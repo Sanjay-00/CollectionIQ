@@ -4,6 +4,22 @@ import plotly.io as pio
 
 YELLOW = "#FFC000"
 
+# Columns that MUST exist for calculations to work
+CRITICAL_COLS = [
+    "Loan No", "RegionName", "Unit", "Loan Status", "Ag_Date",
+    "Arrears / EMI", "Month Receipt Amount", "NET Collection Demand Inst+Exp",
+    "POS", "LCC%", "Strike", "Closing Arrears", "ClosingPC",
+    "Month Due-Inst", "Month Due-Exp", "Total Cum Collection",
+]
+
+# Known column name variations across different LCC extracts
+COL_ALIASES = {
+    "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by R":
+        "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by RE",
+    "Cum Coll (Inst+Exp+BC)": "Cum Coll (Inst+Exp)",
+}
+
+# All expected columns (used for reference only — missing ones show a warning, not error)
 REQUIRED_COLS = [
     "SNo", "Loan No", "CHANNEL", "BU", "StateName", "Zone", "RegionName", "Unit",
     "Ag_Date", "SRC Code", "SRC Name", "MNT CODE", "MNT NAME", "Due Dt", "Tenure",
@@ -63,11 +79,14 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     except Exception as e:
         return None, [f"Could not read file: {e}"]
 
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
-    if missing:
+    # Rename known column variations to standard names
+    df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
+
+    # Hard-fail only on critical columns
+    missing_critical = [c for c in CRITICAL_COLS if c not in df.columns]
+    if missing_critical:
         return None, [
-            f"Missing {len(missing)} expected column(s): "
-            f"{', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}"
+            f"Missing critical column(s): {', '.join(missing_critical)}"
         ]
 
     for date_col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
@@ -86,6 +105,8 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
 
     df["LCC%"] = pd.to_numeric(df["LCC%"], errors="coerce")
     df["Strike"] = df["Strike"].astype(str).str.strip().str.upper()
+    if "Unit" in df.columns:
+        df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
 
     df = assign_buckets(df)
     return df, []

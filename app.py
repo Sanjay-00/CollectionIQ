@@ -444,7 +444,7 @@ SEVERITY_STYLE = {
 }
 CLEAR_STYLE = ("#16a34a", "#f0fdf4")   # green when count == 0
 
-alerts = run_all_alerts(df_curr_raw)
+alerts = run_all_alerts(df_curr)
 
 for i in range(0, len(alerts), 2):
     row_alerts = alerts[i:i+2]
@@ -498,6 +498,7 @@ for i in range(0, len(alerts), 2):
                     st.dataframe(
                         display_df.reset_index(drop=True),
                         use_container_width=True,
+                        hide_index=True,
                         height=min(300, 40 + alert["count"] * 35),
                     )
 
@@ -640,7 +641,7 @@ if result:
                 display_grp = grp.drop(columns=["Priority", "Why", "_rank"], errors="ignore")
                 display_grp = display_grp.loc[:, ~display_grp.columns.duplicated()]
                 st.dataframe(display_grp.reset_index(drop=True), use_container_width=True,
-                             height=min(280, 45 + len(grp) * 36))
+                             height=min(280, 45 + len(grp) * 36), hide_index=True)
 
         else:
             # Normal query result
@@ -698,7 +699,7 @@ if result:
             # Customer table
             st.markdown("<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching Customer Records</div>", unsafe_allow_html=True)
             display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            st.dataframe(display_filtered, use_container_width=True, height=320)
+            st.dataframe(display_filtered, use_container_width=True, height=320, hide_index=True)
 
         # AI observations (always shown)
         obs_lines = "".join(

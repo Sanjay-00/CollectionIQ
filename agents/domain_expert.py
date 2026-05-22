@@ -126,6 +126,7 @@ Set priority_mode to true ONLY for vague/priority queries. When true, the system
 automatically apply the full business priority framework — you do NOT need to specify filters.
 
 Return ONLY valid JSON. No markdown, no explanation outside the JSON.
+Never use em dash, en dash, or hyphen as a dash anywhere in your output.
 """
 
 

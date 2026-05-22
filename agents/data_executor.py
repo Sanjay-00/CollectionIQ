@@ -61,7 +61,7 @@ def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
 
 
 QUERY_DISPLAY_COLS = [
-    "SNo", "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME",
+    "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME",
     "Due Dt", "Tenure", "Loan Status", "Loan Amount", "Veh ID", "Cust Name",
     "Guar Name", "Cust Mob No", "Guar Mob No", "Vehicle Description",
     "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",

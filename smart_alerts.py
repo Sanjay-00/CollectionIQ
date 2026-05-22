@@ -6,11 +6,17 @@ import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
-# Columns shown in every alert drilldown table
-BASE_COLS = [
-    "Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit",
-    "MNT NAME", "Ag_Date", "curr_bucket", "POS", "Arrears / EMI",
-    "ClosingPC", "Closing Arrears",
+# Fixed columns shown in every alert drilldown table
+ALERT_DISPLAY_COLS = [
+    "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME",
+    "Due Dt", "Tenure", "Loan Status", "Loan Amount", "Veh ID", "Cust Name",
+    "Guar Name", "Cust Mob No", "Guar Mob No", "Vehicle Description",
+    "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",
+    "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
+    "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
+    "POS", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
+    "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
+    "TyreFlag", "FUEL_TYPE",
 ]
 
 
@@ -32,7 +38,6 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
     """Customers who have never paid even their 1st EMI."""
     mask = df["Non Starter"].astype(str).str.strip().str.upper() == "Y" if "Non Starter" in df.columns else pd.Series(False, index=df.index)
     subset = df[mask]
-    extra = _safe_cols(df, ["Non Starter", "Loan Amount", "scheme", "NACHStatus"])
     return {
         "title": "Non Starters",
         "subtitle": "Never paid 1st EMI",
@@ -40,7 +45,7 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, BASE_COLS + extra)],
+        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
         "icon": "🚨",
         "action": "Immediate field visit required. Check if disbursement reached customer.",
     }
@@ -54,7 +59,6 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
     arrears = _to_num(df, "Arrears / EMI")
     mask = (inst <= 0) & (exp > 0) & (arrears > 0)
     subset = df[mask]
-    extra = _safe_cols(df, ["Month Due-Inst", "Month Due-Exp", "Month Receipt Amount", "scheme"])
     return {
         "title": "Insurance-Driven Delinquency",
         "subtitle": "EMI paid but insurance charge causing default",
@@ -62,7 +66,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, BASE_COLS + extra)],
+        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
         "icon": "⚠️",
         "action": "Settle insurance by cash or convert to child loan (EMI). Do not mark as willful default.",
     }
@@ -73,7 +77,6 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
     closing = _to_num(df, "Closing Arrears")
     mask = (closing > 0) & (closing < 1000)
     subset = df[mask]
-    extra = _safe_cols(df, ["Closing Arrears", "NACHStatus", "Strike"])
     return {
         "title": "Easy Settlements",
         "subtitle": "Closing arrears < ₹1,000 — quick wins",
@@ -81,7 +84,7 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, BASE_COLS + extra)],
+        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
         "icon": "💡",
         "action": "One call / one visit can clear these. Assign to executives for same-day closure.",
     }
@@ -94,7 +97,6 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = 12) -> dict:
     arrears = _to_num(df, "Arrears / EMI")
     mask = (ag >= cutoff) & (arrears > 0)
     subset = df[mask]
-    extra = _safe_cols(df, ["Ag_Date", "Loan Amount", "scheme", "SRC Name", "NACHStatus"])
     return {
         "title": "Recent Advances at Risk",
         "subtitle": f"Sanctioned in last {months} months — already delinquent",
@@ -102,7 +104,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = 12) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, BASE_COLS + extra)],
+        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
         "icon": "📉",
         "action": "Review sourcing quality. Engage field executive and check NACH status immediately.",
     }
@@ -114,7 +116,6 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
     arrears = _to_num(df, "Arrears / EMI")
     mask = (colend == "Y") & (arrears > 0)
     subset = df[mask]
-    extra = _safe_cols(df, ["CoLending_Loans", "Loan Amount", "NACHStatus", "LGL_FLAG"])
     return {
         "title": "Co-lending Loans at Risk",
         "subtitle": "Partner bank exposure — must not default",
@@ -122,7 +123,7 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, BASE_COLS + extra)],
+        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
         "icon": "🏦",
         "action": "Escalate immediately to Regional Manager. Partner bank SLA may be breached.",
     }

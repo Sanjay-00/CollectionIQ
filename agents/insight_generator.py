@@ -7,6 +7,7 @@ Write exactly 4-5 bullet points.
 Each bullet must start with "• ".
 Be specific — use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
+Never use em dash, en dash, or hyphen as a dash anywhere in your output.
 """
 
 
