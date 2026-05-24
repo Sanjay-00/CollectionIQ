@@ -55,6 +55,8 @@ Every field executive is ranked by collection efficiency, strike rate, and NPA p
 
 When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets - how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
 
+Roll forward and roll backward queries are also supported through the plain English engine. Ask "show me accounts that worsened this month" or "which accounts cured from SMA-1" and get the filtered list instantly.
+
 **Smart Risk Alerts**
 
 Automatic alerts fire when delinquency exceeds thresholds, NACH inactive accounts spike, co-lending loans show arrears, or strike coverage drops. Each alert includes account count, outstanding exposure, and a recommended action.
