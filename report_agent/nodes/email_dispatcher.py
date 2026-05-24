@@ -25,7 +25,7 @@ def email_dispatcher_node(state: ReportState) -> ReportState:
 
     try:
         msg = MIMEMultipart("mixed")
-        msg["Subject"] = f"Shriram Finance -- Portfolio Intelligence Report {state['curr_month']}"
+        msg["Subject"] = f"Shriram Finance - Portfolio Intelligence Report {state['curr_month']}"
         msg["From"]    = smtp_user
         msg["To"]      = to_addr
 

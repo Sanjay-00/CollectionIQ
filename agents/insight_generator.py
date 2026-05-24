@@ -18,16 +18,16 @@ Write exactly 4-5 bullet points.
 Each bullet must start with "• ".
 Be specific — use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
-Never use em dash, en dash, or hyphen as a dash anywhere in your output.
+Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
 """
 
 
 def _fmt_money(val: float) -> str:
-    if abs(val) >= 1_000_000:
-        return f"₹{val / 1_000_000:.1f}M"
-    if abs(val) >= 1_000:
-        return f"₹{val / 1_000:.1f}K"
-    return f"₹{val:.0f}"
+    if abs(val) >= 1_00_00_000:
+        return f"₹{val / 1_00_00_000:.2f}Cr"
+    if abs(val) >= 1_00_000:
+        return f"₹{val / 1_00_000:.2f}L"
+    return f"₹{val:,.0f}"
 
 
 def generate_insights(

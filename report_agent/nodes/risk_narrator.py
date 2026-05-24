@@ -15,11 +15,11 @@ def _call_gemini_with_retry(client, model, contents, config, max_retries=2):
 
 
 def _fmt_money(val):
-    if abs(val) >= 1_000_000:
-        return f"Rs.{val/1_000_000:.1f}M"
-    if abs(val) >= 1_000:
-        return f"Rs.{val/1_000:.0f}K"
-    return f"Rs.{val:.0f}"
+    if abs(val) >= 1_00_00_000:
+        return f"₹{val/1_00_00_000:.2f}Cr"
+    if abs(val) >= 1_00_000:
+        return f"₹{val/1_00_000:.2f}L"
+    return f"₹{val:,.0f}"
 
 
 def _build_prompt(section_data: dict, curr_month: str) -> str:
@@ -71,26 +71,26 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
 
 
 NARRATIVE_PROMPT = """You are the Chief Risk Officer of Shriram Finance preparing a monthly portfolio briefing for the Regional Director.
-Write exactly 3 paragraphs in plain text (no bullet points, no markdown, no em dashes):
+Write exactly 3 paragraphs in plain text (no bullet points, no markdown, no em dashes, no double dashes):
 
-Paragraph 1: Portfolio health summary -- overall collection performance, key wins, major concerns with specific numbers.
-Paragraph 2: Risk concentration -- where is the most risk (geography, bucket, executive) with specific names and figures.
-Paragraph 3: Forward-looking -- what needs priority attention next month and why.
+Paragraph 1: Portfolio health summary - overall collection performance, key wins, major concerns with specific numbers.
+Paragraph 2: Risk concentration - where is the most risk (geography, bucket, executive) with specific names and figures.
+Paragraph 3: Forward-looking - what needs priority attention next month and why.
 
-Be precise. Use Indian NBFC terminology. Professional, direct tone. No hedging. No em dashes anywhere."""
+Be precise. Use Indian NBFC terminology. Professional, direct tone. No hedging. Use single hyphen (-) only, never double dash (--)."""
 
 ACTION_PROMPT = """You are a collections strategy consultant for Shriram Finance.
 Based on the portfolio data provided, generate exactly 5 numbered action items for the collection team this month.
 
 Format each item exactly as:
-N. [Specific action with branch/executive name if available] -- Owner: [Role] -- Timeline: [When]
+N. [Specific action with branch/executive name if available] - Owner: [Role] - Timeline: [When]
 
 Rules:
 - Be specific (name the branch, bucket, or executive where data is available)
 - Owner must be one of: Branch Manager, Field Executive, Regional Manager, Collection Head
 - Timeline must be one of: Immediate (this week), By month-end, Next 48 hours
-- No markdown, no em dashes in narrative
-- Use ' -- ' (space dash dash space) as the separator"""
+- No markdown, no em dashes, no double dashes
+- Use ' - ' (space hyphen space) as the separator"""
 
 
 def risk_narrator_node(state: ReportState) -> ReportState:
@@ -98,7 +98,7 @@ def risk_narrator_node(state: ReportState) -> ReportState:
     if not api_key:
         return {
             **state,
-            "executive_narrative": "AI narrative unavailable -- GOOGLE_API_KEY not configured.",
+            "executive_narrative": "AI narrative unavailable - GOOGLE_API_KEY not configured.",
             "action_plan": "Action plan unavailable.",
         }
 

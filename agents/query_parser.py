@@ -115,7 +115,7 @@ Operators: ==, !=, >, >=, <, <=, in (value must be a list), contains, bucket_wor
 For "in" operator, value must be a JSON array: ["val1", "val2"]
 Always include these in display_columns: Loan No, Cust Name, Cust Mob No, RegionName, Unit
 Add relevant columns based on the query (e.g. Ag_Date if date filter, POS if amount mentioned).
-Never use em dash, en dash, or hyphen as a dash anywhere in your output.
+Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
 """
 
 

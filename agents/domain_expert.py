@@ -77,7 +77,7 @@ def _build_priority_text() -> str:
                 val = "within last 12 months"
             cond_parts.append(f"{c['column']} {c['op']} {val}")
         cond_text = " AND ".join(cond_parts)
-        lines.append(f"Priority {r['rank']} -- {r['label']} ({cond_text}): {r['why']}")
+        lines.append(f"Priority {r['rank']} - {r['label']} ({cond_text}): {r['why']}")
     return "\n".join(lines)
 
 
@@ -226,7 +226,7 @@ For single_stat that requires GROUP BY (e.g. "which executive has the most"), se
 For single_stat that is a simple count/sum (e.g. "how many MAT"), set aggregation_mode false AND result_type "single_stat".
 
 Return ONLY valid JSON. No markdown, no explanation outside the JSON.
-Never use em dash, en dash, or hyphen as a dash anywhere in your output.
+Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
 """
 
 

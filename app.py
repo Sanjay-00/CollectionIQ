@@ -33,7 +33,7 @@ st.markdown("""
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 #MainMenu, footer, header { visibility: hidden; }
 .block-container { padding: 0 2.5rem 3rem 2.5rem !important; max-width: 100% !important; }
-.stApp { background: #eef1f6; }
+.stApp { background: #f2f2f2; }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -112,11 +112,11 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 }
 @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
 .dash-header {
-    background: linear-gradient(135deg, #ffffff 0%, #fafafa 100%);
+    background: #ffffff;
     display: flex; align-items: center; gap: 20px;
-    padding: 16px 28px;
-    border-bottom: 1px solid #e4e7ec;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 16px rgba(0,0,0,0.04);
+    padding: 14px 28px;
+    border-bottom: 3px solid #FFC000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     margin: 0 -2.5rem 24px -2.5rem;
 }
 .dash-logo-box {
@@ -126,7 +126,7 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 }
 .dash-logo-main { font-size: 18px; font-weight: 900; color: #FFC000; letter-spacing: 2px; line-height: 1; }
 .dash-logo-sub  { font-size: 10px; font-weight: 500; color: #888; letter-spacing: 1px; margin-top: 2px; }
-.dash-title { font-size: 20px; font-weight: 700; color: #111; letter-spacing: -0.3px; }
+.dash-title { font-size: 18px; font-weight: 700; color: #111; letter-spacing: -0.3px; }
 .dash-subtitle { font-size: 12px; color: #999; margin-top: 2px; font-weight: 400; }
 .dash-badge {
     margin-left: auto; background: #FFC000; color: #000;
@@ -136,49 +136,53 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
 /* ── Section labels ── */
 .section-label {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 10px; font-weight: 700; color: #6b7280;
-    text-transform: uppercase; letter-spacing: 2px;
-    margin-bottom: 12px; margin-top: 8px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 15px; font-weight: 700; color: #111827;
+    margin-bottom: 14px; margin-top: 10px;
 }
 .section-label::before {
-    content: ''; width: 3px; height: 14px;
+    content: ''; width: 4px; height: 18px;
     background: #FFC000; border-radius: 2px; display: block;
 }
 
 /* ── Upload cards ── */
 .upload-card {
-    background: #fff; border-radius: 14px;
-    border: 2px dashed #d1d5db; padding: 20px;
+    background: #fff; border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    border-bottom: 3px solid #FFC000;
+    padding: 20px;
     transition: all 0.25s ease;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
-.upload-card:hover { border-color: #FFC000; box-shadow: 0 4px 16px rgba(255,192,0,0.12); }
+.upload-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.10); transform: translateY(-1px); }
 .upload-card-title { font-size: 13px; font-weight: 700; color: #1f2937; margin-bottom: 3px; }
 .upload-card-sub   { font-size: 11px; color: #9ca3af; margin-bottom: 12px; }
 
 /* ── KPI cards ── */
 .kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
 .kpi-card {
-    background: #fff; border-radius: 14px;
-    border-top: 3px solid #FFC000;
-    padding: 16px 18px; min-width: 140px; flex: 1;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.04);
+    background: #fff; border-radius: 12px;
+    border-bottom: 3px solid #FFC000;
+    padding: 18px 20px; min-width: 140px; flex: 1;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     transition: transform 0.2s, box-shadow 0.2s;
 }
-.kpi-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.09); }
-.kpi-label { font-size: 10px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-.kpi-value { font-size: 28px; font-weight: 800; color: #111827; line-height: 1; letter-spacing: -0.5px; }
+.kpi-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.10); }
+.kpi-label { font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
+.kpi-value { font-size: 26px; font-weight: 800; color: #111827; line-height: 1; letter-spacing: -0.5px; white-space: nowrap; }
 .kpi-mom   { font-size: 11px; margin-top: 8px; color: #9ca3af; font-weight: 500; }
 .kpi-mom-up   { color: #059669; font-weight: 700; }
 .kpi-mom-down { color: #dc2626; font-weight: 700; }
 
 /* ── Chart containers ── */
 .chart-card {
-    background: #fff; border-radius: 14px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.04);
+    background: #fff; border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     padding: 4px; overflow: hidden;
+    transition: box-shadow 0.2s;
 }
+.chart-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.10); }
 
 /* ── All buttons base ── */
 .stButton > button,
@@ -482,9 +486,12 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
 .rank-card {
     background: #161b22; border-radius: 12px;
     border: 1px solid #21262d; padding: 16px 18px;
+    transition: box-shadow 0.2s, border-color 0.2s;
 }
+.rank-card:hover { border-color: rgba(255,192,0,0.35); box-shadow: 0 4px 16px rgba(255,192,0,0.10); }
 .rank-title { font-size: 11px; font-weight: 700; color: #FFC000; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
-.rank-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #21262d; }
+.rank-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #21262d; transition: background 0.15s; }
+.rank-row:hover { background: rgba(255,192,0,0.04); border-radius: 4px; }
 .rank-row:last-child { border-bottom: none; }
 .rank-name  { font-size: 13px; color: #8b949e; }
 .rank-value { font-size: 13px; font-weight: 700; color: #e6edf3; }
@@ -494,7 +501,9 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
     background: #0d1117; border-radius: 12px;
     border: 1px solid #21262d; border-left: 3px solid #FFC000;
     padding: 20px 24px; margin-top: 16px;
+    transition: border-left-color 0.2s, box-shadow 0.2s;
 }
+.obs-card:hover { border-left-color: #FFD740; box-shadow: 0 4px 16px rgba(255,192,0,0.10); }
 .obs-title { font-size: 11px; font-weight: 700; color: #FFC000; margin-bottom: 14px; text-transform: uppercase; letter-spacing: 1.5px; }
 .obs-line  { font-size: 14px; color: #8b949e; line-height: 1.8; padding: 4px 0; }
 
@@ -515,8 +524,58 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
 }
 .streamlit-expanderContent { border: 1px solid #e5e7eb !important; border-top: none !important; border-radius: 0 0 8px 8px !important; }
 
-/* ── Info / warning / error boxes ── */
-.stAlert { border-radius: 10px !important; border: none !important; }
+/* ── Alerts ── */
+[data-testid="stAlert"] { border-radius: 10px !important; border: none !important; }
+div[data-testid="stAlert"][kind="info"]    { background: rgba(255,192,0,0.08) !important; border-left: 3px solid #FFC000 !important; }
+div[data-testid="stAlert"][kind="success"] { background: rgba(5,150,105,0.08) !important; border-left: 3px solid #059669 !important; }
+div[data-testid="stAlert"][kind="warning"] { background: rgba(217,119,6,0.08) !important; border-left: 3px solid #d97706 !important; }
+div[data-testid="stAlert"][kind="error"]   { background: rgba(220,38,38,0.08)  !important; border-left: 3px solid #dc2626 !important; }
+
+/* ── Text input ── */
+[data-testid="stTextInput"] label {
+    font-size: 10px !important; font-weight: 700 !important;
+    color: #6b7280 !important; text-transform: uppercase !important; letter-spacing: 1.5px !important;
+}
+[data-testid="stTextInput"] input {
+    background: #111827 !important; color: #e6edf3 !important;
+    border: 1px solid #374151 !important; border-radius: 8px !important;
+    font-size: 13px !important; padding: 10px 14px !important;
+    caret-color: #FFC000 !important; transition: border-color 0.2s, box-shadow 0.2s !important;
+}
+[data-testid="stTextInput"] input::placeholder { color: #4b5563 !important; }
+[data-testid="stTextInput"] input:focus {
+    border-color: #FFC000 !important;
+    box-shadow: 0 0 0 3px rgba(255,192,0,0.15) !important; outline: none !important;
+}
+
+/* ── Checkboxes ── */
+[data-testid="stCheckbox"] label { font-size: 13px !important; font-weight: 500 !important; color: #374151 !important; }
+[data-testid="stCheckbox"] input[type="checkbox"] + span {
+    border: 2px solid #d1d5db !important; border-radius: 4px !important;
+    transition: border-color 0.15s, background 0.15s !important;
+}
+[data-testid="stCheckbox"] input[type="checkbox"]:checked + span {
+    background: #FFC000 !important; border-color: #FFC000 !important;
+}
+[data-testid="stCheckbox"] input[type="checkbox"]:checked + span svg { fill: #000 !important; }
+
+/* ── st.metric ── */
+[data-testid="stMetric"] {
+    background: #fff; border-radius: 12px; border-bottom: 3px solid #FFC000;
+    padding: 14px 16px !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+[data-testid="stMetric"]:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.10); }
+[data-testid="stMetricLabel"]  { font-size: 10px !important; font-weight: 700 !important; color: #9ca3af !important; text-transform: uppercase !important; letter-spacing: 1px !important; }
+[data-testid="stMetricValue"]  { font-size: 26px !important; font-weight: 800 !important; color: #111827 !important; }
+[data-testid="stMetricDelta"]  { font-size: 12px !important; font-weight: 600 !important; }
+
+/* ── Caption ── */
+[data-testid="stCaptionContainer"] { color: #9ca3af !important; font-size: 11px !important; }
+
+/* ── Spinner ── */
+[data-testid="stSpinner"] > div { border-top-color: #FFC000 !important; }
 
 /* ── Dataframe ── */
 [data-testid="stDataFrame"] { border-radius: 10px !important; overflow: hidden !important; }
@@ -550,13 +609,21 @@ setInterval(fixSidebarToggle, 500);
 """, unsafe_allow_html=True)
 
 # ── Header ───────────────────────────────────────────────────────────────────
+import base64 as _b64, pathlib as _pl
+_logo_path = _pl.Path(__file__).parent / "assets" / "shriram_logo.jpg"
+_logo_b64  = _b64.b64encode(_logo_path.read_bytes()).decode() if _logo_path.exists() else ""
+_logo_html = (
+    f'<img src="data:image/jpeg;base64,{_logo_b64}" '
+    f'style="height:52px;width:auto;object-fit:contain;display:block;" alt="Shriram Finance">'
+    if _logo_b64 else
+    '<div class="dash-logo-box"><div class="dash-logo-main">SHRIRAM</div>'
+    '<div class="dash-logo-sub">FINANCE</div></div>'
+)
+
 st.markdown('<div class="top-banner"></div>', unsafe_allow_html=True)
-st.markdown("""
+st.markdown(f"""
 <div class="dash-header">
-  <div class="dash-logo-box">
-    <div class="dash-logo-main">SHRIRAM</div>
-    <div class="dash-logo-sub">FINANCE</div>
-  </div>
+  <div style="flex-shrink:0;">{_logo_html}</div>
   <div>
     <div class="dash-title">Regional Collection Dashboard</div>
     <div class="dash-subtitle">Credit &amp; Collection Risk Monitoring System</div>
@@ -572,25 +639,25 @@ st.markdown('<div class="section-label">Data Source</div>', unsafe_allow_html=Tr
 col_up1, col_up2 = st.columns(2)
 
 with col_up1:
-    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Current Month</div><div class="upload-card-sub">Required — main reporting file</div>', unsafe_allow_html=True)
+    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Current Month</div><div class="upload-card-sub">Required - main reporting file</div>', unsafe_allow_html=True)
     curr_file = st.file_uploader("Current Month", type=["xlsx", "xls"], key="curr", label_visibility="collapsed")
     curr_month_input = st.date_input(
         "Reporting Month",
         value=datetime.date.today().replace(day=1),
         key="curr_month_pick",
-        help="Select any date in the reporting month — only Month & Year are used",
+        help="Select any date in the reporting month - only Month & Year are used",
         format="DD/MM/YYYY",
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col_up2:
-    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Previous Month</div><div class="upload-card-sub">Optional — enables MoM % comparison</div>', unsafe_allow_html=True)
+    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Previous Month</div><div class="upload-card-sub">Optional - enables MoM % comparison</div>', unsafe_allow_html=True)
     prev_file = st.file_uploader("Previous Month", type=["xlsx", "xls"], key="prev", label_visibility="collapsed")
     prev_month_input = st.date_input(
         "Reporting Month",
         value=(datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
         key="prev_month_pick",
-        help="Select any date in the previous month — only Month & Year are used",
+        help="Select any date in the previous month - only Month & Year are used",
         format="DD/MM/YYYY",
         disabled=not prev_file,
     )
@@ -642,7 +709,7 @@ if generate:
 if "df_curr_raw" not in st.session_state:
     st.markdown("""
     <div style="text-align:center;padding:20px 0;color:#aaa;font-size:13px;">
-        File ready — click <strong>Generate Dashboard</strong> to build the report.
+        File ready - click <strong>Generate Dashboard</strong> to build the report.
     </div>
     """, unsafe_allow_html=True)
     st.stop()
@@ -892,7 +959,7 @@ for i in range(0, len(alerts), 2):
               </div>
               <div style="font-size:11px;color:#555;font-style:italic;border-top:1px solid rgba(0,0,0,0.08);
                           padding-top:8px;">
-                {"✓ All clear — no accounts flagged" if is_clear else f"💬 {alert['action']}"}
+                {"✓ All clear - no accounts flagged" if is_clear else f"💬 {alert['action']}"}
               </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1003,7 +1070,7 @@ with st.expander("Configure & Generate Monthly Report", expanded=False):
     else:
         rpt_email_to = ""
         if not smtp_ok:
-            st.caption("Email not configured — add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
+            st.caption("Email not configured - add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
 
     rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate")
 

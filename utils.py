@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
@@ -48,31 +49,19 @@ BUCKET_ORDER = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"]
 BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4, "NA": -1}
 
 
-def _assign_bucket(val):
-    try:
-        v = float(val)
-    except (TypeError, ValueError):
-        return "NA"
-    if pd.isna(v):
-        return "NA"
-    if v <= 0:   # credit balances (v < 0) and zero are both current/standard
-        return "STD"
-    if v < 1:
-        return "1-30 DPD"
-    if v < 2:
-        return "SMA-1"
-    if v < 3:
-        return "SMA-2"
-    return "NPA"
-
-
 def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["curr_bucket"] = df["Arrears / EMI"].apply(_assign_bucket)
+    v = pd.to_numeric(df["Arrears / EMI"], errors="coerce")
+    df["curr_bucket"] = np.select(
+        [v.isna(), v <= 0, v < 1, v < 2, v < 3],
+        ["NA",     "STD",  "1-30 DPD", "SMA-1", "SMA-2"],
+        default="NPA",
+    )
     df["curr_score"] = df["curr_bucket"].map(BUCKET_SCORE)
     return df
 
 
+@__import__("streamlit").cache_data(show_spinner=False)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
         df = pd.read_excel(file, engine="openpyxl")
@@ -192,19 +181,19 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
 
 def fmt_value(val, kind: str) -> str:
     if kind == "money":
-        if abs(val) >= 1_000_000:
-            return f"{val / 1_000_000:.1f}M"
-        if abs(val) >= 1_000:
-            return f"{val / 1_000:.1f}K"
-        return f"{val:.0f}"
+        if abs(val) >= 1_00_00_000:
+            return f"₹{val / 1_00_00_000:.2f}Cr"
+        if abs(val) >= 1_00_000:
+            return f"₹{val / 1_00_000:.2f}L"
+        return f"₹{val:,.0f}"
     if kind == "pct":
         return f"{val:.2f}"
     if kind == "count":
-        if abs(val) >= 1_000_000:
-            return f"{val / 1_000_000:.2f}M"
-        if abs(val) >= 1_000:
-            return f"{val / 1_000:.1f}K"
-        return f"{int(val)}"
+        if abs(val) >= 1_00_00_000:
+            return f"{val / 1_00_00_000:.2f}Cr"
+        if abs(val) >= 1_00_000:
+            return f"{val / 1_00_000:.2f}L"
+        return f"{int(val):,}"
     return str(val)
 
 
@@ -286,13 +275,13 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
         .reindex(BUCKET_ORDER, fill_value=0)
     )
 
-    # Format labels as M/K for readability
+    # Format labels in Indian units
     def _fmt(v):
-        if v >= 1_000_000:
-            return f"{v/1_000_000:.1f}M"
-        if v >= 1_000:
-            return f"{v/1_000:.0f}K"
-        return f"{v:.0f}"
+        if v >= 1_00_00_000:
+            return f"₹{v/1_00_00_000:.1f}Cr"
+        if v >= 1_00_000:
+            return f"₹{v/1_00_000:.1f}L"
+        return f"₹{v:,.0f}"
 
     labels = [_fmt(v) for v in exposure.values]
 

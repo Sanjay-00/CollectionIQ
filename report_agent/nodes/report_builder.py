@@ -55,11 +55,11 @@ def _fmt(val, kind="money"):
     except (TypeError, ValueError):
         return str(val)
     if kind == "money":
-        if abs(v) >= 1_000_000:
-            return f"Rs.{v/1_000_000:.1f}M"
-        if abs(v) >= 1_000:
-            return f"Rs.{v/1_000:.0f}K"
-        return f"Rs.{v:.0f}"
+        if abs(v) >= 1_00_00_000:
+            return f"₹{v/1_00_00_000:.2f}Cr"
+        if abs(v) >= 1_00_000:
+            return f"₹{v/1_00_000:.2f}L"
+        return f"₹{v:,.0f}"
     if kind == "pct":
         return f"{v:.1f}%"
     return f"{int(v):,}"
@@ -293,7 +293,7 @@ def report_builder_node(state: ReportState) -> ReportState:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shriram Finance -- Portfolio Intelligence Report {curr_month}</title>
+<title>Shriram Finance - Portfolio Intelligence Report {curr_month}</title>
 <style>{BASE_CSS}</style>
 </head>
 <body>
