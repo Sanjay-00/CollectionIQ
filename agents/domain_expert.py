@@ -124,6 +124,15 @@ You deeply understand NBFC terminology:
 - Month Due-Exp = Monthly expense demand (insurance etc.); if > 0 with no EMI = insurance-only delinquency
 - Closing Arrears = Total arrears at month close in rupees
 
+BUCKET ORDER AND MOVEMENT (when previous month file is uploaded):
+- Bucket severity order from best to worst: STD (0) < 1-30 DPD (1) < SMA-1 (2) < SMA-2 (3) < NPA (4)
+- curr_bucket = this month's bucket. prev_bucket = last month's bucket (column only exists when prev file uploaded).
+- Roll Forward = account moved to a WORSE bucket between months. This is BAD. Examples: STD to 1-30 DPD, SMA-1 to SMA-2, SMA-2 to NPA.
+- Roll Backward = account moved to a BETTER bucket between months. This is GOOD. Examples: NPA to SMA-2, SMA-1 to STD, 1-30 DPD to STD.
+- When query mentions "roll forward", "worsened", "deteriorated" → filter where curr_bucket severity > prev_bucket severity.
+- When query mentions "roll backward", "cured", "improved", "recovered" → filter where curr_bucket severity < prev_bucket severity.
+- Accounts with no prev_bucket (new accounts this month) should be excluded from roll analysis.
+
 LOAN STATUS — three exact values in the "Loan Status" column:
 - "RUN" = Loan is active and within its original tenure. Standard running portfolio account.
 - "MAT" = Loan has matured — tenure is over but closing arrears are still pending. Customer still owes money after loan end date. Recovery mode.

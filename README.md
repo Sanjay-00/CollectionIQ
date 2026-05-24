@@ -100,16 +100,16 @@ Every question typed in plain English passes through four agents in sequence bef
 
 ```mermaid
 flowchart TD
-    User(["💬 Plain English Query\ne.g. rank executives by MAT/RUN ratio"])
+    User(["Plain English Query\ne.g. rank executives by MAT/RUN ratio"])
 
     User --> DE
 
     subgraph QP ["  Query Pipeline  (LangGraph)  "]
         direction TB
-        DE["🧠 Domain Expert Agent\nGemini 2.0 Flash\n\nUnderstands NBFC terminology · Maps intent to columns\nDecides result shape · Detects priority mode\nInjects today's date for relative time filters"]
-        PP["🔍 Query Parser Agent\nGemini 2.0 Flash\n\nTranslates enriched query into structured filter spec\nHandles conditions · GROUP BY · HAVING · sort"]
-        EX["⚙️ Data Executor\nPandas\n\nApplies row filters · Aggregations · Priority rules\nComputes KPIs and executive rankings"]
-        IG["💡 Insight Generator Agent\nGemini 2.0 Flash\n\nReads computed KPIs and rankings\nGenerates domain-aware observations and recommendations"]
+        DE["Domain Expert Agent\nGemini 2.0 Flash\n\nUnderstands NBFC terminology · Maps intent to columns\nDecides result shape · Detects priority mode\nInjects today's date for relative time filters"]
+        PP["Query Parser Agent\nGemini 2.0 Flash\n\nTranslates enriched query into structured filter spec\nHandles conditions · GROUP BY · HAVING · sort"]
+        EX["Data Executor\nPandas\n\nApplies row filters · Aggregations · Priority rules\nComputes KPIs and executive rankings"]
+        IG["Insight Generator Agent\nGemini 2.0 Flash\n\nReads computed KPIs and rankings\nGenerates domain-aware observations and recommendations"]
         DE --> PP --> EX --> IG
     end
 
@@ -122,25 +122,25 @@ flowchart TD
 
 ### Report Pipeline
 
-Triggered on demand. Runs fully autonomously — no user input needed after clicking Generate.
+Triggered on demand. Runs fully autonomously, no user input needed after clicking Generate.
 
 ```mermaid
 flowchart TD
-    Trigger(["📊 Generate Monthly Report"])
+    Trigger(["Generate Monthly Report"])
 
     Trigger --> PA
 
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
-        PA["📐 Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
-        RN["✍️ Risk Narrator\nGemini 2.0 Flash\n\nWrites 3-paragraph board-level executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
-        RB["🗂️ Report Builder\nPython\n\nAssembles fully self-contained HTML report\nNo external CSS · No CDN · Email-safe"]
-        ED["📧 Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
+        PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
+        RN["Risk Narrator\nGemini 2.0 Flash\n\nWrites 3-paragraph board-level executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
+        RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nNo external CSS · No CDN · Email-safe"]
+        ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
         PA --> RN --> RB --> ED
     end
 
-    RB --> DL["⬇ Download HTML Report"]
-    ED --> EM["📬 Email to Configured Recipients"]
+    RB --> DL["Download HTML Report"]
+    ED --> EM["Email to Configured Recipients"]
 ```
 
 &nbsp;
@@ -151,7 +151,7 @@ Both pipelines operate on the same in-memory DataFrame loaded from the Excel upl
 
 ```mermaid
 flowchart LR
-    XL["📂 LCC Excel File\nMonthly extract"] --> VAL["Validation\nSchema check · Type coercion"]
+    XL["LCC Excel File\nMonthly extract"] --> VAL["Validation\nSchema check · Type coercion"]
     VAL --> BK["Bucketing\nDPD bucket assignment\nSTD · 1-30 · SMA-1 · SMA-2 · NPA"]
     BK --> KPI["KPI Computation\nCollection % · POS · Arrears · MoM delta"]
     KPI --> DF[("In-Memory\nDataFrame")]

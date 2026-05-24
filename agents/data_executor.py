@@ -2,6 +2,9 @@ import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
+# Bucket severity scores — higher = worse
+_BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
+
 
 def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
     col = cond["column"]
@@ -10,6 +13,20 @@ def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
 
     if col not in df.columns:
         return df
+
+    # Cross-column bucket comparison operators
+    if op in ("bucket_worse_than", "bucket_better_than"):
+        ref_col = str(val)
+        if ref_col not in df.columns:
+            return df
+        curr_score = df[col].map(_BUCKET_SCORE)
+        prev_score = df[ref_col].map(_BUCKET_SCORE)
+        # Exclude rows where either bucket is unknown/NaN (new accounts, missing prev)
+        valid = curr_score.notna() & prev_score.notna()
+        if op == "bucket_worse_than":
+            return df[valid & (curr_score > prev_score)]
+        else:
+            return df[valid & (curr_score < prev_score)]
 
     series = df[col]
 
@@ -64,6 +81,7 @@ QUERY_DISPLAY_COLS = [
     "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME",
     "Due Dt", "Tenure", "Loan Status", "Loan Amount", "Veh ID", "Cust Name",
     "Guar Name", "Cust Mob No", "Guar Mob No", "Vehicle Description",
+    "prev_bucket", "curr_bucket",
     "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",
     "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",

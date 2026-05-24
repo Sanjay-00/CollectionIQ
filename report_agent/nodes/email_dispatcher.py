@@ -16,10 +16,10 @@ def email_dispatcher_node(state: ReportState) -> ReportState:
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_PASS", "")
-    to_addr   = os.environ.get("REPORT_EMAIL_TO", "")
+    to_addr   = state.get("email_to", "").strip()
 
     if not to_addr:
-        return {**state, "email_sent": False, "email_error": "REPORT_EMAIL_TO not set"}
+        return {**state, "email_sent": False, "email_error": "No recipient email provided"}
     if not state.get("html_report"):
         return {**state, "email_sent": False, "email_error": "No report to send"}
 

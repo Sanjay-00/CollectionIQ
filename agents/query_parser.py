@@ -23,8 +23,8 @@ DATE COLUMNS (use YYYY-MM-DD format in filters):
 - Last Receipt Date: Date of last payment received
 
 CATEGORY COLUMNS:
-- curr_bucket: DPD bucket derived from Arrears/EMI ratio
-  Values: "STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"
+- curr_bucket: DPD bucket in the CURRENT month. Values: "STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"
+- prev_bucket: DPD bucket in the PREVIOUS month (only present when a previous month file is uploaded). Same values as curr_bucket. Use to detect bucket movement between months.
 - Loan Status: Current loan lifecycle status. Exact values (case-sensitive):
   "RUN" = loan is active and within its original tenure
   "MAT" = loan tenure is over but closing arrears still pending (matured, recovery mode)
@@ -69,6 +69,12 @@ FLAG COLUMNS (all Y/N unless noted):
 - CoLending_Loans: Y = co-lending loan
 - No Coll 3 Months and >6 EMI: Y/N/NA
 
+BUCKET ORDER (best to worst): STD < 1-30 DPD < SMA-1 < SMA-2 < NPA
+- "roll forward" or "worsened" = account moved to a WORSE bucket (e.g. STD to 1-30 DPD, SMA-1 to SMA-2). Filter: curr_bucket is worse than prev_bucket.
+- "roll backward" or "cured" or "improved" = account moved to a BETTER bucket (e.g. SMA-2 to SMA-1, NPA to STD). Filter: curr_bucket is better than prev_bucket.
+- For roll forward: use condition {"column": "curr_bucket", "op": "bucket_worse_than", "value": "prev_bucket"}
+- For roll backward / cured: use condition {"column": "curr_bucket", "op": "bucket_better_than", "value": "prev_bucket"}
+
 SPECIAL INTERPRETATIONS:
 - "mature cases" or "matured loans" → Loan Status == "MAT"
 - "running cases" or "running loans" or "active loans" → Loan Status == "RUN"
@@ -105,7 +111,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
   "plain_english": "brief restatement of what is being queried"
 }}
 
-Operators: ==, !=, >, >=, <, <=, in (value must be a list), contains
+Operators: ==, !=, >, >=, <, <=, in (value must be a list), contains, bucket_worse_than (value = another column name), bucket_better_than (value = another column name)
 For "in" operator, value must be a JSON array: ["val1", "val2"]
 Always include these in display_columns: Loan No, Cust Name, Cust Mob No, RegionName, Unit
 Add relevant columns based on the query (e.g. Ag_Date if date filter, POS if amount mentioned).

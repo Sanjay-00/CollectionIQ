@@ -15,7 +15,7 @@ def _route_after_analyze(state: ReportState) -> str:
 
 
 def _route_after_builder(state: ReportState) -> str:
-    return "dispatcher" if os.environ.get("SMTP_HOST", "") else END
+    return "dispatcher" if (os.environ.get("SMTP_HOST", "") and state.get("email_to", "")) else END
 
 
 _graph = StateGraph(ReportState)
@@ -45,6 +45,7 @@ def run_report(
     prev_month: Optional[str] = None,
     enabled_sections: Optional[list] = None,
     filters_applied: Optional[dict] = None,
+    email_to: str = "",
 ) -> ReportState:
     initial: ReportState = {
         "df_curr":          df_curr,
@@ -57,6 +58,7 @@ def run_report(
         "executive_narrative": "",
         "action_plan":      "",
         "html_report":      "",
+        "email_to":         email_to,
         "email_sent":       False,
         "email_error":      "",
         "error":            "",

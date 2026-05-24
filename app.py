@@ -690,6 +690,11 @@ with st.sidebar:
 df_curr = apply_filters(df_curr_raw.copy(), sel_region, sel_branch, sel_status)
 df_prev = apply_filters(df_prev_raw.copy(), sel_region, sel_branch, sel_status)
 
+# ── Attach prev_bucket to df_curr so agents can query roll forward / backward ──
+if len(df_prev) > 0 and "Loan No" in df_curr.columns and "curr_bucket" in df_prev.columns:
+    _prev_slim = df_prev[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"})
+    df_curr = df_curr.merge(_prev_slim, on="Loan No", how="left")
+
 # Clear AI result and report when filters change so stale results are never shown
 _filter_key = f"{sel_region}|{sel_branch}|{sel_status}"
 if st.session_state.get("_last_filter_key") != _filter_key:
@@ -986,10 +991,19 @@ with st.expander("Configure & Generate Monthly Report", expanded=False):
         "Send via email after generation",
         value=False, key="rpt_email",
         disabled=not smtp_ok,
-        help="Configure SMTP_HOST / SMTP_USER / SMTP_PASS / REPORT_EMAIL_TO in .env to enable",
+        help="Configure SMTP_HOST / SMTP_USER / SMTP_PASS in .env to enable",
     )
-    if not smtp_ok:
-        st.caption("Email not configured — add SMTP settings to .env to enable.")
+    if smtp_ok and st.session_state.get("rpt_email"):
+        rpt_email_to = st.text_input(
+            "Send report to (email address)",
+            placeholder="manager@shriram.com, head@shriram.com",
+            key="rpt_email_to",
+            help="Separate multiple addresses with a comma",
+        )
+    else:
+        rpt_email_to = ""
+        if not smtp_ok:
+            st.caption("Email not configured — add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
 
     rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate")
 
@@ -1005,12 +1019,13 @@ if rpt_btn:
 
     with st.spinner("Running Portfolio Intelligence Agent (30–60 seconds)..."):
         _rpt_result = run_report(
-            df_curr=df_curr_raw,
-            df_prev=df_prev_raw,
+            df_curr=df_curr,
+            df_prev=df_prev,
             curr_month=curr_month,
             prev_month=prev_month,
             enabled_sections=enabled_sections,
             filters_applied={"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status},
+            email_to=rpt_email_to,
         )
     st.session_state["report_result"] = _rpt_result
 
@@ -1022,8 +1037,8 @@ if _rpt:
         st.success("Report generated successfully.")
 
         if _rpt.get("email_sent"):
-            st.info(f"Report emailed to: {os.environ.get('REPORT_EMAIL_TO', '')}")
-        elif _rpt.get("email_error") and os.environ.get("SMTP_HOST", ""):
+            st.info(f"Report emailed to: {_rpt.get('email_to', '')}")
+        elif _rpt.get("email_error") and os.environ.get("SMTP_HOST", "") and _rpt.get("email_to", ""):
             st.warning(f"Email failed: {_rpt['email_error']}")
 
         rpt_dl_col, _ = st.columns([1, 3])
@@ -1094,7 +1109,7 @@ if run_btn:
         st.error("GOOGLE_API_KEY not found in .env file.")
     else:
         with st.spinner("Running multi-agent pipeline..."):
-            st.session_state["ai_result"] = run_query(ai_query.strip(), df_curr_raw)
+            st.session_state["ai_result"] = run_query(ai_query.strip(), df_curr)
 
 # ── Render AI result (persists across reruns via session_state) ───────────────
 result = st.session_state.get("ai_result")

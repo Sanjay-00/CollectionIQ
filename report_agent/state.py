@@ -21,6 +21,7 @@ class ReportState(TypedDict):
     html_report: str
 
     # Node 4 — email_dispatcher
+    email_to: str
     email_sent: bool
     email_error: str
 
