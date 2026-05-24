@@ -2,7 +2,7 @@ import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
-# Bucket severity scores — higher = worse
+# Bucket severity scores - higher = worse
 _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
 
 
@@ -216,28 +216,65 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
 
 def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str]:
     """GROUP BY aggregation with ratio/metric computation.
-    spec keys: group_by, counts, sums, metric, metric_label, sort_asc
+    spec keys: group_by (str or [col1, col2]), counts, sums, metric, metric_label, sort_asc
     """
-    group_col = spec.get("group_by", "")
-    if not group_col or group_col not in df.columns:
-        return pd.DataFrame(), f"Group-by column '{group_col}' not found in data."
+    group_by_spec = spec.get("group_by", "")
+    df = df.copy()
+
+    # Support multi-column group_by — combine into a single display column
+    if isinstance(group_by_spec, list) and len(group_by_spec) >= 2:
+        col1, col2 = str(group_by_spec[0]), str(group_by_spec[1])
+        missing = [c for c in [col1, col2] if c not in df.columns]
+        if missing:
+            return pd.DataFrame(), f"Group-by columns not found: {missing}"
+        group_col = f"{col1} ({col2})"
+        df[group_col] = (
+            df[col1].astype(str).str.strip()
+            + " ("
+            + df[col2].astype(str).str.strip()
+            + ")"
+        )
+    else:
+        group_col = str(group_by_spec)
+        if not group_col or group_col not in df.columns:
+            return pd.DataFrame(), f"Group-by column '{group_col}' not found in data."
 
     grouped = df.groupby(group_col, sort=False)
     agg = pd.DataFrame({group_col: list(grouped.groups.keys())}).set_index(group_col)
 
-    # Count rows where column == value per group
+    # Count rows per group — supports equality AND bucket_worse_than / bucket_better_than
     for cnt in spec.get("counts", []):
         alias = cnt.get("alias", "")
         col   = cnt.get("column", "")
-        val   = str(cnt.get("value", "")).upper()
+        op    = cnt.get("op", "==")
+        val   = cnt.get("value", "")
         if not alias:
             continue
-        if col not in df.columns:
-            agg[alias] = 0
+
+        if op in ("bucket_worse_than", "bucket_better_than", "bucket_stable"):
+            ref_col = str(val)
+            if col not in df.columns or ref_col not in df.columns:
+                agg[alias] = 0
+            else:
+                curr_score = df[col].map(_BUCKET_SCORE)
+                prev_score = df[ref_col].map(_BUCKET_SCORE)
+                valid      = curr_score.notna() & prev_score.notna()
+                if op == "bucket_worse_than":
+                    mask = valid & (curr_score > prev_score)
+                elif op == "bucket_better_than":
+                    mask = valid & (curr_score < prev_score)
+                else:  # bucket_stable
+                    mask = valid & (curr_score == prev_score)
+                counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
+                agg[alias] = counts
         else:
-            agg[alias] = grouped[col].apply(
-                lambda s, v=val: int((s.astype(str).str.strip().str.upper() == v).sum())
-            )
+            val_upper = str(val).upper()
+            if col not in df.columns:
+                agg[alias] = 0
+            else:
+                agg[alias] = grouped[col].apply(
+                    lambda s, v=val_upper: int((s.astype(str).str.strip().str.upper() == v).sum())
+                )
 
     # Sum numeric column per group
     for sm in spec.get("sums", []):

@@ -10,15 +10,23 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
     """
     Returns a DataFrame ranked by collection_pct with performance_tier column.
 
-    Columns: MNT NAME, accounts_assigned, strike_rate, collection_pct,
-             npa_pct, total_pos, total_demand, total_collected, performance_tier
+    Columns: Executive (Branch), Accounts, Strike Rate %, Collection %,
+             NPA %, Total POS (L), Demand (L), Collected (L), Tier
+    Groups by MNT NAME + Unit so the same executive in different branches appears separately.
     Executives with fewer than min_accounts are excluded.
     """
     if "MNT NAME" not in df.columns:
         return pd.DataFrame()
 
+    group_cols = ["MNT NAME", "Unit"] if "Unit" in df.columns else ["MNT NAME"]
+
     rows = []
-    for exec_name, grp in df.groupby("MNT NAME"):
+    for keys, grp in df.groupby(group_cols):
+        if isinstance(keys, tuple):
+            exec_name, branch = str(keys[0]), str(keys[1])
+        else:
+            exec_name, branch = str(keys), ""
+
         n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
         if n < min_accounts:
             continue
@@ -39,16 +47,18 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
             npa_count = grp[grp["curr_bucket"] == "NPA"]["Loan No"].nunique()
         npa_pct = round(npa_count / n * 100, 1) if n > 0 else 0.0
 
+        display_name = f"{exec_name} ({branch})" if branch else exec_name
+
         rows.append({
-            "MNT NAME":         exec_name,
-            "Accounts":         n,
-            "Strike Rate %":    strike_rate,
-            "Collection %":     coll_pct,
-            "NPA %":            npa_pct,
-            "Total POS (L)":    round(total_pos / 100_000, 2),
-            "Demand (L)":       round(demand / 100_000, 2),
-            "Collected (L)":    round(collected / 100_000, 2),
-            "_coll_pct_raw":    coll_pct,  # used for tier computation, dropped before display
+            "Executive (Branch)": display_name,
+            "Accounts":           n,
+            "Strike Rate %":      strike_rate,
+            "Collection %":       coll_pct,
+            "NPA %":              npa_pct,
+            "Total POS (L)":      round(total_pos / 100_000, 2),
+            "Demand (L)":         round(demand / 100_000, 2),
+            "Collected (L)":      round(collected / 100_000, 2),
+            "_coll_pct_raw":      coll_pct,
         })
 
     if not rows:
@@ -100,7 +110,7 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
         cells = ""
         for col in headers:
             val = row[col]
-            if col == "MNT NAME":
+            if col == "Executive (Branch)":
                 cells += (
                     f'<td style="padding:8px 12px;font-size:13px;font-weight:600;">'
                     f'{val} &nbsp;{tier_badge}</td>'

@@ -3,21 +3,22 @@ import json
 import re
 import time
 from google import genai
+from langsmith import traceable
 
-# ── Business Priority Framework ───────────────────────────────────────────────
-# Defined here as ground truth — used both in the system prompt and by the
+# Business Priority Framework ───────────────────────────────────────────────
+# Defined here as ground truth - used both in the system prompt and by the
 # data executor when priority_mode is active.
 PRIORITY_RULES = [
     {
         "rank": 1,
         "label": "Non Starters",
-        "why": "Never paid even 1st EMI — highest credit risk, possible fraud or disbursement issue",
+        "why": "Never paid even 1st EMI - highest credit risk, possible fraud or disbursement issue",
         "conditions": [{"column": "Non Starter", "op": "==", "value": "Y"}],
     },
     {
         "rank": 2,
         "label": "Easy Settlements",
-        "why": "Closing arrears < ₹1000 — one call can clear these, quick wins for collection team",
+        "why": "Closing arrears < ₹1000 - one call can clear these, quick wins for collection team",
         "conditions": [
             {"column": "Closing Arrears", "op": ">",  "value": 0},
             {"column": "Closing Arrears", "op": "<",  "value": 1000},
@@ -25,7 +26,7 @@ PRIORITY_RULES = [
     },
     {
         "rank": 3,
-        "label": "Recent Advances — High Bucket",
+        "label": "Recent Advances - High Bucket",
         "why": "Loans sanctioned within last 12 months already in SMA-1 or worse — early warning of sourcing quality issues",
         "conditions": [
             {"column": "Ag_Date",       "op": ">=", "value": "__CUTOFF_1Y__"},
@@ -35,7 +36,7 @@ PRIORITY_RULES = [
     {
         "rank": 4,
         "label": "Insurance-Driven Delinquency",
-        "why": "Customer paid EMI but insurance charge is creating artificial arrears — fixable via cash or child loan",
+        "why": "Customer paid EMI but insurance charge is creating artificial arrears - fixable via cash or child loan",
         "conditions": [
             {"column": "Month Due-Inst", "op": "<=", "value": 0},
             {"column": "Month Due-Exp",  "op": ">",  "value": 0},
@@ -45,7 +46,7 @@ PRIORITY_RULES = [
     {
         "rank": 5,
         "label": "Co-lending at Risk",
-        "why": "Partner bank co-lending loans with any delinquency — SLA breach risk",
+        "why": "Partner bank co-lending loans with any delinquency - SLA breach risk",
         "conditions": [
             {"column": "CoLending_Loans", "op": "==", "value": "Y"},
             {"column": "Arrears / EMI",   "op": ">",  "value": 0},
@@ -54,20 +55,20 @@ PRIORITY_RULES = [
     {
         "rank": 6,
         "label": "No Collection 3 Months",
-        "why": "No payment for 3+ months AND >6 EMI arrears — pre-NPA deterioration signal",
+        "why": "No payment for 3+ months AND >6 EMI arrears - pre-NPA deterioration signal",
         "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
     },
     {
         "rank": 7,
         "label": "NPA Accounts",
-        "why": "Fully non-performing — requires legal/recovery escalation",
+        "why": "Fully non-performing - requires legal/recovery escalation",
         "conditions": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
     },
 ]
 
 
 def _build_priority_text() -> str:
-    """Auto-generate system prompt priority section from PRIORITY_RULES — single source of truth."""
+    """Auto-generate system prompt priority section from PRIORITY_RULES - single source of truth."""
     lines = ["BUSINESS PRIORITY FRAMEWORK (apply when query is vague about what to look at):"]
     for r in PRIORITY_RULES:
         cond_parts = []
@@ -90,6 +91,24 @@ def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max
             if attempt == max_retries:
                 raise
             time.sleep(2 ** attempt)
+
+
+def _add_token_usage(response) -> None:
+    """Attach Gemini token counts to the active LangSmith run tree, if tracing."""
+    try:
+        from langsmith.run_helpers import get_current_run_tree
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        um = getattr(response, "usage_metadata", None)
+        if um:
+            rt.add_metadata({
+                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
+                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
+            })
+    except Exception:
+        pass
 
 
 SYSTEM_PROMPT = f"""You are a Senior Credit & Collection Risk Expert at an NBFC (Non-Banking Financial Company)
@@ -152,11 +171,20 @@ AGGREGATION MODE — set aggregation_mode to true when the query asks to:
 - "Compare executives/branches by X" — result is one row per group, not per loan
 Do NOT set aggregation_mode for individual loan row filters or priority queries.
 
+GROUP_BY RULES — CRITICAL:
+- Grouping by EXECUTIVE: ALWAYS use group_by: ["MNT NAME", "Unit"] — never just "MNT NAME".
+  Reason: the same executive name can work across multiple branches (e.g. Rahul in MAHAD and Rahul in PNVL are different).
+  Using ["MNT NAME", "Unit"] gives one row per executive-branch combination, shown as "Rahul (MAHAD)" and "Rahul (PNVL)" separately.
+- Grouping by BRANCH: use group_by: "Unit"
+- Grouping by REGION: use group_by: "RegionName"
+
 When aggregation_mode is true, populate aggregation_spec with this exact structure:
 {{
-  "group_by": "column to group by — one of: MNT NAME, Unit, RegionName",
+  "group_by": "Unit or RegionName as string, OR [\"MNT NAME\", \"Unit\"] as list for executives",
   "counts": [
-    {{"alias": "snake_case_name", "column": "column_name", "value": "exact_column_value"}}
+    {{"alias": "snake_case_name", "column": "column_name", "value": "exact_column_value"}},
+    {{"alias": "snake_case_name", "column": "column_name", "op": "bucket_worse_than", "value": "ref_column_name"}},
+    {{"alias": "snake_case_name", "column": "column_name", "op": "bucket_better_than", "value": "ref_column_name"}}
   ],
   "sums": [
     {{"alias": "snake_case_name", "column": "numeric_column_name"}}
@@ -169,6 +197,37 @@ When aggregation_mode is true, populate aggregation_spec with this exact structu
   ]
 }}
 
+COUNTS op field — four supported modes:
+- Omit op (or op "==") — count rows where column == value (default equality check)
+- op "bucket_worse_than" — count rows where curr_bucket moved to a WORSE bucket vs prev_bucket (roll forward - BAD)
+- op "bucket_better_than" — count rows where curr_bucket moved to a BETTER bucket vs prev_bucket (roll backward - GOOD)
+- op "bucket_stable" — count rows where curr_bucket == prev_bucket (no change - stable accounts)
+
+Bucket change terminology:
+- Roll Forward = worsened bucket = BAD for collections
+- Roll Backward = improved bucket = GOOD for collections
+- Stable = no bucket change = neutral, indicates consistent behavior
+
+IMPORTANT: When query asks about roll forward AND roll backward executives, always include stable_count too.
+When query asks for "stable" accounts per executive, use op "bucket_stable".
+
+Example — "executives with roll forward, roll backward and stable counts":
+  group_by: ["MNT NAME", "Unit"]
+  counts: [
+    {{"alias": "roll_forward", "column": "curr_bucket", "op": "bucket_worse_than", "value": "prev_bucket"}},
+    {{"alias": "roll_backward", "column": "curr_bucket", "op": "bucket_better_than", "value": "prev_bucket"}},
+    {{"alias": "stable", "column": "curr_bucket", "op": "bucket_stable", "value": "prev_bucket"}}
+  ]
+  metric: "stable", metric_label: "Stable Count", sort_asc: false
+
+Example — "rank executives by roll backward count (most improved first)":
+  group_by: ["MNT NAME", "Unit"]
+  counts: [
+    {{"alias": "roll_backward", "column": "curr_bucket", "op": "bucket_better_than", "value": "prev_bucket"}},
+    {{"alias": "stable", "column": "curr_bucket", "op": "bucket_stable", "value": "prev_bucket"}}
+  ]
+  metric: "roll_backward", metric_label: "Roll Backward Count", sort_asc: false
+
 HAVING rules — use "having" to filter groups AFTER aggregation (like SQL HAVING clause).
 Supported ops: >=, >, <=, <, ==, !=
 Use it whenever the query says: "must have at least N", "only if more than N", "exclude if zero", "with at least N", etc.
@@ -178,7 +237,7 @@ If no such constraint exists, set having to an empty list [].
 Example — "order executives by lowest MAT to RUN ratio, must have at least 1 running case":
   aggregation_mode: true
   aggregation_spec: {{
-    "group_by": "MNT NAME",
+    "group_by": ["MNT NAME", "Unit"],
     "counts": [
       {{"alias": "mat_count", "column": "Loan Status", "value": "MAT"}},
       {{"alias": "run_count", "column": "Loan Status", "value": "RUN"}}
@@ -230,6 +289,7 @@ Use a single hyphen (-) when a dash is needed. Never use double dash (--), em da
 """
 
 
+@traceable(run_type="chain", name="DomainExpert", tags=["gemini", "nbfc", "query-enrichment"])
 def enrich_query(raw_query: str) -> dict:
     from datetime import date as _date
     from dateutil.relativedelta import relativedelta as _rd
@@ -250,6 +310,7 @@ def enrich_query(raw_query: str) -> dict:
         client, "gemini-2.0-flash", date_context + raw_query,
         {"system_instruction": SYSTEM_PROMPT},
     )
+    _add_token_usage(response)
 
     raw = response.text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)

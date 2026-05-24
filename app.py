@@ -18,6 +18,15 @@ from utils import (
 from graph import run_query
 from smart_alerts import run_all_alerts
 
+
+def _send_feedback(run_id: str, score: float) -> None:
+    """Post thumbs-up (1.0) or thumbs-down (0.0) feedback to LangSmith."""
+    try:
+        from langsmith import Client as _LSClient
+        _LSClient().create_feedback(run_id=run_id, key="result_quality", score=score)
+    except Exception:
+        pass
+
 st.set_page_config(
     page_title="Shriram Finance Dashboard",
     page_icon="🏦",
@@ -468,11 +477,6 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
 }
 .ai-title { font-size: 20px; font-weight: 800; color: #FFC000; letter-spacing: -0.3px; }
 .ai-subtitle { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.7; }
-.ai-example {
-    display: inline-block; background: #161b22; color: #8b949e;
-    border: 1px solid #30363d; border-radius: 6px;
-    padding: 3px 10px; font-size: 12px; font-style: italic; margin: 3px 4px 3px 0;
-}
 
 /* ── Result KPI cards ── */
 .result-kpi {
@@ -752,6 +756,7 @@ with st.sidebar:
         {len(df_curr_raw):,} total records loaded
     </div>
     """, unsafe_allow_html=True)
+
 
 # ── Apply filters ──────────────────────────────────────────────────────────────
 df_curr = apply_filters(df_curr_raw.copy(), sel_region, sel_branch, sel_status)
@@ -1119,11 +1124,15 @@ if _rpt:
             )
 
         if _rpt.get("executive_narrative"):
-            preview = _rpt["executive_narrative"][:600]
+            paragraphs = [p.strip() for p in _rpt["executive_narrative"].split("\n") if p.strip()]
+            narrative_html = "".join(
+                f'<p style="margin:0 0 14px 0;line-height:1.8;color:#c9d1d9;font-size:13px;">{p}</p>'
+                for p in paragraphs
+            )
             st.markdown(f"""
             <div class="obs-card">
-              <div class="obs-title">AI Executive Narrative (Preview)</div>
-              <div class="obs-line" style="line-height:1.8;">{preview}{"..." if len(_rpt["executive_narrative"]) > 600 else ""}</div>
+              <div class="obs-title">AI Executive Narrative</div>
+              <div style="margin-top:8px;">{narrative_html}</div>
             </div>""", unsafe_allow_html=True)
 
         if _rpt.get("action_plan"):
@@ -1139,25 +1148,66 @@ if _rpt:
             </div>""", unsafe_allow_html=True)
 
 # ── AI Query Assistant ─────────────────────────────────────────────────────────
-st.markdown("""
-<div class="ai-panel">
-  <div class="ai-header">
-    <span class="ai-icon">🤖</span>
-    <span class="ai-title">AI Query Assistant</span>
+st.components.v1.html("""
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #f2f2f2; font-family: 'Inter', sans-serif; padding: 2px 0 0 0; }
+.panel {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 20px 24px;
+}
+.hdr { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.icon { font-size: 22px; line-height: 1; }
+.title { font-size: 20px; font-weight: 800; color: #FFC000; letter-spacing: -0.3px; }
+.sub { font-size: 13px; color: #6b7280; line-height: 1.7; margin-bottom: 14px; }
+.chip {
+    display: inline-block;
+    background: #161b22;
+    color: #8b949e;
+    border: 1px solid #2d333b;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-style: italic;
+    cursor: pointer;
+    margin: 0 6px 0 0;
+    font-family: 'Inter', sans-serif;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    line-height: 1.4;
+    outline: none;
+}
+.chip:hover { background: #2a2a2a; color: #d0d0d0; border-color: #555; }
+</style>
+<div class="panel">
+  <div class="hdr">
+    <span class="icon">🤖</span>
+    <span class="title">AI Query Assistant</span>
   </div>
-  <div class="ai-subtitle">
-    Ask any question about your loan portfolio in plain English.<br>
-    <span class="ai-example">"Show customers who haven't paid for 3 months"</span>
-    <span class="ai-example">"List NPA accounts in MAHAD with POS above 1 lakh"</span>
-    <span class="ai-example">"Show SMA-2 customers in PUNE region"</span>
-  </div>
+  <div class="sub">Ask any question about your loan portfolio in plain English. Click an example to try:</div>
+  <button class="chip" onclick="fill('Show customers who haven\\'t paid for 3 months')">Show customers who haven't paid for 3 months</button>
+  <button class="chip" onclick="fill('List NPA accounts in MAHAD with POS above 1 lakh')">List NPA accounts in MAHAD with POS above 1 lakh</button>
+<button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 advances')">Show all accounts &gt;2 bucket from Nov 2025 advances</button>
+  <button class="chip" onclick="fill('Show those accounts that need immediate action')">Show accounts that need immediate action</button>
 </div>
-""", unsafe_allow_html=True)
-
-st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+<script>
+function fill(text) {
+    var doc  = window.parent.document;
+    var ta   = doc.querySelector('[data-testid="stTextArea"] textarea');
+    if (!ta) return;
+    var set  = Object.getOwnPropertyDescriptor(window.parent.HTMLTextAreaElement.prototype, 'value').set;
+    set.call(ta, text);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.focus();
+}
+</script>
+""", height=200, scrolling=False)
 
 ai_query = st.text_area(
     "Query",
+    key="ai_query_input",
     placeholder="Type your question here...",
     height=90,
     label_visibility="collapsed",
@@ -1167,7 +1217,10 @@ col_run, col_hint = st.columns([1, 4])
 with col_run:
     run_btn = st.button("🔍  Run Query", type="primary", use_container_width=True)
 with col_hint:
-    st.markdown("<div style='padding-top:10px;font-size:12px;color:#aaa;'>Powered by Gemini Flash 2 · LangGraph multi-agent pipeline</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='padding-top:10px;font-size:12px;color:#aaa;'>Powered by Gemini Flash 2 · LangGraph multi-agent pipeline</div>",
+        unsafe_allow_html=True,
+    )
 
 if run_btn:
     if not ai_query.strip():
@@ -1293,7 +1346,8 @@ if result:
             # ── Single stat from aggregation — show top answer + compact table ──
             agg_spec     = result.get("aggregation_spec", {})
             metric_label = agg_spec.get("metric_label", "Metric")
-            group_col    = agg_spec.get("group_by", "Group")
+            _gb          = agg_spec.get("group_by", "Group")
+            group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
             sort_asc     = agg_spec.get("sort_asc", True)
             if len(filtered_df) > 0 and metric_label in filtered_df.columns:
                 top_row   = filtered_df.iloc[0]
@@ -1306,7 +1360,7 @@ if result:
                   <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
                               letter-spacing:2px;margin-bottom:12px;">{direction} {metric_label}</div>
                   <div style="font-size:36px;font-weight:900;color:#FFC000;letter-spacing:-0.5px;">{top_name}</div>
-                  <div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:6px;">{top_val:.4f}</div>
+                  <div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:6px;">{int(top_val) if isinstance(top_val, (int, float)) and top_val == int(top_val) else round(top_val, 4)}</div>
                   <div style="font-size:12px;color:#4b5563;margin-top:12px;font-style:italic;">{plain}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1319,9 +1373,10 @@ if result:
 
         elif is_aggregation:
             # ── Aggregation result — ranked executive/branch/region table ──────
-            agg_spec    = result.get("aggregation_spec", {})
+            agg_spec     = result.get("aggregation_spec", {})
             metric_label = agg_spec.get("metric_label", "Metric")
-            group_col    = agg_spec.get("group_by", "Group")
+            _gb          = agg_spec.get("group_by", "Group")
+            group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
 
             st.markdown(f"""
             <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
@@ -1354,12 +1409,12 @@ if result:
                     for c in header_cols:
                         val = row[c]
                         if c == "Rank":
-                            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank_val, f"#{rank_val}")
-                            cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">{medal}</td>'
+                            cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">#{rank_val}</td>'
                         elif c == group_col:
                             cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{val}</td>'
                         elif c == metric_label:
-                            cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{val:.4f}</td>'
+                            _disp = int(val) if isinstance(val, (int, float)) and val == int(val) else round(val, 4)
+                            cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{_disp}</td>'
                         else:
                             cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else val}</td>'
                     rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #0d1117;">{cells}</tr>'
@@ -1456,3 +1511,24 @@ if result:
           {obs_lines}
         </div>
         """, unsafe_allow_html=True)
+
+        # User feedback — only shown when LangSmith is configured
+        _ls_key = (os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY", "")).strip()
+        _run_id = result.get("run_id", "")
+        if _ls_key and _run_id:
+            _fb_cols = st.columns([2.5, 0.5, 0.5, 5])
+            with _fb_cols[0]:
+                st.markdown(
+                    "<div style='font-size:12px;color:#888;padding-top:8px;'>Was this result helpful?</div>",
+                    unsafe_allow_html=True,
+                )
+            with _fb_cols[1]:
+                if st.button("👍", key="fb_up", help="Helpful result"):
+                    _send_feedback(_run_id, score=1.0)
+                    st.session_state["_fb_sent"] = True
+            with _fb_cols[2]:
+                if st.button("👎", key="fb_down", help="Result needs improvement"):
+                    _send_feedback(_run_id, score=0.0)
+                    st.session_state["_fb_sent"] = True
+            if st.session_state.pop("_fb_sent", False):
+                st.toast("Feedback saved to LangSmith", icon="✅")

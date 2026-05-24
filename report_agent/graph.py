@@ -1,4 +1,5 @@
 import os
+import uuid as _uuid
 import pandas as pd
 from typing import Optional
 from langgraph.graph import StateGraph, START, END
@@ -47,6 +48,7 @@ def run_report(
     filters_applied: Optional[dict] = None,
     email_to: str = "",
 ) -> ReportState:
+    run_id = str(_uuid.uuid4())
     initial: ReportState = {
         "df_curr":          df_curr,
         "df_prev":          df_prev,
@@ -58,9 +60,10 @@ def run_report(
         "executive_narrative": "",
         "action_plan":      "",
         "html_report":      "",
+        "run_id":           run_id,
         "email_to":         email_to,
         "email_sent":       False,
         "email_error":      "",
         "error":            "",
     }
-    return _compiled.invoke(initial)
+    return _compiled.invoke(initial, config={"run_id": run_id})

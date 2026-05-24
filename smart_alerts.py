@@ -1,5 +1,5 @@
 """
-Smart Alerts — pre-computed, rule-based flags that run on every LCC upload.
+Smart Alerts - pre-computed, rule-based flags that run on every LCC upload.
 No LLM. Pure pandas. Always accurate.
 """
 import pandas as pd
@@ -81,13 +81,13 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
 
 
 def alert_easy_settlements(df: pd.DataFrame) -> dict:
-    """Accounts where closing arrears < 1000 — small amount, easy to clear."""
+    """Accounts where closing arrears < 1000 - small amount, easy to clear."""
     closing = _to_num(df, "Closing Arrears")
     mask = (closing > 0) & (closing < 1000)
     subset = df[mask]
     return {
         "title": "Easy Settlements",
-        "subtitle": "Closing arrears < ₹1,000 — quick wins",
+        "subtitle": "Closing arrears < ₹1,000 - quick wins",
         "severity": "medium",
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
@@ -107,7 +107,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = 12) -> dict:
     subset = df[mask]
     return {
         "title": "Recent Advances at Risk",
-        "subtitle": f"Sanctioned in last {months} months — already delinquent",
+        "subtitle": f"Sanctioned in last {months} months - already delinquent",
         "severity": "high",
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
@@ -126,7 +126,7 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
     subset = df[mask]
     return {
         "title": "Co-lending Loans at Risk",
-        "subtitle": "Partner bank exposure — must not default",
+        "subtitle": "Partner bank exposure - must not default",
         "severity": "critical",
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),

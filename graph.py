@@ -1,4 +1,5 @@
 from typing import TypedDict, Any
+import uuid as _uuid
 import pandas as pd
 from langgraph.graph import StateGraph, START, END
 
@@ -38,6 +39,9 @@ class QueryState(TypedDict):
 
     # Error
     error: str
+
+    # LangSmith trace ID (set by run_query, returned to caller for user feedback)
+    run_id: str
 
 
 # ── Agent 0: Domain Expert (Gemini) ──────────────────────────────────────────
@@ -166,6 +170,7 @@ _compiled = _graph.compile()
 
 
 def run_query(query: str, df: pd.DataFrame) -> QueryState:
+    run_id = str(_uuid.uuid4())
     initial: QueryState = {
         "query":            query,
         "result_df_full":   df,
@@ -185,5 +190,6 @@ def run_query(query: str, df: pd.DataFrame) -> QueryState:
         "result_rankings":  {},
         "insights":         "",
         "error":            "",
+        "run_id":           run_id,
     }
-    return _compiled.invoke(initial)
+    return _compiled.invoke(initial, config={"run_id": run_id})

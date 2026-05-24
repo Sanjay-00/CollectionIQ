@@ -1,6 +1,7 @@
 import os
 import time
 from google import genai
+from langsmith import traceable
 from report_agent.state import ReportState
 
 
@@ -12,6 +13,23 @@ def _call_gemini_with_retry(client, model, contents, config, max_retries=2):
             if attempt == max_retries:
                 raise
             time.sleep(2 ** attempt)
+
+
+def _add_token_usage(response) -> None:
+    try:
+        from langsmith.run_helpers import get_current_run_tree
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        um = getattr(response, "usage_metadata", None)
+        if um:
+            rt.add_metadata({
+                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
+                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
+            })
+    except Exception:
+        pass
 
 
 def _fmt_money(val):
@@ -93,6 +111,7 @@ Rules:
 - Use ' - ' (space hyphen space) as the separator"""
 
 
+@traceable(run_type="chain", name="RiskNarrator", tags=["gemini", "nbfc", "report-generation"])
 def risk_narrator_node(state: ReportState) -> ReportState:
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
@@ -115,12 +134,14 @@ def risk_narrator_node(state: ReportState) -> ReportState:
 
     try:
         resp = _call_gemini_with_retry(client, "gemini-2.0-flash", prompt, {"system_instruction": NARRATIVE_PROMPT})
+        _add_token_usage(resp)
         narrative = resp.text.strip()
     except Exception as e:
         narrative = f"Narrative generation failed: {e}"
 
     try:
         resp2 = _call_gemini_with_retry(client, "gemini-2.0-flash", prompt, {"system_instruction": ACTION_PROMPT})
+        _add_token_usage(resp2)
         action_plan = resp2.text.strip()
     except Exception as e:
         action_plan = f"Action plan generation failed: {e}"

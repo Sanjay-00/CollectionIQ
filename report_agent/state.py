@@ -25,5 +25,8 @@ class ReportState(TypedDict):
     email_sent: bool
     email_error: str
 
+    # LangSmith trace ID
+    run_id: str
+
     # Error
     error: str

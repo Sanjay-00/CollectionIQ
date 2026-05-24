@@ -1,6 +1,7 @@
 import os
 import time
 from google import genai
+from langsmith import traceable
 
 
 def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
@@ -12,11 +13,28 @@ def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max
                 raise
             time.sleep(2 ** attempt)
 
+
+def _add_token_usage(response) -> None:
+    try:
+        from langsmith.run_helpers import get_current_run_tree
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        um = getattr(response, "usage_metadata", None)
+        if um:
+            rt.add_metadata({
+                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
+                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
+            })
+    except Exception:
+        pass
+
 SYSTEM_PROMPT = """You are a senior credit risk analyst at an NBFC (Shriram Finance).
 Generate concise, actionable observations from loan portfolio query results.
 Write exactly 4-5 bullet points.
 Each bullet must start with "• ".
-Be specific — use the numbers provided. Focus on risk, action, and urgency.
+Be specific - use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
 Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
 """
@@ -30,6 +48,7 @@ def _fmt_money(val: float) -> str:
     return f"₹{val:,.0f}"
 
 
+@traceable(run_type="chain", name="InsightGenerator", tags=["gemini", "nbfc", "insight-generation"])
 def generate_insights(
     query: str,
     plain_english: str,
@@ -39,7 +58,7 @@ def generate_insights(
 ) -> str:
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
-        return "• GOOGLE_API_KEY not set — AI observations unavailable."
+        return "• GOOGLE_API_KEY not set - AI observations unavailable."
 
     # Build a structured context summary for Gemini
     region_top = list(rankings.get("region_counts", {}).items())
@@ -78,4 +97,5 @@ BUCKET DISTRIBUTION (% of matched accounts):
         client, "gemini-2.0-flash", context,
         {"system_instruction": SYSTEM_PROMPT},
     )
+    _add_token_usage(response)
     return response.text.strip()

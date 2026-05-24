@@ -90,7 +90,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # These must NOT be filled — missing means unknown, not zero (fillna(0) distorts ratios)
+    # These must NOT be filled - missing means unknown, not zero (fillna(0) distorts ratios)
     for col in [
         "NET Collection Demand Inst+Exp", "Net Collection Demand Inst+Exp+BC",
         "POS", "Arrears / EMI",

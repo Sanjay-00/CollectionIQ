@@ -3,6 +3,7 @@ import json
 import re
 import time
 from google import genai
+from langsmith import traceable
 
 
 def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
@@ -13,6 +14,23 @@ def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max
             if attempt == max_retries:
                 raise
             time.sleep(2 ** attempt)
+
+
+def _add_token_usage(response) -> None:
+    try:
+        from langsmith.run_helpers import get_current_run_tree
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        um = getattr(response, "usage_metadata", None)
+        if um:
+            rt.add_metadata({
+                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
+                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
+            })
+    except Exception:
+        pass
 
 SCHEMA_DESCRIPTION = """
 Available columns in the loan dataset:
@@ -119,6 +137,7 @@ Use a single hyphen (-) when a dash is needed. Never use double dash (--), em da
 """
 
 
+@traceable(run_type="chain", name="QueryParser", tags=["gemini", "nbfc", "filter-generation"])
 def parse_query(query: str) -> dict:
     from datetime import date as _date
     from dateutil.relativedelta import relativedelta as _rd
@@ -139,6 +158,7 @@ def parse_query(query: str) -> dict:
         client, "gemini-2.0-flash", date_context + query,
         {"system_instruction": SYSTEM_PROMPT},
     )
+    _add_token_usage(response)
     raw = response.text.strip()
 
     # Strip markdown code fences if present
