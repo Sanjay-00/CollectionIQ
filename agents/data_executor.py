@@ -73,6 +73,15 @@ QUERY_DISPLAY_COLS = [
 ]
 
 
+def _format_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert datetime columns to date-only for clean display."""
+    df = df.copy()
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.date
+    return df
+
+
 def execute_filters(df: pd.DataFrame, parsed: dict) -> tuple[pd.DataFrame, str]:
     """Apply parsed filter conditions to df. Returns (result_df, error_message)."""
     result = df.copy()
@@ -92,25 +101,35 @@ def execute_filters(df: pd.DataFrame, parsed: dict) -> tuple[pd.DataFrame, str]:
         result = result.sort_values(sort_col, ascending=sort_asc)
 
     display_cols = [c for c in QUERY_DISPLAY_COLS if c in result.columns]
-    return result[display_cols] if display_cols else result, ""
+    out = result[display_cols] if display_cols else result
+    return _format_dates(out), ""
 
 
 def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
-    """Compute query-specific KPIs from the filtered DataFrame."""
-    n = filtered["Loan No"].nunique() if "Loan No" in filtered.columns else len(filtered)
+    """Compute query-specific KPIs from the filtered DataFrame.
+    Operates directly on filtered to avoid index-alignment bugs after concat/sort.
+    df_full is kept in signature for API compatibility but is not used.
+    """
+    work = filtered.drop(columns=["Priority", "_rank"], errors="ignore")
 
-    def _col_sum(col):
-        return df_full.loc[df_full.index.isin(filtered.index), col].sum() if col in df_full.columns else 0
+    n = work["Loan No"].nunique() if "Loan No" in work.columns else len(work)
 
-    def _col_mean(col):
-        vals = df_full.loc[df_full.index.isin(filtered.index), col]
-        return round(vals.mean(), 2) if col in df_full.columns and len(vals) > 0 else 0
+    def _sum(col):
+        if col not in work.columns:
+            return 0
+        return pd.to_numeric(work[col], errors="coerce").sum()
 
-    pos = _col_sum("POS")
-    demand = _col_sum("NET Collection Demand Inst+Exp")
-    collection = _col_sum("Month Receipt Amount")
-    coll_pct = round(collection / demand * 100, 2) if demand > 0 else 0
-    avg_arrears = _col_mean("Arrears / EMI")
+    def _mean(col):
+        if col not in work.columns:
+            return 0
+        vals = pd.to_numeric(work[col], errors="coerce").dropna()
+        return round(vals.mean(), 2) if len(vals) > 0 else 0
+
+    pos        = _sum("POS")
+    demand     = _sum("NET Collection Demand Inst+Exp")
+    collection = _sum("Month Receipt Amount")
+    coll_pct   = round(collection / demand * 100, 2) if demand > 0 else 0
+    avg_arrears = _mean("Arrears / EMI")
 
     return {
         "Count": n,
@@ -173,8 +192,78 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
                     "RegionName", "Unit", "MNT NAME", "Ag_Date",
                     "curr_bucket", "Arrears / EMI", "POS", "ClosingPC", "Closing Arrears"]
     display_cols = [c for c in display_cols if c in result.columns]
+    out = result[display_cols] if display_cols else result
+    return _format_dates(out), ""
 
-    return result[display_cols], ""
+
+def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str]:
+    """GROUP BY aggregation with ratio/metric computation.
+    spec keys: group_by, counts, sums, metric, metric_label, sort_asc
+    """
+    group_col = spec.get("group_by", "")
+    if not group_col or group_col not in df.columns:
+        return pd.DataFrame(), f"Group-by column '{group_col}' not found in data."
+
+    grouped = df.groupby(group_col, sort=False)
+    agg = pd.DataFrame({group_col: list(grouped.groups.keys())}).set_index(group_col)
+
+    # Count rows where column == value per group
+    for cnt in spec.get("counts", []):
+        alias = cnt.get("alias", "")
+        col   = cnt.get("column", "")
+        val   = str(cnt.get("value", "")).upper()
+        if not alias:
+            continue
+        if col not in df.columns:
+            agg[alias] = 0
+        else:
+            agg[alias] = grouped[col].apply(
+                lambda s, v=val: int((s.astype(str).str.strip().str.upper() == v).sum())
+            )
+
+    # Sum numeric column per group
+    for sm in spec.get("sums", []):
+        alias = sm.get("alias", "")
+        col   = sm.get("column", "")
+        if not alias:
+            continue
+        if col not in df.columns:
+            agg[alias] = 0.0
+        else:
+            agg[alias] = grouped[col].apply(lambda s: pd.to_numeric(s, errors="coerce").sum())
+
+    # Compute derived metric using pandas eval
+    metric_expr  = spec.get("metric", "")
+    metric_label = spec.get("metric_label", "Metric")
+    if metric_expr:
+        try:
+            computed = agg.eval(metric_expr)
+            computed = computed.replace([float("inf"), float("-inf")], float("nan")).fillna(0)
+            agg[metric_label] = computed.round(4)
+        except Exception as e:
+            return pd.DataFrame(), f"Metric computation failed ({metric_expr}): {e}"
+
+    # Apply HAVING filters — post-aggregation group filtering (e.g. run_count >= 1)
+    _having_ops = {">=": lambda a, v: a >= v, ">": lambda a, v: a > v,
+                   "<=": lambda a, v: a <= v, "<": lambda a, v: a < v,
+                   "==": lambda a, v: a == v, "!=": lambda a, v: a != v}
+    for h in spec.get("having", []):
+        alias = h.get("alias", "")
+        op    = h.get("op", ">=")
+        val   = h.get("value", 0)
+        if alias in agg.columns and op in _having_ops:
+            agg = agg[_having_ops[op](agg[alias], val)]
+
+    if len(agg) == 0:
+        return pd.DataFrame(), "No groups matched the having conditions."
+
+    sort_asc = spec.get("sort_asc", True)
+    if metric_label in agg.columns:
+        agg = agg.sort_values(metric_label, ascending=sort_asc)
+
+    agg = agg.reset_index()
+    agg.insert(0, "Rank", range(1, len(agg) + 1))
+    return agg, ""
 
 
 def distribute_priority_accounts(df: pd.DataFrame, total_n: int) -> pd.DataFrame:
@@ -211,6 +300,21 @@ def compute_contextual_rankings(df_full: pd.DataFrame, filtered: pd.DataFrame) -
     if "RegionName" in sub.columns and len(sub) > 0:
         region_counts = sub.groupby("RegionName")["Loan No"].nunique().sort_values(ascending=False)
         rankings["region_counts"] = region_counts.head(5).to_dict()
+
+    if "MNT NAME" in sub.columns and "Unit" in sub.columns and len(sub) > 0:
+        # One row per (MNT NAME, Unit) — sorted by account count desc, top 8 rows total
+        grp_cols = sub.groupby(["MNT NAME", "Unit"])
+        mnt_branch = grp_cols["Loan No"].nunique().reset_index(name="count")
+        if "POS" in sub.columns:
+            mnt_branch_pos = grp_cols["POS"].apply(lambda x: pd.to_numeric(x, errors="coerce").sum()).reset_index(name="pos")
+            mnt_branch = mnt_branch.merge(mnt_branch_pos, on=["MNT NAME", "Unit"])
+        else:
+            mnt_branch["pos"] = 0
+        mnt_branch = mnt_branch.sort_values("count", ascending=False).head(8)
+        rankings["mnt_details"] = [
+            {"name": r["MNT NAME"], "branch": r["Unit"], "count": int(r["count"]), "pos": float(r["pos"])}
+            for _, r in mnt_branch.iterrows()
+        ]
 
     if "Unit" in sub.columns and len(sub) > 0:
         branch_counts = sub.groupby("Unit")["Loan No"].nunique().sort_values(ascending=False)

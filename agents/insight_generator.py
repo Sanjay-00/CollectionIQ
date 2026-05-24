@@ -1,5 +1,16 @@
 import os
+import time
 from google import genai
+
+
+def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
+    for attempt in range(max_retries + 1):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            time.sleep(2 ** attempt)
 
 SYSTEM_PROMPT = """You are a senior credit risk analyst at an NBFC (Shriram Finance).
 Generate concise, actionable observations from loan portfolio query results.
@@ -63,9 +74,8 @@ BUCKET DISTRIBUTION (% of matched accounts):
 """
 
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=context,
-        config={"system_instruction": SYSTEM_PROMPT},
+    response = _call_gemini_with_retry(
+        client, "gemini-2.0-flash", context,
+        {"system_instruction": SYSTEM_PROMPT},
     )
     return response.text.strip()

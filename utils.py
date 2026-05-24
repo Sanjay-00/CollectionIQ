@@ -55,7 +55,7 @@ def _assign_bucket(val):
         return "NA"
     if pd.isna(v):
         return "NA"
-    if v == 0:
+    if v <= 0:   # credit balances (v < 0) and zero are both current/standard
         return "STD"
     if v < 1:
         return "1-30 DPD"
@@ -96,12 +96,18 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     # Due Dt is a numeric EMI due day (5, 10, 15, 20) — keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
 
+    # Additive cash flows — zero is the correct default when missing
+    for col in ["Month Receipt Amount", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # These must NOT be filled — missing means unknown, not zero (fillna(0) distorts ratios)
     for col in [
         "NET Collection Demand Inst+Exp", "Net Collection Demand Inst+Exp+BC",
-        "Month Receipt Amount", "NET COLLECTION", "POS",
-        "Cum Coll (Inst+Exp)", "Total Cum Collection", "Arrears / EMI",
+        "POS", "Arrears / EMI",
     ]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["LCC%"] = pd.to_numeric(df["LCC%"], errors="coerce")
     df["Strike"] = df["Strike"].astype(str).str.strip().str.upper()
@@ -137,9 +143,11 @@ def _mom_pct(curr, prev):
 def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     def _calc(df):
         n_accounts = df["Loan No"].nunique()
-        demand = df["NET Collection Demand Inst+Exp"].sum()
+        demand = df["NET Collection Demand Inst+Exp"].sum(min_count=1)
+        demand = 0.0 if pd.isna(demand) else demand
         collection = df["Month Receipt Amount"].sum()
-        pos = df["POS"].sum()
+        pos = df["POS"].sum(min_count=1)
+        pos = 0.0 if pd.isna(pos) else pos
         cum_coll_total = df["Total Cum Collection"].sum()
         cum_coll_inst_exp = df["Cum Coll (Inst+Exp)"].sum()
 

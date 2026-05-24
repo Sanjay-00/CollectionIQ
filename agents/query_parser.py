@@ -1,7 +1,18 @@
 import os
 import json
 import re
+import time
 from google import genai
+
+
+def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
+    for attempt in range(max_retries + 1):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            time.sleep(2 ** attempt)
 
 SCHEMA_DESCRIPTION = """
 Available columns in the loan dataset:
@@ -14,7 +25,10 @@ DATE COLUMNS (use YYYY-MM-DD format in filters):
 CATEGORY COLUMNS:
 - curr_bucket: DPD bucket derived from Arrears/EMI ratio
   Values: "STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"
-- Loan Status: Current loan status (e.g. "RUN", "CLOSED", "NPA")
+- Loan Status: Current loan lifecycle status. Exact values (case-sensitive):
+  "RUN" = loan is active and within its original tenure
+  "MAT" = loan tenure is over but closing arrears still pending (matured, recovery mode)
+  "S&S" = vehicle seized and sold, balance still outstanding (most severe)
 - RegionName: Region name (e.g. "PUNE", "MUMBAI")
 - Unit: Branch name (e.g. "MAHAD", "BELAP", "PNJIM")
 - Strike: Whether collection was attempted this month ("Y" or "N")
@@ -56,6 +70,9 @@ FLAG COLUMNS (all Y/N unless noted):
 - No Coll 3 Months and >6 EMI: Y/N/NA
 
 SPECIAL INTERPRETATIONS:
+- "mature cases" or "matured loans" → Loan Status == "MAT"
+- "running cases" or "running loans" or "active loans" → Loan Status == "RUN"
+- "seized" or "seized and sold" or "S&S cases" → Loan Status == "S&S"
 - "haven't paid for 3 months" or "no collection for 3 months" → No Coll 3 Months and >6 EMI == "Y"
 - "overdue" or "defaulter" → curr_bucket in ["SMA-1", "SMA-2", "NPA"]
 - "at risk" or "risky" → curr_bucket in ["SMA-2", "NPA"]
@@ -97,15 +114,24 @@ Never use em dash, en dash, or hyphen as a dash anywhere in your output.
 
 
 def parse_query(query: str) -> dict:
+    from datetime import date as _date
+    from dateutil.relativedelta import relativedelta as _rd
+
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY environment variable not set.")
 
+    today = _date.today()
+    date_context = (
+        f"[CURRENT DATE: {today.isoformat()} | "
+        f"12 months ago: {(today - _rd(months=12)).isoformat()} | "
+        f"6 months ago: {(today - _rd(months=6)).isoformat()} | "
+        f"3 months ago: {(today - _rd(months=3)).isoformat()}] "
+    )
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=query,
-        config={"system_instruction": SYSTEM_PROMPT},
+    response = _call_gemini_with_retry(
+        client, "gemini-2.0-flash", date_context + query,
+        {"system_instruction": SYSTEM_PROMPT},
     )
     raw = response.text.strip()
 

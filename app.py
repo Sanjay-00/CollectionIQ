@@ -27,210 +27,526 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
-/* ── Global reset ── */
+/* ── Global ── */
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 #MainMenu, footer, header { visibility: hidden; }
-.block-container { padding: 0 2rem 2rem 2rem !important; max-width: 100% !important; }
+.block-container { padding: 0 2.5rem 3rem 2.5rem !important; max-width: 100% !important; }
+.stApp { background: #eef1f6; }
 
-/* ── Page background ── */
-.stApp { background: #f0f2f5; }
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f0f0f0; }
+::-webkit-scrollbar-thumb { background: #FFC000; border-radius: 3px; }
+
+/* ── Sidebar collapse button (inside sidebar) ── */
+[data-testid="stSidebarCollapseButton"] button {
+    background: #FFC000 !important;
+    border: 2px solid #000 !important;
+    border-radius: 6px !important;
+    color: #000 !important;
+}
+[data-testid="stSidebarCollapseButton"] button:hover {
+    background: #e6ac00 !important;
+}
+[data-testid="stSidebarCollapseButton"] svg { fill: #000 !important; }
+
+/* ── Sidebar collapsed state (expand button) ── */
+[data-testid="stSidebarCollapsed"] {
+    background: #FFC000 !important;
+    border-radius: 0 10px 10px 0 !important;
+    width: 36px !important;
+    min-height: 80px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    z-index: 99999 !important;
+    box-shadow: 4px 0 16px rgba(0,0,0,0.35) !important;
+    cursor: pointer !important;
+    border-top: 2px solid #000 !important;
+    border-right: 2px solid #000 !important;
+    border-bottom: 2px solid #000 !important;
+    border-left: none !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+[data-testid="stSidebarCollapsed"] button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 80px !important;
+}
+[data-testid="stSidebarCollapsed"] svg {
+    fill: #000000 !important;
+    width: 20px !important;
+    height: 20px !important;
+}
+[data-testid="stSidebarCollapsed"]:hover { background: #e6ac00 !important; }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #111111 0%, #1e1e1e 100%) !important;
-    border-right: 3px solid #FFC000;
+    background: #0d0d0d !important;
+    border-right: 3px solid #FFC000 !important;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.3) !important;
 }
-[data-testid="stSidebar"] * { color: #e0e0e0 !important; }
-[data-testid="stSidebar"] .stSelectbox > label { color: #FFC000 !important; font-weight: 600; font-size: 13px; }
+[data-testid="stSidebar"] * { color: #c8c8c8 !important; }
+[data-testid="stSidebar"] .stSelectbox > label {
+    color: #FFC000 !important; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.8px;
+}
 [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div {
-    background: #2a2a2a !important; border-color: #444 !important; color: #fff !important;
+    background: #1a1a1a !important; border: 1px solid #2d2d2d !important;
+    color: #fff !important; border-radius: 8px !important;
 }
-[data-testid="stSidebar"] hr { border-color: #333 !important; }
+[data-testid="stSidebar"] hr { border-color: #222 !important; }
 
-/* ── Top header banner ── */
+/* ── Header ── */
 .top-banner {
-    background: linear-gradient(90deg, #FFC000 0%, #FFD740 100%);
-    height: 6px; margin: 0 -2rem 0 -2rem; margin-bottom: 0;
+    background: linear-gradient(90deg, #FFC000 0%, #FFD740 50%, #FFC000 100%);
+    height: 4px; margin: 0 -2.5rem; background-size: 200% 100%;
+    animation: shimmer 3s infinite linear;
 }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
 .dash-header {
-    background: #fff;
+    background: linear-gradient(135deg, #ffffff 0%, #fafafa 100%);
     display: flex; align-items: center; gap: 20px;
-    padding: 14px 24px;
-    border-bottom: 1px solid #e8e8e8;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    margin: 0 -2rem 20px -2rem;
+    padding: 16px 28px;
+    border-bottom: 1px solid #e4e7ec;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 16px rgba(0,0,0,0.04);
+    margin: 0 -2.5rem 24px -2.5rem;
 }
 .dash-logo-box {
-    background: #1a1a1a; border-radius: 8px;
-    padding: 8px 14px; display: flex; flex-direction: column; align-items: center;
+    background: #111; border-radius: 10px;
+    padding: 10px 16px; display: flex; flex-direction: column; align-items: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
-.dash-logo-main { font-size: 20px; font-weight: 900; color: #FFC000; letter-spacing: 1px; line-height: 1; }
-.dash-logo-sub  { font-size: 11px; font-weight: 400; color: #aaa; }
-.dash-title     { font-size: 22px; font-weight: 700; color: #1a1a1a; }
-.dash-subtitle  { font-size: 13px; color: #888; margin-top: 2px; }
+.dash-logo-main { font-size: 18px; font-weight: 900; color: #FFC000; letter-spacing: 2px; line-height: 1; }
+.dash-logo-sub  { font-size: 10px; font-weight: 500; color: #888; letter-spacing: 1px; margin-top: 2px; }
+.dash-title { font-size: 20px; font-weight: 700; color: #111; letter-spacing: -0.3px; }
+.dash-subtitle { font-size: 12px; color: #999; margin-top: 2px; font-weight: 400; }
+.dash-badge {
+    margin-left: auto; background: #FFC000; color: #000;
+    font-size: 10px; font-weight: 800; padding: 4px 10px;
+    border-radius: 20px; letter-spacing: 1px; text-transform: uppercase;
+}
 
-/* ── Section headers ── */
+/* ── Section labels ── */
 .section-label {
-    font-size: 11px; font-weight: 700; color: #888;
-    text-transform: uppercase; letter-spacing: 1.5px;
-    margin-bottom: 10px; margin-top: 4px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; font-weight: 700; color: #6b7280;
+    text-transform: uppercase; letter-spacing: 2px;
+    margin-bottom: 12px; margin-top: 8px;
+}
+.section-label::before {
+    content: ''; width: 3px; height: 14px;
+    background: #FFC000; border-radius: 2px; display: block;
 }
 
-/* ── Upload card ── */
+/* ── Upload cards ── */
 .upload-card {
-    background: #fff; border-radius: 12px;
-    border: 2px dashed #ddd; padding: 18px 20px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
-    transition: border-color 0.2s;
+    background: #fff; border-radius: 14px;
+    border: 2px dashed #d1d5db; padding: 20px;
+    transition: all 0.25s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-.upload-card:hover { border-color: #FFC000; }
-.upload-card-title { font-size: 13px; font-weight: 600; color: #333; margin-bottom: 4px; }
-.upload-card-sub   { font-size: 11px; color: #999; margin-bottom: 10px; }
+.upload-card:hover { border-color: #FFC000; box-shadow: 0 4px 16px rgba(255,192,0,0.12); }
+.upload-card-title { font-size: 13px; font-weight: 700; color: #1f2937; margin-bottom: 3px; }
+.upload-card-sub   { font-size: 11px; color: #9ca3af; margin-bottom: 12px; }
 
 /* ── KPI cards ── */
-.kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
 .kpi-card {
-    background: #fff; border-radius: 12px;
-    border-left: 4px solid #FFC000;
-    padding: 14px 16px; min-width: 140px; flex: 1;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    background: #fff; border-radius: 14px;
+    border-top: 3px solid #FFC000;
+    padding: 16px 18px; min-width: 140px; flex: 1;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.04);
+    transition: transform 0.2s, box-shadow 0.2s;
 }
-.kpi-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
-.kpi-value { font-size: 26px; font-weight: 800; color: #111; line-height: 1; }
-.kpi-mom   { font-size: 12px; margin-top: 6px; color: #666; }
-.kpi-mom-up   { color: #16a34a; font-weight: 700; }
+.kpi-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.09); }
+.kpi-label { font-size: 10px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.kpi-value { font-size: 28px; font-weight: 800; color: #111827; line-height: 1; letter-spacing: -0.5px; }
+.kpi-mom   { font-size: 11px; margin-top: 8px; color: #9ca3af; font-weight: 500; }
+.kpi-mom-up   { color: #059669; font-weight: 700; }
 .kpi-mom-down { color: #dc2626; font-weight: 700; }
 
 /* ── Chart containers ── */
 .chart-card {
-    background: #fff; border-radius: 12px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    background: #fff; border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.04);
     padding: 4px; overflow: hidden;
 }
 
-/* ── Generate button ── */
-.stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #FFC000, #FFD740) !important;
-    color: #000 !important; font-weight: 700 !important;
-    border: none !important; border-radius: 8px !important;
-    padding: 10px 28px !important; font-size: 14px !important;
-    box-shadow: 0 4px 12px rgba(255,192,0,0.4) !important;
-    transition: all 0.2s !important;
+/* ── All buttons base ── */
+.stButton > button,
+[data-testid="baseButton-primary"],
+[data-testid="baseButton-secondary"] {
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    transition: all 0.2s ease !important;
+    letter-spacing: 0.3px !important;
+    cursor: pointer !important;
 }
-.stButton > button[kind="primary"]:hover {
-    box-shadow: 0 6px 16px rgba(255,192,0,0.5) !important;
+
+/* ── Primary button (Generate Dashboard, Run Query) ── */
+[data-testid="baseButton-primary"] {
+    background: #FFC000 !important;
+    color: #000000 !important;
+    border: 2px solid #000000 !important;
+    box-shadow: 0 2px 8px rgba(255,192,0,0.35) !important;
+}
+[data-testid="baseButton-primary"]:hover {
+    background: #e6ac00 !important;
+    color: #000000 !important;
+    border: 2px solid #000000 !important;
+    box-shadow: 0 6px 20px rgba(255,192,0,0.5) !important;
+    transform: translateY(-1px) !important;
+}
+[data-testid="baseButton-primary"]:active {
+    background: #cc9900 !important;
+    color: #000000 !important;
+    border: 2px solid #000000 !important;
+    transform: translateY(0) !important;
+    box-shadow: none !important;
+}
+
+/* ── Secondary button ── */
+[data-testid="baseButton-secondary"] {
+    background: #ffffff !important;
+    color: #374151 !important;
+    border: 1px solid #d1d5db !important;
+}
+[data-testid="baseButton-secondary"]:hover {
+    background: #FFC000 !important;
+    color: #000000 !important;
+    border: 1px solid #000000 !important;
+    box-shadow: 0 4px 12px rgba(255,192,0,0.3) !important;
+}
+
+/* ── File uploader browse button ── */
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stFileUploaderDropzoneButton"],
+[data-testid="stFileUploader"] button {
+    background: #ffffff !important;
+    color: #374151 !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    transition: all 0.2s ease !important;
+}
+[data-testid="stFileUploaderDropzone"] button:hover,
+[data-testid="stFileUploaderDropzoneButton"]:hover,
+[data-testid="stFileUploader"] button:hover {
+    background: #FFC000 !important;
+    color: #000000 !important;
+    border: 1px solid #000000 !important;
+    box-shadow: 0 4px 12px rgba(255,192,0,0.3) !important;
+}
+
+/* ── Download button ── */
+.stDownloadButton > button {
+    background: #1f2937 !important; color: #FFC000 !important;
+    border: 1px solid #374151 !important; border-radius: 8px !important;
+    font-weight: 600 !important; font-size: 13px !important;
+    padding: 10px 20px !important; transition: all 0.2s !important;
+}
+.stDownloadButton > button:hover {
+    background: #111827 !important; color: #FFD740 !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2) !important;
     transform: translateY(-1px) !important;
 }
 
 /* ── Divider ── */
-hr { border-color: #e8e8e8 !important; margin: 24px 0 !important; }
+hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 28px 0 !important; }
 
-/* ── Date input — yellow text ── */
-.stDateInput input {
-    color: #FFC000 !important;
-    background: #1a1a2e !important;
-    border: 1px solid #333 !important;
-    border-radius: 8px !important;
-    font-weight: 600 !important;
+/* ══ DATE PICKER ══════════════════════════════════════════════════════════ */
+
+/* Label */
+[data-testid="stDateInput"] label {
+    font-size: 10px !important; font-weight: 700 !important;
+    color: #6b7280 !important; text-transform: uppercase !important;
+    letter-spacing: 1.8px !important;
 }
-.stDateInput input:focus { border-color: #FFC000 !important; box-shadow: 0 0 0 2px rgba(255,192,0,0.2) !important; }
 
-/* Calendar popup */
-[data-baseweb="calendar"] {
-    background: #2a2a2a !important;
-    border: 1px solid #3a3a3a !important;
+/* Input wrapper */
+[data-testid="stDateInput"] > div {
+    background: #0d1117 !important;
+    border: 1.5px solid #21262d !important;
     border-radius: 10px !important;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.3) !important;
+    transition: border-color 0.2s, box-shadow 0.2s !important;
 }
-[data-baseweb="calendar"] * { color: #ccc !important; }
-[data-baseweb="calendar"] [data-baseweb="select"] span,
-[data-baseweb="calendar"] button[aria-label*="month"],
-[data-baseweb="calendar"] button[aria-label*="year"] {
+[data-testid="stDateInput"] > div:focus-within {
+    border-color: #FFC000 !important;
+    box-shadow: 0 0 0 3px rgba(255,192,0,0.18) !important;
+}
+
+/* Text field */
+.stDateInput input {
+    color: #FFC000 !important; background: transparent !important;
+    border: none !important; border-radius: 10px !important;
+    font-weight: 700 !important; font-size: 14px !important;
+    padding: 10px 14px !important; letter-spacing: 0.8px !important;
+    caret-color: #FFC000 !important;
+}
+
+/* ══ CALENDAR POPUP ═══════════════════════════════════════════════════════ */
+
+/* Outer shell */
+[data-baseweb="calendar"] {
+    background: #0d1117 !important;
+    border: 1px solid #21262d !important;
+    border-radius: 16px !important;
+    box-shadow: 0 0 0 1px rgba(255,192,0,0.10),
+                0 20px 60px rgba(0,0,0,0.75) !important;
+    padding: 12px 10px 14px !important;
+    overflow: hidden !important;
+    min-width: 288px !important;
+}
+
+/* Reset all text to muted grey — specific rules override below */
+[data-baseweb="calendar"] * {
+    color: #8b949e !important;
+    box-sizing: border-box !important;
+}
+
+/* ── Header: month + year selects ── */
+[data-baseweb="calendar"] [data-baseweb="select"] > div {
+    background: transparent !important;
+    border: none !important;
+    padding: 2px 4px !important;
+    border-radius: 6px !important;
+}
+[data-baseweb="calendar"] [data-baseweb="select"] > div:hover {
+    background: rgba(255,192,0,0.08) !important;
+}
+[data-baseweb="calendar"] [data-baseweb="select"] span {
+    color: #FFC000 !important;
+    font-weight: 800 !important;
+    font-size: 15px !important;
+    letter-spacing: 0.2px !important;
+}
+[data-baseweb="calendar"] [data-baseweb="select"] svg {
+    fill: #FFC000 !important;
+    opacity: 0.6 !important;
+}
+
+/* ── Nav arrows (prev / next) ── */
+[data-baseweb="calendar"] [data-baseweb="button"] {
+    background: #161b22 !important;
+    border: 1px solid #30363d !important;
+    border-radius: 8px !important;
+    width: 30px !important; height: 30px !important;
+    display: flex !important; align-items: center !important;
+    justify-content: center !important;
+    transition: background 0.15s, border-color 0.15s !important;
+    padding: 0 !important;
+}
+[data-baseweb="calendar"] [data-baseweb="button"]:hover {
+    background: #FFC000 !important;
+    border-color: #FFC000 !important;
+}
+[data-baseweb="calendar"] [data-baseweb="button"] svg { fill: #8b949e !important; }
+[data-baseweb="calendar"] [data-baseweb="button"]:hover svg { fill: #000 !important; }
+
+/* ── Day-of-week header row ── */
+[data-baseweb="calendar"] abbr {
+    color: #30363d !important;
+    font-size: 10px !important;
+    font-weight: 800 !important;
+    text-decoration: none !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1.4px !important;
+}
+
+/* ── Separator line below day-of-week headers ── */
+[data-baseweb="calendar"] [role="row"]:first-of-type {
+    border-bottom: 1px solid #21262d !important;
+    padding-bottom: 6px !important;
+    margin-bottom: 4px !important;
+}
+
+/* ── Regular day numbers ── */
+[data-baseweb="calendar"] [role="gridcell"] button {
+    border-radius: 8px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    transition: background 0.12s !important;
+}
+
+/* ── Empty / out-of-month cells — fully hidden ── */
+[data-baseweb="calendar"] [role="gridcell"]:empty,
+[data-baseweb="calendar"] button[disabled],
+[data-baseweb="calendar"] [aria-disabled="true"] {
+    background: transparent !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+[data-baseweb="calendar"] button[disabled] > div,
+[data-baseweb="calendar"] [aria-disabled="true"] > div {
+    background: transparent !important;
+}
+
+/* ── Hover (non-selected days) ── */
+[data-baseweb="calendar"] [role="gridcell"] button:not([aria-selected="true"]):hover > div {
+    background: rgba(255,192,0,0.10) !important;
+    border-radius: 8px !important;
+}
+[data-baseweb="calendar"] [role="gridcell"] button:not([aria-selected="true"]):hover * {
+    color: #FFC000 !important;
+}
+
+/* ── Selected day — solid gold pill ── */
+[data-baseweb="calendar"] [aria-selected="true"] > div {
+    background: #FFC000 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 16px rgba(255,192,0,0.50) !important;
+}
+[data-baseweb="calendar"] [aria-selected="true"] * {
+    color: #000 !important;
+    font-weight: 800 !important;
+}
+
+/* ── Today's date (unselected) — gold dot underline ── */
+[data-baseweb="calendar"] [data-today="true"]:not([aria-selected="true"]) > div {
+    border-bottom: 2.5px solid #FFC000 !important;
+    border-radius: 0 !important;
+}
+[data-baseweb="calendar"] [data-today="true"]:not([aria-selected="true"]) * {
+    color: #FFC000 !important;
+    font-weight: 700 !important;
+}
+
+/* ══ MONTH / YEAR DROPDOWN LIST ══════════════════════════════════════════ */
+[data-baseweb="menu"] {
+    background: #161b22 !important;
+    border: 1px solid #21262d !important;
+    border-radius: 12px !important;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.65) !important;
+    padding: 4px !important;
+}
+[data-baseweb="menu"] li {
+    color: #8b949e !important; font-size: 13px !important;
+    border-radius: 8px !important; margin: 1px 0 !important;
+}
+[data-baseweb="menu"] li:hover {
+    background: rgba(255,192,0,0.10) !important;
+    color: #FFC000 !important;
+}
+[data-baseweb="menu"] [aria-selected="true"] {
+    background: rgba(255,192,0,0.16) !important;
     color: #FFC000 !important; font-weight: 700 !important;
 }
-[data-baseweb="calendar"] [aria-selected="true"] > div {
-    background: #FFC000 !important; color: #000 !important; border-radius: 50% !important;
-}
-[data-baseweb="calendar"] button:hover > div {
-    background: rgba(255,255,255,0.08) !important;
-    border-radius: 50% !important;
-    transition: background 0.15s ease !important;
-}
-[data-baseweb="calendar"] [data-baseweb="calendar-header"] {
-    background: #2a2a2a !important; border-bottom: 1px solid #3a3a3a !important;
-}
-[data-baseweb="calendar"] abbr { color: #888 !important; font-size: 11px !important; }
 
 /* ── Text area ── */
 .stTextArea textarea {
-    background: #1a1a2e !important;
-    color: #FFC000 !important;
-    border: 1px solid #333 !important;
-    border-radius: 8px !important;
-    font-size: 14px !important;
-    caret-color: #FFC000 !important;
+    background: #111827 !important; color: #FFC000 !important;
+    border: 1px solid #374151 !important; border-radius: 10px !important;
+    font-size: 14px !important; caret-color: #FFC000 !important;
+    line-height: 1.6 !important;
 }
-.stTextArea textarea::placeholder { color: #555 !important; }
-.stTextArea textarea:focus { border-color: #FFC000 !important; box-shadow: 0 0 0 2px rgba(255,192,0,0.2) !important; }
+.stTextArea textarea::placeholder { color: #4b5563 !important; }
+.stTextArea textarea:focus { border-color: #FFC000 !important; box-shadow: 0 0 0 3px rgba(255,192,0,0.15) !important; }
 
-/* ── AI section ── */
+/* ── Selectbox ── */
+[data-baseweb="select"] > div { border-radius: 8px !important; }
+
+/* ── AI panel ── */
 .ai-panel {
-    background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 100%);
+    background: #0d1117;
     border-radius: 16px; padding: 28px 32px;
-    border: 1px solid #2a2a2a;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+    border: 1px solid #21262d;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.04);
     margin-top: 8px;
 }
-.ai-header {
-    display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
-}
-.ai-icon { font-size: 28px; }
-.ai-title { font-size: 20px; font-weight: 800; color: #FFC000; }
-.ai-subtitle { font-size: 13px; color: #888; margin-bottom: 20px; line-height: 1.6; }
+.ai-title { font-size: 20px; font-weight: 800; color: #FFC000; letter-spacing: -0.3px; }
+.ai-subtitle { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.7; }
 .ai-example {
-    display: inline-block; background: #1e1e2e; color: #aaa;
-    border: 1px solid #333; border-radius: 6px;
-    padding: 2px 10px; font-size: 12px; font-style: italic; margin: 2px 4px 2px 0;
+    display: inline-block; background: #161b22; color: #8b949e;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 3px 10px; font-size: 12px; font-style: italic; margin: 3px 4px 3px 0;
 }
 
-/* ── Result KPI cards (query results) ── */
+/* ── Result KPI cards ── */
 .result-kpi {
-    background: #1e1e2e; border-radius: 10px;
-    border-left: 3px solid #FFC000;
-    padding: 12px 14px; text-align: center; flex: 1; min-width: 100px;
+    background: #161b22; border-radius: 10px; border-top: 2px solid #FFC000;
+    padding: 14px; text-align: center; flex: 1; min-width: 100px;
 }
-.result-kpi-label { font-size: 10px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
-.result-kpi-value { font-size: 20px; font-weight: 800; color: #FFC000; }
+.result-kpi-label { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+.result-kpi-value { font-size: 22px; font-weight: 800; color: #FFC000; letter-spacing: -0.5px; }
 
 /* ── Ranking cards ── */
 .rank-card {
-    background: #1a1a2e; border-radius: 10px;
-    border: 1px solid #2a2a3e; padding: 16px 18px; height: 100%;
+    background: #161b22; border-radius: 12px;
+    border: 1px solid #21262d; padding: 16px 18px;
 }
-.rank-title { font-size: 12px; font-weight: 700; color: #FFC000; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
-.rank-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #2a2a3e; }
+.rank-title { font-size: 11px; font-weight: 700; color: #FFC000; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+.rank-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #21262d; }
 .rank-row:last-child { border-bottom: none; }
-.rank-name  { font-size: 13px; color: #ddd; }
-.rank-value { font-size: 13px; font-weight: 700; color: #fff; }
+.rank-name  { font-size: 13px; color: #8b949e; }
+.rank-value { font-size: 13px; font-weight: 700; color: #e6edf3; }
 
-/* ── AI observations card ── */
+/* ── AI observations ── */
 .obs-card {
-    background: #0f1923; border-radius: 12px;
-    border-left: 4px solid #FFC000;
+    background: #0d1117; border-radius: 12px;
+    border: 1px solid #21262d; border-left: 3px solid #FFC000;
     padding: 20px 24px; margin-top: 16px;
 }
-.obs-title { font-size: 13px; font-weight: 700; color: #FFC000; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
-.obs-line  { font-size: 14px; color: #d0d0d0; line-height: 1.7; padding: 3px 0; }
+.obs-title { font-size: 11px; font-weight: 700; color: #FFC000; margin-bottom: 14px; text-transform: uppercase; letter-spacing: 1.5px; }
+.obs-line  { font-size: 14px; color: #8b949e; line-height: 1.8; padding: 4px 0; }
 
 /* ── Sidebar filter header ── */
 .filter-header {
-    background: #FFC000; color: #000 !important; font-weight: 800;
-    font-size: 14px; padding: 8px 0; border-radius: 6px;
-    text-align: center; letter-spacing: 1px; margin-bottom: 16px;
+    background: linear-gradient(135deg, #FFC000, #FFD740);
+    color: #000 !important; font-weight: 800;
+    font-size: 12px; padding: 10px 0; border-radius: 8px;
+    text-align: center; letter-spacing: 2px; margin-bottom: 18px;
+    box-shadow: 0 4px 12px rgba(255,192,0,0.3);
 }
+
+/* ── Expander ── */
+.streamlit-expanderHeader {
+    background: #fff !important; border-radius: 8px !important;
+    font-weight: 600 !important; font-size: 13px !important;
+    border: 1px solid #e5e7eb !important;
+}
+.streamlit-expanderContent { border: 1px solid #e5e7eb !important; border-top: none !important; border-radius: 0 0 8px 8px !important; }
+
+/* ── Info / warning / error boxes ── */
+.stAlert { border-radius: 10px !important; border: none !important; }
+
+/* ── Dataframe ── */
+[data-testid="stDataFrame"] { border-radius: 10px !important; overflow: hidden !important; }
 </style>
+<script>
+function fixSidebarToggle() {
+    const el = document.querySelector('[data-testid="stSidebarCollapsed"]');
+    if (el) {
+        el.style.setProperty("background", "#FFC000", "important");
+        el.style.setProperty("visibility", "visible", "important");
+        el.style.setProperty("opacity", "1", "important");
+        el.style.setProperty("display", "flex", "important");
+        el.style.setProperty("min-width", "36px", "important");
+        el.style.setProperty("min-height", "80px", "important");
+        el.style.setProperty("z-index", "99999", "important");
+        el.style.setProperty("border-radius", "0 10px 10px 0", "important");
+        el.style.setProperty("cursor", "pointer", "important");
+        el.querySelectorAll("svg").forEach(s => s.style.setProperty("fill", "#000", "important"));
+        el.querySelectorAll("button").forEach(b => {
+            b.style.setProperty("background", "transparent", "important");
+            b.style.setProperty("border", "none", "important");
+            b.style.setProperty("min-height", "80px", "important");
+        });
+    }
+}
+const obs = new MutationObserver(fixSidebarToggle);
+obs.observe(document.body, { childList: true, subtree: true, attributes: true });
+fixSidebarToggle();
+setInterval(fixSidebarToggle, 500);
+</script>
 """, unsafe_allow_html=True)
 
 # ── Header ───────────────────────────────────────────────────────────────────
@@ -239,12 +555,13 @@ st.markdown("""
 <div class="dash-header">
   <div class="dash-logo-box">
     <div class="dash-logo-main">SHRIRAM</div>
-    <div class="dash-logo-sub">Finance</div>
+    <div class="dash-logo-sub">FINANCE</div>
   </div>
   <div>
     <div class="dash-title">Regional Collection Dashboard</div>
-    <div class="dash-subtitle">Credit &amp; Collection Risk Monitoring</div>
+    <div class="dash-subtitle">Credit &amp; Collection Risk Monitoring System</div>
   </div>
+  <div class="dash-badge">CollectionIQ</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -258,10 +575,11 @@ with col_up1:
     st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Current Month</div><div class="upload-card-sub">Required — main reporting file</div>', unsafe_allow_html=True)
     curr_file = st.file_uploader("Current Month", type=["xlsx", "xls"], key="curr", label_visibility="collapsed")
     curr_month_input = st.date_input(
-        "Reporting month (pick any day in that month)",
+        "Reporting Month",
         value=datetime.date.today().replace(day=1),
         key="curr_month_pick",
-        help="Pick any date within the reporting month — only month & year are used",
+        help="Select any date in the reporting month — only Month & Year are used",
+        format="DD/MM/YYYY",
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -269,10 +587,11 @@ with col_up2:
     st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Previous Month</div><div class="upload-card-sub">Optional — enables MoM % comparison</div>', unsafe_allow_html=True)
     prev_file = st.file_uploader("Previous Month", type=["xlsx", "xls"], key="prev", label_visibility="collapsed")
     prev_month_input = st.date_input(
-        "Reporting month (pick any day in that month)",
+        "Reporting Month",
         value=(datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
         key="prev_month_pick",
-        help="Pick any date within the reporting month — only month & year are used",
+        help="Select any date in the previous month — only Month & Year are used",
+        format="DD/MM/YYYY",
         disabled=not prev_file,
     )
     st.markdown('</div>', unsafe_allow_html=True)
@@ -299,12 +618,18 @@ with col_btn:
 
 # ── Load data — persisted in session_state so reruns (e.g. Run Query) don't reset ──
 if generate:
-    df_curr_raw, err_curr = load_and_validate(curr_file)
+    # Clear all derived state so stale data never survives a re-upload
+    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key"]:
+        st.session_state.pop(_k, None)
+
+    with st.spinner("Loading data..."):
+        df_curr_raw, err_curr = load_and_validate(curr_file)
     if err_curr:
         st.error(f"Current month file: {err_curr[0]}")
         st.stop()
     if prev_file:
-        df_prev_raw, err_prev = load_and_validate(prev_file)
+        with st.spinner("Loading previous month..."):
+            df_prev_raw, err_prev = load_and_validate(prev_file)
         if err_prev:
             st.error(f"Previous month file: {err_prev[0]}")
             st.stop()
@@ -312,6 +637,7 @@ if generate:
         df_prev_raw = df_curr_raw.iloc[0:0].copy()
     st.session_state["df_curr_raw"] = df_curr_raw
     st.session_state["df_prev_raw"] = df_prev_raw
+    st.rerun()
 
 if "df_curr_raw" not in st.session_state:
     st.markdown("""
@@ -338,9 +664,17 @@ with st.sidebar:
     regions = ["All"] + sorted(df_curr_raw["RegionName"].dropna().unique().tolist())
     sel_region = st.selectbox("Region", regions)
 
+    # Reset branch when region changes so stale branch never causes silent zero results
+    if st.session_state.get("_prev_region") != sel_region:
+        st.session_state["_sel_branch"] = "All"
+        st.session_state["_prev_region"] = sel_region
+
     df_for_branch = df_curr_raw if sel_region == "All" else df_curr_raw[df_curr_raw["RegionName"] == sel_region]
     branches = ["All"] + sorted(df_for_branch["Unit"].dropna().unique().tolist())
-    sel_branch = st.selectbox("Branch", branches)
+    default_branch = st.session_state.get("_sel_branch", "All")
+    branch_idx = branches.index(default_branch) if default_branch in branches else 0
+    sel_branch = st.selectbox("Branch", branches, index=branch_idx)
+    st.session_state["_sel_branch"] = sel_branch
 
     statuses = ["All"] + sorted(df_curr_raw["Loan Status"].dropna().unique().tolist())
     sel_status = st.selectbox("Loan Status", statuses)
@@ -355,6 +689,13 @@ with st.sidebar:
 # ── Apply filters ──────────────────────────────────────────────────────────────
 df_curr = apply_filters(df_curr_raw.copy(), sel_region, sel_branch, sel_status)
 df_prev = apply_filters(df_prev_raw.copy(), sel_region, sel_branch, sel_status)
+
+# Clear AI result and report when filters change so stale results are never shown
+_filter_key = f"{sel_region}|{sel_branch}|{sel_status}"
+if st.session_state.get("_last_filter_key") != _filter_key:
+    st.session_state.pop("ai_result", None)
+    st.session_state.pop("report_result", None)
+    st.session_state["_last_filter_key"] = _filter_key
 
 if len(df_curr) == 0:
     st.warning("No data matches the selected filters.")
@@ -433,6 +774,66 @@ with col_bot:
     st.markdown("<br>", unsafe_allow_html=True)
     _render_kpi_row(KPI_BOT)
 
+# ── Field Executive Performance Scorecard ─────────────────────────────────────
+if "MNT NAME" in df_curr.columns:
+    st.markdown("---")
+    st.markdown('<div class="section-label">Field Executive Performance Scorecard</div>', unsafe_allow_html=True)
+
+    from analysis.executive_scorecard import compute_executive_scorecard, build_scorecard_table_html
+
+    scorecard_df = compute_executive_scorecard(df_curr)
+    if len(scorecard_df) > 0:
+        top_count = (scorecard_df["Tier"] == "top").sum()
+        bot_count = (scorecard_df["Tier"] == "bottom").sum()
+
+        avg_coll   = scorecard_df["Collection %"].mean()
+        avg_strike = scorecard_df["Strike Rate %"].mean()
+        avg_npa    = scorecard_df["NPA %"].mean()
+
+        sc_col1, sc_col2, sc_col3, sc_col4, sc_col5 = st.columns(5)
+        with sc_col1:
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top-color:#16a34a;">
+              <div class="kpi-label">Top Performers</div>
+              <div class="kpi-value" style="color:#16a34a;">{top_count}</div>
+              <div class="kpi-mom">Top 25% by collection %</div>
+            </div>""", unsafe_allow_html=True)
+        with sc_col2:
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top-color:#dc2626;">
+              <div class="kpi-label">Need Attention</div>
+              <div class="kpi-value" style="color:#dc2626;">{bot_count}</div>
+              <div class="kpi-mom">Bottom 25% by collection %</div>
+            </div>""", unsafe_allow_html=True)
+        with sc_col3:
+            st.markdown(f"""
+            <div class="kpi-card">
+              <div class="kpi-label">Avg Collection %</div>
+              <div class="kpi-value">{avg_coll:.1f}%</div>
+              <div class="kpi-mom">{len(scorecard_df)} executives ranked</div>
+            </div>""", unsafe_allow_html=True)
+        with sc_col4:
+            strike_color = "#16a34a" if avg_strike >= 70 else "#d97706" if avg_strike >= 50 else "#dc2626"
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top-color:{strike_color};">
+              <div class="kpi-label">Avg Strike Rate %</div>
+              <div class="kpi-value" style="color:{strike_color};">{avg_strike:.1f}%</div>
+              <div class="kpi-mom">Field visit coverage</div>
+            </div>""", unsafe_allow_html=True)
+        with sc_col5:
+            npa_color = "#16a34a" if avg_npa < 5 else "#d97706" if avg_npa < 10 else "#dc2626"
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top-color:{npa_color};">
+              <div class="kpi-label">Avg NPA %</div>
+              <div class="kpi-value" style="color:{npa_color};">{avg_npa:.1f}%</div>
+              <div class="kpi-mom">Across all executives</div>
+            </div>""", unsafe_allow_html=True)
+
+        with st.expander(f"View Executive Performance Table ({len(scorecard_df)} executives)", expanded=False):
+            st.markdown(build_scorecard_table_html(scorecard_df), unsafe_allow_html=True)
+    else:
+        st.info("Not enough data per executive to build scorecard (minimum 5 accounts required).")
+
 # ── Smart Alerts ──────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown('<div class="section-label">Smart Alerts</div>', unsafe_allow_html=True)
@@ -502,6 +903,41 @@ for i in range(0, len(alerts), 2):
                         height=min(300, 40 + alert["count"] * 35),
                     )
 
+# ── Bucket Migration / Roll-Rate Analysis ─────────────────────────────────────
+if len(df_prev_raw) > 0:
+    st.markdown("---")
+    st.markdown('<div class="section-label">Bucket Migration / Roll-Rate Analysis</div>', unsafe_allow_html=True)
+
+    from analysis.roll_rate import compute_roll_rate_matrix, compute_roll_rate_kpis, build_roll_rate_heatmap
+
+    rr_matrix, rr_meta = compute_roll_rate_matrix(df_curr, df_prev)
+    fig_rr = build_roll_rate_heatmap(rr_matrix)
+
+    rr_col1, rr_col2, rr_col3, rr_col4 = st.columns(4)
+    rr_kpis = [
+        ("Roll-Forward Rate", rr_meta["roll_forward_rate"], "%", "#dc2626", "Accounts that worsened bucket"),
+        ("Cure Rate",         rr_meta["cure_rate"],         "%", "#16a34a", "Delinquent accounts returned to STD"),
+        ("NPA Formation",     rr_meta["npa_formation_rate"],"%", "#991b1b", "Non-NPA accounts that became NPA"),
+        ("Matched Accounts",  rr_meta["matched_count"],     "",  "#111827", "Accounts in both months"),
+    ]
+    for col, (label, val, unit, color, tip) in zip([rr_col1, rr_col2, rr_col3, rr_col4], rr_kpis):
+        with col:
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top-color:{color};">
+              <div class="kpi-label">{label}</div>
+              <div class="kpi-value" style="color:{color};font-size:24px;">{val:,.1f}{unit}</div>
+              <div class="kpi-mom" style="color:#9ca3af;">{tip}</div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown('<div class="chart-card" style="margin-top:12px;">', unsafe_allow_html=True)
+    st.plotly_chart(fig_rr, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.caption(
+        f"{rr_meta['matched_count']:,} matched accounts | "
+        f"{rr_meta['new_entries']:,} new this month | "
+        f"{rr_meta['exits']:,} closed/exited"
+    )
+
 # ── HTML export ────────────────────────────────────────────────────────────────
 st.markdown("---")
 col_dl, _ = st.columns([1, 3])
@@ -515,6 +951,110 @@ with col_dl:
         mime="text/html",
         use_container_width=True,
     )
+
+# ── Portfolio Intelligence Report ─────────────────────────────────────────────
+st.markdown("---")
+st.markdown('<div class="section-label">AI Portfolio Intelligence Report</div>', unsafe_allow_html=True)
+
+with st.expander("Configure & Generate Monthly Report", expanded=False):
+    st.markdown("""
+    <div class="ai-panel">
+      <div class="ai-title">Monthly Portfolio Intelligence Report</div>
+      <div class="ai-subtitle">
+        Generates a board-ready HTML report with AI executive narrative, branch rankings,
+        field executive scorecard, bucket migration analysis, and 5 prioritized action items.
+        Download as HTML or send via email.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("<div style='margin-top:14px;'><strong style='font-size:13px;'>Report Sections:</strong></div>", unsafe_allow_html=True)
+    rpt_c1, rpt_c2, rpt_c3 = st.columns(3)
+    with rpt_c1:
+        inc_health  = st.checkbox("Portfolio Health", value=True, key="rpt_health")
+        inc_flags   = st.checkbox("Risk Flags",       value=True, key="rpt_flags")
+    with rpt_c2:
+        inc_migrate = st.checkbox(
+            "Bucket Migration", value=(len(df_prev_raw) > 0), key="rpt_migrate",
+            disabled=(len(df_prev_raw) == 0), help="Upload previous month file to enable",
+        )
+        inc_branch  = st.checkbox("Branch Performance", value=True, key="rpt_branch")
+    with rpt_c3:
+        inc_exec    = st.checkbox("Executive Rankings", value=True, key="rpt_exec")
+
+    smtp_ok = bool(os.environ.get("SMTP_HOST", ""))
+    send_email_rpt = st.checkbox(
+        "Send via email after generation",
+        value=False, key="rpt_email",
+        disabled=not smtp_ok,
+        help="Configure SMTP_HOST / SMTP_USER / SMTP_PASS / REPORT_EMAIL_TO in .env to enable",
+    )
+    if not smtp_ok:
+        st.caption("Email not configured — add SMTP settings to .env to enable.")
+
+    rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate")
+
+if rpt_btn:
+    enabled_sections = []
+    if st.session_state.get("rpt_health"):   enabled_sections.append("portfolio_health")
+    if st.session_state.get("rpt_flags"):    enabled_sections.append("risk_flags")
+    if st.session_state.get("rpt_migrate"):  enabled_sections.append("bucket_migration")
+    if st.session_state.get("rpt_branch"):   enabled_sections.append("branch_performance")
+    if st.session_state.get("rpt_exec"):     enabled_sections.append("executive_rankings")
+
+    from report_agent.graph import run_report
+
+    with st.spinner("Running Portfolio Intelligence Agent (30–60 seconds)..."):
+        _rpt_result = run_report(
+            df_curr=df_curr_raw,
+            df_prev=df_prev_raw,
+            curr_month=curr_month,
+            prev_month=prev_month,
+            enabled_sections=enabled_sections,
+            filters_applied={"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status},
+        )
+    st.session_state["report_result"] = _rpt_result
+
+_rpt = st.session_state.get("report_result")
+if _rpt:
+    if _rpt.get("error"):
+        st.error(f"Report generation failed: {_rpt['error']}")
+    elif _rpt.get("html_report"):
+        st.success("Report generated successfully.")
+
+        if _rpt.get("email_sent"):
+            st.info(f"Report emailed to: {os.environ.get('REPORT_EMAIL_TO', '')}")
+        elif _rpt.get("email_error") and os.environ.get("SMTP_HOST", ""):
+            st.warning(f"Email failed: {_rpt['email_error']}")
+
+        rpt_dl_col, _ = st.columns([1, 3])
+        with rpt_dl_col:
+            st.download_button(
+                label="⬇  Download Intelligence Report (HTML)",
+                data=_rpt["html_report"].encode("utf-8"),
+                file_name=f"portfolio_intelligence_{curr_month}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+
+        if _rpt.get("executive_narrative"):
+            preview = _rpt["executive_narrative"][:600]
+            st.markdown(f"""
+            <div class="obs-card">
+              <div class="obs-title">AI Executive Narrative (Preview)</div>
+              <div class="obs-line" style="line-height:1.8;">{preview}{"..." if len(_rpt["executive_narrative"]) > 600 else ""}</div>
+            </div>""", unsafe_allow_html=True)
+
+        if _rpt.get("action_plan"):
+            lines = [l.strip() for l in _rpt["action_plan"].split("\n") if l.strip()][:5]
+            action_html = "".join(
+                f'<div style="padding:8px 0;border-bottom:1px solid #21262d;font-size:13px;color:#8b949e;">{l}</div>'
+                for l in lines
+            )
+            st.markdown(f"""
+            <div class="obs-card" style="margin-top:12px;">
+              <div class="obs-title">Prioritized Action Plan</div>
+              {action_html}
+            </div>""", unsafe_allow_html=True)
 
 # ── AI Query Assistant ─────────────────────────────────────────────────────────
 st.markdown("""
@@ -569,7 +1109,9 @@ if result:
         plain       = result["parsed_filters"].get("plain_english", "")
 
         # Domain Expert interpretation card
-        is_priority = result.get("priority_mode", False)
+        is_priority    = result.get("priority_mode", False)
+        is_aggregation = result.get("aggregation_mode", False)
+        result_type    = result.get("result_type", "loan_table")
         category   = result.get("query_category", "general").replace("_", " ").title()
         query_title = result.get("query_title", "")
         enriched   = result.get("enriched_query", "")
@@ -643,8 +1185,116 @@ if result:
                 st.dataframe(display_grp.reset_index(drop=True), use_container_width=True,
                              height=min(280, 45 + len(grp) * 36), hide_index=True)
 
+        elif result_type == "single_stat" and not is_aggregation:
+            # ── Single stat — simple count / sum over filtered rows ─────────────
+            st.markdown(f"""
+            <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
+                        padding:32px 36px;margin:0 0 20px 0;text-align:center;">
+              <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
+                          letter-spacing:2px;margin-bottom:16px;">{query_title}</div>
+              <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">
+            """ + "".join(
+                f'<div style="min-width:140px;">'
+                f'<div style="font-size:11px;color:#6b7280;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:1px;margin-bottom:8px;">{k}</div>'
+                f'<div style="font-size:42px;font-weight:900;color:#FFC000;line-height:1;letter-spacing:-1px;">'
+                f'{fmt_value(v, {"Count":"count","Total POS":"money","Avg Arrears/EMI":"pct","Total Demand":"money","Total Collection":"money","Collection %":"pct"}.get(k,"count"))}'
+                f'</div></div>'
+                for k, v in kpis_q.items() if v not in (0, 0.0, "")
+            ) + f"""
+              </div>
+              <div style="font-size:13px;color:#4b5563;margin-top:20px;font-style:italic;">{plain}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif result_type == "single_stat" and is_aggregation:
+            # ── Single stat from aggregation — show top answer + compact table ──
+            agg_spec     = result.get("aggregation_spec", {})
+            metric_label = agg_spec.get("metric_label", "Metric")
+            group_col    = agg_spec.get("group_by", "Group")
+            sort_asc     = agg_spec.get("sort_asc", True)
+            if len(filtered_df) > 0 and metric_label in filtered_df.columns:
+                top_row   = filtered_df.iloc[0]
+                top_name  = top_row.get(group_col, "—")
+                top_val   = top_row.get(metric_label, 0)
+                direction = "lowest" if sort_asc else "highest"
+                st.markdown(f"""
+                <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
+                            padding:28px 36px;margin:0 0 20px 0;text-align:center;">
+                  <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
+                              letter-spacing:2px;margin-bottom:12px;">{direction} {metric_label}</div>
+                  <div style="font-size:36px;font-weight:900;color:#FFC000;letter-spacing:-0.5px;">{top_name}</div>
+                  <div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:6px;">{top_val:.4f}</div>
+                  <div style="font-size:12px;color:#4b5563;margin-top:12px;font-style:italic;">{plain}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Also show compact full ranking below
+            if len(filtered_df) > 1:
+                st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
+                st.dataframe(filtered_df, use_container_width=True,
+                             height=min(400, 50 + len(filtered_df) * 36), hide_index=True)
+
+        elif is_aggregation:
+            # ── Aggregation result — ranked executive/branch/region table ──────
+            agg_spec    = result.get("aggregation_spec", {})
+            metric_label = agg_spec.get("metric_label", "Metric")
+            group_col    = agg_spec.get("group_by", "Group")
+
+            st.markdown(f"""
+            <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
+                        padding:16px 20px;margin:0 0 16px 0;">
+              <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:6px;letter-spacing:1px;">
+                📊 AGGREGATION RESULT — {metric_label.upper()}
+              </div>
+              <div style="font-size:12px;color:#94a3b8;">
+                {plain}&nbsp; &nbsp;
+                <strong style="color:#fff">{len(filtered_df)} {group_col}s</strong> ranked
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Build styled HTML table
+            if len(filtered_df) > 0:
+                header_cols = list(filtered_df.columns)
+                th_cells = "".join(
+                    f'<th style="padding:10px 14px;text-align:{"right" if c not in ("Rank", group_col) else "left"};'
+                    f'font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;'
+                    f'letter-spacing:1.2px;border-bottom:1px solid #21262d;">{c}</th>'
+                    for c in header_cols
+                )
+                rows_html = ""
+                for i, row in filtered_df.iterrows():
+                    rank_val = int(row.get("Rank", i + 1))
+                    # Highlight top 3
+                    row_bg = "rgba(255,192,0,0.06)" if rank_val <= 3 else "transparent"
+                    cells = ""
+                    for c in header_cols:
+                        val = row[c]
+                        if c == "Rank":
+                            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank_val, f"#{rank_val}")
+                            cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">{medal}</td>'
+                        elif c == group_col:
+                            cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{val}</td>'
+                        elif c == metric_label:
+                            cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{val:.4f}</td>'
+                        else:
+                            cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else val}</td>'
+                    rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #0d1117;">{cells}</tr>'
+
+                st.markdown(f"""
+                <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;overflow:hidden;margin-top:8px;">
+                  <table style="width:100%;border-collapse:collapse;">
+                    <thead><tr style="background:#0d1117;">{th_cells}</tr></thead>
+                    <tbody>{rows_html}</tbody>
+                  </table>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.warning("No data returned for this aggregation.")
+
         else:
-            # Normal query result
+            # ── Normal row-level filter result ─────────────────────────────────
             st.markdown(f"""
             <div style="background:#1a2e1a;border-left:4px solid #16a34a;border-radius:8px;
                         padding:12px 16px;margin:0 0 16px 0;color:#86efac;font-weight:600;font-size:14px;">
@@ -666,7 +1316,7 @@ if result:
                 unsafe_allow_html=True,
             )
 
-            # Rankings
+            # Rankings — 2 columns: left (regions + bucket dist + MNT NAME) | right (branches)
             r1, r2 = st.columns(2)
 
             def _rank_rows(items, val_fmt="count"):
@@ -685,7 +1335,19 @@ if result:
                         f'<div class="rank-row"><span class="rank-name">{b}</span><span class="rank-value">{p}%</span></div>'
                         for b, p in rankings["bucket_dist"].items()
                     )
-                    left_html += f'<div class="rank-card"><div class="rank-title">📊 Bucket Distribution</div>{bucket_rows}</div>'
+                    left_html += f'<div class="rank-card" style="margin-bottom:12px;"><div class="rank-title">📊 Bucket Distribution</div>{bucket_rows}</div>'
+                if rankings.get("mnt_details"):
+                    mnt_rows = ""
+                    for e in rankings["mnt_details"]:
+                        mnt_rows += (
+                            f'<div class="rank-row" style="gap:6px;">'
+                            f'<span class="rank-name" style="flex:1.4;font-weight:600;">{e["name"]}</span>'
+                            f'<span class="rank-name" style="flex:0.9;color:#9ca3af;font-size:11px;">{e["branch"]}</span>'
+                            f'<span class="rank-value" style="min-width:36px;text-align:right;">{e["count"]}</span>'
+                            f'<span class="rank-value" style="min-width:52px;text-align:right;color:#FFC000;">{fmt_value(e["pos"], "money")}</span>'
+                            f'</div>'
+                        )
+                    left_html += f'<div class="rank-card"><div class="rank-title">👤 Top Executives by Account Count</div>{mnt_rows}</div>'
                 st.markdown(left_html, unsafe_allow_html=True)
 
             with r2:

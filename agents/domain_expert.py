@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 from google import genai
 
 # ── Business Priority Framework ───────────────────────────────────────────────
@@ -64,6 +65,33 @@ PRIORITY_RULES = [
     },
 ]
 
+
+def _build_priority_text() -> str:
+    """Auto-generate system prompt priority section from PRIORITY_RULES — single source of truth."""
+    lines = ["BUSINESS PRIORITY FRAMEWORK (apply when query is vague about what to look at):"]
+    for r in PRIORITY_RULES:
+        cond_parts = []
+        for c in r["conditions"]:
+            val = c["value"]
+            if val == "__CUTOFF_1Y__":
+                val = "within last 12 months"
+            cond_parts.append(f"{c['column']} {c['op']} {val}")
+        cond_text = " AND ".join(cond_parts)
+        lines.append(f"Priority {r['rank']} -- {r['label']} ({cond_text}): {r['why']}")
+    return "\n".join(lines)
+
+
+def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
+    """Call Gemini with exponential backoff retry on transient failures."""
+    for attempt in range(max_retries + 1):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            time.sleep(2 ** attempt)
+
+
 SYSTEM_PROMPT = f"""You are a Senior Credit & Collection Risk Expert at an NBFC (Non-Banking Financial Company)
 with 15+ years of experience in loan portfolio management, collections, and credit risk.
 
@@ -96,19 +124,77 @@ You deeply understand NBFC terminology:
 - Month Due-Exp = Monthly expense demand (insurance etc.); if > 0 with no EMI = insurance-only delinquency
 - Closing Arrears = Total arrears at month close in rupees
 
-BUSINESS PRIORITY FRAMEWORK (apply when query is vague about what to look at):
-Priority 1 — Non Starters (Non Starter == Y): Never paid 1st EMI
-Priority 2 — Easy Settlements (0 < Closing Arrears < 1000): Quick wins
-Priority 3 — Recent Advances at Risk (Ag_Date within 1 year AND Arrears/EMI >= 1): New portfolio deterioration
-Priority 4 — Insurance-Driven Delinquency (Month Due-Inst <= 0 AND Month Due-Exp > 0 AND Arrears/EMI > 0)
-Priority 5 — Co-lending at Risk (CoLending_Loans == Y AND Arrears/EMI > 0)
-Priority 6 — No Collection 3 Months (No Coll 3 Months and >6 EMI == Y)
-Priority 7 — NPA Accounts (curr_bucket == NPA)
+LOAN STATUS — three exact values in the "Loan Status" column:
+- "RUN" = Loan is active and within its original tenure. Standard running portfolio account.
+- "MAT" = Loan has matured — tenure is over but closing arrears are still pending. Customer still owes money after loan end date. Recovery mode.
+- "S&S" = Seized and Sold — vehicle was seized and auctioned/sold, but a balance remains outstanding in closing arrears. Most severe status — requires legal/recovery escalation.
+Mapping rule: "mature/matured cases" = Loan Status == "MAT" | "running/active cases" = Loan Status == "RUN" | "seized/sold" = Loan Status == "S&S"
+
+{_build_priority_text()}
 
 VAGUE QUERY DETECTION — set priority_mode to true when the query contains phrases like:
 "prioritize", "what should I focus on", "urgent cases", "action needed", "most important",
 "what to work on", "cases to handle first", "where to start", "which cases first",
 "top cases", "critical cases", "immediate attention", or any similar intent.
+
+AGGREGATION MODE — set aggregation_mode to true when the query asks to:
+- Rank, order, or sort a GROUP (executives / branches / regions) by a ratio or derived metric
+- "Which executive has the highest/lowest X" implying ALL executives should be ranked
+- "Compare executives/branches by X" — result is one row per group, not per loan
+Do NOT set aggregation_mode for individual loan row filters or priority queries.
+
+When aggregation_mode is true, populate aggregation_spec with this exact structure:
+{{
+  "group_by": "column to group by — one of: MNT NAME, Unit, RegionName",
+  "counts": [
+    {{"alias": "snake_case_name", "column": "column_name", "value": "exact_column_value"}}
+  ],
+  "sums": [
+    {{"alias": "snake_case_name", "column": "numeric_column_name"}}
+  ],
+  "metric": "pandas eval expression using alias names (e.g. mat_count / run_count)",
+  "metric_label": "Human Readable Metric Name",
+  "sort_asc": true,
+  "having": [
+    {{"alias": "alias_name", "op": ">=", "value": 1}}
+  ]
+}}
+
+HAVING rules — use "having" to filter groups AFTER aggregation (like SQL HAVING clause).
+Supported ops: >=, >, <=, <, ==, !=
+Use it whenever the query says: "must have at least N", "only if more than N", "exclude if zero", "with at least N", etc.
+Example: "must have at least 1 running case" → having: [{{"alias": "run_count", "op": ">=", "value": 1}}]
+If no such constraint exists, set having to an empty list [].
+
+Example — "order executives by lowest MAT to RUN ratio, must have at least 1 running case":
+  aggregation_mode: true
+  aggregation_spec: {{
+    "group_by": "MNT NAME",
+    "counts": [
+      {{"alias": "mat_count", "column": "Loan Status", "value": "MAT"}},
+      {{"alias": "run_count", "column": "Loan Status", "value": "RUN"}}
+    ],
+    "sums": [],
+    "metric": "mat_count / run_count",
+    "metric_label": "MAT/RUN Ratio",
+    "sort_asc": true,
+    "having": [{{"alias": "run_count", "op": ">=", "value": 1}}]
+  }}
+
+When aggregation_mode is false, set aggregation_spec to null.
+
+RESULT TYPE — always decide what shape the answer should be:
+- "loan_table"       : user wants individual loan records. Signals: "show me", "list", "find accounts", "which customers", "filter by", "give me loans where".
+- "aggregation_table": user wants groups ranked/compared by a metric. Signals: "rank by", "order by", "sort executives by", "compare branches by", "top N groups".
+- "single_stat"      : user wants ONE summary answer — a count, total, average, or the name of the best/worst group. Signals: "how many", "total", "what is the", "count of", "which executive has the most/least", "average", "sum of".
+
+Rules:
+- "rank executives by X" → aggregation_table (full ranked list)
+- "which executive has the highest X" → single_stat (the answer is one name + value)
+- "how many MAT accounts" → single_stat
+- "total POS of NPA accounts" → single_stat
+- "show all MAT accounts" → loan_table
+- "list accounts with no strike" → loan_table
 
 Your output must be a JSON object with this exact structure:
 {{
@@ -119,11 +205,16 @@ Your output must be a JSON object with this exact structure:
   "insight_focus": "What angle should AI observations focus on? 1-2 sentences.",
   "risk_flag": "high | medium | low",
   "suggested_sort": "Column and direction (e.g. 'Arrears / EMI descending')",
-  "priority_mode": false
+  "priority_mode": false,
+  "aggregation_mode": false,
+  "aggregation_spec": null,
+  "result_type": "loan_table"
 }}
 
-Set priority_mode to true ONLY for vague/priority queries. When true, the system will
-automatically apply the full business priority framework — you do NOT need to specify filters.
+Set priority_mode to true ONLY for vague/priority queries.
+Set aggregation_mode to true and result_type to "aggregation_table" or "single_stat" for group queries.
+For single_stat that requires GROUP BY (e.g. "which executive has the most"), set aggregation_mode true AND result_type "single_stat".
+For single_stat that is a simple count/sum (e.g. "how many MAT"), set aggregation_mode false AND result_type "single_stat".
 
 Return ONLY valid JSON. No markdown, no explanation outside the JSON.
 Never use em dash, en dash, or hyphen as a dash anywhere in your output.
@@ -131,15 +222,24 @@ Never use em dash, en dash, or hyphen as a dash anywhere in your output.
 
 
 def enrich_query(raw_query: str) -> dict:
+    from datetime import date as _date
+    from dateutil.relativedelta import relativedelta as _rd
+
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY not set.")
 
+    today = _date.today()
+    date_context = (
+        f"[CURRENT DATE: {today.isoformat()} | "
+        f"12 months ago: {(today - _rd(months=12)).isoformat()} | "
+        f"6 months ago: {(today - _rd(months=6)).isoformat()} | "
+        f"3 months ago: {(today - _rd(months=3)).isoformat()}] "
+    )
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=raw_query,
-        config={"system_instruction": SYSTEM_PROMPT},
+    response = _call_gemini_with_retry(
+        client, "gemini-2.0-flash", date_context + raw_query,
+        {"system_instruction": SYSTEM_PROMPT},
     )
 
     raw = response.text.strip()
@@ -155,5 +255,19 @@ def enrich_query(raw_query: str) -> dict:
     result.setdefault("risk_flag", "medium")
     result.setdefault("suggested_sort", "POS descending")
     result.setdefault("priority_mode", False)
+    result.setdefault("aggregation_mode", False)
+    result.setdefault("aggregation_spec", None)
+    result.setdefault("result_type", "loan_table")
+
+    # Guard against Gemini returning "true"/"false" strings instead of booleans
+    pm = result.get("priority_mode", False)
+    result["priority_mode"] = pm is True or str(pm).lower() == "true"
+    am = result.get("aggregation_mode", False)
+    result["aggregation_mode"] = am is True or str(am).lower() == "true"
+
+    # Validate result_type
+    valid_result_types = {"loan_table", "aggregation_table", "single_stat"}
+    if result.get("result_type") not in valid_result_types:
+        result["result_type"] = "loan_table"
 
     return result

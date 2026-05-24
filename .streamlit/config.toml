@@ -6,6 +6,6 @@ textColor = "#000000"
 font = "sans serif"
 
 [server]
-port = 8501
+port = 8502
 maxUploadSize = 200
 headless = true

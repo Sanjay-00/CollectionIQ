@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, START, END
 
 from agents.domain_expert import enrich_query
 from agents.query_parser import parse_query
-from agents.data_executor import execute_filters, execute_priority_mode, distribute_priority_accounts, compute_result_kpis, compute_contextual_rankings
+from agents.data_executor import execute_filters, execute_priority_mode, execute_aggregation, distribute_priority_accounts, compute_result_kpis, compute_contextual_rankings
 from agents.insight_generator import generate_insights
 
 
@@ -21,6 +21,9 @@ class QueryState(TypedDict):
     insight_focus: str
     risk_flag: str
     priority_mode: bool
+    aggregation_mode: bool
+    aggregation_spec: dict
+    result_type: str
 
     # Agent 1 output — Query Parser
     parsed_filters: dict
@@ -43,26 +46,32 @@ def domain_expert_node(state: QueryState) -> QueryState:
         enriched = enrich_query(state["query"])
         return {
             **state,
-            "enriched_query":  enriched.get("enriched_query", state["query"]),
-            "query_category":  enriched.get("query_category", "general"),
-            "query_title":     enriched.get("query_title", "Custom Query"),
-            "focus_kpis":      enriched.get("focus_kpis", []),
-            "insight_focus":   enriched.get("insight_focus", ""),
-            "risk_flag":       enriched.get("risk_flag", "medium"),
-            "priority_mode":   bool(enriched.get("priority_mode", False)),
+            "enriched_query":   enriched.get("enriched_query", state["query"]),
+            "query_category":   enriched.get("query_category", "general"),
+            "query_title":      enriched.get("query_title", "Custom Query"),
+            "focus_kpis":       enriched.get("focus_kpis", []),
+            "insight_focus":    enriched.get("insight_focus", ""),
+            "risk_flag":        enriched.get("risk_flag", "medium"),
+            "priority_mode":    bool(enriched.get("priority_mode", False)),
+            "aggregation_mode": bool(enriched.get("aggregation_mode", False)),
+            "aggregation_spec": enriched.get("aggregation_spec") or {},
+            "result_type":      enriched.get("result_type", "loan_table"),
             "error": "",
         }
     except Exception as e:
         # Non-fatal — fall back to raw query
         return {
             **state,
-            "enriched_query": state["query"],
-            "query_category": "general",
-            "query_title":    "Custom Query",
-            "focus_kpis":     [],
-            "insight_focus":  "",
-            "risk_flag":      "medium",
-            "priority_mode":  False,
+            "enriched_query":   state["query"],
+            "query_category":   "general",
+            "query_title":      "Custom Query",
+            "focus_kpis":       [],
+            "insight_focus":    "",
+            "risk_flag":        "medium",
+            "priority_mode":    False,
+            "aggregation_mode": False,
+            "aggregation_spec": {},
+            "result_type":      "loan_table",
             "error": "",
         }
 
@@ -83,17 +92,25 @@ def execute_node(state: QueryState) -> QueryState:
     if df is None or len(df) == 0:
         return {**state, "error": "No data loaded."}
     try:
-        # Priority mode: bypass filter parser, apply full priority framework
         if state.get("priority_mode"):
+            # Priority mode: bypass filter parser, apply full priority framework
             display_df, err = execute_priority_mode(df)
+        elif state.get("aggregation_mode"):
+            # Aggregation mode: GROUP BY + ratio computation — no row-level filter
+            display_df, err = execute_aggregation(df, state.get("aggregation_spec", {}))
         else:
             display_df, err = execute_filters(df, state["parsed_filters"])
 
         if err:
             return {**state, "result_df": pd.DataFrame(), "error": err}
 
-        kpis     = compute_result_kpis(df, display_df)
-        rankings = compute_contextual_rankings(df, display_df)
+        if state.get("aggregation_mode"):
+            # KPIs and rankings are not meaningful for aggregation results
+            kpis     = {"Count": len(display_df)}
+            rankings = {}
+        else:
+            kpis     = compute_result_kpis(df, display_df)
+            rankings = compute_contextual_rankings(df, display_df)
         return {**state, "result_df": display_df, "result_kpis": kpis, "result_rankings": rankings, "error": ""}
     except Exception as e:
         return {**state, "result_df": pd.DataFrame(), "error": f"Data execution failed: {e}"}
@@ -150,20 +167,23 @@ _compiled = _graph.compile()
 
 def run_query(query: str, df: pd.DataFrame) -> QueryState:
     initial: QueryState = {
-        "query":          query,
-        "result_df_full": df,
-        "enriched_query": "",
-        "query_category": "",
-        "query_title":    "",
-        "focus_kpis":     [],
-        "insight_focus":  "",
-        "risk_flag":      "medium",
-        "priority_mode":  False,
-        "parsed_filters": {},
-        "result_df":      pd.DataFrame(),
-        "result_kpis":    {},
-        "result_rankings":{},
-        "insights":       "",
-        "error":          "",
+        "query":            query,
+        "result_df_full":   df,
+        "enriched_query":   "",
+        "query_category":   "",
+        "query_title":      "",
+        "focus_kpis":       [],
+        "insight_focus":    "",
+        "risk_flag":        "medium",
+        "priority_mode":    False,
+        "aggregation_mode": False,
+        "aggregation_spec": {},
+        "result_type":      "loan_table",
+        "parsed_filters":   {},
+        "result_df":        pd.DataFrame(),
+        "result_kpis":      {},
+        "result_rankings":  {},
+        "insights":         "",
+        "error":            "",
     }
     return _compiled.invoke(initial)

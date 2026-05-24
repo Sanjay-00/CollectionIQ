@@ -6,6 +6,14 @@ import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
+
+def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.date
+    return df
+
 # Fixed columns shown in every alert drilldown table
 ALERT_DISPLAY_COLS = [
     "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME",
@@ -45,7 +53,7 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
+        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
         "icon": "🚨",
         "action": "Immediate field visit required. Check if disbursement reached customer.",
     }
@@ -57,7 +65,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
     inst = _to_num(df, "Month Due-Inst")
     exp  = _to_num(df, "Month Due-Exp")
     arrears = _to_num(df, "Arrears / EMI")
-    mask = (inst <= 0) & (exp > 0) & (arrears > 0)
+    mask = (inst == 0) & (exp > 0) & (arrears > 0)
     subset = df[mask]
     return {
         "title": "Insurance-Driven Delinquency",
@@ -66,7 +74,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
+        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
         "icon": "⚠️",
         "action": "Settle insurance by cash or convert to child loan (EMI). Do not mark as willful default.",
     }
@@ -84,7 +92,7 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
+        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
         "icon": "💡",
         "action": "One call / one visit can clear these. Assign to executives for same-day closure.",
     }
@@ -104,7 +112,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = 12) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
+        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
         "icon": "📉",
         "action": "Review sourcing quality. Engage field executive and check NACH status immediately.",
     }
@@ -123,7 +131,7 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
         "closing_pc": _to_num(subset, "ClosingPC").sum(),
-        "df": subset[_safe_cols(df, ALERT_DISPLAY_COLS)],
+        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
         "icon": "🏦",
         "action": "Escalate immediately to Regional Manager. Partner bank SLA may be breached.",
     }
