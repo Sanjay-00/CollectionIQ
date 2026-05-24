@@ -177,7 +177,7 @@ flowchart LR
 | Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
-The domain knowledge layer (NBFC terminology, loan status values, priority framework) is embedded in the agent system prompts. This means the AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning — the business context is injected at query time, making it straightforward to extend with new domain rules.
+The domain knowledge layer (NBFC terminology, loan status values, priority framework) is embedded in the agent system prompts. This means the AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning, the business context is injected at query time, making it straightforward to extend with new domain rules.
 
 Both pipelines are stateless between runs. Each query or report generation starts fresh, which means there is no stale context, no memory leak, and no shared state between users.
 
