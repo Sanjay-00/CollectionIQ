@@ -1,6 +1,6 @@
 """
 Bucket Migration / Roll-Rate Analysis
-Pure pandas — no LLM dependency.
+Pure pandas - no LLM dependency.
 Requires both current and previous month DataFrames matched on Loan No.
 """
 import pandas as pd
@@ -73,37 +73,35 @@ def compute_roll_rate_matrix(
 
 
 def compute_roll_rate_kpis(matrix: pd.DataFrame) -> dict:
-    """Derive the 3 headline migration KPIs from the matrix."""
-    delinquent_buckets  = ["1-30 DPD", "SMA-1", "SMA-2", "NPA"]
-    non_npa_del_buckets = ["1-30 DPD", "SMA-1", "SMA-2"]
-    available_rows = [b for b in matrix.index.tolist() if b in matrix.index]
+    """Derive the 3 headline migration KPIs from the matrix.
 
-    # Roll-forward rate: accounts that moved to a worse bucket
-    total_non_std = 0
+    Roll forward: any account that moved to a strictly worse bucket (including STD → 1-30 DPD).
+    Cure rate:    any account that moved to a strictly better bucket (including NPA → SMA-2).
+    Both use all matched accounts as the denominator.
+    NPA formation rate: non-NPA accounts that became NPA this month.
+    """
+    available_rows = [b for b in VALID_BUCKETS if b in matrix.index]
+    total_matched = matrix.values.sum()
+
     rolled_forward = 0
+    cured = 0
     for row in available_rows:
-        if row == "STD":
-            continue
-        row_total = matrix.loc[row].sum()
-        total_non_std += row_total
         prev_score = BUCKET_SCORE.get(row, -1)
         for col in matrix.columns:
             curr_score = BUCKET_SCORE.get(col, -1)
+            count = matrix.loc[row, col]
             if curr_score > prev_score:
-                rolled_forward += matrix.loc[row, col]
+                rolled_forward += count
+            elif curr_score < prev_score:
+                cured += count
 
-    roll_forward_rate = round(rolled_forward / total_non_std * 100, 2) if total_non_std > 0 else 0.0
+    roll_forward_rate = round(rolled_forward / total_matched * 100, 2) if total_matched > 0 else 0.0
+    cure_rate         = round(cured          / total_matched * 100, 2) if total_matched > 0 else 0.0
 
-    # Cure rate: delinquent accounts that returned to STD
-    del_rows = [b for b in delinquent_buckets if b in matrix.index]
-    total_delinquent = matrix.loc[del_rows].values.sum() if del_rows else 0
-    cured = matrix.loc[del_rows, "STD"].sum() if del_rows and "STD" in matrix.columns else 0
-    cure_rate = round(cured / total_delinquent * 100, 2) if total_delinquent > 0 else 0.0
-
-    # NPA formation rate: non-NPA delinquent accounts that became NPA
-    non_npa_rows = [b for b in non_npa_del_buckets if b in matrix.index]
+    # NPA formation rate: non-NPA accounts (any bucket) that became NPA
+    non_npa_rows = [b for b in available_rows if b != "NPA"]
     total_pre_npa = matrix.loc[non_npa_rows].values.sum() if non_npa_rows else 0
-    formed_npa = matrix.loc[non_npa_rows, "NPA"].sum() if non_npa_rows and "NPA" in matrix.columns else 0
+    formed_npa    = matrix.loc[non_npa_rows, "NPA"].sum() if non_npa_rows and "NPA" in matrix.columns else 0
     npa_formation_rate = round(formed_npa / total_pre_npa * 100, 2) if total_pre_npa > 0 else 0.0
 
     return {
