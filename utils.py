@@ -66,7 +66,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
         df = pd.read_excel(file, engine="openpyxl")
     except Exception as e:
-        return None, [f"Could not read file: {e}"]
+        return None, [f"Could not read file: {e}"]  
 
     # Rename known column variations to standard names
     df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
@@ -85,7 +85,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     # Due Dt is a numeric EMI due day (5, 10, 15, 20) — keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
 
-    # Additive cash flows — zero is the correct default when missing
+    # Additive cash flows - zero is the correct default when missing
     for col in ["Month Receipt Amount", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -151,7 +151,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             n_accounts,
         )
         hard_pct = _safe_pct(
-            df[df["curr_score"] >= 2]["Loan No"].nunique(),
+            df[df["Arrears / EMI"] >= 6]["Loan No"].nunique(),
             n_accounts,
         )
         lcc_avg = df["LCC%"].mean()
