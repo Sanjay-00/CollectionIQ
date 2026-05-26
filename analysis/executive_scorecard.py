@@ -1,7 +1,7 @@
 """
 Field Executive Performance Scorecard
 Groups by MNT NAME and computes per-executive collection metrics.
-Performance tiers are quartile-based (relative to the dataset) — not hardcoded thresholds.
+Performance tiers are quartile-based (relative to the dataset) - not hardcoded thresholds.
 """
 import pandas as pd
 
@@ -31,7 +31,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
         if n < min_accounts:
             continue
 
-        # Strike rate — only count rows where Strike is Y or N
+        # Strike rate - only count rows where Strike is Y or N
         strike_valid = grp[grp["Strike"].isin(["Y", "N"])] if "Strike" in grp.columns else pd.DataFrame()
         strike_rate = round(
             (strike_valid["Strike"] == "Y").sum() / len(strike_valid) * 100, 1
