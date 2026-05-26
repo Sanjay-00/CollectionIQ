@@ -125,7 +125,7 @@ You deeply understand NBFC terminology:
 - SMA-1 = Special Mention Account 1 (Arrears/EMI between 1-2, stressed accounts)
 - SMA-2 = Special Mention Account 2 (Arrears/EMI between 2-3, severely stressed)
 - STD = Standard / current accounts (Arrears/EMI = 0, no dues)
-- Hard bucket = SMA-1 + SMA-2 + NPA combined (risky accounts)
+- Hard bucket = where "Arrears / EMI" >6 (very very risky accounts)
 - Strike = field collection attempt this month (Y/YES = attempted, N/NO = not attempted)
 - POS = Principal Outstanding (total remaining loan exposure)
 - ClosingPC = Amount customer needs to pay RIGHT NOW to have zero arrears — key recovery KPI
