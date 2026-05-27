@@ -61,7 +61,7 @@ NUMERIC COLUMNS:
 - LCC%: Collection efficiency percentage
 - Loan Amount: Original loan amount
 - Month Receipt Amount: Amount collected this month
-- NET Collection Demand Inst+Exp: Monthly demand
+- Net Collection Demand Inst+Exp+BC: Total monthly demand (installment + expense + bounce charges). Use this as the demand denominator for Collection % = Month Receipt Amount / Net Collection Demand Inst+Exp+BC * 100
 - DelinquencyDays: Days past due (alternative to Arrears/EMI)
 
 STRING COLUMNS:
@@ -165,7 +165,7 @@ def parse_query(query: str) -> dict:
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
-    parsed = json.loads(raw)
+    parsed = json.loads(raw) #string to python dict
 
     # Ensure required display columns are always present
     required = ["Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit"]
