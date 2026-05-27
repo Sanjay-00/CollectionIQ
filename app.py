@@ -791,9 +791,16 @@ KPI_TOP = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA 
 KPI_BOT = ["Count", "POS", "CMD %"]
 
 
+_INVERSE_MOM_LABELS = {"NPA %", "Hard Bucket %"}
+
+
 def _kpi_card_styled(label, value, mom):
     arrow = "▲" if mom >= 0 else "▼"
-    cls   = "kpi-mom-up" if mom >= 0 else "kpi-mom-down"
+    # For bad metrics (NPA, Hard Bucket): up = red, down = green — inverted from normal
+    if label in _INVERSE_MOM_LABELS:
+        cls = "kpi-mom-down" if mom >= 0 else "kpi-mom-up"
+    else:
+        cls = "kpi-mom-up" if mom >= 0 else "kpi-mom-down"
     return (
         f'<div class="kpi-card">'
         f'  <div class="kpi-label">{label}</div>'
@@ -937,7 +944,7 @@ for i in range(0, len(alerts), 2):
         border = f"border-left:4px solid {title_color};"
         count_color = "#16a34a" if is_clear else title_color
         pos_fmt = fmt_value(alert["pos"], "money")
-        pc_fmt  = fmt_value(alert["closing_pc"], "money")
+        pc_fmt  = fmt_value(alert["closing_arrears"], "money")
 
         with col:
             st.markdown(f"""
@@ -958,7 +965,7 @@ for i in range(0, len(alerts), 2):
                   <div style="font-size:22px;font-weight:800;color:#111;">{pos_fmt if not is_clear else "—"}</div>
                 </div>
                 <div>
-                  <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">ClosingPC</div>
+                  <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Closing Arrears</div>
                   <div style="font-size:22px;font-weight:800;color:{title_color};">{pc_fmt if not is_clear else "—"}</div>
                 </div>
               </div>
