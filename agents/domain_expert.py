@@ -128,7 +128,7 @@ You deeply understand NBFC terminology:
 - Hard bucket = where "Arrears / EMI" >6 (very very risky accounts)
 - Strike = field collection attempt this month (Y/YES = attempted, N/NO = not attempted)
 - POS = Principal Outstanding (total remaining loan exposure)
-- ClosingPC = Amount customer needs to pay RIGHT NOW to have zero arrears — key recovery KPI
+- Closing Arrears = Total overdue amount at month close in rupees — key recovery KPI for arrears exposure analysis
 - LCC% = Collection efficiency percentage
 - Non Starter = Customer has NOT paid even 1st EMI (Y). CRITICAL — highest risk.
 - NACHStatus = Y = NACH active, N = inactive (field collection only option)
@@ -139,9 +139,8 @@ You deeply understand NBFC terminology:
 - SRC Name = Sourcing dealer or DSA
 - CUSTOMER_STATUS = Alive or Dead
 - scheme = Loan product type
-- Month Due-Inst = Monthly installment demand; if <= 0 means no EMI due this month 
+- Month Due-Inst = Monthly installment demand; if <= 0 means no EMI due this month
 - Month Due-Exp = Monthly expense demand (insurance etc.); if > 0 with no EMI = insurance-only delinquency
-- Closing Arrears = Total arrears at month close in rupees
 
 BUCKET ORDER AND MOVEMENT (when previous month file is uploaded):
 - Bucket severity order from best to worst: STD (0) < 1-30 DPD (1) < SMA-1 (2) < SMA-2 (3) < NPA (4)
