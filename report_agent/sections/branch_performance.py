@@ -9,7 +9,7 @@ def compute_branch_performance(df_curr: pd.DataFrame, df_prev: pd.DataFrame = No
         if "Unit" not in df_curr.columns:
             return None
         grp = df_curr.groupby("Unit").agg(
-            demand=("NET Collection Demand Inst+Exp", "sum"),
+            demand=("Net Collection Demand Inst+Exp+BC", "sum"),
             collection=("Month Receipt Amount", "sum"),
             accounts=("Loan No", "nunique"),
         )
