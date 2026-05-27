@@ -83,7 +83,7 @@ QUERY_DISPLAY_COLS = [
     "Guar Name", "Cust Mob No", "Guar Mob No", "Vehicle Description",
     "prev_bucket", "curr_bucket",
     "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",
-    "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
+    "Net Collection Demand Inst+Exp+BC", "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
     "POS", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
     "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
@@ -144,7 +144,7 @@ def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
         return round(vals.mean(), 2) if len(vals) > 0 else 0
 
     pos        = _sum("POS")
-    demand     = _sum("NET Collection Demand Inst+Exp")
+    demand     = _sum("Net Collection Demand Inst+Exp+BC")
     collection = _sum("Month Receipt Amount")
     coll_pct   = round(collection / demand * 100, 2) if demand > 0 else 0
     avg_arrears = _mean("Arrears / EMI")
@@ -208,7 +208,8 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     # Select display columns (no Why column)
     display_cols = ["Priority", "Loan No", "Cust Name", "Cust Mob No",
                     "RegionName", "Unit", "MNT NAME", "Ag_Date",
-                    "curr_bucket", "Arrears / EMI", "POS", "ClosingPC", "Closing Arrears"]
+                    "curr_bucket", "Arrears / EMI", "POS",
+                    "Net Collection Demand Inst+Exp+BC", "Closing Arrears"]
     display_cols = [c for c in display_cols if c in result.columns]
     out = result[display_cols] if display_cols else result
     return _format_dates(out), ""
@@ -286,6 +287,13 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
             agg[alias] = 0.0
         else:
             agg[alias] = grouped[col].apply(lambda s: pd.to_numeric(s, errors="coerce").sum())
+
+    # Always include total demand so readers know the denominator for Collection %
+    _DEMAND_COL = "Net Collection Demand Inst+Exp+BC"
+    if _DEMAND_COL in df.columns and "Demand (L)" not in agg.columns:
+        agg["Demand (L)"] = grouped[_DEMAND_COL].apply(
+            lambda s: round(pd.to_numeric(s, errors="coerce").sum() / 100_000, 2)
+        )
 
     # Compute derived metric using pandas eval
     metric_expr  = spec.get("metric", "")
