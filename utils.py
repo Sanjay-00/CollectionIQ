@@ -8,8 +8,8 @@ YELLOW = "#FFC000"
 # Columns that MUST exist for calculations to work
 CRITICAL_COLS = [
     "Loan No", "RegionName", "Unit", "Loan Status", "Ag_Date",
-    "Arrears / EMI", "Month Receipt Amount", "NET Collection Demand Inst+Exp",
-    "POS", "LCC%", "Strike", "Closing Arrears", "ClosingPC",
+    "Arrears / EMI", "Month Receipt Amount", "Net Collection Demand Inst+Exp+BC",
+    "POS", "LCC%", "Strike", "Closing Arrears",
     "Month Due-Inst", "Month Due-Exp", "Total Cum Collection",
 ]
 
@@ -132,7 +132,7 @@ def _mom_pct(curr, prev):
 def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     def _calc(df):
         n_accounts = df["Loan No"].nunique()
-        demand = df["NET Collection Demand Inst+Exp"].sum(min_count=1)
+        demand = df["Net Collection Demand Inst+Exp+BC"].sum(min_count=1)
         demand = 0.0 if pd.isna(demand) else demand
         collection = df["Month Receipt Amount"].sum()
         pos = df["POS"].sum(min_count=1)
@@ -228,7 +228,7 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
         return go.Figure()
 
     grp = df.groupby("Unit").agg(
-        demand=("NET Collection Demand Inst+Exp", "sum"),
+        demand=("Net Collection Demand Inst+Exp+BC", "sum"),
         collection=("Month Receipt Amount", "sum"),
     )
     grp["coll_pct"] = grp.apply(
@@ -261,16 +261,16 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
-    """Arrears exposure by DPD bucket — SUM(ClosingPC) per bucket.
+    """Arrears exposure by DPD bucket — SUM(Closing Arrears) per bucket.
     Shows how much money is stuck at each risk level."""
-    if len(df) == 0 or "ClosingPC" not in df.columns:
+    if len(df) == 0 or "Closing Arrears" not in df.columns:
         return go.Figure()
 
     df = df.copy()
-    df["ClosingPC"] = pd.to_numeric(df["ClosingPC"], errors="coerce").fillna(0)
+    df["Closing Arrears"] = pd.to_numeric(df["Closing Arrears"], errors="coerce").fillna(0)
 
     exposure = (
-        df.groupby("curr_bucket")["ClosingPC"]
+        df.groupby("curr_bucket")["Closing Arrears"]
         .sum()
         .reindex(BUCKET_ORDER, fill_value=0)
     )
@@ -305,7 +305,7 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
         textfont=dict(size=12, color="#000000"),
     ))
     fig.update_layout(
-        title=dict(text="Arrears Exposure (ClosingPC) by DPD Bucket", font=dict(size=14, color="#000000")),
+        title=dict(text="Closing Arrears by DPD Bucket", font=dict(size=14, color="#000000")),
         plot_bgcolor="white",
         paper_bgcolor="white",
         xaxis=dict(showgrid=False, tickfont=dict(color="#000000")),
