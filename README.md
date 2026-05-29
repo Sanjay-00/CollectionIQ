@@ -2,7 +2,7 @@
 
 ### AI-Powered Portfolio Intelligence for NBFC Collection Leaders
 
-&nbsp;
+
 
 ## The Problem
 
@@ -21,9 +21,13 @@ Leaders were dependent on coordinators and analysts for information that should 
 
 ## What CollectionIQ Does
 
-CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable - without writing a single formula or waiting for a report.
+CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
 
 It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
+
+&nbsp;
+
+**[Live Demo → collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
 
 &nbsp;
 
@@ -41,11 +45,11 @@ It answers questions in plain English, surfaces risks automatically, and generat
 
 **Plain English Query Engine**
 
-Ask questions the way you think them. The system understands NBFC domain language - "show me MAT accounts with no collection in last 1 year", "rank executives by mature to running ratio", "how many advances from last 6 months are already in SMA-2" - and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer.
+Ask questions the way you think them. The system understands NBFC domain language like "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2" and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
 
 **Automated Priority Action List**
 
-A seven-tier business priority framework identifies accounts that need immediate attention - non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
+A seven-tier business priority framework identifies accounts that need immediate attention, non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
 
 **Field Executive Performance Scorecard**
 
@@ -53,13 +57,13 @@ Every field executive is ranked by collection efficiency, strike rate, and NPA p
 
 **Bucket Migration Analysis**
 
-When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets - how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
+When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets, how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
 
 Roll forward and roll backward queries are also supported through the plain English engine. Ask "show me accounts that worsened this month" or "which accounts cured from SMA-1" and get the filtered list instantly.
 
 **Smart Risk Alerts**
 
-Automatic alerts fire when delinquency exceeds thresholds, NACH inactive accounts spike, co-lending loans show arrears, or strike coverage drops. Each alert includes account count, outstanding exposure, and a recommended action.
+Automatic alerts fire for non-starters, insurance-driven delinquency, easy settlements, recent advances at risk, and co-lending loans showing arrears. Each alert includes account count, outstanding exposure, and a recommended action, with a direct Excel download of the flagged accounts.
 
 **Monthly Portfolio Intelligence Report**
 
@@ -92,7 +96,7 @@ With CollectionIQ, the same question is answered in under 30 seconds — directl
 
 ## Architecture
 
-CollectionIQ runs two independent AI pipelines orchestrated with LangGraph — one for answering queries in real time, one for generating the monthly portfolio report.
+CollectionIQ runs two independent AI pipelines orchestrated with LangGraph, one for answering queries in real time, one for generating the monthly portfolio report.
 
 &nbsp;
 
@@ -175,6 +179,7 @@ flowchart LR
 | Charts | Plotly | DPD distribution, bucket migration heatmap, branch charts |
 | AI SDK | google-genai | Gemini API with retry and exponential backoff |
 | Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
+| Observability | LangSmith | Query tracing and result quality feedback |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
 The domain knowledge layer (NBFC terminology, loan status values, priority framework) is embedded in the agent system prompts. This means the AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning, the business context is injected at query time, making it straightforward to extend with new domain rules.
@@ -182,8 +187,5 @@ The domain knowledge layer (NBFC terminology, loan status values, priority frame
 Both pipelines are stateless between runs. Each query or report generation starts fresh, which means there is no stale context, no memory leak, and no shared state between users.
 
 &nbsp;
-
-
-
 
 
