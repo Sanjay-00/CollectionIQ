@@ -1,4 +1,5 @@
 import os
+from io import BytesIO
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -17,6 +18,23 @@ from utils import (
 )
 from graph import run_query
 from smart_alerts import run_all_alerts
+
+
+def _excel_bytes(df: pd.DataFrame) -> bytes:
+    buf = BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue()
+
+
+def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
+    """Render a compact right-aligned Excel download button."""
+    _, col = st.columns([5, 1])
+    with col:
+        st.download_button(
+            "⬇ Excel", data=_excel_bytes(df), file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=key, use_container_width=True,
+        )
 
 
 def _send_feedback(run_id: str, score: float) -> None:
@@ -915,6 +933,8 @@ if "MNT NAME" in df_curr.columns:
 
         with st.expander(f"View Executive Performance Table ({len(scorecard_df)} executives)", expanded=False):
             st.markdown(build_scorecard_table_html(scorecard_df), unsafe_allow_html=True)
+            _dl_btn(scorecard_df.drop(columns=["Tier"], errors="ignore"),
+                    "executive_scorecard.xlsx", "dl_scorecard")
     else:
         st.info("Not enough data per executive to build scorecard (minimum 5 accounts required).")
 
@@ -986,6 +1006,9 @@ for i in range(0, len(alerts), 2):
                         hide_index=True,
                         height=min(300, 40 + alert["count"] * 35),
                     )
+                    _dl_btn(display_df.reset_index(drop=True),
+                            f"alert_{alert['title'].replace(' ', '_')}.xlsx",
+                            f"dl_alert_{alert['title']}")
 
 # ── Bucket Migration / Roll-Rate Analysis ─────────────────────────────────────
 if len(df_prev_raw) > 0:
@@ -1326,6 +1349,8 @@ if result:
                 display_grp = display_grp.loc[:, ~display_grp.columns.duplicated()]
                 st.dataframe(display_grp.reset_index(drop=True), use_container_width=True,
                              height=min(280, 45 + len(grp) * 36), hide_index=True)
+                _dl_btn(display_grp.reset_index(drop=True),
+                        f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
 
         elif result_type == "single_stat" and not is_aggregation:
             # ── Single stat — simple count / sum over filtered rows ─────────────
@@ -1377,6 +1402,7 @@ if result:
                 st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
                 st.dataframe(filtered_df, use_container_width=True,
                              height=min(400, 50 + len(filtered_df) * 36), hide_index=True)
+                _dl_btn(filtered_df, "ranking_result.xlsx", "dl_ranking")
 
         elif is_aggregation:
             # ── Aggregation result — ranked executive/branch/region table ──────
@@ -1434,6 +1460,7 @@ if result:
                   </table>
                 </div>
                 """, unsafe_allow_html=True)
+                _dl_btn(filtered_df, "aggregation_result.xlsx", "dl_aggregation")
             else:
                 st.warning("No data returned for this aggregation.")
 
@@ -1506,6 +1533,7 @@ if result:
             st.markdown("<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching Customer Records</div>", unsafe_allow_html=True)
             display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
             st.dataframe(display_filtered, use_container_width=True, height=320, hide_index=True)
+            _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")
 
         # AI observations (always shown)
         obs_lines = "".join(
