@@ -64,7 +64,9 @@ def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
 @__import__("streamlit").cache_data(show_spinner=False)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
-        df = pd.read_excel(file, engine="openpyxl")
+        fname = getattr(file, "name", "")
+        engine = "xlrd" if fname.lower().endswith(".xls") else "openpyxl"
+        df = pd.read_excel(file, engine=engine)
     except Exception as e:
         return None, [f"Could not read file: {e}"]  
 
