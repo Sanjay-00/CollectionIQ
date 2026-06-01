@@ -657,6 +657,11 @@ st.markdown(f"""
 # ── File upload ───────────────────────────────────────────────────────────────
 import datetime
 
+# Pre-populate date pickers for sample data — must run before widgets render
+if st.session_state.pop("_set_sample_dates", False):
+    st.session_state["curr_month_pick"] = datetime.date(2026, 3, 1)
+    st.session_state["prev_month_pick"] = datetime.date(2026, 2, 1)
+
 st.markdown('<div class="section-label">Data Source</div>', unsafe_allow_html=True)
 col_up1, col_up2 = st.columns(2)
 
@@ -681,15 +686,15 @@ with col_up2:
         key="prev_month_pick",
         help="Select any date in the previous month - only Month & Year are used",
         format="DD/MM/YYYY",
-        disabled=not prev_file,
+        disabled=(not prev_file and not st.session_state.get("_sample_loaded")),
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
 # Derive period labels from user-selected dates
 curr_month = curr_month_input.strftime("%Y-%m")
-prev_month = prev_month_input.strftime("%Y-%m") if prev_file else None
+prev_month = prev_month_input.strftime("%Y-%m") if (prev_file or st.session_state.get("_sample_loaded")) else None
 
-if not curr_file:
+if not curr_file and not st.session_state.get("_sample_loaded"):
     st.markdown(
         '<div style="margin-top:32px;text-align:center;margin-bottom:40px;">'
         '<div style="font-size:12px;font-weight:800;letter-spacing:4px;color:#FFC000;'
@@ -723,9 +728,51 @@ if not curr_file:
             )
 
     st.markdown(
-        '<div style="border-top:1px solid #e5e7eb;margin-top:36px;margin-bottom:8px;"></div>',
+        '<div style="border-top:1px solid #e5e7eb;margin-top:36px;margin-bottom:16px;"></div>',
         unsafe_allow_html=True,
     )
+
+    # ── Fill Sample Data ──────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="text-align:center;font-size:11px;font-weight:700;color:#9ca3af;'
+        'text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;">No file? Try the built-in sample</div>',
+        unsafe_allow_html=True,
+    )
+
+    @st.cache_data(show_spinner=False)
+    def _fetch_sample_from_github():
+        import urllib.request, io
+        BASE  = "https://raw.githubusercontent.com/Sanjay-00/CollectionIQ/main/sample_data/"
+        FILES = {
+            "curr": "Current_Month_Demo.xlsx",
+            "prev": "Previous_Month_Demo.xlsx",
+        }
+        out = {}
+        for key, fname in FILES.items():
+            with urllib.request.urlopen(BASE + fname, timeout=20) as resp:
+                buf = io.BytesIO(resp.read())
+            buf.name = fname
+            df, errs = load_and_validate(buf)
+            if errs:
+                raise ValueError(errs[0])
+            out[key] = df
+        return out["curr"], out["prev"]
+
+    _, col_s, _ = st.columns([2, 1, 2])
+    with col_s:
+        if st.button("Fill Sample Data", type="primary", use_container_width=True):
+            try:
+                with st.spinner("Fetching sample data from GitHub..."):
+                    _dc, _dp = _fetch_sample_from_github()
+                st.session_state["df_curr_raw"]       = _dc
+                st.session_state["df_prev_raw"]       = _dp
+                st.session_state["_sample_loaded"]    = True
+                st.session_state["_set_sample_dates"] = True
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Could not fetch sample data: {_e}")
+    st.caption("12,466 loans · real LCC extract · Mar 2026 (current) + Feb 2026 (previous)")
+
     st.session_state.pop("df_curr_raw", None)
     st.session_state.pop("df_prev_raw", None)
     st.stop()
@@ -735,9 +782,8 @@ with col_btn:
     generate = st.button("⚡  Generate Dashboard", type="primary", use_container_width=True)
 
 # ── Load data — persisted in session_state so reruns (e.g. Run Query) don't reset ──
-if generate:
-    # Clear all derived state so stale data never survives a re-upload
-    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key"]:
+if generate and curr_file:
+    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key", "_sample_loaded"]:
         st.session_state.pop(_k, None)
 
     with st.spinner("Loading data..."):
