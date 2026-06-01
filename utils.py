@@ -318,9 +318,9 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _kpi_card_html(label: str, value: str, mom: float, unit: str = "") -> str:
+def _kpi_card_html(label: str, value: str, mom: float, unit: str = "", inverse: bool = False) -> str:
     arrow = "&#9650;" if mom >= 0 else "&#9660;"
-    color = "#00A651" if mom >= 0 else "#CC0000"
+    color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
     mom_str = f"{abs(mom):.2f}%"
     return (
         f'<div style="border:2px solid {YELLOW};border-radius:8px;padding:16px 12px;'
@@ -341,68 +341,230 @@ def build_html_export(
     fig_branch: go.Figure,
     fig_trend: go.Figure,
     filters: dict,
+    *,
+    curr_month: str = "",
+    alerts: list = None,
+    scorecard_df=None,
+    roll_rate_meta: dict = None,
 ) -> str:
+    import datetime as _dt
+
     def _fig_html(fig):
         return pio.to_html(fig, full_html=False, include_plotlyjs=False)
 
     KPI_TOP = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %", "Hard Bucket %"]
-    KPI_BOT = ["Count", "POS", "CMD %"]
+    KPI_BOT = ["Count", "POS", "LCC%", "CMD %"]
     KINDS = {
         "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
         "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct",
         "Count": "count", "POS": "money", "LCC%": "pct", "CMD %": "pct",
     }
+    INVERSE = {"NPA %", "Hard Bucket %"}
+
+    def _card(label, value, mom, unit="", inverse=False):
+        arrow = "&#9650;" if mom >= 0 else "&#9660;"
+        color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
+        return (
+            f'<div style="background:#fff;border:1px solid #e5e7eb;border-bottom:3px solid {YELLOW};'
+            f'border-radius:10px;padding:16px 14px;min-width:120px;flex:1;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
+            f'<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">{label}</div>'
+            f'<div style="font-size:26px;font-weight:800;color:#111827;line-height:1;letter-spacing:-0.5px;">{value}{unit}</div>'
+            f'<div style="font-size:11px;margin-top:8px;color:#9ca3af;">MoM <span style="color:{color};font-weight:700;">{arrow} {abs(mom):.2f}%</span></div>'
+            f'</div>'
+        )
 
     def _cards(keys, style=""):
         cards = "".join(
-            _kpi_card_html(k, fmt_value(metrics[k][0], KINDS[k]), metrics[k][1])
+            _card(k, fmt_value(metrics[k][0], KINDS[k]), metrics[k][1],
+                  unit="%" if KINDS[k] == "pct" else "",
+                  inverse=k in INVERSE)
             for k in keys
         )
-        return f'<div style="display:flex;gap:12px;flex-wrap:wrap;{style}">{cards}</div>'
+        return f'<div style="display:flex;gap:10px;flex-wrap:wrap;{style}">{cards}</div>'
 
-    filter_info = " | ".join(f"{k}: {v}" for k, v in filters.items() if v != "All") or "All data"
+    def _section(title):
+        return (
+            f'<div style="display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;'
+            f'color:#111827;margin:28px 0 14px 0;">'
+            f'<span style="width:4px;height:18px;background:{YELLOW};border-radius:2px;display:inline-block;flex-shrink:0;"></span>'
+            f'{title}</div>'
+        )
 
-    lcc_card = _kpi_card_html("LCC%", fmt_value(metrics["LCC%"][0], "pct"), metrics["LCC%"][1])
+    filter_info = " | ".join(f"<b>{k}:</b> {v}" for k, v in filters.items() if v != "All") or "All data"
+    generated_at = _dt.datetime.now().strftime("%d %b %Y, %I:%M %p")
+    month_label = curr_month or filters.get("Year Month", "")
+
+    # ── Smart Alerts section ──────────────────────────────────────────────────
+    alerts_html = ""
+    if alerts:
+        SEVERITY_COLOR = {"critical": "#dc2626", "high": "#f97316", "medium": "#d97706"}
+        cards_html = ""
+        for alert in alerts:
+            is_clear = alert["count"] == 0
+            color = "#16a34a" if is_clear else SEVERITY_COLOR.get(alert["severity"], "#d97706")
+            pos_fmt = fmt_value(alert["pos"], "money") if not is_clear else "—"
+            arr_fmt = fmt_value(alert["closing_arrears"], "money") if not is_clear else "—"
+            cards_html += (
+                f'<div style="background:#fff;border:1px solid #e5e7eb;border-left:4px solid {color};'
+                f'border-radius:10px;padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
+                f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">'
+                f'<span style="font-size:18px;">{"✅" if is_clear else alert["icon"]}</span>'
+                f'<span style="font-size:13px;font-weight:700;color:{color};">{alert["title"]}</span></div>'
+                f'<div style="font-size:11px;color:#6b7280;margin-bottom:8px;">{alert["subtitle"]}</div>'
+                f'<div style="display:flex;gap:14px;">'
+                f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">Accounts</div>'
+                f'<div style="font-size:22px;font-weight:800;color:{color};">{alert["count"]}</div></div>'
+                f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">POS</div>'
+                f'<div style="font-size:16px;font-weight:700;color:#111;">{pos_fmt}</div></div>'
+                f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">Arrears</div>'
+                f'<div style="font-size:16px;font-weight:700;color:{color};">{arr_fmt}</div></div>'
+                f'</div>'
+                f'<div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:8px;border-top:1px solid #f3f4f6;padding-top:6px;">'
+                f'{"✓ All clear" if is_clear else alert["action"]}</div>'
+                f'</div>'
+            )
+        alerts_html = (
+            _section("Smart Alerts") +
+            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">{cards_html}</div>'
+        )
+
+    # ── Executive Scorecard section ───────────────────────────────────────────
+    scorecard_html = ""
+    if scorecard_df is not None and len(scorecard_df) > 0:
+        top5 = scorecard_df[scorecard_df["Tier"] == "top"].head(5)
+        bot5 = scorecard_df[scorecard_df["Tier"] == "bottom"].sort_values("Collection %").head(5)
+
+        def _exec_rows(sub):
+            rows = ""
+            for _, row in sub.iterrows():
+                coll = row["Collection %"]
+                coll_color = "#16a34a" if coll > 100 else "#d97706" if coll >= 90 else "#dc2626"
+                rows += (
+                    f'<tr style="border-bottom:1px solid #f3f4f6;">'
+                    f'<td style="padding:7px 10px;font-size:12px;font-weight:600;color:#111;">{row["Executive (Branch)"]}</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Accounts"]}</td>'
+                    f'<td style="padding:7px 10px;font-size:13px;font-weight:800;color:{coll_color};text-align:center;">{coll}%</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Strike Rate %"]}%</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["NPA %"]}%</td>'
+                    f'</tr>'
+                )
+            return rows
+
+        def _exec_table(title, sub, color):
+            return (
+                f'<div style="flex:1;">'
+                f'<div style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase;'
+                f'letter-spacing:1px;margin-bottom:8px;padding:5px 10px;background:{color}18;border-radius:6px;">{title}</div>'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f9fafb;">'
+                f'<th style="padding:7px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Executive</th>'
+                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Accounts</th>'
+                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Coll %</th>'
+                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Strike %</th>'
+                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">NPA %</th>'
+                f'</tr></thead>'
+                f'<tbody>{_exec_rows(sub)}</tbody>'
+                f'</table></div>'
+            )
+
+        scorecard_html = (
+            _section(f"Executive Performance ({len(scorecard_df)} Executives)") +
+            f'<div style="display:flex;gap:16px;background:#fff;border:1px solid #e5e7eb;'
+            f'border-radius:10px;padding:16px;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
+            + _exec_table("Top Performers", top5, "#16a34a")
+            + f'<div style="width:1px;background:#e5e7eb;flex-shrink:0;"></div>'
+            + _exec_table("Need Attention", bot5, "#dc2626")
+            + f'</div>'
+        )
+
+    # ── Roll-Rate section ─────────────────────────────────────────────────────
+    roll_html = ""
+    if roll_rate_meta and roll_rate_meta.get("matched_count", 0) > 0:
+        rr = roll_rate_meta
+        rr_items = [
+            ("Roll-Forward Rate", f'{rr["roll_forward_rate"]:.1f}%',  "#dc2626", "Accounts that worsened"),
+            ("Roll-Backward Rate", f'{rr["roll_backward_rate"]:.1f}%',  "#16a34a", "Returned to STD"),
+            ("NPA Formation",     f'{rr["npa_formation_rate"]:.1f}%', "#991b1b", "New NPA this month"),
+            ("Matched Accounts",  f'{rr["matched_count"]:,}',         "#111827", "In both months"),
+        ]
+        rr_cards = "".join(
+            f'<div style="background:#fff;border:1px solid #e5e7eb;border-top:3px solid {c};'
+            f'border-radius:10px;padding:14px 16px;flex:1;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
+            f'<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;">{lbl}</div>'
+            f'<div style="font-size:24px;font-weight:800;color:{c};">{val}</div>'
+            f'<div style="font-size:11px;color:#9ca3af;margin-top:4px;">{tip}</div>'
+            f'</div>'
+            for lbl, val, c, tip in rr_items
+        )
+        roll_html = (
+            _section("Bucket Migration / Roll-Rate") +
+            f'<div style="display:flex;gap:10px;">{rr_cards}</div>'
+        )
 
     html = f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Shriram Finance – Regional Collection Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shriram Finance – Regional Collection Dashboard {month_label}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
-  body {{font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:0;}}
-  .header {{background:#fff;border-bottom:4px solid {YELLOW};padding:16px 32px;
-            display:flex;align-items:center;gap:24px;}}
-  .header h1 {{font-size:22px;color:#000;margin:0;}}
-  .logo {{font-size:26px;font-weight:900;color:{YELLOW};letter-spacing:-1px;}}
-  .content {{padding:24px 32px;}}
-  .filter-bar {{font-size:12px;color:#666;margin-bottom:16px;}}
-  .mid-row {{display:grid;grid-template-columns:1fr 1fr auto;gap:16px;margin-top:16px;}}
-  .bot-row {{display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-top:16px;}}
-  .chart-box {{background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:8px;}}
-  .lcc-box {{display:flex;align-items:center;justify-content:center;min-width:160px;}}
+  *{{box-sizing:border-box;margin:0;padding:0;}}
+  body{{font-family:'Inter',Arial,sans-serif;background:#f2f2f2;color:#111827;}}
+  .banner{{height:4px;background:linear-gradient(90deg,{YELLOW},#FFD740,{YELLOW});background-size:200%;animation:shimmer 3s linear infinite;}}
+  @keyframes shimmer{{0%{{background-position:-200% 0}}100%{{background-position:200% 0}}}}
+  .header{{background:#fff;border-bottom:3px solid {YELLOW};padding:14px 32px;display:flex;align-items:center;gap:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);}}
+  .logo-box{{background:#111;border-radius:8px;padding:8px 14px;}}
+  .logo-main{{font-size:16px;font-weight:900;color:{YELLOW};letter-spacing:2px;line-height:1;}}
+  .logo-sub{{font-size:9px;color:#888;letter-spacing:1px;margin-top:2px;}}
+  .header-title{{font-size:17px;font-weight:700;color:#111;}}
+  .header-sub{{font-size:11px;color:#999;margin-top:2px;}}
+  .month-badge{{margin-left:auto;background:{YELLOW};color:#000;font-size:11px;font-weight:800;padding:5px 14px;border-radius:20px;letter-spacing:1px;white-space:nowrap;}}
+  .content{{padding:20px 32px 40px;max-width:1400px;margin:0 auto;}}
+  .meta-bar{{display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 16px;margin-bottom:20px;font-size:12px;color:#6b7280;}}
+  .chart-card{{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:6px;box-shadow:0 2px 6px rgba(0,0,0,0.06);}}
+  .footer{{text-align:center;padding:20px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb;margin-top:8px;}}
 </style>
 </head>
 <body>
+<div class="banner"></div>
 <div class="header">
-  <div class="logo">SHRIRAM<br><span style="font-size:14px;font-weight:400;">Finance</span></div>
-  <h1>Shriram Finance &ndash; Regional Collection Dashboard</h1>
+  <div class="logo-box">
+    <div class="logo-main">SHRIRAM</div>
+    <div class="logo-sub">FINANCE</div>
+  </div>
+  <div>
+    <div class="header-title">Regional Collection Dashboard</div>
+    <div class="header-sub">Credit &amp; Collection Risk Monitoring &nbsp;&middot;&nbsp; CollectionIQ</div>
+  </div>
+  {f'<div class="month-badge">{month_label}</div>' if month_label else ''}
 </div>
+
 <div class="content">
-  <div class="filter-bar">Filters: {filter_info}</div>
-  {_cards(KPI_TOP, "margin-bottom:16px;")}
-  <div class="mid-row">
-    <div class="chart-box">{_fig_html(fig_status)}</div>
-    <div class="chart-box">{_fig_html(fig_branch)}</div>
-    <div class="lcc-box">{lcc_card}</div>
+  <div class="meta-bar">
+    <span>&#128269; <b>Filters:</b> &nbsp;{filter_info}</span>
+    <span>Generated: {generated_at}</span>
   </div>
-  <div class="bot-row">
-    <div class="chart-box">{_fig_html(fig_trend)}</div>
-    <div style="display:flex;flex-direction:column;justify-content:center;">
-      {_cards(KPI_BOT)}
-    </div>
+
+  {_section("Key Performance Indicators")}
+  {_cards(KPI_TOP, "margin-bottom:10px;")}
+  {_cards(KPI_BOT)}
+
+  {_section("Portfolio Analysis")}
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+    <div class="chart-card">{_fig_html(fig_status)}</div>
+    <div class="chart-card">{_fig_html(fig_branch)}</div>
+    <div class="chart-card">{_fig_html(fig_trend)}</div>
   </div>
+
+  {alerts_html}
+  {scorecard_html}
+  {roll_html}
+</div>
+
+<div class="footer">
+  Generated by <b>CollectionIQ</b> &nbsp;&middot;&nbsp; Shriram Finance Regional Collection Dashboard &nbsp;&middot;&nbsp; {generated_at}
 </div>
 </body>
 </html>"""
