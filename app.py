@@ -690,13 +690,42 @@ curr_month = curr_month_input.strftime("%Y-%m")
 prev_month = prev_month_input.strftime("%Y-%m") if prev_file else None
 
 if not curr_file:
-    st.markdown("""
-    <div style="text-align:center;padding:40px 0;color:#999;">
-        <div style="font-size:40px;margin-bottom:12px;">📊</div>
-        <div style="font-size:16px;font-weight:600;color:#555;">Upload your LCC Excel file to begin</div>
-        <div style="font-size:13px;margin-top:6px;">Supports .xlsx and .xls formats</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div style="margin-top:32px;text-align:center;margin-bottom:40px;">'
+        '<div style="font-size:12px;font-weight:800;letter-spacing:4px;color:#FFC000;'
+        'text-transform:uppercase;margin-bottom:12px;">📚 COLLECTIONIQ INTELLIGENCE PLATFORM</div>'
+        '<div style="font-size:26px;font-weight:800;color:#111;margin-bottom:10px;'
+        'letter-spacing:-0.5px;line-height:1.2;">Upload your LCC extract to activate the dashboard</div>'
+        '<div style="font-size:13px;color:#999;font-weight:400;letter-spacing:0.2px;">'
+        'Supports .xlsx and .xls &nbsp;&#183;&nbsp; Up to 200 MB &nbsp;&#183;&nbsp; Data never leaves your machine'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    _FEATURES = [
+        ("#FFBF00", "KPI DASHBOARD",       "Collection %, POS, demand, strike rate and NPA with month-on-month movement."),
+        ("#111111", "EXECUTIVE SCORECARD", "Every field executive ranked by collection efficiency, strike rate and roll rates."),
+        ("#FFBF00", "SMART ALERTS",        "Flagged non-starters, co-lending risk, easy settlements and insurance-driven arrears."),
+        ("#111111", "AI QUERY ENGINE",     "Ask any question in plain English. Query priority loans or filter SMA-2 accounts by region."),
+        ("#FFBF00", "MONTHLY REPORT",      "Board-ready HTML report with AI narrative, branch league table and a five-point action plan."),
+    ]
+    for col, (color, title, desc) in zip(st.columns(5), _FEATURES):
+        with col:
+            st.markdown(
+                f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;'
+                f'padding:20px 16px;border-top:3px solid {color};">'
+                f'<div style="font-size:10px;font-weight:700;letter-spacing:1.5px;color:{color};'
+                f'text-transform:uppercase;margin-bottom:8px;">{title}</div>'
+                f'<div style="font-size:12px;color:#555;line-height:1.6;">{desc}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown(
+        '<div style="border-top:1px solid #e5e7eb;margin-top:36px;margin-bottom:8px;"></div>',
+        unsafe_allow_html=True,
+    )
     st.session_state.pop("df_curr_raw", None)
     st.session_state.pop("df_prev_raw", None)
     st.stop()
@@ -738,6 +767,13 @@ if "df_curr_raw" not in st.session_state:
 
 df_curr_raw = st.session_state["df_curr_raw"]
 df_prev_raw = st.session_state["df_prev_raw"]
+
+# If the user uploaded a prev file without re-clicking Generate, auto-load it now.
+# load_and_validate is @st.cache_data so this is a cache hit — no performance cost.
+if prev_file and len(df_prev_raw) == 0:
+    _prev_tmp, _prev_err = load_and_validate(prev_file)
+    if not _prev_err:
+        df_prev_raw = _prev_tmp
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -781,8 +817,10 @@ df_curr = apply_filters(df_curr_raw.copy(), sel_region, sel_branch, sel_status)
 df_prev = apply_filters(df_prev_raw.copy(), sel_region, sel_branch, sel_status)
 
 # ── Attach prev_bucket to df_curr so agents can query roll forward / backward ──
-if len(df_prev) > 0 and "Loan No" in df_curr.columns and "curr_bucket" in df_prev.columns:
-    _prev_slim = df_prev[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"})
+# Use df_prev_raw (unfiltered) for the lookup — sidebar filters must not prevent
+# bucket migration from being tracked for loans in the current filtered view.
+if len(df_prev_raw) > 0 and "Loan No" in df_curr.columns and "curr_bucket" in df_prev_raw.columns:
+    _prev_slim = df_prev_raw[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"})
     df_curr = df_curr.merge(_prev_slim, on="Loan No", how="left")
 
 # Clear AI result and report when filters change so stale results are never shown
@@ -1023,7 +1061,7 @@ if len(df_prev_raw) > 0:
     rr_col1, rr_col2, rr_col3, rr_col4 = st.columns(4)
     rr_kpis = [
         ("Roll-Forward Rate", rr_meta["roll_forward_rate"], "%", "#dc2626", "Accounts that worsened bucket"),
-        ("Cure Rate",         rr_meta["cure_rate"],         "%", "#16a34a", "Delinquent accounts returned to STD"),
+        ("Roll-Backward Rate", rr_meta["roll_backward_rate"], "%", "#16a34a", "Delinquent accounts returned to STD"),
         ("NPA Formation",     rr_meta["npa_formation_rate"],"%", "#991b1b", "Non-NPA accounts that became NPA"),
         ("Matched Accounts",  rr_meta["matched_count"],     "",  "#111827", "Accounts in both months"),
     ]
@@ -1050,7 +1088,13 @@ st.markdown("---")
 col_dl, _ = st.columns([1, 3])
 with col_dl:
     filters_applied = {"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status, "Year Month": str(curr_month)}
-    html_content = build_html_export(df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing, filters_applied)
+    html_content = build_html_export(
+        df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing, filters_applied,
+        curr_month=curr_month,
+        alerts=alerts,
+        scorecard_df=scorecard_df if "MNT NAME" in df_curr.columns else None,
+        roll_rate_meta=rr_meta if len(df_prev_raw) > 0 else None,
+    )
     st.download_button(
         label="⬇  Download as HTML",
         data=html_content.encode("utf-8"),
