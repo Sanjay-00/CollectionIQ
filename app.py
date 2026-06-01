@@ -771,7 +771,6 @@ if not curr_file and not st.session_state.get("_sample_loaded"):
                 st.rerun()
             except Exception as _e:
                 st.error(f"Could not fetch sample data: {_e}")
-    st.caption("12,466 loans · real LCC extract · Mar 2026 (current) + Feb 2026 (previous)")
 
     st.session_state.pop("df_curr_raw", None)
     st.session_state.pop("df_prev_raw", None)
