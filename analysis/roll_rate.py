@@ -37,7 +37,7 @@ def compute_roll_rate_matrix(
     if len(df_prev) == 0 or key_col not in df_curr.columns or key_col not in df_prev.columns:
         empty = pd.DataFrame(0, index=VALID_BUCKETS, columns=VALID_BUCKETS)
         return empty, {"matched_count": 0, "new_entries": 0, "exits": 0,
-                       "roll_forward_rate": 0.0, "cure_rate": 0.0, "npa_formation_rate": 0.0}
+                       "roll_forward_rate": 0.0, "roll_backward_rate": 0.0, "npa_formation_rate": 0.0}
 
     prev_keys = set(df_prev[key_col].dropna())
     curr_keys = set(df_curr[key_col].dropna())
@@ -55,7 +55,7 @@ def compute_roll_rate_matrix(
     if len(merged) == 0:
         empty = pd.DataFrame(0, index=VALID_BUCKETS, columns=VALID_BUCKETS)
         return empty, {"matched_count": 0, "new_entries": new_entries, "exits": exits,
-                       "roll_forward_rate": 0.0, "cure_rate": 0.0, "npa_formation_rate": 0.0}
+                       "roll_forward_rate": 0.0, "roll_backward_rate": 0.0, "npa_formation_rate": 0.0}
 
     matrix = pd.crosstab(
         merged["prev_bucket"],
@@ -96,7 +96,7 @@ def compute_roll_rate_kpis(matrix: pd.DataFrame) -> dict:
                 cured += count
 
     roll_forward_rate = round(rolled_forward / total_matched * 100, 2) if total_matched > 0 else 0.0
-    cure_rate         = round(cured          / total_matched * 100, 2) if total_matched > 0 else 0.0
+    roll_backward_rate = round(cured          / total_matched * 100, 2) if total_matched > 0 else 0.0
 
     # NPA formation rate: non-NPA accounts (any bucket) that became NPA
     non_npa_rows = [b for b in available_rows if b != "NPA"]
@@ -106,7 +106,7 @@ def compute_roll_rate_kpis(matrix: pd.DataFrame) -> dict:
 
     return {
         "roll_forward_rate":  roll_forward_rate,
-        "cure_rate":          cure_rate,
+        "roll_backward_rate":  roll_backward_rate,
         "npa_formation_rate": npa_formation_rate,
     }
 

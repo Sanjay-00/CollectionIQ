@@ -61,7 +61,7 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
     if bm:
         parts.append("\nBUCKET MIGRATION (prev month to curr month):")
         parts.append(f"  Roll-forward rate (worsened): {bm['roll_forward_rate']}%")
-        parts.append(f"  Cure rate (returned to STD):  {bm['cure_rate']}%")
+        parts.append(f"  Roll-backward rate (returned to STD): {bm['roll_backward_rate']}%")
         parts.append(f"  NPA formation rate:            {bm['npa_formation_rate']}%")
         parts.append(f"  Matched accounts:              {bm['matched_count']:,}")
 

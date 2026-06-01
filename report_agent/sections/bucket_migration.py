@@ -17,7 +17,7 @@ def compute_bucket_migration_section(df_curr: pd.DataFrame, df_prev: pd.DataFram
             "matrix":            matrix_dict,
             "buckets":           matrix.columns.tolist(),
             "roll_forward_rate": meta["roll_forward_rate"],
-            "cure_rate":         meta["cure_rate"],
+            "roll_backward_rate": meta["roll_backward_rate"],
             "npa_formation_rate": meta["npa_formation_rate"],
             "matched_count":     meta["matched_count"],
             "new_entries":       meta["new_entries"],
