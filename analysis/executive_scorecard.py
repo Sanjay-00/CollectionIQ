@@ -18,6 +18,9 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
     if "MNT NAME" not in df.columns:
         return pd.DataFrame()
 
+    _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
+    has_roll = "prev_bucket" in df.columns and "curr_bucket" in df.columns
+
     group_cols = ["MNT NAME", "Unit"] if "Unit" in df.columns else ["MNT NAME"]
 
     rows = []
@@ -47,19 +50,37 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
             npa_count = grp[grp["curr_bucket"] == "NPA"]["Loan No"].nunique()
         npa_pct = round(npa_count / n * 100, 1) if n > 0 else 0.0
 
+        roll_fwd_pct = roll_bwd_pct = None
+        if has_roll:
+            curr_score = grp["curr_bucket"].map(_BUCKET_SCORE)
+            prev_score = grp["prev_bucket"].map(_BUCKET_SCORE)
+            valid = curr_score.notna() & prev_score.notna()
+            total_valid = int(valid.sum())
+            if total_valid > 0:
+                roll_fwd_pct = round((valid & (curr_score > prev_score)).sum() / total_valid * 100, 1)
+                roll_bwd_pct = round((valid & (curr_score < prev_score)).sum() / total_valid * 100, 1)
+            else:
+                roll_fwd_pct = roll_bwd_pct = 0.0
+
         display_name = f"{exec_name} ({branch})" if branch else exec_name
 
-        rows.append({
+        row = {
             "Executive (Branch)": display_name,
             "Accounts":           n,
             "Strike Rate %":      strike_rate,
             "Collection %":       coll_pct,
+        }
+        if has_roll:
+            row["Roll Fwd %"] = roll_fwd_pct
+            row["Roll Bwd %"] = roll_bwd_pct
+        row.update({
             "NPA %":              npa_pct,
             "Total POS (L)":      round(total_pos / 100_000, 2),
             "Demand (L)":         round(demand / 100_000, 2),
             "Collected (L)":      round(collected / 100_000, 2),
             "_coll_pct_raw":      coll_pct,
         })
+        rows.append(row)
 
     if not rows:
         return pd.DataFrame()
@@ -123,6 +144,12 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
                     f'background:{coll_bg};border-radius:4px;">'
                     f'{val}%</td>'
                 )
+            elif col == "Roll Fwd %":
+                color = "#dc2626" if val >= 20 else "#d97706" if val >= 10 else "#16a34a"
+                cells += f'<td style="padding:8px 12px;font-size:13px;color:{color};font-weight:600;">{val}%</td>'
+            elif col == "Roll Bwd %":
+                color = "#16a34a" if val >= 10 else "#d97706" if val >= 5 else "#6b7280"
+                cells += f'<td style="padding:8px 12px;font-size:13px;color:{color};font-weight:600;">{val}%</td>'
             elif col in ("Strike Rate %", "NPA %"):
                 cells += f'<td style="padding:8px 12px;font-size:13px;">{val}%</td>'
             else:
