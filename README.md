@@ -2,7 +2,78 @@
 
 ### AI-Powered Portfolio Intelligence for NBFC Collection Leaders
 
+![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-FF4B4B?logo=streamlit&logoColor=white)
+![Gemini](https://img.shields.io/badge/Google%20Gemini-2.0%20Flash-4285F4?logo=google&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
+&nbsp;
+
+**[Live Demo → collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
+
+&nbsp;
+
+## Try It in 30 Seconds
+
+No data? No setup? Click **Fill Sample Data** on the landing page — it loads a real 12,000-loan LCC extract directly from this repo and builds the full dashboard instantly. No file upload needed.
+
+&nbsp;
+
+## Screenshots
+
+**Landing Page — Upload or fill sample data instantly**
+![Landing Page](docs/screenshots/01-landing.png)
+
+&nbsp;
+
+**KPI Dashboard — Portfolio health at a glance with MoM movement**
+![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
+
+&nbsp;
+
+**Portfolio Analysis — DPD bucket distribution, branch collection %, arrears exposure**
+![Portfolio Analysis](docs/screenshots/03-portfolio-analysis.png)
+
+&nbsp;
+
+<table>
+<tr>
+<td width="50%">
+
+**Executive Scorecard — Every field executive ranked by collection %, strike rate and roll rates**
+![Executive Scorecard](docs/screenshots/04-executive-scorecard.png)
+
+</td>
+<td width="50%">
+
+**Smart Alerts — Automatic risk flags with POS exposure and recommended actions**
+![Smart Alerts](docs/screenshots/05-smart-alerts.png)
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**AI Query Assistant — Plain English queries powered by Gemini + LangGraph**
+![AI Query](docs/screenshots/06-ai-query.png)
+
+</td>
+<td width="50%">
+
+**AI Query Result — KPIs, rankings, and domain-aware observations**
+![AI Query Result](docs/screenshots/07-ai-query-result.png)
+
+</td>
+</tr>
+</table>
+
+&nbsp;
+
+**Filtered Customer Table + AI Observations**
+![Customer Table](docs/screenshots/08-customer-table.png)
+
+&nbsp;
 
 ## The Problem
 
@@ -13,7 +84,7 @@ In a large NBFC, a Regional Business Head or Zonal Head manages thousands of loa
 > *"How many accounts from last year's advances have gone delinquent?"*
 > *"Show me customers who haven't paid in 3 months in the Western region."*
 
-Getting answers to these questions meant raising a request to an analyst, waiting for a report, then asking a follow-up. The cycle repeated for every business question, every day.
+Getting answers meant raising a request to an analyst, waiting for a report, then asking a follow-up. The cycle repeated for every business question, every day.
 
 Leaders were dependent on coordinators and analysts for information that should have been at their fingertips.
 
@@ -21,13 +92,9 @@ Leaders were dependent on coordinators and analysts for information that should 
 
 ## What CollectionIQ Does
 
-CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
+CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable — without writing a single formula or waiting for a report.
 
 It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
-
-&nbsp;
-
-**[Live Demo → collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
 
 &nbsp;
 
@@ -45,19 +112,19 @@ It answers questions in plain English, surfaces risks automatically, and generat
 
 **Plain English Query Engine**
 
-Ask questions the way you think them. The system understands NBFC domain language like "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2" and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
+Ask questions the way you think them. The system understands NBFC domain language — "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2" — and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
 
 **Automated Priority Action List**
 
-A seven-tier business priority framework identifies accounts that need immediate attention, non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
+A seven-tier business priority framework identifies accounts that need immediate attention — non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
 
 **Field Executive Performance Scorecard**
 
-Every field executive is ranked by collection efficiency, strike rate, and NPA percentage. Top performers and underperformers are identified dynamically using quartile analysis so rankings are always relative to the current portfolio, not fixed benchmarks.
+Every field executive is ranked by collection efficiency, strike rate, NPA percentage, and bucket roll rates. Top performers and underperformers are identified dynamically using quartile analysis so rankings are always relative to the current portfolio, not fixed benchmarks.
 
 **Bucket Migration Analysis**
 
-When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets, how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
+When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets — how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
 
 Roll forward and roll backward queries are also supported through the plain English engine. Ask "show me accounts that worsened this month" or "which accounts cured from SMA-1" and get the filtered list instantly.
 
@@ -78,25 +145,23 @@ Before CollectionIQ, a leader needed to raise a request, wait for an analyst to 
 With CollectionIQ, the same question is answered in under 30 seconds — directly by the leader, without involving anyone else.
 
 **What this eliminates:**
-
-* Dependency on analysts and coordinators for portfolio queries
-* Manual Excel work for bucket-level or executive-level breakdowns
-* Delays in identifying which accounts to target for collection
-* Subjective prioritization replaced by a structured, data-driven action framework
-* Waiting for month-end reports to understand portfolio health
+- Dependency on analysts and coordinators for portfolio queries
+- Manual Excel work for bucket-level or executive-level breakdowns
+- Delays in identifying which accounts to target for collection
+- Subjective prioritization replaced by a structured, data-driven action framework
+- Waiting for month-end reports to understand portfolio health
 
 **What this enables:**
-
-* Leaders making faster, evidence-based collection decisions
-* Field executives held accountable through transparent scorecards
-* Early detection of portfolio stress through bucket migration tracking
-* Consistent prioritization logic applied across all regions and branches
+- Leaders making faster, evidence-based collection decisions
+- Field executives held accountable through transparent scorecards
+- Early detection of portfolio stress through bucket migration tracking
+- Consistent prioritization logic applied across all regions and branches
 
 &nbsp;
 
 ## Architecture
 
-CollectionIQ runs two independent AI pipelines orchestrated with LangGraph, one for answering queries in real time, one for generating the monthly portfolio report.
+CollectionIQ runs two independent AI pipelines orchestrated with LangGraph — one for answering queries in real time, one for generating the monthly portfolio report.
 
 &nbsp;
 
@@ -128,7 +193,7 @@ flowchart TD
 
 ### Report Pipeline
 
-Triggered on demand. Runs fully autonomously, no user input needed after clicking Generate.
+Triggered on demand. Runs fully autonomously — no user input needed after clicking Generate.
 
 ```mermaid
 flowchart TD
@@ -168,6 +233,120 @@ flowchart LR
 
 &nbsp;
 
+## Project Structure
+
+```
+CollectionIQ/
+├── app.py                          # Main Streamlit app — all UI layout and state
+├── graph.py                        # AI query pipeline (LangGraph state machine)
+├── utils.py                        # Data loading, metrics, charts, HTML export
+├── smart_alerts.py                 # 5 rule-based risk alerts (pure pandas, no LLM)
+│
+├── agents/
+│   ├── domain_expert.py            # Agent 0 — query enrichment + intent detection
+│   ├── query_parser.py             # Agent 1 — natural language to filter spec
+│   ├── data_executor.py            # Agent 2 — pandas filter / aggregation / priority
+│   └── insight_generator.py        # Agent 3 — AI observations on query results
+│
+├── analysis/
+│   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
+│   └── roll_rate.py                # Bucket migration matrix and roll-rate KPIs
+│
+├── report_agent/
+│   ├── graph.py                    # Report pipeline (LangGraph)
+│   └── nodes/
+│       ├── portfolio_analyzer.py   # Computes all report sections
+│       ├── risk_narrator.py        # AI executive narrative + action plan
+│       ├── report_builder.py       # Assembles self-contained HTML report
+│       └── email_dispatcher.py     # SMTP delivery
+│
+├── sample_data/
+│   ├── Current_Month_Demo.xlsx     # Sample LCC extract — current month
+│   └── Previous_Month_Demo.xlsx    # Sample LCC extract — previous month
+│
+└── requirements.txt
+```
+
+&nbsp;
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10 or higher
+- A [Google AI Studio](https://aistudio.google.com/app/apikey) API key (free tier works)
+
+&nbsp;
+
+### 1 — Clone the repository
+
+```bash
+git clone https://github.com/Sanjay-00/CollectionIQ.git
+cd CollectionIQ
+```
+
+&nbsp;
+
+### 2 — Create a virtual environment and install dependencies
+
+```bash
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# macOS / Linux
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+&nbsp;
+
+### 3 — Set up environment variables
+
+Create a `.env` file in the project root:
+
+```env
+# Required — AI query engine and report generation
+GOOGLE_API_KEY=your_google_api_key_here
+
+# Optional — LangSmith observability (query tracing + feedback)
+LANGSMITH_API_KEY=your_langsmith_key
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=CollectionIQ
+
+# Optional — Email delivery for monthly reports
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_app_password
+```
+
+> KPIs, charts, smart alerts, and executive scorecard work without any API key. Only the AI query engine and monthly report require `GOOGLE_API_KEY`.
+
+&nbsp;
+
+### 4 — Run the app
+
+```bash
+streamlit run app.py
+```
+
+Opens at **http://localhost:8501**
+
+&nbsp;
+
+### 5 — Load data
+
+**Option A — Fill Sample Data (instant)**
+Click the **Fill Sample Data** button on the landing page. It fetches a real LCC extract from this repo and loads the full dashboard in seconds — no file needed.
+
+**Option B — Upload your own LCC extract**
+Upload your `.xlsx` or `.xls` file using the file uploader. Upload a second file for the previous month to enable bucket migration and roll-rate analysis.
+
+&nbsp;
+
 ## Technology
 
 | Layer | Technology | Role |
@@ -182,10 +361,8 @@ flowchart LR
 | Observability | LangSmith | Query tracing and result quality feedback |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
-The domain knowledge layer (NBFC terminology, loan status values, priority framework) is embedded in the agent system prompts. This means the AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning, the business context is injected at query time, making it straightforward to extend with new domain rules.
+The domain knowledge layer — NBFC terminology, loan status values, priority framework — is embedded in the agent system prompts. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
 
-Both pipelines are stateless between runs. Each query or report generation starts fresh, which means there is no stale context, no memory leak, and no shared state between users.
+Both pipelines are stateless between runs. Each query or report generation starts fresh — no stale context, no memory leak, no shared state between users.
 
 &nbsp;
-
-
