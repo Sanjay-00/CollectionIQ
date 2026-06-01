@@ -21,7 +21,6 @@ In a large NBFC, a Regional Business Head or Zonal Head manages thousands of loa
 Getting answers meant raising a request to an analyst, waiting for a report, then asking a follow-up. The cycle repeated for every business question, every day.
 
 Leaders were dependent on coordinators and analysts for information that should have been at their fingertips.
-
 &nbsp;
 ## What CollectionIQ Does
 
@@ -30,6 +29,7 @@ CollectionIQ is a self-serve portfolio intelligence dashboard built for collecti
 It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
 
 &nbsp;
+
 **Live Link : [collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
 
 &nbsp;
@@ -103,7 +103,6 @@ No data? No setup? Click **Fill Sample Data** on the landing page, it loads a re
 &nbsp;
 
 
-
 ## Who It Is Built For
 
 | Role | How They Use It |
@@ -113,7 +112,6 @@ No data? No setup? Click **Fill Sample Data** on the landing page, it loads a re
 | Business Unit Head | Query specific customer segments, get prioritized action lists, analyse new advances |
 
 &nbsp;
-
 ## Core Capabilities
 
 **Plain English Query Engine**
@@ -147,7 +145,7 @@ A board-ready HTML report with AI-written executive narrative, branch performanc
 
 Before CollectionIQ, a leader needed to raise a request, wait for an analyst to pull data, and then ask a follow-up for any change in filter or angle. Each loop took hours to a day.
 
-With CollectionIQ, the same question is answered in under 30 seconds — directly by the leader, without involving anyone else.
+With CollectionIQ, the same question is answered in under 30 seconds, directly by the leader, without involving anyone else.
 
 **What this eliminates:**
 - Dependency on analysts and coordinators for portfolio queries
@@ -193,7 +191,6 @@ flowchart TD
 ```
 
 &nbsp;
-
 ### Report Pipeline
 
 Triggered on demand. Runs fully autonomously, no user input needed after clicking Generate.
@@ -269,7 +266,6 @@ CollectionIQ/
 │
 └── requirements.txt
 ```
-
 &nbsp;
 ## Technology
 
