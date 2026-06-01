@@ -27,7 +27,7 @@ Leaders were dependent on coordinators and analysts for information that should 
 
 ## What CollectionIQ Does
 
-CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable — without writing a single formula or waiting for a report.
+CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
 
 It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
 
