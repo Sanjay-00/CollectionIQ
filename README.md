@@ -9,7 +9,6 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 &nbsp;
-
 ## The Problem
 
 In a large NBFC, a Regional Business Head or Zonal Head manages thousands of loan accounts across dozens of branches and field executives. Every morning, the same questions come up:
@@ -24,7 +23,6 @@ Getting answers meant raising a request to an analyst, waiting for a report, the
 Leaders were dependent on coordinators and analysts for information that should have been at their fingertips.
 
 &nbsp;
-
 ## What CollectionIQ Does
 
 CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
@@ -32,7 +30,6 @@ CollectionIQ is a self-serve portfolio intelligence dashboard built for collecti
 It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
 
 &nbsp;
-
 **Live Link : [collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
 
 &nbsp;
@@ -42,7 +39,6 @@ It answers questions in plain English, surfaces risks automatically, and generat
 No data? No setup? Click **Fill Sample Data** on the landing page, it loads a real 1000-loan LCC extract directly from this repo and builds the full dashboard instantly. No file upload needed.
 
 &nbsp;
-
 ## Screenshots
 
 **Landing Page - Upload or fill sample data instantly**
@@ -147,7 +143,6 @@ Automatic alerts fire for non-starters, insurance-driven delinquency, easy settl
 A board-ready HTML report with AI-written executive narrative, branch performance league tables, executive rankings, risk flags, and a five-point prioritized action plan. Download it or send it by email directly from the dashboard.
 
 &nbsp;
-
 ## The Impact
 
 Before CollectionIQ, a leader needed to raise a request, wait for an analyst to pull data, and then ask a follow-up for any change in filter or angle. Each loop took hours to a day.
@@ -168,13 +163,11 @@ With CollectionIQ, the same question is answered in under 30 seconds — directl
 - Consistent prioritization logic applied across all regions and branches
 
 &nbsp;
-
 ## Architecture
 
 CollectionIQ runs two independent AI pipelines orchestrated with LangGraph — one for answering queries in real time, one for generating the monthly portfolio report.
 
 &nbsp;
-
 ### Query Pipeline
 
 Every question typed in plain English passes through four agents in sequence before a result appears on screen.
@@ -203,7 +196,7 @@ flowchart TD
 
 ### Report Pipeline
 
-Triggered on demand. Runs fully autonomously — no user input needed after clicking Generate.
+Triggered on demand. Runs fully autonomously, no user input needed after clicking Generate.
 
 ```mermaid
 flowchart TD
@@ -247,16 +240,16 @@ flowchart LR
 
 ```
 CollectionIQ/
-├── app.py                          # Main Streamlit app — all UI layout and state
+├── app.py                          # Main Streamlit app - all UI layout and state
 ├── graph.py                        # AI query pipeline (LangGraph state machine)
 ├── utils.py                        # Data loading, metrics, charts, HTML export
 ├── smart_alerts.py                 # 5 rule-based risk alerts (pure pandas, no LLM)
 │
 ├── agents/
-│   ├── domain_expert.py            # Agent 0 — query enrichment + intent detection
-│   ├── query_parser.py             # Agent 1 — natural language to filter spec
-│   ├── data_executor.py            # Agent 2 — pandas filter / aggregation / priority
-│   └── insight_generator.py        # Agent 3 — AI observations on query results
+│   ├── domain_expert.py            # Agent 0 - query enrichment + intent detection
+│   ├── query_parser.py             # Agent 1 - natural language to filter spec
+│   ├── data_executor.py            # Agent 2 - pandas filter / aggregation / priority
+│   └── insight_generator.py        # Agent 3 - AI observations on query results
 │
 ├── analysis/
 │   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
@@ -271,92 +264,13 @@ CollectionIQ/
 │       └── email_dispatcher.py     # SMTP delivery
 │
 ├── sample_data/
-│   ├── Current_Month_Demo.xlsx     # Sample LCC extract — current month
-│   └── Previous_Month_Demo.xlsx    # Sample LCC extract — previous month
+│   ├── Current_Month_Demo.xlsx     # Sample LCC extract - current month
+│   └── Previous_Month_Demo.xlsx    # Sample LCC extract - previous month
 │
 └── requirements.txt
 ```
 
 &nbsp;
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.10 or higher
-- A [Google AI Studio](https://aistudio.google.com/app/apikey) API key (free tier works)
-
-&nbsp;
-
-### 1 — Clone the repository
-
-```bash
-git clone https://github.com/Sanjay-00/CollectionIQ.git
-cd CollectionIQ
-```
-
-&nbsp;
-
-### 2 — Create a virtual environment and install dependencies
-
-```bash
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# macOS / Linux
-source venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-&nbsp;
-
-### 3 — Set up environment variables
-
-Create a `.env` file in the project root:
-
-```env
-# Required — AI query engine and report generation
-GOOGLE_API_KEY=your_google_api_key_here
-
-# Optional — LangSmith observability (query tracing + feedback)
-LANGSMITH_API_KEY=your_langsmith_key
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=CollectionIQ
-
-# Optional — Email delivery for monthly reports
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your_email@gmail.com
-SMTP_PASS=your_app_password
-```
-
-> KPIs, charts, smart alerts, and executive scorecard work without any API key. Only the AI query engine and monthly report require `GOOGLE_API_KEY`.
-
-&nbsp;
-
-### 4  Run the app
-
-```bash
-streamlit run app.py
-```
-
-Opens at **http://localhost:8501**
-
-&nbsp;
-
-### 5  Load data
-
-**Option A - Fill Sample Data (instant)**
-Click the **Fill Sample Data** button on the landing page. It fetches a real LCC extract from this repo and loads the full dashboard in seconds, no file needed.
-
-**Option B - Upload your own LCC extract**
-Upload your `.xlsx` or `.xls` file using the file uploader. Upload a second file for the previous month to enable bucket migration and roll-rate analysis.
-
-&nbsp;
-
 ## Technology
 
 | Layer | Technology | Role |
