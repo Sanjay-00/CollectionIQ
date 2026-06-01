@@ -742,21 +742,32 @@ if not curr_file and not st.session_state.get("_sample_loaded"):
     @st.cache_data(show_spinner=False)
     def _fetch_sample_from_github():
         import urllib.request, io
+        from utils import assign_buckets, COL_ALIASES
         BASE  = "https://raw.githubusercontent.com/Sanjay-00/CollectionIQ/main/sample_data/"
-        FILES = {
-            "curr": "Current_Month_Demo.xlsx",
-            "prev": "Previous_Month_Demo.xlsx",
-        }
-        out = {}
-        for key, fname in FILES.items():
+        FILES = {"curr": "Current_Month_Demo.xlsx", "prev": "Previous_Month_Demo.xlsx"}
+
+        def _load(fname):
             with urllib.request.urlopen(BASE + fname, timeout=20) as resp:
                 buf = io.BytesIO(resp.read())
-            buf.name = fname
-            df, errs = load_and_validate(buf)
-            if errs:
-                raise ValueError(errs[0])
-            out[key] = df
-        return out["curr"], out["prev"]
+            df = pd.read_excel(buf, engine="openpyxl")
+            df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
+            for col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+            df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
+            for col in ["Month Receipt Amount", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            for col in ["NET Collection Demand Inst+Exp", "Net Collection Demand Inst+Exp+BC", "POS", "Arrears / EMI"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["LCC%"]   = pd.to_numeric(df["LCC%"], errors="coerce")
+            df["Strike"] = df["Strike"].astype(str).str.strip().str.upper()
+            if "Unit" in df.columns:
+                df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
+            return assign_buckets(df)
+
+        return _load(FILES["curr"]), _load(FILES["prev"])
 
     _, col_s, _ = st.columns([2, 1, 2])
     with col_s:
