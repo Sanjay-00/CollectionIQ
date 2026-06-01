@@ -10,71 +10,6 @@
 
 &nbsp;
 
-**[Live Demo → collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
-
-&nbsp;
-
-## Try It in 30 Seconds
-
-No data? No setup? Click **Fill Sample Data** on the landing page — it loads a real 12,000-loan LCC extract directly from this repo and builds the full dashboard instantly. No file upload needed.
-
-&nbsp;
-
-## Screenshots
-
-**Landing Page — Upload or fill sample data instantly**
-![Landing Page](docs/screenshots/01-landing.png)
-
-&nbsp;
-
-**KPI Dashboard — Portfolio health at a glance with MoM movement**
-![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
-
-&nbsp;
-
-**Portfolio Analysis — DPD bucket distribution, branch collection %, arrears exposure**
-![Portfolio Analysis](docs/screenshots/03-portfolio-analysis.png)
-
-&nbsp;
-
-<table>
-<tr>
-<td width="50%">
-
-**Executive Scorecard — Every field executive ranked by collection %, strike rate and roll rates**
-![Executive Scorecard](docs/screenshots/04-executive-scorecard.png)
-
-</td>
-<td width="50%">
-
-**Smart Alerts — Automatic risk flags with POS exposure and recommended actions**
-![Smart Alerts](docs/screenshots/05-smart-alerts.png)
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-**AI Query Assistant — Plain English queries powered by Gemini + LangGraph**
-![AI Query](docs/screenshots/06-ai-query.png)
-
-</td>
-<td width="50%">
-
-**AI Query Result — KPIs, rankings, and domain-aware observations**
-![AI Query Result](docs/screenshots/07-ai-query-result.png)
-
-</td>
-</tr>
-</table>
-
-&nbsp;
-
-**Filtered Customer Table + AI Observations**
-![Customer Table](docs/screenshots/08-customer-table.png)
-
-&nbsp;
-
 ## The Problem
 
 In a large NBFC, a Regional Business Head or Zonal Head manages thousands of loan accounts across dozens of branches and field executives. Every morning, the same questions come up:
@@ -98,6 +33,81 @@ It answers questions in plain English, surfaces risks automatically, and generat
 
 &nbsp;
 
+**Live Link : [collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
+
+&nbsp;
+
+## Try It in 30 Seconds
+
+No data? No setup? Click **Fill Sample Data** on the landing page, it loads a real 1000-loan LCC extract directly from this repo and builds the full dashboard instantly. No file upload needed.
+
+&nbsp;
+
+## Screenshots
+
+**Landing Page - Upload or fill sample data instantly**
+
+![Landing Page](docs/screenshots/01-landing.png)
+
+&nbsp;
+
+**KPI Dashboard - Portfolio health at a glance with MoM movement**
+
+![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
+
+&nbsp;
+
+**Portfolio Analysis - DPD bucket distribution, branch collection %, arrears exposure**
+
+![Portfolio Analysis](docs/screenshots/03-portfolio-analysis.png)
+
+&nbsp;
+
+<table>
+<tr>
+<td width="50%">
+
+**Executive Scorecard - Every field executive ranked by collection %, strike rate and roll rates**
+
+![Executive Scorecard](docs/screenshots/04-executive-scorecard.png)
+
+</td>
+<td width="50%">
+
+**Smart Alerts - Automatic risk flags with POS exposure and recommended actions**
+
+![Smart Alerts](docs/screenshots/05-smart-alerts.png)
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**AI Query Assistant - Plain English queries powered by Gemini + LangGraph**
+
+![AI Query](docs/screenshots/06-ai-query.png)
+
+</td>
+<td width="50%">
+
+**AI Query Result - KPIs, rankings, and domain-aware observations**
+
+![AI Query Result](docs/screenshots/07-ai-query-result.png)
+
+</td>
+</tr>
+</table>
+
+&nbsp;
+
+**Filtered Customer Table + AI Observations**
+
+![Customer Table](docs/screenshots/08-customer-table.png)
+
+&nbsp;
+
+
+
 ## Who It Is Built For
 
 | Role | How They Use It |
@@ -112,11 +122,11 @@ It answers questions in plain English, surfaces risks automatically, and generat
 
 **Plain English Query Engine**
 
-Ask questions the way you think them. The system understands NBFC domain language — "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2" — and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
+Ask questions the way you think them. The system understands NBFC domain language - "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2" and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
 
 **Automated Priority Action List**
 
-A seven-tier business priority framework identifies accounts that need immediate attention — non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
+A seven-tier business priority framework identifies accounts that need immediate attention non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
 
 **Field Executive Performance Scorecard**
 
@@ -124,7 +134,7 @@ Every field executive is ranked by collection efficiency, strike rate, NPA perce
 
 **Bucket Migration Analysis**
 
-When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets — how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
+When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets, how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
 
 Roll forward and roll backward queries are also supported through the plain English engine. Ask "show me accounts that worsened this month" or "which accounts cured from SMA-1" and get the filtered list instantly.
 
@@ -327,7 +337,7 @@ SMTP_PASS=your_app_password
 
 &nbsp;
 
-### 4 — Run the app
+### 4  Run the app
 
 ```bash
 streamlit run app.py
@@ -337,12 +347,12 @@ Opens at **http://localhost:8501**
 
 &nbsp;
 
-### 5 — Load data
+### 5  Load data
 
-**Option A — Fill Sample Data (instant)**
-Click the **Fill Sample Data** button on the landing page. It fetches a real LCC extract from this repo and loads the full dashboard in seconds — no file needed.
+**Option A - Fill Sample Data (instant)**
+Click the **Fill Sample Data** button on the landing page. It fetches a real LCC extract from this repo and loads the full dashboard in seconds, no file needed.
 
-**Option B — Upload your own LCC extract**
+**Option B - Upload your own LCC extract**
 Upload your `.xlsx` or `.xls` file using the file uploader. Upload a second file for the previous month to enable bucket migration and roll-rate analysis.
 
 &nbsp;
@@ -361,8 +371,8 @@ Upload your `.xlsx` or `.xls` file using the file uploader. Upload a second file
 | Observability | LangSmith | Query tracing and result quality feedback |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
-The domain knowledge layer — NBFC terminology, loan status values, priority framework — is embedded in the agent system prompts. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
+The domain knowledge layer: NBFC terminology, loan status values, priority framework, is embedded in the agent system prompts. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
 
-Both pipelines are stateless between runs. Each query or report generation starts fresh — no stale context, no memory leak, no shared state between users.
+Both pipelines are stateless between runs. Each query or report generation starts fresh, no stale context, no memory leak, no shared state between users.
 
 &nbsp;
