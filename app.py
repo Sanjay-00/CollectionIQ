@@ -1014,7 +1014,7 @@ if "MNT NAME" in df_curr.columns:
             <div class="kpi-card" style="border-top-color:{strike_color};">
               <div class="kpi-label">Avg Strike Rate %</div>
               <div class="kpi-value" style="color:{strike_color};">{avg_strike:.1f}%</div>
-              <div class="kpi-mom">Field visit coverage</div>
+              <div class="kpi-mom">Full payment received %</div>
             </div>""", unsafe_allow_html=True)
         with sc_col5:
             npa_color = "#16a34a" if avg_npa < 5 else "#d97706" if avg_npa < 10 else "#dc2626"
@@ -1348,7 +1348,7 @@ with col_run:
     run_btn = st.button("🔍  Run Query", type="primary", use_container_width=True)
 with col_hint:
     st.markdown(
-        "<div style='padding-top:10px;font-size:12px;color:#aaa;'>Powered by Gemini Flash 2 · LangGraph multi-agent pipeline</div>",
+        "<div style='padding-top:10px;font-size:12px;color:#aaa;'>Powered by Gemini Flash 2.5 · LangGraph multi-agent pipeline</div>",
         unsafe_allow_html=True,
     )
 
