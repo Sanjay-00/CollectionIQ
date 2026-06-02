@@ -94,7 +94,7 @@ BUCKET DISTRIBUTION (% of matched accounts):
 
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, "gemini-2.0-flash", context,
+        client, "gemini-2.5-flash", context,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)

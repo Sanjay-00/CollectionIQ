@@ -126,7 +126,7 @@ You deeply understand NBFC terminology:
 - SMA-2 = Special Mention Account 2 (Arrears/EMI between 2-3, severely stressed)
 - STD = Standard / current accounts (Arrears/EMI = 0, no dues)
 - Hard bucket = where "Arrears / EMI" >6 (very very risky accounts)
-- Strike = field collection attempt this month (Y/YES = attempted, N/NO = not attempted)
+- Strike = full EMI payment received for this month (Y = full payment received, N = full payment NOT received)
 - POS = Principal Outstanding (total remaining loan exposure)
 - Closing Arrears = Total overdue amount at month close in rupees — key recovery KPI for arrears exposure analysis
 - LCC% = Collection efficiency percentage
@@ -306,7 +306,7 @@ def enrich_query(raw_query: str) -> dict:
     )
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, "gemini-2.0-flash", date_context + raw_query,
+        client, "gemini-2.5-flash", date_context + raw_query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)

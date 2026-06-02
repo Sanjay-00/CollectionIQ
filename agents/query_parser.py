@@ -49,7 +49,7 @@ CATEGORY COLUMNS:
   "S&S" = vehicle seized and sold, balance still outstanding (most severe)
 - RegionName: Region name (e.g. "PUNE", "MUMBAI")
 - Unit: Branch name (e.g. "MAHAD", "BELAP", "PNJIM")
-- Strike: Whether collection was attempted this month ("Y" or "N")
+- Strike: Whether full EMI payment was received this month ("Y" = full payment received, "N" = not received)
 - CHANNEL: Loan channel
 - Segment: Loan segment
 - NACHStatus: NACH payment status
@@ -80,7 +80,7 @@ STRING COLUMNS:
 - No Coll 3 Months and >6 EMI: Y = no collection for 3+ months AND arrears exceed 6 EMIs, N = no, NA = not applicable
 
 FLAG COLUMNS (all Y/N unless noted):
-- Strike: Y = field collection attempted this month, N = not attempted (NA excluded)
+- Strike: Y = full EMI payment received this month, N = full payment not received (NA excluded)
 - Non Starter: Y = missed first EMI ever
 - NACHStatus: Y = NACH active, N = NACH inactive
 - LGL_FLAG: Y = legal action filed
@@ -110,7 +110,8 @@ SPECIAL INTERPRETATIONS:
 - "legal accounts" or "legal action" or "under legal" → LGL_FLAG == "Y"
 - "co-lending" or "co lending" or "colending" → CoLending_Loans == "Y"
 - "dead customer" or "deceased" → CUSTOMER_STATUS == "Dead" (or similar value)
-- "field not visited" or "no strike" → Strike == "N"
+- "no strike" or "no full payment" or "payment not received" → Strike == "N"
+- "strike" or "full payment received" or "fully collected" → Strike == "Y"
 """
 
 SYSTEM_PROMPT = f"""You are a data analyst assistant for a loan portfolio management system.
@@ -155,7 +156,7 @@ def parse_query(query: str) -> dict:
     )
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, "gemini-2.0-flash", date_context + query,
+        client, "gemini-2.5-flash", date_context + query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)
