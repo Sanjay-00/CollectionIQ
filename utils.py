@@ -8,7 +8,8 @@ YELLOW = "#FFC000"
 # Columns that MUST exist for calculations to work
 CRITICAL_COLS = [
     "Loan No", "RegionName", "Unit", "Loan Status", "Ag_Date",
-    "Arrears / EMI", "Month Receipt Amount", "Net Collection Demand Inst+Exp+BC",
+    "Arrears / EMI", "Month Receipt Amount", "Month Collection (Excluding Reserve Collection)",
+    "Net Collection Demand Inst+Exp+BC",
     "POS", "LCC%", "Strike", "Closing Arrears",
     "Month Due-Inst", "Month Due-Exp", "Total Cum Collection",
 ]
@@ -88,7 +89,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
 
     # Additive cash flows - zero is the correct default when missing
-    for col in ["Month Receipt Amount", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
+    for col in ["Month Receipt Amount", "Month Collection (Excluding Reserve Collection)", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
@@ -136,7 +137,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         n_accounts = df["Loan No"].nunique()
         demand = df["Net Collection Demand Inst+Exp+BC"].sum(min_count=1)
         demand = 0.0 if pd.isna(demand) else demand
-        collection = df["Month Receipt Amount"].sum()
+        collection = df["Month Collection (Excluding Reserve Collection)"].sum()
         pos = df["POS"].sum(min_count=1)
         pos = 0.0 if pd.isna(pos) else pos
         cum_coll_total = df["Total Cum Collection"].sum()
@@ -231,7 +232,7 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
 
     grp = df.groupby("Unit").agg(
         demand=("Net Collection Demand Inst+Exp+BC", "sum"),
-        collection=("Month Receipt Amount", "sum"),
+        collection=("Month Collection (Excluding Reserve Collection)", "sum"),
     )
     grp["coll_pct"] = grp.apply(
         lambda r: _safe_pct(r["collection"], r["demand"]), axis=1

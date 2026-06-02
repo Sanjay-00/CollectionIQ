@@ -755,7 +755,7 @@ if not curr_file and not st.session_state.get("_sample_loaded"):
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors="coerce")
             df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
-            for col in ["Month Receipt Amount", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
+            for col in ["Month Receipt Amount", "Month Collection (Excluding Reserve Collection)", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
             for col in ["NET Collection Demand Inst+Exp", "Net Collection Demand Inst+Exp+BC", "POS", "Arrears / EMI"]:
@@ -1317,7 +1317,7 @@ body { background: #f2f2f2; font-family: 'Inter', sans-serif; padding: 2px 0 0 0
     <span class="title">AI Query Assistant</span>
   </div>
   <div class="sub">Ask any question about your loan portfolio in plain English. Click an example to try:</div>
-  <button class="chip" onclick="fill('Show customers who haven\\'t paid for 3 months')">Show customers who haven't paid for 3 months</button>
+  <button class="chip" onclick="fill('Show customers who haven\\'t paid for last 3 months')">Show customers who haven't paid for last 3 months</button>
   <button class="chip" onclick="fill('List NPA accounts in MAHAD with POS above 1 lakh')">List NPA accounts in MAHAD with POS above 1 lakh</button>
 <button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 advances')">Show all accounts &gt;2 bucket from Nov 2025 advances</button>
   <button class="chip" onclick="fill('Show those accounts that need immediate action')">Show accounts that need immediate action</button>
