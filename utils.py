@@ -247,16 +247,18 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
         textposition="outside",
         textfont=dict(size=11, color="#000000"),
     ))
+    max_val = grp["coll_pct"].max() if len(grp) > 0 else 100
     fig.update_layout(
         title=dict(text="Collection % by Branch", font=dict(size=14, color="#000000")),
         plot_bgcolor="white",
         paper_bgcolor="white",
         xaxis=dict(
             showgrid=False,
+            range=[0, max_val * 1.12],
             title=dict(text="Collection %", font=dict(color="#000000")),
         ),
         yaxis=dict(showgrid=False, tickfont=dict(color="#000000")),
-        margin=dict(l=20, r=60, t=40, b=20),
+        margin=dict(l=20, r=20, t=40, b=20),
         height=300,
     )
     return fig
