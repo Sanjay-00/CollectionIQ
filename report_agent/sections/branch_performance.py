@@ -10,7 +10,7 @@ def compute_branch_performance(df_curr: pd.DataFrame, df_prev: pd.DataFrame = No
             return None
         grp = df_curr.groupby("Unit").agg(
             demand=("Net Collection Demand Inst+Exp+BC", "sum"),
-            collection=("Month Receipt Amount", "sum"),
+            collection=("Month Collection (Excluding Reserve Collection)", "sum"),
             accounts=("Loan No", "nunique"),
         )
         grp["coll_pct"] = grp.apply(lambda r: _safe_pct(r["collection"], r["demand"]), axis=1)
