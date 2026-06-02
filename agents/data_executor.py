@@ -145,7 +145,7 @@ def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
 
     pos        = _sum("POS")
     demand     = _sum("Net Collection Demand Inst+Exp+BC")
-    collection = _sum("Month Receipt Amount")
+    collection = _sum("Month Collection (Excluding Reserve Collection)")
     coll_pct   = round(collection / demand * 100, 2) if demand > 0 else 0
     avg_arrears = _mean("Arrears / EMI")
 

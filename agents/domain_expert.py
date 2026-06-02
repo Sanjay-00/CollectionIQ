@@ -134,7 +134,7 @@ You deeply understand NBFC terminology:
 - NACHStatus = Y = NACH active, N = inactive (field collection only option)
 - LGL_FLAG = Y = legal proceedings ongoing
 - CoLending_Loans = Y = high-priority co-lending loan (MUST NOT default)
-- No Coll 3 Months and >6 EMI = Y = no payment 3+ months AND >6 EMI arrears
+- No Coll 3 Months and >6 EMI = Y = no payment for 3+ consecutive months AND arrears exceed 6 EMIs. Use this column ONLY when the query mentions a time period like "3 months", "last 3 months", "no collection for 3 months". Do NOT use this for "3 bucket" or "3 EMI arrears" — those refer to Arrears/EMI >= 3.
 - MNT NAME = Field collection executive
 - SRC Name = Sourcing dealer or DSA
 - CUSTOMER_STATUS = Alive or Dead

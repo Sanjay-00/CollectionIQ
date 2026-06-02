@@ -60,8 +60,9 @@ NUMERIC COLUMNS:
 - Arrears / EMI: PRIMARY delinquency indicator. 0 = fully current (no dues). >0 = has some overdue/delinquency. >1 = SMA-1. >2 = SMA-2. >3 = NPA. Use this column for ANY query about "delinquency", "overdue", "dues", "arrears".
 - LCC%: Collection efficiency percentage
 - Loan Amount: Original loan amount
-- Month Receipt Amount: Amount collected this month
-- Net Collection Demand Inst+Exp+BC: Total monthly demand (installment + expense + bounce charges). Use this as the demand denominator for Collection % = Month Receipt Amount / Net Collection Demand Inst+Exp+BC * 100
+- Month Receipt Amount: Total amount received this month (includes reserve collection)
+- Month Collection (Excluding Reserve Collection): Actual collection this month excluding reserve/advance payments - use this for Collection % calculation
+- Net Collection Demand Inst+Exp+BC: Total monthly demand (installment + expense + bounce charges). Collection % = Month Collection (Excluding Reserve Collection) / Net Collection Demand Inst+Exp+BC * 100
 - DelinquencyDays: Days past due (alternative to Arrears/EMI)
 
 STRING COLUMNS:
@@ -97,7 +98,9 @@ SPECIAL INTERPRETATIONS:
 - "mature cases" or "matured loans" → Loan Status == "MAT"
 - "running cases" or "running loans" or "active loans" → Loan Status == "RUN"
 - "seized" or "seized and sold" or "S&S cases" → Loan Status == "S&S"
-- "haven't paid for 3 months" or "no collection for 3 months" → No Coll 3 Months and >6 EMI == "Y"
+- "haven't paid for 3 months" or "no collection for 3 months" or "no collection last 3 months" or "3 months no payment" → No Coll 3 Months and >6 EMI == "Y"
+- "3 bucket" or "bucket 3" or "3 EMI arrears" or "arrears >= 3" or "3 or more EMI" → Arrears / EMI >= 3 (NPA threshold — do NOT use No Coll 3 Months column for this)
+- CRITICAL RULE: "3 months" (time period) → No Coll 3 Months and >6 EMI column. "3 bucket/EMI" (delinquency level) → Arrears / EMI >= 3. Never mix these two.
 - "overdue" or "defaulter" → curr_bucket in ["SMA-1", "SMA-2", "NPA"]
 - "at risk" or "risky" → curr_bucket in ["SMA-2", "NPA"]
 - "regular" or "good customer" → curr_bucket == "STD"
