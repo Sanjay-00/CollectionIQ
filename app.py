@@ -130,6 +130,25 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     color: #fff !important; border-radius: 8px !important;
 }
 [data-testid="stSidebar"] hr { border-color: #222 !important; }
+[data-testid="stSidebar"] [data-testid="stButton"][key="clear_cache_btn"] > button {
+    background: transparent !important;
+    color: #555 !important;
+    border: 1.5px solid #000000 !important;
+    border-radius: 0px !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    padding: 4px 10px !important;
+    letter-spacing: 0.5px !important;
+    text-transform: uppercase !important;
+    transition: all 0.2s !important;
+    box-shadow: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"][key="clear_cache_btn"] > button:hover {
+    background: #000000 !important;
+    color: #FFC000 !important;
+    border-color: #000000 !important;
+    box-shadow: none !important;
+}
 
 /* ── Header ── */
 .top-banner {
@@ -866,6 +885,14 @@ with st.sidebar:
         {len(df_curr_raw):,} total records loaded
     </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+    if st.button("Clear cache & relaod", use_container_width=True, key="clear_cache_btn"):
+        st.cache_data.clear()
+        for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result",
+                   "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region"]:
+            st.session_state.pop(_k, None)
+        st.rerun()
 
 
 # ── Apply filters ──────────────────────────────────────────────────────────────
