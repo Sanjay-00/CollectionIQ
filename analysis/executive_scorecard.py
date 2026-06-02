@@ -41,7 +41,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
         ) if len(strike_valid) > 0 else 0.0
 
         demand     = pd.to_numeric(grp.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce").sum()
-        collected  = pd.to_numeric(grp.get("Month Receipt Amount", pd.Series(dtype=float)), errors="coerce").sum()
+        collected  = pd.to_numeric(grp.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce").sum()
         total_pos  = pd.to_numeric(grp.get("POS", pd.Series(dtype=float)), errors="coerce").sum()
         coll_pct   = round(collected / demand * 100, 1) if demand > 0 else 0.0
 
