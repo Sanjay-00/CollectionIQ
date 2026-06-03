@@ -89,13 +89,22 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
 
 
 NARRATIVE_PROMPT = """You are the Chief Risk Officer of Shriram Finance preparing a monthly portfolio briefing for the Regional Director.
-Write exactly 3 paragraphs in plain text (no bullet points, no markdown, no em dashes, no double dashes):
+Write exactly 6 to 8 bullet points in plain text. Each bullet must start with a hyphen and a space (- ).
 
-Paragraph 1: Portfolio health summary - overall collection performance, key wins, major concerns with specific numbers.
-Paragraph 2: Risk concentration - where is the most risk (geography, bucket, executive) with specific names and figures.
-Paragraph 3: Forward-looking - what needs priority attention next month and why.
+Cover these areas across the bullets (not as headers, just as content):
+- Overall collection performance with key numbers
+- Key wins this month with specific figures
+- Major risk concerns with specific branch/bucket/executive names
+- NPA and delinquency observations
+- Bucket migration highlights (if data available)
+- What needs priority attention and why
 
-Be precise. Use Indian NBFC terminology. Professional, direct tone. No hedging. Use single hyphen (-) only, never double dash (--)."""
+Rules:
+- Each bullet is one concise sentence (max 20 words)
+- Use specific numbers, names, and percentages from the data
+- No markdown, no paragraphs, no headers, no em dashes, no double dashes
+- Use single hyphen (-) at the start of each bullet only
+- Professional, direct NBFC tone"""
 
 ACTION_PROMPT = """You are a collections strategy consultant for Shriram Finance.
 Based on the portfolio data provided, generate exactly 5 numbered action items for the collection team this month.
