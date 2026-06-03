@@ -21,6 +21,7 @@ ALERT_DISPLAY_COLS = [
     "Guar Name", "Cust Mob No", "Guar Mob No", "Vehicle Description",
     "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",
     "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
+    "ARREARS AGAINST INST", "ARREARS AGAINST EXP",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
     "POS", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
     "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
@@ -60,16 +61,16 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
 
 
 def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
-    """Customers with zero/negative installment demand but positive expense (insurance) demand.
-    Customer is paying EMI but insurance charge is creating artificial delinquency."""
-    inst = _to_num(df, "Month Due-Inst")
-    exp  = _to_num(df, "Month Due-Exp")
-    arrears = _to_num(df, "Arrears / EMI")
-    mask = (inst == 0) & (exp > 0) & (arrears > 0)
+    """Customer has no arrears against installment but has arrears against expenses (insurance).
+    EMI is being paid but unpaid insurance charge is creating artificial delinquency."""
+    arr_inst = _to_num(df, "ARREARS AGAINST INST")
+    arr_exp  = _to_num(df, "ARREARS AGAINST EXP")
+    arrears  = _to_num(df, "Arrears / EMI")
+    mask = (arr_inst <= 0) & (arr_exp > 5000) & (arrears > 0)
     subset = df[mask]
     return {
         "title": "Insurance-Driven Delinquency",
-        "subtitle": "EMI paid but insurance charge causing default",
+        "subtitle": "EMI paid but unpaid insurance charge causing delinquency",
         "severity": "high",
         "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
         "pos": _to_num(subset, "POS").sum(),
