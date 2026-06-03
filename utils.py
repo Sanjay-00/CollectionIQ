@@ -16,6 +16,9 @@ CRITICAL_COLS = [
 
 # Known column name variations across different LCC extracts
 COL_ALIASES = {
+    
+    "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by":
+        "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by RE",
     "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by R":
         "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by RE",
     "Cum Coll (Inst+Exp+BC)": "Cum Coll (Inst+Exp)",
@@ -62,6 +65,71 @@ def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize uploaded column names to our standard names.
+
+    Pass 1 — Strip leading/trailing spaces from every column.
+    Pass 2 — Apply COL_ALIASES (exact known truncations / variations).
+    Pass 3 — Case-insensitive exact match (handles capitalisation differences).
+    Pass 4 — Prefix match for truncated long names.
+              Targets sorted longest-first so the more-specific column wins
+              when a shorter column name is a prefix of a longer one
+              (e.g. "Net Collection Demand Inst+Exp+BC" beats "NET Collection
+              Demand Inst+Exp" when the file column is ambiguously truncated).
+    """
+    all_standard = list(dict.fromkeys(CRITICAL_COLS + REQUIRED_COLS))  # critical first, no dupes
+
+    # Pass 1 — strip spaces
+    df.columns = pd.Index([str(c).strip() for c in df.columns])
+
+    # Pass 2 — known aliases
+    df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
+
+    # Build case-insensitive lookup; longest targets first so more-specific
+    # columns win over shorter prefix-collision siblings.
+    target_ci: dict[str, str] = {}
+    for t in sorted(all_standard, key=len, reverse=True):
+        tl = t.lower()
+        if tl not in target_ci:
+            target_ci[tl] = t
+
+    rename_map: dict[str, str] = {}
+    claimed: set[str] = {c for c in df.columns if c in all_standard}
+
+    for col in df.columns:
+        if col in all_standard:
+            claimed.add(col)
+            continue
+
+        col_lower = col.lower()
+
+        # Pass 3 — case-insensitive exact match
+        if col_lower in target_ci and target_ci[col_lower] not in claimed:
+            target = target_ci[col_lower]
+            rename_map[col] = target
+            claimed.add(target)
+            continue
+
+        # Pass 4 — prefix match (file col is truncated version of target)
+        # Skip short columns (< 15 chars) to avoid false matches.
+        if len(col) < 15:
+            continue
+
+        for tl, target in sorted(target_ci.items(), key=lambda x: len(x[0]), reverse=True):
+            if target in claimed:
+                continue
+            if len(col_lower) < len(tl) and tl.startswith(col_lower):
+                rename_map[col] = target
+                claimed.add(target)
+                break
+
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+
+    return df
+
+
 @__import__("streamlit").cache_data(show_spinner=False)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
@@ -72,15 +140,31 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             engine = "xlrd"
         else:
             engine = "openpyxl"
-        df = pd.read_excel(file, engine=engine)
+        df = pd.read_excel(file, engine=engine, sheet_name=0)
     except Exception as e:
-        return None, [f"Could not read file: {e}"]  
+        return None, [f"Could not read file: {e}"]
 
-    # Rename known column variations to standard names
-    df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
+    # Normalize column names (strips spaces, fixes capitalisation, maps truncated names)
+    df = _normalize_columns(df)
 
-    # Hard-fail only on critical columns
+    # If critical columns are missing from sheet 0, try a sheet named "LCC"
     missing_critical = [c for c in CRITICAL_COLS if c not in df.columns]
+    if missing_critical:
+        try:
+            if hasattr(file, "seek"):
+                file.seek(0)
+            xl   = pd.ExcelFile(file, engine=engine)
+            lcc  = next((s for s in xl.sheet_names if str(s).strip().upper() == "LCC"), None)
+            if lcc:
+                if hasattr(file, "seek"):
+                    file.seek(0)
+                df = pd.read_excel(file, engine=engine, sheet_name=lcc)
+                df = _normalize_columns(df)
+                missing_critical = [c for c in CRITICAL_COLS if c not in df.columns]
+        except Exception:
+            pass  # fall through to the error below
+
+    # Hard-fail if critical columns still missing after sheet fallback
     if missing_critical:
         return None, [
             f"Missing critical column(s): {', '.join(missing_critical)}"
