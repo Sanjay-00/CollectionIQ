@@ -84,6 +84,7 @@ QUERY_DISPLAY_COLS = [
     "prev_bucket", "curr_bucket",
     "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",
     "Net Collection Demand Inst+Exp+BC", "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
+    "ARREARS AGAINST INST", "ARREARS AGAINST EXP",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
     "POS", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
     "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",

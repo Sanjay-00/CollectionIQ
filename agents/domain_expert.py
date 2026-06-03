@@ -36,11 +36,11 @@ PRIORITY_RULES = [
     {
         "rank": 4,
         "label": "Insurance-Driven Delinquency",
-        "why": "Customer paid EMI but insurance charge is creating artificial arrears - fixable via cash or child loan",
+        "why": "Customer paid EMI (no arrears against installment) but unpaid insurance/expense charge is creating artificial arrears - fixable via cash or child loan",
         "conditions": [
-            {"column": "Month Due-Inst", "op": "<=", "value": 0},
-            {"column": "Month Due-Exp",  "op": ">",  "value": 0},
-            {"column": "Arrears / EMI",  "op": ">",  "value": 0},
+            {"column": "ARREARS AGAINST INST", "op": "<=", "value": 0},
+            {"column": "ARREARS AGAINST EXP",  "op": ">",  "value": 5000},
+            {"column": "Arrears / EMI",         "op": ">",  "value": 0},
         ],
     },
     {
@@ -139,8 +139,11 @@ You deeply understand NBFC terminology:
 - SRC Name = Sourcing dealer or DSA
 - CUSTOMER_STATUS = Alive or Dead
 - scheme = Loan product type
-- Month Due-Inst = Monthly installment demand; if <= 0 means no EMI due this month
-- Month Due-Exp = Monthly expense demand (insurance etc.); if > 0 with no EMI = insurance-only delinquency
+- Month Due-Inst = Monthly installment demand (always normal — not an indicator of insurance delinquency)
+- Month Due-Exp = Monthly expense demand (insurance, etc.)
+- ARREARS AGAINST INST = Closing arrears on installment component. If <= 0, customer has paid their EMI.
+- ARREARS AGAINST EXP = Closing arrears on expense/insurance component. If > 0, insurance charge is unpaid, This becomes our insurance case.
+- Insurance-Driven Delinquency = ARREARS AGAINST INST <= 0 AND ARREARS AGAINST EXP > 5000 AND Arrears/EMI > 0. The threshold is > 5000 because insurance charges are typically above ₹3000, and smaller expense arrears (e.g. legal fees < ₹5000) should not be treated as insurance cases. Do NOT use Month Due-Inst for this check.
 
 BUCKET ORDER AND MOVEMENT (when previous month file is uploaded):
 - Bucket severity order from best to worst: STD (0) < 1-30 DPD (1) < SMA-1 (2) < SMA-2 (3) < NPA (4)

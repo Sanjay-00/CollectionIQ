@@ -115,6 +115,7 @@ SPECIAL INTERPRETATIONS:
 - "dead customer" or "deceased" → CUSTOMER_STATUS == "Dead" (or similar value)
 - "no strike" or "no full payment" or "payment not received" → Strike == "N"
 - "strike" or "full payment received" or "fully collected" → Strike == "Y"
+- "insurance cases" or "arrears due to insurance" or "insurance delinquency" or "insurance arrears" or "arrears only due to insurance" or "delinquent due to insurance" → ARREARS AGAINST INST <= 0 AND ARREARS AGAINST EXP > 5000 AND Arrears / EMI > 0. Threshold is > 5000 (not > 0) because insurance charges are typically above ₹3000 and smaller expense arrears like legal fees can be falsely flagged. Do NOT use Month Due-Inst or Month Due-Exp for this.
 """
 
 SYSTEM_PROMPT = f"""You are a data analyst assistant for a loan portfolio management system.
@@ -135,7 +136,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
 
 Operators: ==, !=, >, >=, <, <=, in (value must be a list), contains, bucket_worse_than (value = another column name), bucket_better_than (value = another column name)
 For "in" operator, value must be a JSON array: ["val1", "val2"]
-Always include these in display_columns: Loan No, Cust Name, Cust Mob No, RegionName, Unit
+Always include these in display_columns: Loan No, Cust Name, Cust Mob No, RegionName, Unit, ARREARS AGAINST INST, ARREARS AGAINST EXP
 Add relevant columns based on the query (e.g. Ag_Date if date filter, POS if amount mentioned).
 Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
 """
