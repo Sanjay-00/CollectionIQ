@@ -725,7 +725,7 @@ col_up1, col_up2 = st.columns(2)
 
 with col_up1:
     st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Current Month</div><div class="upload-card-sub">Required - main reporting file</div>', unsafe_allow_html=True)
-    curr_file = st.file_uploader("Current Month", type=["xlsx", "xls"], key="curr", label_visibility="collapsed")
+    curr_file = st.file_uploader("Current Month", type=["xlsx", "xls", "xlsb"], key="curr", label_visibility="collapsed")
     curr_month_input = st.date_input(
         "Reporting Month",
         value=datetime.date.today().replace(day=1),
@@ -737,7 +737,7 @@ with col_up1:
 
 with col_up2:
     st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Previous Month</div><div class="upload-card-sub">Optional - enables MoM % comparison</div>', unsafe_allow_html=True)
-    prev_file = st.file_uploader("Previous Month", type=["xlsx", "xls"], key="prev", label_visibility="collapsed")
+    prev_file = st.file_uploader("Previous Month", type=["xlsx", "xls", "xlsb"], key="prev", label_visibility="collapsed")
     prev_month_input = st.date_input(
         "Reporting Month",
         value=(datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
@@ -760,7 +760,7 @@ if not curr_file and not st.session_state.get("_sample_loaded"):
         '<div style="font-size:26px;font-weight:800;color:#111;margin-bottom:10px;'
         'letter-spacing:-0.5px;line-height:1.2;">Upload your LCC extract to activate the dashboard</div>'
         '<div style="font-size:13px;color:#999;font-weight:400;letter-spacing:0.2px;">'
-        'Supports .xlsx and .xls &nbsp;&#183;&nbsp; Up to 200 MB &nbsp;&#183;&nbsp; Data never leaves your machine'
+        'Supports .xlsx, .xls and .xlsb &nbsp;&#183;&nbsp; Up to 200 MB &nbsp;&#183;&nbsp; Data never leaves your machine'
         '</div>'
         '</div>',
         unsafe_allow_html=True,
@@ -1331,10 +1331,13 @@ if _rpt:
 
 
         if _rpt.get("executive_narrative"):
-            paragraphs = [p.strip() for p in _rpt["executive_narrative"].split("\n") if p.strip()]
+            bullets = [l.strip().lstrip("- ").strip() for l in _rpt["executive_narrative"].split("\n") if l.strip()]
             narrative_html = "".join(
-                f'<p style="margin:0 0 14px 0;line-height:1.8;color:#c9d1d9;font-size:13px;">{p}</p>'
-                for p in paragraphs
+                f'<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #1e293b;">'
+                f'<span style="color:#FFC000;font-size:14px;font-weight:900;flex-shrink:0;">&#8226;</span>'
+                f'<span style="color:#c9d1d9;font-size:13px;line-height:1.6;">{b}</span>'
+                f'</div>'
+                for b in bullets
             )
             st.markdown(f"""
             <div class="obs-card">
