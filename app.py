@@ -20,6 +20,15 @@ from graph import run_query
 from smart_alerts import run_all_alerts
 
 
+def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce mixed-type object columns to string before st.dataframe display.
+    Prevents PyArrow serialization errors when Excel columns contain mixed int/str values."""
+    df = df.copy()
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].astype(str).replace({"nan": "", "None": ""})
+    return df
+
+
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
     df.to_excel(buf, index=False, engine="openpyxl")
@@ -35,6 +44,36 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key, use_container_width=True,
         )
+
+
+def _send_report_email(html_report: str, email_to: str, curr_month: str) -> tuple[bool, str]:
+    """Send the HTML report via SMTP without regenerating. Returns (success, error_msg)."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders as _enc
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+    try:
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = f"Shriram Finance - Portfolio Intelligence Report {curr_month}"
+        msg["From"]    = smtp_user
+        msg["To"]      = email_to
+        msg.attach(MIMEText(html_report, "html", "utf-8"))
+        att = MIMEBase("application", "octet-stream")
+        att.set_payload(html_report.encode("utf-8"))
+        _enc.encode_base64(att)
+        att.add_header("Content-Disposition", f'attachment; filename="portfolio_report_{curr_month}.html"')
+        msg.attach(att)
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as srv:
+            srv.ehlo(); srv.starttls(); srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_user, [r.strip() for r in email_to.split(",") if r.strip()], msg.as_string())
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 def _send_feedback(run_id: str, score: float) -> None:
@@ -1122,7 +1161,7 @@ for i in range(0, len(alerts), 2):
                     display_df = alert["df"]
                     display_df = display_df.loc[:, ~display_df.columns.duplicated()]
                     st.dataframe(
-                        display_df.reset_index(drop=True),
+                        _safe_df(display_df.reset_index(drop=True)),
                         use_container_width=True,
                         hide_index=True,
                         height=min(300, 40 + alert["count"] * 35),
@@ -1216,13 +1255,7 @@ with st.expander("Configure & Generate Monthly Report", expanded=False):
         inc_exec    = st.checkbox("Executive Rankings", value=True, key="rpt_exec")
 
     smtp_ok = bool(os.environ.get("SMTP_HOST", ""))
-    send_email_rpt = st.checkbox(
-        "Send via email after generation",
-        value=False, key="rpt_email",
-        disabled=not smtp_ok,
-        help="Configure SMTP_HOST / SMTP_USER / SMTP_PASS in .env to enable",
-    )
-    if smtp_ok and st.session_state.get("rpt_email"):
+    if smtp_ok:
         rpt_email_to = st.text_input(
             "Send report to (email address)",
             placeholder="manager@shriram.com, head@shriram.com",
@@ -1231,10 +1264,26 @@ with st.expander("Configure & Generate Monthly Report", expanded=False):
         )
     else:
         rpt_email_to = ""
-        if not smtp_ok:
-            st.caption("Email not configured - add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
+        st.caption("Email not configured — add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
 
-    rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate")
+    _gc, _sc, _ = st.columns([2, 1, 3])
+    with _gc:
+        rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate", use_container_width=True)
+    with _sc:
+        rpt_send_btn = st.button("📧 Send", key="rpt_send_only", use_container_width=True,
+                                  disabled=not (smtp_ok and st.session_state.get("report_result", {}).get("html_report")))
+
+if rpt_send_btn:
+    _cached = st.session_state.get("report_result", {})
+    if not rpt_email_to.strip():
+        st.warning("Enter an email address in the field above.")
+    else:
+        with st.spinner("Sending report..."):
+            _ok, _err = _send_report_email(_cached["html_report"], rpt_email_to.strip(), curr_month)
+        if _ok:
+            st.success(f"Report sent to: {rpt_email_to}")
+        else:
+            st.error(f"Failed: {_err}")
 
 if rpt_btn:
     enabled_sections = []
@@ -1279,6 +1328,7 @@ if _rpt:
                 mime="text/html",
                 use_container_width=True,
             )
+
 
         if _rpt.get("executive_narrative"):
             paragraphs = [p.strip() for p in _rpt["executive_narrative"].split("\n") if p.strip()]
@@ -1446,6 +1496,14 @@ if result:
             </div>
             """, unsafe_allow_html=True)
 
+            st.markdown("""
+<style>
+div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+div[data-testid="stSelectbox"] [data-baseweb="select"] span {
+    color: #FFC000 !important;
+}
+</style>""", unsafe_allow_html=True)
             sel_col, _ = st.columns([1, 3])
             with sel_col:
                 n_accounts = st.selectbox(
@@ -1474,7 +1532,7 @@ if result:
 
                 display_grp = grp.drop(columns=["Priority", "Why", "_rank"], errors="ignore")
                 display_grp = display_grp.loc[:, ~display_grp.columns.duplicated()]
-                st.dataframe(display_grp.reset_index(drop=True), use_container_width=True,
+                st.dataframe(_safe_df(display_grp.reset_index(drop=True)), use_container_width=True,
                              height=min(280, 45 + len(grp) * 36), hide_index=True)
                 _dl_btn(display_grp.reset_index(drop=True),
                         f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
@@ -1527,7 +1585,7 @@ if result:
             # Also show compact full ranking below
             if len(filtered_df) > 1:
                 st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
-                st.dataframe(filtered_df, use_container_width=True,
+                st.dataframe(_safe_df(filtered_df), use_container_width=True,
                              height=min(400, 50 + len(filtered_df) * 36), hide_index=True)
                 _dl_btn(filtered_df, "ranking_result.xlsx", "dl_ranking")
 
@@ -1659,7 +1717,7 @@ if result:
             # Customer table
             st.markdown("<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching Customer Records</div>", unsafe_allow_html=True)
             display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            st.dataframe(display_filtered, use_container_width=True, height=320, hide_index=True)
+            st.dataframe(_safe_df(display_filtered), use_container_width=True, height=320, hide_index=True)
             _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")
 
         # AI observations (always shown)
