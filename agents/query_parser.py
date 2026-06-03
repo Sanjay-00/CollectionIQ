@@ -111,11 +111,13 @@ SPECIAL INTERPRETATIONS:
 - "non starters" or "never paid" or "missed first emi" → Non Starter == "Y"
 - "no nach" or "nach inactive" or "no auto debit" → NACHStatus == "N"
 - "legal accounts" or "legal action" or "under legal" → LGL_FLAG == "Y"
-- "co-lending" or "co lending" or "colending" → CoLending_Loans == "Y"
+- "co-lending" or "co lending" or "colending" or "co-lending cases" or "colending loans" → CoLending_Loans == "Y" (all co-lending loans)
+- "co-lending at risk" or "co-lending delinquent" or "co-lending with arrears" or "co-lending defaults" or "co-lending overdue" → CoLending_Loans == "Y" AND Arrears / EMI > 0. These are partner bank co-lending loans showing delinquency - highest priority, SLA breach risk.
 - "dead customer" or "deceased" → CUSTOMER_STATUS == "Dead" (or similar value)
 - "no strike" or "no full payment" or "payment not received" → Strike == "N"
 - "strike" or "full payment received" or "fully collected" → Strike == "Y"
 - "insurance cases" or "arrears due to insurance" or "insurance delinquency" or "insurance arrears" or "arrears only due to insurance" or "delinquent due to insurance" → ARREARS AGAINST INST <= 0 AND ARREARS AGAINST EXP > 5000 AND Arrears / EMI > 0. Threshold is > 5000 (not > 0) because insurance charges are typically above ₹3000 and smaller expense arrears like legal fees can be falsely flagged. Do NOT use Month Due-Inst or Month Due-Exp for this.
+- "easy settlement" or "easy settlements" or "quick wins" or "small arrears" or "low arrears cases" → Closing Arrears > 0 AND Closing Arrears < 1000. These are accounts with tiny outstanding amounts that can be cleared in one call or visit.
 """
 
 SYSTEM_PROMPT = f"""You are a data analyst assistant for a loan portfolio management system.
