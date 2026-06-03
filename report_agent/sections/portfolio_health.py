@@ -24,13 +24,19 @@ def compute_portfolio_health(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> di
                 return "green" if val >= 80 else "amber" if val >= 60 else "red"
             return "neutral"
 
+        prev_metrics = compute_metrics(df_prev, df_prev.iloc[0:0]) if len(df_prev) > 0 else {}
+
         kpis_out = {}
         for k, (val, mom) in metrics.items():
+            kind     = KINDS.get(k, "count")
+            prev_val = prev_metrics[k][0] if k in prev_metrics else None
             kpis_out[k] = {
-                "value":    val,
-                "formatted": fmt_value(val, KINDS.get(k, "count")),
-                "mom":      mom,
-                "traffic":  _traffic_light(k, val),
+                "value":          val,
+                "prev_value":     prev_val,
+                "formatted":      fmt_value(val, kind),
+                "prev_formatted": fmt_value(prev_val, kind) if prev_val is not None else "—",
+                "mom":            mom,
+                "traffic":        _traffic_light(k, val),
             }
         return {"kpis": kpis_out, "total_accounts": df_curr["Loan No"].nunique() if "Loan No" in df_curr.columns else len(df_curr)}
     except Exception:
