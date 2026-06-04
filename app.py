@@ -46,6 +46,36 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
         )
 
 
+def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
+    """Load one or more Excel files and concatenate into a single DataFrame.
+    Works with a single file or a list — so single-file uploads are unchanged."""
+    if not files:
+        return None, ["No file uploaded"]
+    if not isinstance(files, list):
+        files = [files]
+
+    dfs, errors = [], []
+    for f in files:
+        df, errs = load_and_validate(f)
+        if errs:
+            errors.append(f"{getattr(f, 'name', 'file')}: {errs[0]}")
+        else:
+            dfs.append(df)
+
+    if not dfs:
+        return None, errors
+
+    if len(dfs) == 1:
+        combined = dfs[0]
+    else:
+        combined = pd.concat(dfs, ignore_index=True)
+        # Drop duplicate Loan No — same loan shouldn't appear in two regional files
+        if "Loan No" in combined.columns:
+            combined = combined.drop_duplicates(subset=["Loan No"], keep="first")
+
+    return combined, errors  # errors here are warnings (some files failed but ≥1 succeeded)
+
+
 def _send_report_email(html_report: str, email_to: str, curr_month: str) -> tuple[bool, str]:
     """Send the HTML report via SMTP without regenerating. Returns (success, error_msg)."""
     import smtplib
@@ -724,8 +754,8 @@ st.markdown('<div class="section-label">Data Source</div>', unsafe_allow_html=Tr
 col_up1, col_up2 = st.columns(2)
 
 with col_up1:
-    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Current Month</div><div class="upload-card-sub">Required - main reporting file</div>', unsafe_allow_html=True)
-    curr_file = st.file_uploader("Current Month", type=["xlsx", "xls", "xlsb"], key="curr", label_visibility="collapsed")
+    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Current Month</div><div class="upload-card-sub">Required - upload one or multiple regional files</div>', unsafe_allow_html=True)
+    curr_file = st.file_uploader("Current Month", type=["xlsx", "xls", "xlsb"], key="curr", label_visibility="collapsed", accept_multiple_files=True)
     curr_month_input = st.date_input(
         "Reporting Month",
         value=datetime.date.today().replace(day=1),
@@ -736,8 +766,8 @@ with col_up1:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col_up2:
-    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Previous Month</div><div class="upload-card-sub">Optional - enables MoM % comparison</div>', unsafe_allow_html=True)
-    prev_file = st.file_uploader("Previous Month", type=["xlsx", "xls", "xlsb"], key="prev", label_visibility="collapsed")
+    st.markdown('<div class="upload-card"><div class="upload-card-title">📂 Previous Month</div><div class="upload-card-sub">Optional - upload one or multiple regional files</div>', unsafe_allow_html=True)
+    prev_file = st.file_uploader("Previous Month", type=["xlsx", "xls", "xlsb"], key="prev", label_visibility="collapsed", accept_multiple_files=True)
     prev_month_input = st.date_input(
         "Reporting Month",
         value=(datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
@@ -854,17 +884,23 @@ if generate and curr_file:
     for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key", "_sample_loaded"]:
         st.session_state.pop(_k, None)
 
-    with st.spinner("Loading data..."):
-        df_curr_raw, err_curr = load_and_validate(curr_file)
-    if err_curr:
-        st.error(f"Current month file: {err_curr[0]}")
+    n_curr = len(curr_file) if isinstance(curr_file, list) else 1
+    with st.spinner(f"Loading {n_curr} current month file(s)..."):
+        df_curr_raw, err_curr = _load_and_concat(curr_file)
+    if df_curr_raw is None:
+        st.error(f"Current month: {err_curr[0]}")
         st.stop()
+    for _e in err_curr:  # partial failures — show as warnings, not errors
+        st.warning(f"Skipped: {_e}")
     if prev_file:
-        with st.spinner("Loading previous month..."):
-            df_prev_raw, err_prev = load_and_validate(prev_file)
-        if err_prev:
-            st.error(f"Previous month file: {err_prev[0]}")
+        n_prev = len(prev_file) if isinstance(prev_file, list) else 1
+        with st.spinner(f"Loading {n_prev} previous month file(s)..."):
+            df_prev_raw, err_prev = _load_and_concat(prev_file)
+        if df_prev_raw is None:
+            st.error(f"Previous month: {err_prev[0]}")
             st.stop()
+        for _e in err_prev:
+            st.warning(f"Skipped: {_e}")
     else:
         df_prev_raw = df_curr_raw.iloc[0:0].copy()
     st.session_state["df_curr_raw"] = df_curr_raw
@@ -885,8 +921,8 @@ df_prev_raw = st.session_state["df_prev_raw"]
 # If the user uploaded a prev file without re-clicking Generate, auto-load it now.
 # load_and_validate is @st.cache_data so this is a cache hit — no performance cost.
 if prev_file and len(df_prev_raw) == 0:
-    _prev_tmp, _prev_err = load_and_validate(prev_file)
-    if not _prev_err:
+    _prev_tmp, _prev_err = _load_and_concat(prev_file)
+    if _prev_tmp is not None:
         df_prev_raw = _prev_tmp
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
