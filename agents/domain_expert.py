@@ -127,8 +127,9 @@ You deeply understand NBFC terminology:
 - STD = Standard / current accounts (Arrears/EMI = 0, no dues)
 - Hard bucket = where "Arrears / EMI" >6 (very very risky accounts)
 - Strike = account is effectively current on its installment (EMI) obligation for this month. Strike=Y when ANY of: (1) Month Collection (Excluding Reserve Collection) >= Month Due-Inst, OR (2) LCC% = 100 (max value, means fully current on all cumulative inst+exp dues), OR (3) ARREARS AGAINST INST <= 0 (no pending installment arrears — customer may be pre-paid). Strike is ONLY about the installment component — insurance/expense arrears do NOT affect Strike.
-- POS = Principal Outstanding = future principal balance remaining on the loan (NOT penal charges)
-- ClosingPC = Closing Penal Charges = accumulated penalties on the loan. Completely different from POS.
+- POS = Principal Outstanding = future principal balance remaining on the loan (NOT penal charges). Can be 0 for MAT/S&S accounts where principal is fully amortised.
+- SOH = Sum of Hire = POS + Closing Arrears = TOTAL exposure if customer defaults. Always use SOH for exposure/risk queries, not POS alone. For MAT/S&S accounts POS=0 but SOH correctly shows the remaining arrears exposure.
+- ClosingPC = Closing Penal Charges = accumulated penalties on the loan. Completely different from POS or SOH.
 - Closing Arrears = Total overdue amount at month close in rupees — key recovery KPI for arrears exposure analysis
 - LCC% = Cumulative collection efficiency = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) × 100. Capped at 100 (max value is 100). LCC% = 100 means customer has paid all cumulative installment + expense dues till date. LCC% < 100 means some historical dues are still unpaid.
 - Month Receipt Amount = total cash received this month including reserve/advance collection

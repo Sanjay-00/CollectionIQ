@@ -86,7 +86,7 @@ QUERY_DISPLAY_COLS = [
     "Net Collection Demand Inst+Exp+BC", "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
     "ARREARS AGAINST INST", "ARREARS AGAINST EXP",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
-    "POS", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
+    "POS", "SOH", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
     "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
     "TyreFlag", "FUEL_TYPE",
 ]
@@ -144,7 +144,7 @@ def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
         vals = pd.to_numeric(work[col], errors="coerce").dropna()
         return round(vals.mean(), 2) if len(vals) > 0 else 0
 
-    pos        = _sum("POS")
+    pos        = _sum("SOH")
     demand     = _sum("Net Collection Demand Inst+Exp+BC")
     collection = _sum("Month Collection (Excluding Reserve Collection)")
     coll_pct   = round(collection / demand * 100, 2) if demand > 0 else 0
@@ -369,8 +369,8 @@ def compute_contextual_rankings(df_full: pd.DataFrame, filtered: pd.DataFrame) -
         # One row per (MNT NAME, Unit) — sorted by account count desc, top 8 rows total
         grp_cols = sub.groupby(["MNT NAME", "Unit"])
         mnt_branch = grp_cols["Loan No"].nunique().reset_index(name="count")
-        if "POS" in sub.columns:
-            mnt_branch_pos = grp_cols["POS"].apply(lambda x: pd.to_numeric(x, errors="coerce").sum()).reset_index(name="pos")
+        if "SOH" in sub.columns:
+            mnt_branch_pos = grp_cols["SOH"].apply(lambda x: pd.to_numeric(x, errors="coerce").sum()).reset_index(name="pos")
             mnt_branch = mnt_branch.merge(mnt_branch_pos, on=["MNT NAME", "Unit"])
         else:
             mnt_branch["pos"] = 0
@@ -384,8 +384,8 @@ def compute_contextual_rankings(df_full: pd.DataFrame, filtered: pd.DataFrame) -
         branch_counts = sub.groupby("Unit")["Loan No"].nunique().sort_values(ascending=False)
         rankings["branch_counts"] = branch_counts.head(5).to_dict()
 
-        if "POS" in sub.columns:
-            branch_pos = sub.groupby("Unit")["POS"].sum().sort_values(ascending=False)
+        if "SOH" in sub.columns:
+            branch_pos = sub.groupby("Unit")["SOH"].sum().sort_values(ascending=False)
             rankings["branch_pos"] = branch_pos.head(5).to_dict()
 
     if "curr_bucket" in sub.columns and len(sub) > 0:

@@ -56,8 +56,9 @@ CATEGORY COLUMNS:
 - CUSTOMER_STATUS: Customer classification
 
 NUMERIC COLUMNS:
-- POS: Principal Outstanding = future principal balance remaining on the loan. NOT the same as penal charges.
-- ClosingPC: Closing Penal Charges = accumulated penalties on the loan. Completely different from POS.
+- POS: Principal Outstanding = future principal balance remaining on the loan. Can be 0 for MAT/S&S accounts.
+- SOH: Sum of Hire = POS + Closing Arrears = total exposure if customer defaults. Use SOH for any "exposure", "outstanding", "at risk" queries. SOH is more accurate than POS because it includes overdue arrears.
+- ClosingPC: Closing Penal Charges = accumulated penalties on the loan. Completely different from POS or SOH.
 - Arrears / EMI: PRIMARY delinquency indicator. 0 = fully current (no dues). >0 = has some overdue/delinquency. >1 = SMA-1. >2 = SMA-2. >3 = NPA. Use this column for ANY query about "delinquency", "overdue", "dues", "arrears".
 - LCC%: Cumulative collection efficiency = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) × 100. Capped at 100. LCC% = 100 means customer has paid all cumulative installment + expense dues. LCC% < 100 means some historical dues are unpaid.
 - Loan Amount: Original loan amount
