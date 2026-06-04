@@ -139,7 +139,7 @@ def _render_portfolio_health(data: dict, curr_month: str = "", prev_month: str =
     kpis = data.get("kpis", {})
 
     KPI_TOP = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %"]
-    KPI_BOT = ["Hard Bucket %", "Count", "POS", "LCC%", "CMD %"]
+    KPI_BOT = ["Hard Bucket %", "Count", "SOH", "LCC%", "CMD %"]
 
     prev_lbl = prev_month or "Prev"
 

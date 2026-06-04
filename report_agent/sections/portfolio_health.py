@@ -10,7 +10,7 @@ def compute_portfolio_health(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> di
         KINDS = {
             "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
             "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct",
-            "Count": "count", "POS": "money", "LCC%": "pct", "CMD %": "pct",
+            "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct",
         }
 
         def _traffic_light(key, val):
