@@ -1009,11 +1009,12 @@ metrics = compute_metrics(df_curr, df_prev)
 KIND = {
     "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
     "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct",
-    "Count": "count", "POS": "money", "LCC%": "pct", "CMD %": "pct",
+    "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct",
 }
 
 KPI_TOP = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %", "Hard Bucket %"]
-KPI_BOT = ["Count", "POS", "CMD %"]
+KPI_BOT      = ["Count", "CMD %"]
+KPI_EXPOSURE = ["SOH"]
 
 
 _INVERSE_MOM_LABELS = {"NPA %", "Hard Bucket %"}
@@ -1082,6 +1083,7 @@ with col_trend:
 with col_bot:
     st.markdown("<br>", unsafe_allow_html=True)
     _render_kpi_row(KPI_BOT)
+    _render_kpi_row(KPI_EXPOSURE)
 
 # ── Field Executive Performance Scorecard ─────────────────────────────────────
 if "MNT NAME" in df_curr.columns:
