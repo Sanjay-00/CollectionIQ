@@ -68,6 +68,17 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     if len(dfs) == 1:
         combined = dfs[0]
     else:
+        # Normalize datetime columns to ms precision before concat.
+        # Different files can have datetime64[ns] vs datetime64[us] which causes
+        # OutOfBoundsDatetime when pandas tries to upcast them during concat.
+        def _normalize_dt(df):
+            for col in df.select_dtypes(include="datetime64").columns:
+                try:
+                    df[col] = df[col].astype("datetime64[ms]")
+                except Exception:
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+            return df
+        dfs = [_normalize_dt(df) for df in dfs]
         combined = pd.concat(dfs, ignore_index=True)
         # Drop duplicate Loan No — same loan shouldn't appear in two regional files
         if "Loan No" in combined.columns:
