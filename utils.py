@@ -62,6 +62,10 @@ def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
         default="NPA",
     )
     df["curr_score"] = df["curr_bucket"].map(BUCKET_SCORE)
+    # SOH = Sum of Hire = POS + Closing Arrears = total exposure if customer defaults
+    _pos = pd.to_numeric(df["POS"], errors="coerce").fillna(0) if "POS" in df.columns else pd.Series(0.0, index=df.index)
+    _arr = pd.to_numeric(df["Closing Arrears"], errors="coerce").fillna(0) if "Closing Arrears" in df.columns else pd.Series(0.0, index=df.index)
+    df["SOH"] = _pos + _arr
     return df
 
 
@@ -227,7 +231,8 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         demand = df["Net Collection Demand Inst+Exp+BC"].sum(min_count=1)
         demand = 0.0 if pd.isna(demand) else demand
         collection = df["Month Collection (Excluding Reserve Collection)"].sum()
-        pos = df["POS"].sum(min_count=1)
+        _soh_col = "SOH" if "SOH" in df.columns else "POS"
+        pos = df[_soh_col].sum(min_count=1)
         pos = 0.0 if pd.isna(pos) else pos
         cum_coll_total = df["Total Cum Collection"].sum()
         cum_coll_inst_exp = df["Cum Coll (Inst+Exp)"].sum()
@@ -258,7 +263,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             "NPA %": npa_pct,
             "Hard Bucket %": hard_pct,
             "Count": n_accounts,
-            "POS": pos,
+            "SOH": pos,
             "LCC%": lcc_avg,
             "CMD %": cmd_pct,
         }
@@ -445,11 +450,11 @@ def build_html_export(
         return pio.to_html(fig, full_html=False, include_plotlyjs=False)
 
     KPI_TOP = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %", "Hard Bucket %"]
-    KPI_BOT = ["Count", "POS", "LCC%", "CMD %"]
+    KPI_BOT = ["Count", "SOH", "LCC%", "CMD %"]
     KINDS = {
         "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
         "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct",
-        "Count": "count", "POS": "money", "LCC%": "pct", "CMD %": "pct",
+        "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct",
     }
     INVERSE = {"NPA %", "Hard Bucket %"}
 
