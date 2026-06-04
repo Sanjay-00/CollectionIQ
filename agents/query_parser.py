@@ -118,6 +118,9 @@ SPECIAL INTERPRETATIONS:
 - "strike" or "full payment received" or "fully collected" → Strike == "Y"
 - "insurance cases" or "arrears due to insurance" or "insurance delinquency" or "insurance arrears" or "arrears only due to insurance" or "delinquent due to insurance" → ARREARS AGAINST INST <= 0 AND ARREARS AGAINST EXP > 5000 AND Arrears / EMI > 0. Threshold is > 5000 (not > 0) because insurance charges are typically above ₹3000 and smaller expense arrears like legal fees can be falsely flagged. Do NOT use Month Due-Inst or Month Due-Exp for this.
 - "easy settlement" or "easy settlements" or "quick wins" or "small arrears" or "low arrears cases" → Closing Arrears > 0 AND Closing Arrears < 1000. These are accounts with tiny outstanding amounts that can be cleared in one call or visit.
+- "no collection" or "zero collection" or "no payment this month" or "not paid this month" or "zero payers" → Month Collection (Excluding Reserve Collection) == 0 AND Net Collection Demand Inst+Exp+BC > 0. The demand check excludes accounts that genuinely had no EMI due this month.
+- "short collection" or "partial collection" or "partial payment" or "partially paid" or "short payers" or "underpaid" → Month Collection (Excluding Reserve Collection) > 0 AND Month Collection (Excluding Reserve Collection) < Net Collection Demand Inst+Exp+BC. These paid something but less than the full demand.
+- "under collected" or "under collection" or "both no and short collection" or "no collection and short collection" or "not fully collected" or "less than demand" or "collection shortfall" → Month Collection (Excluding Reserve Collection) < Net Collection Demand Inst+Exp+BC AND Net Collection Demand Inst+Exp+BC > 0. This covers BOTH zero payers and partial payers in one condition.
 """
 
 SYSTEM_PROMPT = f"""You are a data analyst assistant for a loan portfolio management system.

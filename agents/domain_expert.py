@@ -144,6 +144,9 @@ You deeply understand NBFC terminology:
 - ARREARS AGAINST INST = Closing arrears on installment component. If <= 0, customer has paid their EMI.
 - ARREARS AGAINST EXP = Closing arrears on expense/insurance component. If > 0, insurance charge is unpaid, This becomes our insurance case.
 - Insurance-Driven Delinquency = ARREARS AGAINST INST <= 0 AND ARREARS AGAINST EXP > 5000 AND Arrears/EMI > 0. The threshold is > 5000 because insurance charges are typically above ₹3000, and smaller expense arrears (e.g. legal fees < ₹5000) should not be treated as insurance cases. Do NOT use Month Due-Inst for this check.
+- No Collection = Month Collection (Excluding Reserve Collection) == 0 AND Net Collection Demand Inst+Exp+BC > 0. Accounts that received zero payment this month despite having a demand due.
+- Short Collection = Month Collection (Excluding Reserve Collection) > 0 AND Month Collection (Excluding Reserve Collection) < Net Collection Demand Inst+Exp+BC. Accounts that paid something but less than the full demand.
+- Under-Collected (no + short combined) = Month Collection (Excluding Reserve Collection) < Net Collection Demand Inst+Exp+BC AND Net Collection Demand Inst+Exp+BC > 0. Single condition covering both zero payers and partial payers.
 
 BUCKET ORDER AND MOVEMENT (when previous month file is uploaded):
 - Bucket severity order from best to worst: STD (0) < 1-30 DPD (1) < SMA-1 (2) < SMA-2 (3) < NPA (4)
