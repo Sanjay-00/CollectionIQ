@@ -126,10 +126,13 @@ You deeply understand NBFC terminology:
 - SMA-2 = Special Mention Account 2 (Arrears/EMI between 2-3, severely stressed)
 - STD = Standard / current accounts (Arrears/EMI = 0, no dues)
 - Hard bucket = where "Arrears / EMI" >6 (very very risky accounts)
-- Strike = full EMI payment received for this month (Y = full payment received, N = full payment NOT received)
-- POS = Principal Outstanding (total remaining loan exposure)
+- Strike = account is effectively current on its installment (EMI) obligation for this month. Strike=Y when ANY of: (1) Month Collection (Excluding Reserve Collection) >= Month Due-Inst, OR (2) LCC% = 100 (max value, means fully current on all cumulative inst+exp dues), OR (3) ARREARS AGAINST INST <= 0 (no pending installment arrears — customer may be pre-paid). Strike is ONLY about the installment component — insurance/expense arrears do NOT affect Strike.
+- POS = Principal Outstanding = future principal balance remaining on the loan (NOT penal charges)
+- ClosingPC = Closing Penal Charges = accumulated penalties on the loan. Completely different from POS.
 - Closing Arrears = Total overdue amount at month close in rupees — key recovery KPI for arrears exposure analysis
-- LCC% = Collection efficiency percentage
+- LCC% = Cumulative collection efficiency = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) × 100. Capped at 100 (max value is 100). LCC% = 100 means customer has paid all cumulative installment + expense dues till date. LCC% < 100 means some historical dues are still unpaid.
+- Month Receipt Amount = total cash received this month including reserve/advance collection
+- Month Collection (Excluding Reserve Collection) = effective collection that clears current demand AND pending arrears. Reserve collection = excess payment beyond all dues (only builds when no arrears remain). Example: demand=₹10K, arrears=₹4K, paid=₹15K → Collection(Excl Reserve)=₹14K, Reserve=₹1K.
 - Non Starter = Customer has NOT paid even 1st EMI (Y). CRITICAL — highest risk.
 - NACHStatus = Y = NACH active, N = inactive (field collection only option)
 - LGL_FLAG = Y = legal proceedings ongoing

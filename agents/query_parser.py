@@ -49,19 +49,20 @@ CATEGORY COLUMNS:
   "S&S" = vehicle seized and sold, balance still outstanding (most severe)
 - RegionName: Region name (e.g. "PUNE", "MUMBAI")
 - Unit: Branch name (e.g. "MAHAD", "BELAP", "PNJIM")
-- Strike: Whether full EMI payment was received this month ("Y" = full payment received, "N" = not received)
+- Strike: Whether the account is current on its installment (EMI) obligation this month. Y = current (at least one of: collection >= Month Due-Inst, OR LCC%=100, OR ARREARS AGAINST INST<=0). N = not current on installment. Strike is ONLY about installment — insurance/expense arrears do NOT affect it.
 - CHANNEL: Loan channel
 - Segment: Loan segment
 - NACHStatus: NACH payment status
 - CUSTOMER_STATUS: Customer classification
 
 NUMERIC COLUMNS:
-- POS: Principal outstanding amount
+- POS: Principal Outstanding = future principal balance remaining on the loan. NOT the same as penal charges.
+- ClosingPC: Closing Penal Charges = accumulated penalties on the loan. Completely different from POS.
 - Arrears / EMI: PRIMARY delinquency indicator. 0 = fully current (no dues). >0 = has some overdue/delinquency. >1 = SMA-1. >2 = SMA-2. >3 = NPA. Use this column for ANY query about "delinquency", "overdue", "dues", "arrears".
-- LCC%: Collection efficiency percentage
+- LCC%: Cumulative collection efficiency = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) × 100. Capped at 100. LCC% = 100 means customer has paid all cumulative installment + expense dues. LCC% < 100 means some historical dues are unpaid.
 - Loan Amount: Original loan amount
-- Month Receipt Amount: Total amount received this month (includes reserve collection)
-- Month Collection (Excluding Reserve Collection): Actual collection this month excluding reserve/advance payments - use this for Collection % calculation
+- Month Receipt Amount: Total cash received this month including reserve/advance collection
+- Month Collection (Excluding Reserve Collection): Effective collection that clears current demand AND pending arrears, excluding reserve (advance) payments. Reserve = excess payment beyond all dues. Use this column for Collection % and under-collection analysis.
 - Net Collection Demand Inst+Exp+BC: Total monthly demand (installment + expense + bounce charges). Collection % = Month Collection (Excluding Reserve Collection) / Net Collection Demand Inst+Exp+BC * 100
 - DelinquencyDays: Days past due (alternative to Arrears/EMI)
 
@@ -81,7 +82,7 @@ STRING COLUMNS:
 - No Coll 3 Months and >6 EMI: Y = no collection for 3+ months AND arrears exceed 6 EMIs, N = no, NA = not applicable
 
 FLAG COLUMNS (all Y/N unless noted):
-- Strike: Y = full EMI payment received this month, N = full payment not received (NA excluded)
+- Strike: Y = installment obligation current this month (collection>=inst due, OR LCC%=100, OR no inst arrears), N = installment not current. Insurance/expense arrears do NOT affect Strike.
 - Non Starter: Y = missed first EMI ever
 - NACHStatus: Y = NACH active, N = NACH inactive
 - LGL_FLAG: Y = legal action filed
