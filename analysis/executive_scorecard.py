@@ -42,7 +42,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
 
         demand     = pd.to_numeric(grp.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce").sum()
         collected  = pd.to_numeric(grp.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce").sum()
-        total_pos  = pd.to_numeric(grp.get("POS", pd.Series(dtype=float)), errors="coerce").sum()
+        total_pos  = pd.to_numeric(grp.get("SOH", pd.Series(dtype=float)), errors="coerce").sum()
         coll_pct   = round(collected / demand * 100, 1) if demand > 0 else 0.0
 
         npa_count  = 0
@@ -75,7 +75,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
             row["Roll Bwd %"] = roll_bwd_pct
         row.update({
             "NPA %":              npa_pct,
-            "Total POS (L)":      round(total_pos / 100_000, 2),
+            "Total SOH (L)":      round(total_pos / 100_000, 2),
             "Demand (L)":         round(demand / 100_000, 2),
             "Collected (L)":      round(collected / 100_000, 2),
             "_coll_pct_raw":      coll_pct,
