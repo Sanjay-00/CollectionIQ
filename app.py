@@ -1582,10 +1582,12 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span {
 
                 display_grp = grp.drop(columns=["Priority", "Why", "_rank"], errors="ignore")
                 display_grp = display_grp.loc[:, ~display_grp.columns.duplicated()]
-                st.dataframe(_safe_df(display_grp.reset_index(drop=True)), use_container_width=True,
-                             height=min(280, 45 + len(grp) * 36), hide_index=True)
-                _dl_btn(display_grp.reset_index(drop=True),
-                        f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
+                _disp_grp = display_grp.reset_index(drop=True)
+                st.dataframe(_safe_df(_disp_grp.head(1000)), use_container_width=True,
+                             height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
+                if len(_disp_grp) > 1000:
+                    st.caption(f"Showing 1,000 of {len(_disp_grp):,} rows — download Excel for full list.")
+                _dl_btn(_disp_grp, f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
 
         elif result_type == "single_stat" and not is_aggregation:
             # ── Single stat — simple count / sum over filtered rows ─────────────
@@ -1635,8 +1637,10 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span {
             # Also show compact full ranking below
             if len(filtered_df) > 1:
                 st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
-                st.dataframe(_safe_df(filtered_df), use_container_width=True,
-                             height=min(400, 50 + len(filtered_df) * 36), hide_index=True)
+                st.dataframe(_safe_df(filtered_df.head(1000)), use_container_width=True,
+                             height=min(400, 50 + min(len(filtered_df), 1000) * 36), hide_index=True)
+                if len(filtered_df) > 1000:
+                    st.caption(f"Showing 1,000 of {len(filtered_df):,} rows — download Excel for full list.")
                 _dl_btn(filtered_df, "ranking_result.xlsx", "dl_ranking")
 
         elif is_aggregation:
@@ -1767,7 +1771,9 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span {
             # Customer table
             st.markdown("<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching Customer Records</div>", unsafe_allow_html=True)
             display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            st.dataframe(_safe_df(display_filtered), use_container_width=True, height=320, hide_index=True)
+            st.dataframe(_safe_df(display_filtered.head(1000)), use_container_width=True, height=320, hide_index=True)
+            if len(display_filtered) > 1000:
+                st.caption(f"Showing 1,000 of {len(display_filtered):,} rows — download Excel for full list.")
             _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")
 
         # AI observations (always shown)
