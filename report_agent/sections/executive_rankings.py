@@ -17,7 +17,7 @@ def compute_executive_rankings(df_curr: pd.DataFrame, df_prev: pd.DataFrame = No
                     "accounts":    int(row["Accounts"]),
                     "coll_pct":    float(row["Collection %"]),
                     "strike_rate": float(row["Strike Rate %"]),
-                    "npa_pct":     float(row["NPA %"]),
+                    "npa_pct":     float(row.get("NPA %", 0)),
                     "tier":        row["Tier"],
                 }
                 for _, row in df_slice.iterrows()
