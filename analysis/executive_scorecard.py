@@ -11,7 +11,8 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
     Returns a DataFrame ranked by collection_pct with performance_tier column.
 
     Columns: Executive (Branch), Accounts, Strike Rate %, Collection %,
-             NPA %, Total POS (L), Demand (L), Collected (L), Tier
+             [Roll Fwd %, Roll Bwd %], NPA, SMA-2, Total POS (L), Total SOH (L),
+             Demand (L), Collected (L), Tier
     Groups by MNT NAME + Unit so the same executive in different branches appears separately.
     Executives with fewer than min_accounts are excluded.
     """
@@ -40,15 +41,18 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
             (strike_valid["Strike"] == "Y").sum() / len(strike_valid) * 100, 1
         ) if len(strike_valid) > 0 else 0.0
 
-        demand     = pd.to_numeric(grp.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce").sum()
-        collected  = pd.to_numeric(grp.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce").sum()
-        total_pos  = pd.to_numeric(grp.get("SOH", pd.Series(dtype=float)), errors="coerce").sum()
-        coll_pct   = round(collected / demand * 100, 1) if demand > 0 else 0.0
+        demand    = pd.to_numeric(grp.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce").sum()
+        collected = pd.to_numeric(grp.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce").sum()
+        total_soh = pd.to_numeric(grp.get("SOH", pd.Series(dtype=float)), errors="coerce").sum()
+        total_pos = pd.to_numeric(grp.get("POS", pd.Series(dtype=float)), errors="coerce").sum()
+        coll_pct  = round(collected / demand * 100, 1) if demand > 0 else 0.0
 
+        # NPA and SMA-2 counts
         npa_count  = 0
+        sma2_count = 0
         if "curr_bucket" in grp.columns and "Loan No" in grp.columns:
-            npa_count = grp[grp["curr_bucket"] == "NPA"]["Loan No"].nunique()
-        npa_pct = round(npa_count / n * 100, 1) if n > 0 else 0.0
+            npa_count  = grp[grp["curr_bucket"] == "NPA"]["Loan No"].nunique()
+            sma2_count = grp[grp["curr_bucket"] == "SMA-2"]["Loan No"].nunique()
 
         roll_fwd_pct = roll_bwd_pct = None
         if has_roll:
@@ -73,12 +77,16 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.D
         if has_roll:
             row["Roll Fwd %"] = roll_fwd_pct
             row["Roll Bwd %"] = roll_bwd_pct
+        npa_pct = round(npa_count / n * 100, 1) if n > 0 else 0.0
         row.update({
-            "NPA %":              npa_pct,
-            "Total SOH (L)":      round(total_pos / 100_000, 2),
-            "Demand (L)":         round(demand / 100_000, 2),
-            "Collected (L)":      round(collected / 100_000, 2),
-            "_coll_pct_raw":      coll_pct,
+            "NPA %":          npa_pct,
+            "NPA":            npa_count,
+            "SMA-2":          sma2_count,
+            "Total POS (L)":  round(total_pos / 100_000, 2),
+            "Total SOH (L)":  round(total_soh / 100_000, 2),
+            "Demand (L)":     round(demand / 100_000, 2),
+            "Collected (L)":  round(collected / 100_000, 2),
+            "_coll_pct_raw":  coll_pct,
         })
         rows.append(row)
 
@@ -152,6 +160,12 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
                 cells += f'<td style="padding:8px 12px;font-size:13px;color:{color};font-weight:600;">{val}%</td>'
             elif col in ("Strike Rate %", "NPA %"):
                 cells += f'<td style="padding:8px 12px;font-size:13px;">{val}%</td>'
+            elif col == "NPA":
+                color = "#dc2626" if val > 0 else "#16a34a"
+                cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{val}</td>'
+            elif col == "SMA-2":
+                color = "#d97706" if val > 0 else "#16a34a"
+                cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{val}</td>'
             else:
                 cells += f'<td style="padding:8px 12px;font-size:13px;">{val}</td>'
         rows_html += (

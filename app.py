@@ -1102,7 +1102,7 @@ if "MNT NAME" in df_curr.columns:
 
         avg_coll   = scorecard_df["Collection %"].mean()
         avg_strike = scorecard_df["Strike Rate %"].mean()
-        avg_npa    = scorecard_df["NPA %"].mean()
+        avg_npa    = scorecard_df["NPA %"].mean() if "NPA %" in scorecard_df.columns else 0.0
 
         sc_col1, sc_col2, sc_col3, sc_col4, sc_col5 = st.columns(5)
         with sc_col1:

@@ -174,9 +174,18 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             f"Missing critical column(s): {', '.join(missing_critical)}"
         ]
 
+    _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
     for date_col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
-        if date_col in df.columns:
-            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        if date_col not in df.columns:
+            continue
+        col = df[date_col]
+        if pd.api.types.is_numeric_dtype(col):
+            # xlsb files store dates as Excel serial numbers (days since 1899-12-30)
+            numeric = pd.to_numeric(col, errors="coerce")
+            df[date_col] = _EXCEL_EPOCH + pd.to_timedelta(numeric, unit="D")
+            df[date_col] = df[date_col].where(numeric.notna() & (numeric > 0), pd.NaT)
+        else:
+            df[date_col] = pd.to_datetime(col, errors="coerce")
 
     # Due Dt is a numeric EMI due day (5, 10, 15, 20) — keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
