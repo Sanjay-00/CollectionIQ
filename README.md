@@ -4,10 +4,9 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-FF4B4B?logo=streamlit&logoColor=white)
-![Gemini](https://img.shields.io/badge/Google%20Gemini-2.0%20Flash-4285F4?logo=google&logoColor=white)
+![Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash-4285F4?logo=google&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
-
 &nbsp;
 ## The Problem
 
@@ -18,59 +17,51 @@ In a large NBFC, a Regional Business Head or Zonal Head manages thousands of loa
 > *"How many accounts from last year's advances have gone delinquent?"*
 > *"Show me customers who haven't paid in 3 months in the Western region."*
 
-Getting answers meant raising a request to an analyst, waiting for a report, then asking a follow-up. The cycle repeated for every business question, every day.
+Getting answers meant raising a request to an analyst, waiting for a report, and then asking a follow-up. The cycle repeated for every business question, every day.
 
 Leaders were dependent on coordinators and analysts for information that should have been at their fingertips.
 &nbsp;
 ## What CollectionIQ Does
 
-CollectionIQ is a self-serve portfolio intelligence dashboard built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
+CollectionIQ is a self-serve portfolio intelligence platform built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
 
 It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
-
 &nbsp;
-
 **Live Link : [collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
-
 &nbsp;
-
 ## Try It in 30 Seconds
 
-No data? No setup? Click **Fill Sample Data** on the landing page, it loads a real 1000-loan LCC extract directly from this repo and builds the full dashboard instantly. No file upload needed.
-
+No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a real LCC extract directly from this repository and builds the full dashboard instantly. No file upload, no API key, no configuration needed.
 &nbsp;
 ## Screenshots
 
-**Landing Page - Upload or fill sample data instantly**
+**Landing Page - Upload regional files or load sample data instantly**
 
 ![Landing Page](docs/screenshots/01-landing.png)
 
 &nbsp;
-
-**KPI Dashboard - Portfolio health at a glance with MoM movement**
+**KPI Dashboard - Portfolio health with Month-on-Month movement**
 
 ![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
 
 &nbsp;
-
 **Portfolio Analysis - DPD bucket distribution, branch collection %, arrears exposure**
 
 ![Portfolio Analysis](docs/screenshots/03-portfolio-analysis.png)
 
 &nbsp;
-
 <table>
 <tr>
 <td width="50%">
 
-**Executive Scorecard - Every field executive ranked by collection %, strike rate and roll rates**
+**Executive Scorecard - Every field executive ranked by collection %, strike rate, NPA count and roll rates**
 
 ![Executive Scorecard](docs/screenshots/04-executive-scorecard.png)
 
 </td>
 <td width="50%">
 
-**Smart Alerts - Automatic risk flags with POS exposure and recommended actions**
+**Smart Alerts - 6 automatic risk flags with SOH exposure and recommended actions**
 
 ![Smart Alerts](docs/screenshots/05-smart-alerts.png)
 
@@ -79,7 +70,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page, it loads a re
 <tr>
 <td width="50%">
 
-**AI Query Assistant - Plain English queries powered by Gemini + LangGraph**
+**AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash + LangGraph**
 
 ![AI Query](docs/screenshots/06-ai-query.png)
 
@@ -101,8 +92,6 @@ No data? No setup? Click **Fill Sample Data** on the landing page, it loads a re
 ![Customer Table](docs/screenshots/08-customer-table.png)
 
 &nbsp;
-
-
 ## Who It Is Built For
 
 | Role | How They Use It |
@@ -116,54 +105,68 @@ No data? No setup? Click **Fill Sample Data** on the landing page, it loads a re
 
 **Plain English Query Engine**
 
-Ask questions the way you think them. The system understands NBFC domain language - "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2" and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
+Ask questions the way you think them. The system understands NBFC domain language - "show me MAT accounts with no collection in last 1 year", "rank executives by strike rate", "how many advances from last 6 months are already in SMA-2", "show insurance delinquency cases" - and returns the right result, whether that is a filtered customer table, a ranked executive comparison, or a single summary answer. Every result includes AI-generated observations and a download to Excel.
+
+**Multi-Region File Support**
+
+Upload multiple regional LCC extracts at once. The system concatenates them into a single unified portfolio view, deduplicates on Loan No, and normalises datetime precision across files. The sidebar Region filter then lets you slice by any individual region or view all combined. Supports `.xlsx`, `.xls`, and `.xlsb` (Microsoft Excel Binary) formats.
+
+**Robust Column Normalisation**
+
+LCC extracts vary across regions and systems - truncated headers, trailing spaces, inconsistent capitalisation. A four-pass normalisation pipeline handles all of this automatically: strip spaces, apply known aliases, case-insensitive exact match, then longest-first prefix matching for truncated names. Verified at 100% accuracy across all 85 expected columns including the tricky `NET Collection Demand Inst+Exp` vs `NET Collection Demand Inst+Exp+BC` collision. Multi-sheet workbooks are handled too - if the required sheet is not first, the system automatically detects and reads the sheet named "LCC".
 
 **Automated Priority Action List**
 
-A seven-tier business priority framework identifies accounts that need immediate attention non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
+A seven-tier business priority framework identifies accounts that need immediate attention - non-starters, easy settlements, recent advances already delinquent, insurance-driven arrears, co-lending at risk, long-term non-payers, and NPA accounts. Leaders get a ready-to-act list sorted by business impact, not just EMI count.
 
 **Field Executive Performance Scorecard**
 
-Every field executive is ranked by collection efficiency, strike rate, NPA percentage, and bucket roll rates. Top performers and underperformers are identified dynamically using quartile analysis so rankings are always relative to the current portfolio, not fixed benchmarks.
+Every field executive is ranked by collection efficiency, strike rate, NPA percentage, SMA-2 count, bucket roll rates, and Sum of Hire (SOH). Top performers and underperformers are identified dynamically using quartile analysis so rankings are always relative to the current portfolio, not fixed benchmarks.
 
 **Bucket Migration Analysis**
 
-When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets, how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
+When two months of data are uploaded, the system shows exactly how accounts moved between DPD buckets - how many cured, how many worsened, and the NPA formation rate. This is the early warning signal that tells a leader whether the portfolio is improving or deteriorating before the numbers become a crisis.
 
-Roll forward and roll backward queries are also supported through the plain English engine. Ask "show me accounts that worsened this month" or "which accounts cured from SMA-1" and get the filtered list instantly.
+**6 Smart Risk Alerts**
 
-**Smart Risk Alerts**
+Six automatic rule-based alerts fire on every upload using pure pandas - no LLM, always accurate:
 
-Automatic alerts fire for non-starters, insurance-driven delinquency, easy settlements, recent advances at risk, and co-lending loans showing arrears. Each alert includes account count, outstanding exposure, and a recommended action, with a direct Excel download of the flagged accounts.
+| Alert | Severity | What It Catches |
+|---|---|---|
+| Non Starters | Critical | Never paid 1st EMI - potential fraud or disbursement failure |
+| Co-lending at Risk | Critical | Partner bank co-lending loans showing any delinquency |
+| High Arrears - Loan at Risk | Critical | Inst+Exp+BC arrears exceed 50% of original loan - sorted by ratio, worst-first |
+| Insurance-Driven Delinquency | High | EMI paid but unpaid insurance charge causing artificial delinquency |
+| Recent Advances at Risk | High | Loans sanctioned in last 12 months already delinquent |
+| Easy Settlements | Medium | Closing arrears under ₹1,000 - one call can clear these |
+
+**SOH as the True Exposure Metric**
+
+The system uses Sum of Hire (SOH = Principal Outstanding + Closing Arrears) instead of POS alone as the exposure metric. For matured (MAT) and seized/sold (S&S) accounts where POS = 0, SOH correctly captures the remaining arrears exposure that POS would show as zero.
 
 **Monthly Portfolio Intelligence Report**
 
-A board-ready HTML report with AI-written executive narrative, branch performance league tables, executive rankings, risk flags, and a five-point prioritized action plan. Download it or send it by email directly from the dashboard.
+A board-ready HTML report with AI-written executive narrative in bullet points, branch performance league tables, executive rankings, risk flags, and a five-point prioritized action plan. The report uses table-based HTML layouts - fully email-safe, renders correctly in Gmail, Outlook, and any email client. Generate once, send to multiple addresses without regenerating.
 
 &nbsp;
 ## The Impact
 
 Before CollectionIQ, a leader needed to raise a request, wait for an analyst to pull data, and then ask a follow-up for any change in filter or angle. Each loop took hours to a day.
 
-With CollectionIQ, the same question is answered in under 30 seconds, directly by the leader, without involving anyone else.
+With CollectionIQ, the same question is answered in under 30 seconds - directly by the leader, without involving anyone else.
 
 **What this eliminates:**
-- Dependency on analysts and coordinators for portfolio queries
-- Manual Excel work for bucket-level or executive-level breakdowns
-- Delays in identifying which accounts to target for collection
-- Subjective prioritization replaced by a structured, data-driven action framework
-- Waiting for month-end reports to understand portfolio health
+
+Dependency on analysts and coordinators for portfolio queries. Manual Excel work for bucket-level or executive-level breakdowns. Delays in identifying which accounts to target for collection. Subjective prioritization replaced by a structured, data-driven action framework. Waiting for month-end reports to understand portfolio health.
 
 **What this enables:**
-- Leaders making faster, evidence-based collection decisions
-- Field executives held accountable through transparent scorecards
-- Early detection of portfolio stress through bucket migration tracking
-- Consistent prioritization logic applied across all regions and branches
+
+Leaders making faster, evidence-based collection decisions. Field executives held accountable through transparent scorecards. Early detection of portfolio stress through bucket migration tracking. Consistent prioritization logic applied across all regions and branches.
 
 &nbsp;
 ## Architecture
 
-CollectionIQ runs two independent AI pipelines orchestrated with LangGraph — one for answering queries in real time, one for generating the monthly portfolio report.
+CollectionIQ runs two independent AI pipelines orchestrated with LangGraph - one for answering queries in real time, one for generating the monthly portfolio report.
 
 &nbsp;
 ### Query Pipeline
@@ -178,10 +181,10 @@ flowchart TD
 
     subgraph QP ["  Query Pipeline  (LangGraph)  "]
         direction TB
-        DE["Domain Expert Agent\nGemini 2.0 Flash\n\nUnderstands NBFC terminology · Maps intent to columns\nDecides result shape · Detects priority mode\nInjects today's date for relative time filters"]
-        PP["Query Parser Agent\nGemini 2.0 Flash\n\nTranslates enriched query into structured filter spec\nHandles conditions · GROUP BY · HAVING · sort"]
+        DE["Domain Expert Agent\nGemini 2.5 Flash\n\nUnderstands NBFC terminology · Maps intent to columns\nDecides result shape · Detects priority mode\nInjects today's date for relative time filters"]
+        PP["Query Parser Agent\nGemini 2.5 Flash\n\nTranslates enriched query into structured filter spec\nHandles conditions · GROUP BY · HAVING · sort"]
         EX["Data Executor\nPandas\n\nApplies row filters · Aggregations · Priority rules\nComputes KPIs and executive rankings"]
-        IG["Insight Generator Agent\nGemini 2.0 Flash\n\nReads computed KPIs and rankings\nGenerates domain-aware observations and recommendations"]
+        IG["Insight Generator Agent\nGemini 2.5 Flash\n\nReads computed KPIs and rankings\nGenerates domain-aware observations and recommendations"]
         DE --> PP --> EX --> IG
     end
 
@@ -193,7 +196,7 @@ flowchart TD
 &nbsp;
 ### Report Pipeline
 
-Triggered on demand. Runs fully autonomously, no user input needed after clicking Generate.
+Triggered on demand. Runs fully autonomously - no user input needed after clicking Generate.
 
 ```mermaid
 flowchart TD
@@ -204,8 +207,8 @@ flowchart TD
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
         PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
-        RN["Risk Narrator\nGemini 2.0 Flash\n\nWrites 3-paragraph board-level executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
-        RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nNo external CSS · No CDN · Email-safe"]
+        RN["Risk Narrator\nGemini 2.5 Flash\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
+        RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
         ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
         PA --> RN --> RB --> ED
     end
@@ -215,16 +218,15 @@ flowchart TD
 ```
 
 &nbsp;
-
 ### Data Layer
 
 Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine.
 
 ```mermaid
 flowchart LR
-    XL["LCC Excel File\nMonthly extract"] --> VAL["Validation\nSchema check · Type coercion"]
-    VAL --> BK["Bucketing\nDPD bucket assignment\nSTD · 1-30 · SMA-1 · SMA-2 · NPA"]
-    BK --> KPI["KPI Computation\nCollection % · POS · Arrears · MoM delta"]
+    XL["LCC Excel File\n.xlsx / .xls / .xlsb\nSingle or multiple regional files"] --> VAL["Validation\nSchema check · Column normalisation\nMulti-sheet detection · Date parsing"]
+    VAL --> BK["Bucketing\nDPD bucket assignment\nSTD · 1-30 · SMA-1 · SMA-2 · NPA\nSOH = POS + Closing Arrears"]
+    BK --> KPI["KPI Computation\nCollection % · SOH · Arrears · MoM delta"]
     KPI --> DF[("In-Memory\nDataFrame")]
     DF --> QP2["Query Pipeline"]
     DF --> RP2["Report Pipeline"]
@@ -232,21 +234,20 @@ flowchart LR
 ```
 
 &nbsp;
-
 ## Project Structure
 
 ```
 CollectionIQ/
 ├── app.py                          # Main Streamlit app - all UI layout and state
 ├── graph.py                        # AI query pipeline (LangGraph state machine)
-├── utils.py                        # Data loading, metrics, charts, HTML export
-├── smart_alerts.py                 # 5 rule-based risk alerts (pure pandas, no LLM)
+├── utils.py                        # Data loading, column normalisation, metrics, charts
+├── smart_alerts.py                 # 6 rule-based risk alerts (pure pandas, no LLM)
 │
 ├── agents/
-│   ├── domain_expert.py            # Agent 0 - query enrichment + intent detection
-│   ├── query_parser.py             # Agent 1 - natural language to filter spec
-│   ├── data_executor.py            # Agent 2 - pandas filter / aggregation / priority
-│   └── insight_generator.py        # Agent 3 - AI observations on query results
+│   ├── domain_expert.py            # Agent 1 - query enrichment + NBFC intent detection
+│   ├── query_parser.py             # Agent 2 - natural language to structured filter spec
+│   ├── data_executor.py            # Agent 3 - pandas filter / aggregation / priority mode
+│   └── insight_generator.py        # Agent 4 - AI observations on query results
 │
 ├── analysis/
 │   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
@@ -257,7 +258,7 @@ CollectionIQ/
 │   └── nodes/
 │       ├── portfolio_analyzer.py   # Computes all report sections
 │       ├── risk_narrator.py        # AI executive narrative + action plan
-│       ├── report_builder.py       # Assembles self-contained HTML report
+│       ├── report_builder.py       # Assembles email-safe self-contained HTML report
 │       └── email_dispatcher.py     # SMTP delivery
 │
 ├── sample_data/
@@ -266,22 +267,24 @@ CollectionIQ/
 │
 └── requirements.txt
 ```
+
 &nbsp;
 ## Technology
 
 | Layer | Technology | Role |
 |---|---|---|
-| UI and Dashboard | Streamlit | Interactive web interface, session state, file upload |
-| AI Models | Google Gemini 2.0 Flash | All four AI agents across both pipelines |
+| UI and Dashboard | Streamlit | Interactive web interface, session state, multi-file upload |
+| AI Models | Google Gemini 2.5 Flash | All four AI agents across both pipelines |
 | Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
 | Charts | Plotly | DPD distribution, bucket migration heatmap, branch charts |
 | AI SDK | google-genai | Gemini API with retry and exponential backoff |
 | Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
 | Observability | LangSmith | Query tracing and result quality feedback |
+| Excel Formats | openpyxl · xlrd · pyxlsb | Handles .xlsx, .xls, and .xlsb with serial-date correction |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
-The domain knowledge layer: NBFC terminology, loan status values, priority framework, is embedded in the agent system prompts. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
+The domain knowledge layer: NBFC terminology, loan status values, strike rate definition, SOH calculation, priority framework, insurance delinquency logic - is embedded in the agent system prompts and verified against real portfolio data. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
 
 Both pipelines are stateless between runs. Each query or report generation starts fresh, no stale context, no memory leak, no shared state between users.
 
