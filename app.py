@@ -1037,7 +1037,10 @@ def _kpi_card_styled(label, value, mom):
 
 
 def _render_kpi_row(keys):
-    html = "".join(_kpi_card_styled(k, fmt_value(metrics[k][0], KIND[k]), metrics[k][1]) for k in keys)
+    html = "".join(
+        _kpi_card_styled(k, fmt_value(metrics[k][0], KIND[k]), metrics[k][1])
+        for k in keys if k in metrics and k in KIND
+    )
     st.markdown(f'<div class="kpi-row">{html}</div>', unsafe_allow_html=True)
 
 
