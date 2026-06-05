@@ -144,6 +144,8 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             engine = "xlrd"
         else:
             engine = "openpyxl"
+        if hasattr(file, "seek"):
+            file.seek(0)
         df = pd.read_excel(file, engine=engine, sheet_name=0)
     except Exception as e:
         return None, [f"Could not read file: {e}"]
