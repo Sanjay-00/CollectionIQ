@@ -6,33 +6,19 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-FF4B4B?logo=streamlit&logoColor=white)
 ![Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash-4285F4?logo=google&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)
-![License](https://img.shields.io/badge/License-MIT-yellow)
+
 &nbsp;
-## The Problem
 
-In a large NBFC, a Regional Business Head or Zonal Head manages thousands of loan accounts across dozens of branches and field executives. Every morning, the same questions come up:
-
-> *"Which accounts should my team prioritize today?"*
-> *"Which executive is underperforming and why?"*
-> *"How many accounts from last year's advances have gone delinquent?"*
-> *"Show me customers who haven't paid in 3 months in the Western region."*
-
-Getting answers meant raising a request to an analyst, waiting for a report, and then asking a follow-up. The cycle repeated for every business question, every day.
-
-Leaders were dependent on coordinators and analysts for information that should have been at their fingertips.
-&nbsp;
-## What CollectionIQ Does
-
-CollectionIQ is a self-serve portfolio intelligence platform built for collection leaders. Upload your monthly LCC Excel extract and the entire portfolio becomes queryable, visual, and explainable, without writing a single formula or waiting for a report.
-
-It answers questions in plain English, surfaces risks automatically, and generates board-ready analysis on demand.
-&nbsp;
 **Live Link : [collectioniq.streamlit.app](https://collectioniq.streamlit.app/)**
+
 &nbsp;
+
 ## Try It in 30 Seconds
 
 No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a real LCC extract directly from this repository and builds the full dashboard instantly. No file upload, no API key, no configuration needed.
+
 &nbsp;
+
 ## Screenshots
 
 **Landing Page - Upload regional files or load sample data instantly**
@@ -40,16 +26,19 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 ![Landing Page](docs/screenshots/01-landing.png)
 
 &nbsp;
+
 **KPI Dashboard - Portfolio health with Month-on-Month movement**
 
 ![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
 
 &nbsp;
+
 **Portfolio Analysis - DPD bucket distribution, branch collection %, arrears exposure**
 
 ![Portfolio Analysis](docs/screenshots/03-portfolio-analysis.png)
 
 &nbsp;
+
 <table>
 <tr>
 <td width="50%">
@@ -92,6 +81,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 ![Customer Table](docs/screenshots/08-customer-table.png)
 
 &nbsp;
+
 ## Who It Is Built For
 
 | Role | How They Use It |
@@ -101,6 +91,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 | Business Unit Head | Query specific customer segments, get prioritized action lists, analyse new advances |
 
 &nbsp;
+
 ## Core Capabilities
 
 **Plain English Query Engine**
@@ -149,6 +140,7 @@ The system uses Sum of Hire (SOH = Principal Outstanding + Closing Arrears) inst
 A board-ready HTML report with AI-written executive narrative in bullet points, branch performance league tables, executive rankings, risk flags, and a five-point prioritized action plan. The report uses table-based HTML layouts - fully email-safe, renders correctly in Gmail, Outlook, and any email client. Generate once, send to multiple addresses without regenerating.
 
 &nbsp;
+
 ## The Impact
 
 Before CollectionIQ, a leader needed to raise a request, wait for an analyst to pull data, and then ask a follow-up for any change in filter or angle. Each loop took hours to a day.
@@ -164,11 +156,13 @@ Dependency on analysts and coordinators for portfolio queries. Manual Excel work
 Leaders making faster, evidence-based collection decisions. Field executives held accountable through transparent scorecards. Early detection of portfolio stress through bucket migration tracking. Consistent prioritization logic applied across all regions and branches.
 
 &nbsp;
+
 ## Architecture
 
 CollectionIQ runs two independent AI pipelines orchestrated with LangGraph - one for answering queries in real time, one for generating the monthly portfolio report.
 
 &nbsp;
+
 ### Query Pipeline
 
 Every question typed in plain English passes through four agents in sequence before a result appears on screen.
@@ -194,6 +188,7 @@ flowchart TD
 ```
 
 &nbsp;
+
 ### Report Pipeline
 
 Triggered on demand. Runs fully autonomously - no user input needed after clicking Generate.
@@ -218,6 +213,7 @@ flowchart TD
 ```
 
 &nbsp;
+
 ### Data Layer
 
 Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine.
@@ -234,6 +230,7 @@ flowchart LR
 ```
 
 &nbsp;
+
 ## Project Structure
 
 ```
@@ -269,6 +266,7 @@ CollectionIQ/
 ```
 
 &nbsp;
+
 ## Technology
 
 | Layer | Technology | Role |
