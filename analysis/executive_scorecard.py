@@ -5,8 +5,10 @@ Performance tiers are quartile-based (relative to the dataset) - not hardcoded t
 """
 import pandas as pd
 
+from config import SCORECARD_MIN_ACCOUNTS
 
-def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = 5) -> pd.DataFrame:
+
+def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_MIN_ACCOUNTS) -> pd.DataFrame:
     """
     Returns a DataFrame ranked by collection_pct with performance_tier column.
 

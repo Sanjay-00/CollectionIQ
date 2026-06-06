@@ -2,6 +2,7 @@ import os
 import time
 from google import genai
 from langsmith import traceable
+from config import GEMINI_MODEL
 from report_agent.state import ReportState
 
 
@@ -142,14 +143,14 @@ def risk_narrator_node(state: ReportState) -> ReportState:
     client = genai.Client(api_key=api_key)
 
     try:
-        resp = _call_gemini_with_retry(client, "gemini-2.5-flash", prompt, {"system_instruction": NARRATIVE_PROMPT})
+        resp = _call_gemini_with_retry(client, GEMINI_MODEL, prompt, {"system_instruction": NARRATIVE_PROMPT})
         _add_token_usage(resp)
         narrative = resp.text.strip()
     except Exception as e:
         narrative = f"Narrative generation failed: {e}"
 
     try:
-        resp2 = _call_gemini_with_retry(client, "gemini-2.5-flash", prompt, {"system_instruction": ACTION_PROMPT})
+        resp2 = _call_gemini_with_retry(client, GEMINI_MODEL, prompt, {"system_instruction": ACTION_PROMPT})
         _add_token_usage(resp2)
         action_plan = resp2.text.strip()
     except Exception as e:

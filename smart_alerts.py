@@ -6,6 +6,13 @@ import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
+from config import (
+    EASY_SETTLEMENT_MAX_ARREARS,
+    HIGH_ARREARS_LOAN_RATIO,
+    INSURANCE_EXP_ARREARS_MIN,
+    RECENT_ADVANCES_MONTHS,
+)
+
 
 def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -66,7 +73,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
     arr_inst = _to_num(df, "ARREARS AGAINST INST")
     arr_exp  = _to_num(df, "ARREARS AGAINST EXP")
     arrears  = _to_num(df, "Arrears / EMI")
-    mask = (arr_inst <= 0) & (arr_exp > 5000) & (arrears > 0)
+    mask = (arr_inst <= 0) & (arr_exp > INSURANCE_EXP_ARREARS_MIN) & (arrears > 0)
     subset = df[mask]
     return {
         "title": "Insurance-Driven Delinquency",
@@ -84,7 +91,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
 def alert_easy_settlements(df: pd.DataFrame) -> dict:
     """Accounts where closing arrears < 1000 - small amount, easy to clear."""
     closing = _to_num(df, "Closing Arrears")
-    mask = (closing > 0) & (closing < 1000)
+    mask = (closing > 0) & (closing < EASY_SETTLEMENT_MAX_ARREARS)
     subset = df[mask]
     return {
         "title": "Easy Settlements",
@@ -99,7 +106,7 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
     }
 
 
-def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = 12) -> dict:
+def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCES_MONTHS) -> dict:
     """Loans sanctioned in the last N months that already have delinquencies."""
     cutoff = pd.Timestamp(date.today() - relativedelta(months=months))
     ag = df["Ag_Date"] if "Ag_Date" in df.columns else pd.Series(pd.NaT, index=df.index)
@@ -147,7 +154,7 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     loan_amt = pd.to_numeric(df["Loan Amount"], errors="coerce") if "Loan Amount" in df.columns else pd.Series(0.0, index=df.index)
 
     total_arr = arr_inst + arr_exp + arr_bc
-    mask = (total_arr > 0.5 * loan_amt) & (loan_amt > 0)
+    mask = (total_arr > HIGH_ARREARS_LOAN_RATIO * loan_amt) & (loan_amt > 0)
     subset = df[mask].copy()
 
     # Add ratio column — sorted worst-first so >100% cases surface immediately
