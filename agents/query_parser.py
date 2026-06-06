@@ -4,6 +4,7 @@ import re
 import time
 from google import genai
 from langsmith import traceable
+from config import GEMINI_MODEL
 
 
 def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
@@ -167,7 +168,7 @@ def parse_query(query: str) -> dict:
     )
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, "gemini-2.5-flash", date_context + query,
+        client, GEMINI_MODEL, date_context + query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)

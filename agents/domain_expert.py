@@ -4,6 +4,7 @@ import re
 import time
 from google import genai
 from langsmith import traceable
+from config import GEMINI_MODEL
 
 # Business Priority Framework ───────────────────────────────────────────────
 # Defined here as ground truth - used both in the system prompt and by the
@@ -316,7 +317,7 @@ def enrich_query(raw_query: str) -> dict:
     )
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, "gemini-2.5-flash", date_context + raw_query,
+        client, GEMINI_MODEL, date_context + raw_query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)

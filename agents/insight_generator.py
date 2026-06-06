@@ -2,6 +2,7 @@ import os
 import time
 from google import genai
 from langsmith import traceable
+from config import GEMINI_MODEL
 
 
 def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
@@ -94,7 +95,7 @@ BUCKET DISTRIBUTION (% of matched accounts):
 
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, "gemini-2.5-flash", context,
+        client, GEMINI_MODEL, context,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)
