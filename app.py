@@ -1132,7 +1132,7 @@ if "MNT NAME" in df_curr.columns:
             <div class="kpi-card" style="border-top-color:{strike_color};">
               <div class="kpi-label">Avg Strike Rate %</div>
               <div class="kpi-value" style="color:{strike_color};">{avg_strike:.1f}%</div>
-              <div class="kpi-mom">Full payment received %</div>
+              <div class="kpi-mom">EMI obligation cleared this month</div>
             </div>""", unsafe_allow_html=True)
         with sc_col5:
             npa_color = "#16a34a" if avg_npa < 5 else "#d97706" if avg_npa < 10 else "#dc2626"

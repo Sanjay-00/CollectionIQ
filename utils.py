@@ -522,7 +522,7 @@ def build_html_export(
                 f'<div style="display:flex;gap:14px;">'
                 f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">Accounts</div>'
                 f'<div style="font-size:22px;font-weight:800;color:{color};">{alert["count"]}</div></div>'
-                f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">POS</div>'
+                f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">SOH</div>'
                 f'<div style="font-size:16px;font-weight:700;color:#111;">{pos_fmt}</div></div>'
                 f'<div><div style="font-size:9px;color:#9ca3af;font-weight:600;text-transform:uppercase;">Arrears</div>'
                 f'<div style="font-size:16px;font-weight:700;color:{color};">{arr_fmt}</div></div>'
@@ -545,32 +545,40 @@ def build_html_export(
         def _exec_rows(sub):
             rows = ""
             for _, row in sub.iterrows():
-                coll = row["Collection %"]
+                coll      = row["Collection %"]
+                npa_count = int(row.get("NPA", 0))
+                sma2      = int(row.get("SMA-2", 0))
                 coll_color = "#16a34a" if coll > 100 else "#d97706" if coll >= 90 else "#dc2626"
+                npa_color  = "#dc2626" if npa_count > 0 else "#16a34a"
+                sma2_color = "#d97706" if sma2 > 0 else "#16a34a"
                 rows += (
                     f'<tr style="border-bottom:1px solid #f3f4f6;">'
                     f'<td style="padding:7px 10px;font-size:12px;font-weight:600;color:#111;">{row["Executive (Branch)"]}</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Accounts"]}</td>'
                     f'<td style="padding:7px 10px;font-size:13px;font-weight:800;color:{coll_color};text-align:center;">{coll}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Strike Rate %"]}%</td>'
-                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["NPA %"]}%</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row.get("NPA %", 0)}%</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{npa_color};text-align:center;">{npa_count}</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{sma2_color};text-align:center;">{sma2}</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row.get("Total POS (L)", 0)}</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row.get("Total SOH (L)", 0)}</td>'
                     f'</tr>'
                 )
             return rows
 
         def _exec_table(title, sub, color):
+            headers = ["Executive", "Accounts", "Coll %", "Strike %", "NPA %", "NPA", "SMA-2", "POS (L)", "SOH (L)"]
+            th = "".join(
+                f'<th style="padding:7px 10px;text-align:{"left" if i==0 else "center"};font-size:10px;'
+                f'color:#6b7280;font-weight:700;text-transform:uppercase;">{h}</th>'
+                for i, h in enumerate(headers)
+            )
             return (
                 f'<div style="flex:1;">'
                 f'<div style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase;'
                 f'letter-spacing:1px;margin-bottom:8px;padding:5px 10px;background:{color}18;border-radius:6px;">{title}</div>'
                 f'<table style="width:100%;border-collapse:collapse;">'
-                f'<thead><tr style="background:#f9fafb;">'
-                f'<th style="padding:7px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Executive</th>'
-                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Accounts</th>'
-                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Coll %</th>'
-                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">Strike %</th>'
-                f'<th style="padding:7px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;">NPA %</th>'
-                f'</tr></thead>'
+                f'<thead><tr style="background:#f9fafb;">{th}</tr></thead>'
                 f'<tbody>{_exec_rows(sub)}</tbody>'
                 f'</table></div>'
             )
