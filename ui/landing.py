@@ -57,7 +57,7 @@ def render_landing() -> None:
         ("#FFBF00", "KPI DASHBOARD",       "Collection %, POS, demand, strike rate and NPA with month-on-month movement."),
         ("#111111", "EXECUTIVE SCORECARD", "Every field executive ranked by collection efficiency, strike rate and roll rates."),
         ("#FFBF00", "SMART ALERTS",        "Flagged non-starters, co-lending risk, easy settlements and insurance-driven arrears."),
-        ("#111111", "AI QUERY ENGINE",     "Ask any question in plain English. Query priority loans or filter SMA-2 accounts by region."),
+        ("#111111", "AI QUERY ENGINE",     "Ask any question in plain English. Query priority loans or filter NPA loans by region."),
         ("#FFBF00", "MONTHLY REPORT",      "Board-ready HTML report with AI narrative, branch league table and a five-point action plan."),
     ]
     for col, (color, title, desc) in zip(st.columns(5), _FEATURES):

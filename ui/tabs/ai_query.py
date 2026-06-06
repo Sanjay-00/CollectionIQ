@@ -46,7 +46,7 @@ body { background: #f2f2f2; font-family: 'Inter', sans-serif; padding: 2px 0 0 0
   <div class="sub">Ask any question about your loan portfolio in plain English. Click an example to try:</div>
   <button class="chip" onclick="fill('Show customers who haven\\'t paid for last 3 months')">Show customers who haven't paid for last 3 months</button>
   <button class="chip" onclick="fill('List NPA accounts in MAHAD with POS above 1 lakh')">List NPA accounts in MAHAD with POS above 1 lakh</button>
-  <button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 advances')">Show all accounts &gt;2 bucket from Nov 2025 advances</button>
+  <button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 onward advances')">Show all accounts &gt;2 bucket from Nov 2025 onward advances</button>
   <button class="chip" onclick="fill('Show those accounts that need immediate action')">Show accounts that need immediate action</button>
 </div>
 <script>
