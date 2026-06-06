@@ -5,3 +5,4 @@ __pycache__/
 *.pyo
 .streamlit/secrets.toml
 .claude/
+generate_sample_data.py
