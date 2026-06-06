@@ -1,13 +1,50 @@
-from typing import TypedDict, Any
+import threading
 import uuid as _uuid
+from typing import Any, Callable, Optional, TypedDict
+
 import pandas as pd
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 
+from agents.data_executor import (
+    compute_contextual_rankings,
+    compute_result_kpis,
+    distribute_priority_accounts,
+    execute_aggregation,
+    execute_filters,
+    execute_priority_mode,
+)
 from agents.domain_expert import enrich_query
-from agents.query_parser import parse_query
-from agents.data_executor import execute_filters, execute_priority_mode, execute_aggregation, distribute_priority_accounts, compute_result_kpis, compute_contextual_rankings
 from agents.insight_generator import generate_insights
+from agents.query_parser import parse_query
 
+
+# ── Per-thread step callback ──────────────────────────────────────────────────
+# Each Streamlit user session runs in its own thread, so threading.local()
+# isolates callbacks correctly under concurrent load.
+_tls = threading.local()
+
+_STEP_LABELS: dict[str, str] = {
+    "expert":  "🧠  Domain Expert: enriching query with NBFC context",
+    "parse":   "📋  Query Parser: translating to filter conditions",
+    "execute": "⚡  Data Executor: applying filters to portfolio",
+    "analyze": "💡  Insight Generator: writing AI observations",
+}
+
+
+def _announce(node: str) -> None:
+    """Fire the step callback, if one is registered for this thread."""
+    cb: Optional[Callable[[str], None]] = getattr(_tls, "step_callback", None)
+    if cb is None:
+        return
+    label = _STEP_LABELS.get(node)
+    if label:
+        try:
+            cb(label)
+        except Exception:
+            pass
+
+
+# ── Graph state ───────────────────────────────────────────────────────────────
 
 class QueryState(TypedDict):
     # Input
@@ -46,6 +83,7 @@ class QueryState(TypedDict):
 
 # ── Agent 0: Domain Expert (Gemini) ──────────────────────────────────────────
 def domain_expert_node(state: QueryState) -> QueryState:
+    _announce("expert")
     try:
         enriched = enrich_query(state["query"])
         return {
@@ -62,7 +100,7 @@ def domain_expert_node(state: QueryState) -> QueryState:
             "result_type":      enriched.get("result_type", "loan_table"),
             "error": "",
         }
-    except Exception as e:
+    except Exception:
         # Non-fatal — fall back to raw query
         return {
             **state,
@@ -82,8 +120,8 @@ def domain_expert_node(state: QueryState) -> QueryState:
 
 # ── Agent 1: Query Parser (Gemini) ───────────────────────────────────────────
 def parse_node(state: QueryState) -> QueryState:
+    _announce("parse")
     try:
-        # Use enriched_query so the parser gets domain-expert context
         parsed = parse_query(state["enriched_query"])
         return {**state, "parsed_filters": parsed, "error": ""}
     except Exception as e:
@@ -92,15 +130,14 @@ def parse_node(state: QueryState) -> QueryState:
 
 # ── Agent 2: Data Executor (pandas) ──────────────────────────────────────────
 def execute_node(state: QueryState) -> QueryState:
+    _announce("execute")
     df: pd.DataFrame = state.get("result_df_full")
     if df is None or len(df) == 0:
         return {**state, "error": "No data loaded."}
     try:
         if state.get("priority_mode"):
-            # Priority mode: bypass filter parser, apply full priority framework
             display_df, err = execute_priority_mode(df)
         elif state.get("aggregation_mode"):
-            # Aggregation mode: GROUP BY + ratio computation — no row-level filter
             display_df, err = execute_aggregation(df, state.get("aggregation_spec", {}))
         else:
             display_df, err = execute_filters(df, state["parsed_filters"])
@@ -109,7 +146,6 @@ def execute_node(state: QueryState) -> QueryState:
             return {**state, "result_df": pd.DataFrame(), "error": err}
 
         if state.get("aggregation_mode"):
-            # KPIs and rankings are not meaningful for aggregation results
             kpis     = {"Count": len(display_df)}
             rankings = {}
         else:
@@ -122,6 +158,7 @@ def execute_node(state: QueryState) -> QueryState:
 
 # ── Agent 3: Insight Generator (Gemini) ──────────────────────────────────────
 def analyze_node(state: QueryState) -> QueryState:
+    _announce("analyze")
     try:
         insights = generate_insights(
             query=state["query"],
@@ -169,7 +206,18 @@ _graph.add_edge("error",   END)
 _compiled = _graph.compile()
 
 
-def run_query(query: str, df: pd.DataFrame) -> QueryState:
+def run_query(
+    query: str,
+    df: pd.DataFrame,
+    on_step: Optional[Callable[[str], None]] = None,
+) -> QueryState:
+    """Run the 4-agent query pipeline.
+
+    on_step, if provided, is called with a human-readable label at the start of
+    each pipeline stage — use it to drive a progress UI (e.g. st.status).
+    The callback fires on the same thread that calls run_query, so Streamlit's
+    st.status().write() works safely from inside it.
+    """
     run_id = str(_uuid.uuid4())
     initial: QueryState = {
         "query":            query,
@@ -192,4 +240,9 @@ def run_query(query: str, df: pd.DataFrame) -> QueryState:
         "error":            "",
         "run_id":           run_id,
     }
-    return _compiled.invoke(initial, config={"run_id": run_id})
+
+    _tls.step_callback = on_step
+    try:
+        return _compiled.invoke(initial, config={"run_id": run_id})
+    finally:
+        _tls.step_callback = None
