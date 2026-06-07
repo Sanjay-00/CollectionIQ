@@ -46,7 +46,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 ![Landing Page](docs/screenshots/01-landing.png)
 &nbsp;
 
-**KPI Dashboard - Portfolio health with Month-on-Month movement**
+**Dashboard - KPIs and portfolio health with Month-on-Month movement**
 
 ![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
 &nbsp;
@@ -78,27 +78,49 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 <tr>
 <td width="50%">
 
-**AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash + LangGraph**
+**Bucket Migration - Roll-forward / roll-backward rates and the prev-month → curr-month migration matrix**
 
 
-![AI Query](docs/screenshots/06-ai-query.png)
+![Bucket Migration](docs/screenshots/06-migration.png)
 
 </td>
 <td width="50%">
 
-**AI Query Result - KPIs, rankings, and domain-aware observations**
+**Monthly Portfolio Intelligence Report - board-ready HTML report with narrative, rankings and action plan**
 
 
-![AI Query Result](docs/screenshots/07-ai-query-result.png)
+![Monthly Report](docs/screenshots/10-report.png)
 
 </td>
 </tr>
 </table>
 &nbsp;
 
-**Filtered Customer Table + AI Observations**
+**AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash + LangGraph**
 
-![Customer Table](docs/screenshots/08-customer-table.png)
+![AI Query](docs/screenshots/07-ai-query.png)
+&nbsp;
+
+<table>
+<tr>
+<td width="50%">
+
+**AI Query summary - top regions, branches, executives and bucket distribution for the matched accounts**
+
+
+![Customer Table](docs/screenshots/09-customer-table.png)
+
+</td>
+<td width="50%">
+
+**AI Queried table Observations - domain-aware narrative generated for every query result**
+
+
+![AI Observations](docs/screenshots/08-ai-observations.png)
+
+</td>
+</tr>
+</table>
 &nbsp;
 
 
@@ -130,7 +152,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 |---|---|---|
 | Non Starters | Critical | Never paid 1st EMI |
 | Co-lending at Risk | Critical | Partner bank exposure showing delinquency |
-| High Arrears — Loan at Risk | Critical | Inst+Exp+BC arrears exceed 50% of original loan |
+| High Arrears - Loan at Risk | Critical | Inst+Exp+BC arrears exceed 50% of original loan |
 | Insurance-Driven Delinquency | High | EMI paid but insurance charge causing false delinquency |
 | Recent Advances at Risk | High | Loans under 12 months already delinquent |
 | Easy Settlements | Medium | Closing arrears under ₹1,000 |
