@@ -262,7 +262,11 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             df[df["Arrears / EMI"] >= 6]["Loan No"].nunique(),
             n_accounts,
         )
-        lcc_avg = df["LCC%"].mean()
+        _cum_due = sum(
+            pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
+            for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns
+        )
+        lcc_avg = _safe_pct(df["Total Cum Collection"].sum(), _cum_due)
         lcc_avg = round(lcc_avg, 2) if not pd.isna(lcc_avg) else 0.0
         cmd_pct = _safe_pct(cum_coll_total, cum_coll_inst_exp)
 
