@@ -9,6 +9,7 @@ class ReportState(TypedDict):
     prev_month: Optional[str]
     enabled_sections: list
     filters_applied: dict
+    skip_ai: bool
 
     # Node 1 — portfolio_analyzer
     section_data: dict
@@ -16,6 +17,7 @@ class ReportState(TypedDict):
     # Node 2 — risk_narrator
     executive_narrative: str
     action_plan: str
+    ai_skipped: bool
 
     # Node 3 — report_builder
     html_report: str

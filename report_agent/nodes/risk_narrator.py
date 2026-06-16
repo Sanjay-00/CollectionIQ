@@ -123,21 +123,15 @@ Rules:
 
 @traceable(run_type="chain", name="RiskNarrator", tags=["gemini", "nbfc", "report-generation"])
 def risk_narrator_node(state: ReportState) -> ReportState:
+    _empty = {**state, "executive_narrative": "", "action_plan": "", "ai_skipped": True}
+
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
-        return {
-            **state,
-            "executive_narrative": "AI narrative unavailable - GOOGLE_API_KEY not configured.",
-            "action_plan": "Action plan unavailable.",
-        }
+        return _empty
 
-    sd = state["section_data"]
+    sd = state.get("section_data")
     if not sd:
-        return {
-            **state,
-            "executive_narrative": "Insufficient data to generate narrative.",
-            "action_plan": "Insufficient data to generate action plan.",
-        }
+        return _empty
 
     prompt = _build_prompt(sd, state["curr_month"])
     client = genai.Client(api_key=api_key)
@@ -146,14 +140,11 @@ def risk_narrator_node(state: ReportState) -> ReportState:
         resp = _call_gemini_with_retry(client, GEMINI_MODEL, prompt, {"system_instruction": NARRATIVE_PROMPT})
         _add_token_usage(resp)
         narrative = resp.text.strip()
-    except Exception as e:
-        narrative = f"Narrative generation failed: {e}"
 
-    try:
         resp2 = _call_gemini_with_retry(client, GEMINI_MODEL, prompt, {"system_instruction": ACTION_PROMPT})
         _add_token_usage(resp2)
         action_plan = resp2.text.strip()
-    except Exception as e:
-        action_plan = f"Action plan generation failed: {e}"
+    except Exception:
+        return _empty
 
-    return {**state, "executive_narrative": narrative, "action_plan": action_plan}
+    return {**state, "executive_narrative": narrative, "action_plan": action_plan, "ai_skipped": False}
