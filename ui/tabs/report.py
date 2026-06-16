@@ -45,6 +45,8 @@ def render_report_tab(
         inc_branch = st.checkbox("Branch Performance",  value=True, key="rpt_branch")
     with rpt_c3:
         inc_exec   = st.checkbox("Executive Rankings",  value=True, key="rpt_exec")
+        inc_ai     = st.checkbox("AI Summary",          value=True, key="rpt_ai",
+                                 help="Uncheck to skip Gemini and generate a faster, pandas-only report")
 
     # ── Email (optional) ─────────────────────────────────────────────────────
     smtp_ok = bool(os.environ.get("SMTP_HOST", ""))
@@ -91,13 +93,16 @@ def render_report_tab(
         if st.session_state.get("rpt_branch"):  enabled_sections.append("branch_performance")
         if st.session_state.get("rpt_exec"):    enabled_sections.append("executive_rankings")
 
-        with st.spinner("Running Portfolio Intelligence Agent (30–60 seconds)..."):
+        _skip_ai = not st.session_state.get("rpt_ai", True)
+        _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30–60 seconds)..."
+        with st.spinner(_spinner_msg):
             _rpt_result = run_report(
                 df_curr=df_curr, df_prev=df_prev,
                 curr_month=curr_month, prev_month=prev_month,
                 enabled_sections=enabled_sections,
                 filters_applied={"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status},
                 email_to=rpt_email_to,
+                skip_ai=_skip_ai,
             )
         st.session_state["report_result"] = _rpt_result
 
@@ -114,6 +119,8 @@ def render_report_tab(
         return
 
     st.success("Report generated successfully.")
+    if _rpt.get("ai_skipped") and not _rpt.get("skip_ai"):
+        st.warning("AI summary could not be generated (Gemini unavailable). Report sent without it.")
     if _rpt.get("email_sent"):
         st.info(f"Report emailed to: {_rpt.get('email_to', '')}")
     elif _rpt.get("email_error") and os.environ.get("SMTP_HOST", "") and _rpt.get("email_to", ""):
