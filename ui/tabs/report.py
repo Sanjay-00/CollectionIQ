@@ -64,10 +64,10 @@ def render_report_tab(
     # ── Buttons ──────────────────────────────────────────────────────────────
     _gc, _sc, _ = st.columns([2, 1, 3])
     with _gc:
-        rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate", use_container_width=True)
+        rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate", width='stretch')
     with _sc:
         rpt_send_btn = st.button(
-            "📧 Send", key="rpt_send_only", use_container_width=True,
+            "📧 Send", key="rpt_send_only", width='stretch',
             disabled=not (smtp_ok and st.session_state.get("report_result", {}).get("html_report")),
         )
 
@@ -133,7 +133,7 @@ def render_report_tab(
             data=_rpt["html_report"].encode("utf-8"),
             file_name=f"portfolio_intelligence_{curr_month}.html",
             mime="text/html",
-            use_container_width=True,
+            width='stretch',
         )
 
     if _rpt.get("executive_narrative"):

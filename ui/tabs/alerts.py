@@ -82,7 +82,7 @@ def render_alerts_tab(df_curr: pd.DataFrame, alerts: list) -> None:
                         display_df = alert["df"].loc[:, ~alert["df"].columns.duplicated()]
                         st.dataframe(
                             _safe_df(display_df.reset_index(drop=True)),
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True,
                             height=min(300, 40 + alert["count"] * 35),
                         )

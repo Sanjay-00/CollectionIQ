@@ -46,7 +46,7 @@ def render_migration_tab(
     st.markdown('<div class="section-label" style="margin-top:20px;">Bucket Migration Matrix</div>', unsafe_allow_html=True)
     fig_rr = build_roll_rate_heatmap(rr_matrix)
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    st.plotly_chart(fig_rr, use_container_width=True)
+    st.plotly_chart(fig_rr, width='stretch')
     st.markdown('</div>', unsafe_allow_html=True)
     st.caption(
         f"{rr_meta['matched_count']:,} matched accounts | "

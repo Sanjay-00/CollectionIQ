@@ -30,7 +30,7 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
         st.download_button(
             "⬇ Excel", data=_excel_bytes(df), file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=key, use_container_width=True,
+            key=key, width='stretch',
         )
 
 

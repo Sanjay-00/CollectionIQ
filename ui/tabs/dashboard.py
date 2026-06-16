@@ -68,11 +68,11 @@ def render_dashboard_tab(
     col_bar, col_hbar, col_lcc = st.columns([2, 2, 1])
     with col_bar:
         st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_status, use_container_width=True)
+        st.plotly_chart(fig_status, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
     with col_hbar:
         st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_branch, use_container_width=True)
+        st.plotly_chart(fig_branch, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
     with col_lcc:
         lcc_val   = fmt_value(metrics["LCC%"][0], "pct")
@@ -91,7 +91,7 @@ def render_dashboard_tab(
     col_trend, col_bot = st.columns([3, 2])
     with col_trend:
         st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_closing, use_container_width=True)
+        st.plotly_chart(fig_closing, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
     with col_bot:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -117,5 +117,5 @@ def render_dashboard_tab(
             data=html_content.encode("utf-8"),
             file_name=f"shriram_dashboard_{curr_month}.html",
             mime="text/html",
-            use_container_width=True,
+            width='stretch',
         )

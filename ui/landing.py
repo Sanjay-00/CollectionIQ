@@ -84,7 +84,7 @@ def render_landing() -> None:
 
     _, col_s, _ = st.columns([2, 1, 2])
     with col_s:
-        if st.button("Fill Sample Data", type="primary", use_container_width=True):
+        if st.button("Fill Sample Data", type="primary", width='stretch'):
             try:
                 with st.spinner("Fetching sample data from GitHub..."):
                     _dc, _dp = _fetch_sample_from_github()

@@ -70,7 +70,7 @@ function fill(text) {
 
     col_run, col_hint = st.columns([1, 4])
     with col_run:
-        run_btn = st.button("🔍  Run Query", type="primary", use_container_width=True)
+        run_btn = st.button("🔍  Run Query", type="primary", width='stretch')
     with col_hint:
         st.markdown(
             "<div style='padding-top:10px;font-size:12px;color:#aaa;'>"
@@ -181,7 +181,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
 
             disp = grp.drop(columns=["Priority", "Why", "_rank"], errors="ignore")
             disp = disp.loc[:, ~disp.columns.duplicated()].reset_index(drop=True)
-            st.dataframe(_safe_df(disp.head(1000)), use_container_width=True,
+            st.dataframe(_safe_df(disp.head(1000)), width='stretch',
                          height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
             if len(disp) > 1000:
                 st.caption(f"Showing 1,000 of {len(disp):,} rows — download Excel for full list.")
@@ -233,7 +233,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             """, unsafe_allow_html=True)
         if len(filtered_df) > 1:
             st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
-            st.dataframe(_safe_df(filtered_df.head(1000)), use_container_width=True,
+            st.dataframe(_safe_df(filtered_df.head(1000)), width='stretch',
                          height=min(400, 50 + min(len(filtered_df), 1000) * 36), hide_index=True)
             if len(filtered_df) > 1000:
                 st.caption(f"Showing 1,000 of {len(filtered_df):,} rows - download Excel for full list.")
@@ -392,7 +392,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             unsafe_allow_html=True,
         )
         display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-        st.dataframe(_safe_df(display_filtered.head(1000)), use_container_width=True, height=320, hide_index=True)
+        st.dataframe(_safe_df(display_filtered.head(1000)), width='stretch', height=320, hide_index=True)
         if len(display_filtered) > 1000:
             st.caption(f"Showing 1,000 of {len(display_filtered):,} rows - download Excel for full list.")
         _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")

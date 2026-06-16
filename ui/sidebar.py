@@ -39,7 +39,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
             unsafe_allow_html=True,
         )
         st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
-        if st.button("Clear cache & reload", use_container_width=True, key="clear_cache_btn"):
+        if st.button("Clear cache & reload", width='stretch', key="clear_cache_btn"):
             st.cache_data.clear()
             for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result",
                        "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region"]:

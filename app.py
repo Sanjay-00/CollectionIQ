@@ -93,7 +93,7 @@ if not curr_file and not st.session_state.get("_sample_loaded"):
 # ── Generate button ───────────────────────────────────────────────────────────
 col_btn, _ = st.columns([1, 3])
 with col_btn:
-    generate = st.button("⚡  Generate Dashboard", type="primary", use_container_width=True)
+    generate = st.button("⚡  Generate Dashboard", type="primary", width='stretch')
 
 # ── Load & cache data ─────────────────────────────────────────────────────────
 if generate and curr_file:
