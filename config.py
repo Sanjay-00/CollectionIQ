@@ -1,9 +1,9 @@
 # Single source of truth for shared configuration values.
 # Import from here rather than hardcoding strings across modules.
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-# ── Smart Alert thresholds ────────────────────────────────────────────────────
+#  Smart Alert thresholds ────────────────────────────────────────────────────
 # Tune these to adjust sensitivity without touching business logic code.
 
 # Easy Settlements: closing arrears below this are considered quick wins
