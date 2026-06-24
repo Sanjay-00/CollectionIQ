@@ -237,7 +237,15 @@ def _mom_pct(curr, prev):
 
 
 def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
+    _zero = {
+        "Month Demand": 0.0, "Total Collection": 0.0, "Collection %": 0.0,
+        "Strike %": 0.0, "NPA %": 0.0, "Hard Bucket %": 0.0,
+        "Count": 0, "SOH": 0.0, "LCC%": 0.0, "CMD %": 0.0,
+    }
+
     def _calc(df):
+        if df.empty or "Loan No" not in df.columns:
+            return _zero.copy()
         n_accounts = df["Loan No"].nunique()
         demand = df["Net Collection Demand Inst+Exp+BC"].sum(min_count=1)
         demand = 0.0 if pd.isna(demand) else demand
