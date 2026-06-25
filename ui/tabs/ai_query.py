@@ -103,16 +103,16 @@ function fill(text) {
     filtered_df = result["result_df"]
     kpis_q      = result["result_kpis"]
     rankings    = result["result_rankings"]
-    insights    = result["insights"]
-    plain       = result["parsed_filters"].get("plain_english", "")
+    insights    = result.get("insights") or ""
+    plain       = (result.get("parsed_filters") or {}).get("plain_english") or ""
 
     is_priority    = result.get("priority_mode", False)
     is_aggregation = result.get("aggregation_mode", False)
-    result_type    = result.get("result_type", "loan_table")
-    category       = result.get("query_category", "general").replace("_", " ").title()
-    query_title    = result.get("query_title", "")
-    enriched       = result.get("enriched_query", "")
-    risk_flag      = result.get("risk_flag", "medium")
+    result_type    = result.get("result_type") or "loan_table"
+    category       = (result.get("query_category") or "general").replace("_", " ").title()
+    query_title    = result.get("query_title") or ""
+    enriched       = result.get("enriched_query") or ""
+    risk_flag      = result.get("risk_flag") or "medium"
     risk_color     = {"high": "#dc2626", "medium": "#d97706", "low": "#16a34a"}.get(risk_flag, "#d97706")
     risk_label     = {"high": "🔴 High Risk", "medium": "🟡 Medium Risk", "low": "🟢 Low Risk"}.get(risk_flag, "🟡 Medium Risk")
 

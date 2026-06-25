@@ -88,16 +88,16 @@ def domain_expert_node(state: QueryState) -> QueryState:
         enriched = enrich_query(state["query"])
         return {
             **state,
-            "enriched_query":   enriched.get("enriched_query", state["query"]),
-            "query_category":   enriched.get("query_category", "general"),
-            "query_title":      enriched.get("query_title", "Custom Query"),
-            "focus_kpis":       enriched.get("focus_kpis", []),
-            "insight_focus":    enriched.get("insight_focus", ""),
-            "risk_flag":        enriched.get("risk_flag", "medium"),
+            "enriched_query":   enriched.get("enriched_query") or state["query"],
+            "query_category":   enriched.get("query_category") or "general",
+            "query_title":      enriched.get("query_title") or "Custom Query",
+            "focus_kpis":       enriched.get("focus_kpis") or [],
+            "insight_focus":    enriched.get("insight_focus") or "",
+            "risk_flag":        enriched.get("risk_flag") or "medium",
             "priority_mode":    bool(enriched.get("priority_mode", False)),
             "aggregation_mode": bool(enriched.get("aggregation_mode", False)),
             "aggregation_spec": enriched.get("aggregation_spec") or {},
-            "result_type":      enriched.get("result_type", "loan_table"),
+            "result_type":      enriched.get("result_type") or "loan_table",
             "error": "",
         }
     except Exception:
