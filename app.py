@@ -97,7 +97,7 @@ with col_btn:
 
 # ── Load & cache data ─────────────────────────────────────────────────────────
 if generate and curr_file:
-    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key", "_sample_loaded"]:
+    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region"]:
         st.session_state.pop(_k, None)
 
     n_curr = len(curr_file) if isinstance(curr_file, list) else 1
