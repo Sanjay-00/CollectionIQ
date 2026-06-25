@@ -215,6 +215,8 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
 
 
 def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str) -> pd.DataFrame:
+    if df.empty:
+        return df
     if region != "All":
         df = df[df["RegionName"] == region]
     if branch != "All":
@@ -318,6 +320,8 @@ def fmt_value(val, kind: str) -> str:
 
 
 def build_status_bar_chart(df: pd.DataFrame) -> go.Figure:
+    if df.empty or "curr_bucket" not in df.columns or "Loan No" not in df.columns:
+        return go.Figure()
     counts = (
         df.groupby("curr_bucket")["Loan No"]
         .nunique()
@@ -344,7 +348,7 @@ def build_status_bar_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
-    if len(df) == 0:
+    if df.empty or "Unit" not in df.columns:
         return go.Figure()
 
     grp = df.groupby("Unit").agg(
@@ -385,7 +389,7 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
 def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
     """Arrears exposure by DPD bucket — SUM(Closing Arrears) per bucket.
     Shows how much money is stuck at each risk level."""
-    if len(df) == 0 or "Closing Arrears" not in df.columns:
+    if df.empty or "Closing Arrears" not in df.columns or "curr_bucket" not in df.columns:
         return go.Figure()
 
     df = df.copy()

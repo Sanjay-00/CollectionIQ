@@ -13,7 +13,7 @@ def compute_executive_rankings(df_curr: pd.DataFrame, df_prev: pd.DataFrame = No
         def _rows(df_slice):
             return [
                 {
-                    "name":        row["MNT NAME"],
+                    "name":        row["Executive (Branch)"],
                     "accounts":    int(row["Accounts"]),
                     "coll_pct":    float(row["Collection %"]),
                     "strike_rate": float(row["Strike Rate %"]),
