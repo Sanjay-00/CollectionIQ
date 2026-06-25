@@ -244,7 +244,7 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     grouped = df.groupby(group_col, sort=False)
     agg = pd.DataFrame({group_col: list(grouped.groups.keys())}).set_index(group_col)
 
-    # Count rows per group — supports equality AND bucket_worse_than / bucket_better_than
+    # Count rows per group — supports total, equality, numeric comparison, and bucket ops
     for cnt in spec.get("counts", []):
         alias = cnt.get("alias", "")
         col   = cnt.get("column", "")
@@ -253,9 +253,17 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
         if not alias:
             continue
 
+        if col == "__total__":
+            agg[alias] = grouped.size()
+            continue
+
+        if not col or col not in df.columns:
+            agg[alias] = 0
+            continue
+
         if op in ("bucket_worse_than", "bucket_better_than", "bucket_stable"):
             ref_col = str(val) if val is not None else ""
-            if col not in df.columns or ref_col not in df.columns:
+            if ref_col not in df.columns:
                 agg[alias] = 0
             else:
                 curr_score = df[col].map(_BUCKET_SCORE)
@@ -265,11 +273,11 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
                     mask = valid & (curr_score > prev_score)
                 elif op == "bucket_better_than":
                     mask = valid & (curr_score < prev_score)
-                else:  # bucket_stable
+                else:
                     mask = valid & (curr_score == prev_score)
                 counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
                 agg[alias] = counts
-        elif op in (">", ">=", "<", "<=") and col in df.columns:
+        elif op in (">", ">=", "<", "<=", "!="):
             try:
                 val_num = float(val)
             except (TypeError, ValueError):
@@ -281,18 +289,21 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
                 ">=": lambda s, v: s >= v,
                 "<":  lambda s, v: s < v,
                 "<=": lambda s, v: s <= v,
+                "!=": lambda s, v: s != v,
             }
             mask = _num_ops[op](numeric_series, val_num)
             counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
             agg[alias] = counts
+        elif op == "in" and isinstance(val, list):
+            vals_upper = [str(v).upper() for v in val]
+            mask = df[col].astype(str).str.strip().str.upper().isin(vals_upper)
+            counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
+            agg[alias] = counts
         else:
-            if col not in df.columns:
-                agg[alias] = 0
-            else:
-                val_upper = str(val if val is not None else "").upper()
-                agg[alias] = grouped[col].apply(
-                    lambda s, v=val_upper: int((s.astype(str).str.strip().str.upper() == v).sum())
-                )
+            val_upper = str(val if val is not None else "").upper()
+            agg[alias] = grouped[col].apply(
+                lambda s, v=val_upper: int((s.astype(str).str.strip().str.upper() == v).sum())
+            )
 
     # Sum numeric column per group
     for sm in spec.get("sums", []):
@@ -313,8 +324,8 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
         )
 
     # Compute derived metric using pandas eval
-    metric_expr  = spec.get("metric", "")
-    metric_label = spec.get("metric_label", "Metric")
+    metric_expr  = spec.get("metric") or ""
+    metric_label = spec.get("metric_label") or "Metric"
     if metric_expr:
         try:
             computed = agg.eval(metric_expr)

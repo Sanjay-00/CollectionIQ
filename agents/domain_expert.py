@@ -207,8 +207,11 @@ When aggregation_mode is true, populate aggregation_spec with this exact structu
   ]
 }}
 
-COUNTS op field — four supported modes:
+COUNTS op field — supported modes:
+- column "__total__" — counts ALL rows in the group (no condition needed, op and value are ignored). Use for "total cases", "total accounts", "total portfolio", "all cases".
 - Omit op (or op "==") — count rows where column == value (default equality check)
+- op ">", ">=", "<", "<=" — numeric comparison. Use for "Closing Arrears <= 0", "Arrears / EMI > 3", etc. value must be a number.
+- op "in" — count rows where column value is in a list. value must be a list like ["SMA-1", "SMA-2"].
 - op "bucket_worse_than" — count rows where curr_bucket moved to a WORSE bucket vs prev_bucket (roll forward - BAD)
 - op "bucket_better_than" — count rows where curr_bucket moved to a BETTER bucket vs prev_bucket (roll backward - GOOD)
 - op "bucket_stable" — count rows where curr_bucket == prev_bucket (no change - stable accounts)
@@ -237,6 +240,36 @@ Example - "rank executives by roll backward count (most improved first)":
     {{"alias": "stable", "column": "curr_bucket", "op": "bucket_stable", "value": "prev_bucket"}}
   ]
   metric: "roll_backward", metric_label: "Roll Backward Count", sort_asc: false
+
+Example — "regionwise total cases, zero closing arrears, SMA-2 and NPA count":
+  aggregation_mode: true
+  aggregation_spec: {{
+    "group_by": "RegionName",
+    "counts": [
+      {{"alias": "total_cases", "column": "__total__"}},
+      {{"alias": "zero_closing_arrears", "column": "Closing Arrears", "op": "<=", "value": 0}},
+      {{"alias": "sma2", "column": "curr_bucket", "value": "SMA-2"}},
+      {{"alias": "npa", "column": "curr_bucket", "value": "NPA"}}
+    ],
+    "sums": [],
+    "metric": "",
+    "metric_label": "Total Cases",
+    "sort_asc": false
+  }}
+
+Example — "branchwise accounts with arrears > 3 EMI":
+  aggregation_mode: true
+  aggregation_spec: {{
+    "group_by": "Unit",
+    "counts": [
+      {{"alias": "total_cases", "column": "__total__"}},
+      {{"alias": "high_arrears", "column": "Arrears / EMI", "op": ">", "value": 3}}
+    ],
+    "sums": [],
+    "metric": "high_arrears / total_cases * 100",
+    "metric_label": "High Arrears %",
+    "sort_asc": false
+  }}
 
 HAVING rules - use "having" to filter groups AFTER aggregation (like SQL HAVING clause).
 Supported ops: >=, >, <=, <, ==, !=
