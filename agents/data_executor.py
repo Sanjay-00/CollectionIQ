@@ -248,13 +248,13 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     for cnt in spec.get("counts", []):
         alias = cnt.get("alias", "")
         col   = cnt.get("column", "")
-        op    = cnt.get("op", "==")
-        val   = cnt.get("value", "")
+        op    = cnt.get("op") or "=="
+        val   = cnt.get("value")
         if not alias:
             continue
 
         if op in ("bucket_worse_than", "bucket_better_than", "bucket_stable"):
-            ref_col = str(val)
+            ref_col = str(val) if val is not None else ""
             if col not in df.columns or ref_col not in df.columns:
                 agg[alias] = 0
             else:
@@ -269,23 +269,27 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
                     mask = valid & (curr_score == prev_score)
                 counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
                 agg[alias] = counts
+        elif op in (">", ">=", "<", "<=") and col in df.columns:
+            try:
+                val_num = float(val)
+            except (TypeError, ValueError):
+                agg[alias] = 0
+                continue
+            numeric_series = pd.to_numeric(df[col], errors="coerce")
+            _num_ops = {
+                ">":  lambda s, v: s > v,
+                ">=": lambda s, v: s >= v,
+                "<":  lambda s, v: s < v,
+                "<=": lambda s, v: s <= v,
+            }
+            mask = _num_ops[op](numeric_series, val_num)
+            counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
+            agg[alias] = counts
         else:
             if col not in df.columns:
                 agg[alias] = 0
-            elif op in (">", ">=", "<", "<=", "!=") and not isinstance(val, str):
-                numeric_series = pd.to_numeric(df[col], errors="coerce")
-                _num_ops = {
-                    ">":  lambda s, v: s > v,
-                    ">=": lambda s, v: s >= v,
-                    "<":  lambda s, v: s < v,
-                    "<=": lambda s, v: s <= v,
-                    "!=": lambda s, v: s != v,
-                }
-                mask = _num_ops[op](numeric_series, float(val))
-                counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
-                agg[alias] = counts
             else:
-                val_upper = str(val).upper()
+                val_upper = str(val if val is not None else "").upper()
                 agg[alias] = grouped[col].apply(
                     lambda s, v=val_upper: int((s.astype(str).str.strip().str.upper() == v).sum())
                 )
