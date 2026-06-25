@@ -15,6 +15,8 @@ from ui.header import render_header
 from ui.landing import render_landing
 from ui.sidebar import render_sidebar
 from ui.components import _load_and_concat
+from analysis.executive_scorecard import compute_executive_scorecard
+from analysis.roll_rate import compute_roll_rate_matrix
 from ui.tabs.dashboard import render_dashboard_tab
 from ui.tabs.scorecard import render_scorecard_tab
 from ui.tabs.alerts import render_alerts_tab
@@ -146,28 +148,15 @@ if prev_file and len(df_prev_raw) == 0:
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 sel_region, sel_branch, sel_status = render_sidebar(df_curr_raw, curr_month)
 
-# ── Apply filters ─────────────────────────────────────────────────────────────
-df_curr = apply_filters(df_curr_raw.copy(), sel_region, sel_branch, sel_status)
-df_prev = apply_filters(df_prev_raw.copy(), sel_region, sel_branch, sel_status)
-
-# Attach prev_bucket for roll-forward/backward agent queries
-if len(df_prev_raw) > 0 and "Loan No" in df_curr.columns and "curr_bucket" in df_prev_raw.columns:
-    _prev_slim = df_prev_raw[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"})
-    df_curr = df_curr.merge(_prev_slim, on="Loan No", how="left")
-
-# Clear AI/report results when filters change
-_filter_key = f"{sel_region}|{sel_branch}|{sel_status}"
-if st.session_state.get("_last_filter_key") != _filter_key:
-    st.session_state.pop("ai_result", None)
-    st.session_state.pop("report_result", None)
-    st.session_state["_last_filter_key"] = _filter_key
-
-if len(df_curr) == 0:
-    st.warning("No data matches the selected filters.")
-    st.stop()
-
-# ── Cached computation wrappers ───────────────────────────────────────────────
-# Keyed on DataFrame content — cache hit on reruns (e.g. Run Query) with same filters.
+# ── Cached computation wrappers (module-level — registered once, not per rerun) ──
+@st.cache_data(show_spinner=False)
+def _cached_filter(df_c: pd.DataFrame, df_p_raw: pd.DataFrame, region: str, branch: str, status: str):
+    df = apply_filters(df_c.copy(), region, branch, status)
+    df_p = apply_filters(df_p_raw.copy(), region, branch, status)
+    if len(df_p_raw) > 0 and "Loan No" in df.columns and "curr_bucket" in df_p_raw.columns:
+        slim = df_p_raw[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"})
+        df = df.merge(slim, on="Loan No", how="left")
+    return df, df_p
 
 @st.cache_data(show_spinner=False)
 def _cached_metrics(df_c: pd.DataFrame, df_p: pd.DataFrame):
@@ -179,13 +168,25 @@ def _cached_alerts(df_c: pd.DataFrame):
 
 @st.cache_data(show_spinner=False)
 def _cached_scorecard(df_c: pd.DataFrame):
-    from analysis.executive_scorecard import compute_executive_scorecard
     return compute_executive_scorecard(df_c)
 
 @st.cache_data(show_spinner=False)
 def _cached_roll_rate(df_c: pd.DataFrame, df_p: pd.DataFrame):
-    from analysis.roll_rate import compute_roll_rate_matrix
     return compute_roll_rate_matrix(df_c, df_p)
+
+# ── Apply filters (cached — no pandas work on same filter rerun) ──────────────
+df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, sel_region, sel_branch, sel_status)
+
+# Clear AI/report results when filters change
+_filter_key = f"{sel_region}|{sel_branch}|{sel_status}"
+if st.session_state.get("_last_filter_key") != _filter_key:
+    st.session_state.pop("ai_result", None)
+    st.session_state.pop("report_result", None)
+    st.session_state["_last_filter_key"] = _filter_key
+
+if len(df_curr) == 0:
+    st.warning("No data matches the selected filters.")
+    st.stop()
 
 # ── Pre-compute shared data ───────────────────────────────────────────────────
 metrics = _cached_metrics(df_curr, df_prev)

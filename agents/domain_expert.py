@@ -179,6 +179,8 @@ AGGREGATION MODE - set aggregation_mode to true when the query asks to:
 - Rank, order, or sort a GROUP (executives / branches / regions) by a ratio or derived metric
 - "Which executive has the highest/lowest X" implying ALL executives should be ranked
 - "Compare executives/branches by X" - result is one row per group, not per loan
+- Count, summarize, or break down cases BY a group — "region wise count", "branch wise summary", "how many cases per region", "give me X region wise", "X by region/branch/executive"
+- Show a table with one row per region/branch/executive with multiple columns — any query that explicitly lists columns in a [col1, col2, col3] format grouped by region/branch/executive
 Do NOT set aggregation_mode for individual loan row filters or priority queries.
 
 GROUP_BY RULES - CRITICAL:
