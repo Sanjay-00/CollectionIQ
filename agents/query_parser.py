@@ -183,7 +183,7 @@ def parse_query(query: str) -> dict:
     # Ensure required display columns are always present
     required = ["Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit"]
     for col in required:
-        if col not in parsed.get("display_columns", []):
+        if col not in (parsed.get("display_columns") or []):
             parsed.setdefault("display_columns", []).insert(0, col)
 
     return parsed

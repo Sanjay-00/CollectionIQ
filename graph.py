@@ -138,7 +138,7 @@ def execute_node(state: QueryState) -> QueryState:
         if state.get("priority_mode"):
             display_df, err = execute_priority_mode(df)
         elif state.get("aggregation_mode"):
-            display_df, err = execute_aggregation(df, state.get("aggregation_spec", {}))
+            display_df, err = execute_aggregation(df, state.get("aggregation_spec") or {})
         else:
             display_df, err = execute_filters(df, state["parsed_filters"])
 
@@ -162,10 +162,10 @@ def analyze_node(state: QueryState) -> QueryState:
     try:
         insights = generate_insights(
             query=state["query"],
-            plain_english=state["parsed_filters"].get("plain_english", state["enriched_query"]),
-            kpis=state["result_kpis"],
-            rankings=state["result_rankings"],
-            insight_focus=state.get("insight_focus", ""),
+            plain_english=(state.get("parsed_filters") or {}).get("plain_english") or state.get("enriched_query") or "",
+            kpis=state.get("result_kpis") or {},
+            rankings=state.get("result_rankings") or {},
+            insight_focus=state.get("insight_focus") or "",
         )
         return {**state, "insights": insights}
     except Exception as e:
