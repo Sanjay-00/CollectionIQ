@@ -61,13 +61,30 @@ def generate_insights(
     if not api_key:
         return "• GOOGLE_API_KEY not set - AI observations unavailable."
 
-    # Build a structured context summary for Gemini
-    region_top = list(rankings.get("region_counts", {}).items())
-    branch_top = list(rankings.get("branch_counts", {}).items())
-    branch_pos_top = list(rankings.get("branch_pos", {}).items())
-    bucket_dist = rankings.get("bucket_dist", {})
+    agg_rows = kpis.get("_agg_rows")
 
-    context = f"""
+    if agg_rows:
+        # Aggregation result — build context from the grouped table rows
+        rows_text = "\n".join(
+            "  " + ", ".join(f"{k}: {v}" for k, v in row.items() if k != "Rank")
+            for row in agg_rows
+        )
+        context = f"""
+User query: "{query}"
+Interpreted as: {plain_english}
+Focus area: {insight_focus if insight_focus else "General portfolio risk analysis"}
+
+AGGREGATION RESULT ({kpis.get('Count', 0)} groups):
+{rows_text}
+"""
+    else:
+        # Loan-level filter result
+        region_top = list(rankings.get("region_counts", {}).items())
+        branch_top = list(rankings.get("branch_counts", {}).items())
+        branch_pos_top = list(rankings.get("branch_pos", {}).items())
+        bucket_dist = rankings.get("bucket_dist", {})
+
+        context = f"""
 User query: "{query}"
 Interpreted as: {plain_english}
 Focus area: {insight_focus if insight_focus else "General portfolio risk analysis"}

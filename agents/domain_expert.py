@@ -175,12 +175,14 @@ VAGUE QUERY DETECTION - set priority_mode to true when the query contains phrase
 "what to work on", "cases to handle first", "where to start", "which cases first",
 "top cases", "critical cases", "immediate attention", or any similar intent.
 
-AGGREGATION MODE - set aggregation_mode to true when the query asks to:
-- Rank, order, or sort a GROUP (executives / branches / regions) by a ratio or derived metric
+AGGREGATION MODE - CRITICAL: you MUST set aggregation_mode to true for ANY of these patterns:
+- The query uses "region wise", "branch wise", "executive wise", "by region", "by branch", "by executive" — these ALWAYS mean aggregation
+- The query asks for a count, summary, or breakdown grouped by a dimension — "how many cases per region", "give me X region wise", "X by region/branch/executive"
+- The query explicitly lists output columns in a [col1, col2, col3] format to be shown per group — this is ALWAYS aggregation
+- Rank, order, or sort a GROUP by a ratio or derived metric
 - "Which executive has the highest/lowest X" implying ALL executives should be ranked
-- "Compare executives/branches by X" - result is one row per group, not per loan
-- Count, summarize, or break down cases BY a group — "region wise count", "branch wise summary", "how many cases per region", "give me X region wise", "X by region/branch/executive"
-- Show a table with one row per region/branch/executive with multiple columns — any query that explicitly lists columns in a [col1, col2, col3] format grouped by region/branch/executive
+- "Compare executives/branches by X" — result is one row per group, not per loan
+DEFAULT RULE: if the result should have ONE ROW PER REGION/BRANCH/EXECUTIVE, set aggregation_mode to true. If the result should have one row per LOAN/CUSTOMER, set aggregation_mode to false.
 Do NOT set aggregation_mode for individual loan row filters or priority queries.
 
 GROUP_BY RULES - CRITICAL:
@@ -190,11 +192,13 @@ GROUP_BY RULES - CRITICAL:
 - Grouping by BRANCH: use group_by: "Unit"
 - Grouping by REGION: use group_by: "RegionName"
 
+COLUMN RENAMING — if the user says "X as Y" or "X called Y", use Y (converted to snake_case) as the alias for that count or sum, and as the base for the metric label. Example: "npa cases as total_npa" → alias: "total_npa", metric label: "total_npa_%".
+
 When aggregation_mode is true, populate aggregation_spec with this exact structure:
 {{
   "group_by": "Unit or RegionName as string, OR [\"MNT NAME\", \"Unit\"] as list for executives",
   "counts": [
-    {{"alias": "snake_case_name", "column": "column_name", "value": "exact_column_value"}},
+    {{"alias": "snake_case_name_or_user_provided_alias", "column": "column_name", "value": "exact_column_value"}},
     {{"alias": "snake_case_name", "column": "column_name", "op": "bucket_worse_than", "value": "ref_column_name"}},
     {{"alias": "snake_case_name", "column": "column_name", "op": "bucket_better_than", "value": "ref_column_name"}}
   ],

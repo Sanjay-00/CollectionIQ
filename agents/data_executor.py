@@ -318,13 +318,6 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
         else:
             agg[alias] = grouped[col].apply(lambda s: pd.to_numeric(s, errors="coerce").sum())
 
-    # Always include total demand so readers know the denominator for Collection %
-    _DEMAND_COL = "Net Collection Demand Inst+Exp+BC"
-    if _DEMAND_COL in df.columns and "Demand (L)" not in agg.columns:
-        agg["Demand (L)"] = grouped[_DEMAND_COL].apply(
-            lambda s: round(pd.to_numeric(s, errors="coerce").sum() / 100_000, 2)
-        )
-
     # Compute derived metrics using pandas eval
     # Supports both old single metric (metric + metric_label) and new list (metrics)
     metrics_list = spec.get("metrics") or []
