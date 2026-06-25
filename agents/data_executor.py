@@ -270,10 +270,22 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
                 counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
                 agg[alias] = counts
         else:
-            val_upper = str(val).upper()
             if col not in df.columns:
                 agg[alias] = 0
+            elif op in (">", ">=", "<", "<=", "!=") and not isinstance(val, str):
+                numeric_series = pd.to_numeric(df[col], errors="coerce")
+                _num_ops = {
+                    ">":  lambda s, v: s > v,
+                    ">=": lambda s, v: s >= v,
+                    "<":  lambda s, v: s < v,
+                    "<=": lambda s, v: s <= v,
+                    "!=": lambda s, v: s != v,
+                }
+                mask = _num_ops[op](numeric_series, float(val))
+                counts = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
+                agg[alias] = counts
             else:
+                val_upper = str(val).upper()
                 agg[alias] = grouped[col].apply(
                     lambda s, v=val_upper: int((s.astype(str).str.strip().str.upper() == v).sum())
                 )
