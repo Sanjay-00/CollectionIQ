@@ -105,7 +105,7 @@ def execute_filters(df: pd.DataFrame, parsed: dict) -> tuple[pd.DataFrame, str]:
     """Apply parsed filter conditions to df. Returns (result_df, error_message)."""
     result = df.copy()
 
-    for cond in parsed.get("conditions", []):
+    for cond in parsed.get("conditions") or []:
         try:
             result = _apply_condition(result, cond)
         except Exception as e:
@@ -115,7 +115,9 @@ def execute_filters(df: pd.DataFrame, parsed: dict) -> tuple[pd.DataFrame, str]:
         return pd.DataFrame(), "No records match the given criteria."
 
     sort_col = parsed.get("sort_by")
-    sort_asc = parsed.get("sort_asc", False)
+    sort_asc = parsed.get("sort_asc")
+    if sort_asc is None:
+        sort_asc = False
     if sort_col and sort_col in result.columns:
         result = result.sort_values(sort_col, ascending=sort_asc)
 
@@ -220,7 +222,7 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     """GROUP BY aggregation with ratio/metric computation.
     spec keys: group_by (str or [col1, col2]), counts, sums, metric, metric_label, sort_asc
     """
-    group_by_spec = spec.get("group_by", "")
+    group_by_spec = spec.get("group_by") or ""
     df = df.copy()
 
     # Support multi-column group_by — combine into a single display column
@@ -245,9 +247,9 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     agg = pd.DataFrame({group_col: list(grouped.groups.keys())}).set_index(group_col)
 
     # Count rows per group — supports total, equality, numeric comparison, and bucket ops
-    for cnt in spec.get("counts", []):
-        alias = cnt.get("alias", "")
-        col   = cnt.get("column", "")
+    for cnt in spec.get("counts") or []:
+        alias = cnt.get("alias") or ""
+        col   = cnt.get("column") or ""
         op    = cnt.get("op") or "=="
         val   = cnt.get("value")
         if not alias:
@@ -306,9 +308,9 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
             )
 
     # Sum numeric column per group
-    for sm in spec.get("sums", []):
-        alias = sm.get("alias", "")
-        col   = sm.get("column", "")
+    for sm in spec.get("sums") or []:
+        alias = sm.get("alias") or ""
+        col   = sm.get("column") or ""
         if not alias:
             continue
         if col not in df.columns:
@@ -338,9 +340,9 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     _having_ops = {">=": lambda a, v: a >= v, ">": lambda a, v: a > v,
                    "<=": lambda a, v: a <= v, "<": lambda a, v: a < v,
                    "==": lambda a, v: a == v, "!=": lambda a, v: a != v}
-    for h in spec.get("having", []):
-        alias = h.get("alias", "")
-        op    = h.get("op", ">=")
+    for h in spec.get("having") or []:
+        alias = h.get("alias") or ""
+        op    = h.get("op") or ">="
         val   = h.get("value", 0)
         if alias in agg.columns and op in _having_ops:
             agg = agg[_having_ops[op](agg[alias], val)]
@@ -348,7 +350,9 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     if len(agg) == 0:
         return pd.DataFrame(), "No groups matched the having conditions."
 
-    sort_asc = spec.get("sort_asc", True)
+    sort_asc = spec.get("sort_asc")
+    if sort_asc is None:
+        sort_asc = True
     if metric_label in agg.columns:
         agg = agg.sort_values(metric_label, ascending=sort_asc)
 

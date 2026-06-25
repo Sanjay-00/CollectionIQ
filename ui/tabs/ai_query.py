@@ -211,11 +211,13 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
 
     elif result_type == "single_stat" and is_aggregation:
         # ── Aggregation single-answer ─────────────────────────────────────────
-        agg_spec     = result.get("aggregation_spec", {})
+        agg_spec     = result.get("aggregation_spec") or {}
         metric_label = agg_spec.get("metric_label") or "Metric"
         _gb          = agg_spec.get("group_by") or "Group"
         group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
-        sort_asc     = agg_spec.get("sort_asc", True)
+        sort_asc     = agg_spec.get("sort_asc")
+        if sort_asc is None:
+            sort_asc = True
         if len(filtered_df) > 0 and metric_label in filtered_df.columns:
             top_row   = filtered_df.iloc[0]
             top_name  = top_row.get(group_col, "—")
@@ -241,7 +243,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
 
     elif is_aggregation:
         # ── Ranked aggregation table ──────────────────────────────────────────
-        agg_spec     = result.get("aggregation_spec", {})
+        agg_spec     = result.get("aggregation_spec") or {}
         metric_label = agg_spec.get("metric_label") or "Metric"
         _gb          = agg_spec.get("group_by") or "Group"
         group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
