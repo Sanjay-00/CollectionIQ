@@ -212,7 +212,8 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
     elif result_type == "single_stat" and is_aggregation:
         # ── Aggregation single-answer ─────────────────────────────────────────
         agg_spec     = result.get("aggregation_spec") or {}
-        metric_label = agg_spec.get("metric_label") or "Metric"
+        _metrics     = agg_spec.get("metrics") or []
+        metric_label = _metrics[0]["label"] if _metrics else (agg_spec.get("metric_label") or "Metric")
         _gb          = agg_spec.get("group_by") or "Group"
         group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
         sort_asc     = agg_spec.get("sort_asc")
@@ -243,16 +244,19 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
 
     elif is_aggregation:
         # ── Ranked aggregation table ──────────────────────────────────────────
-        agg_spec     = result.get("aggregation_spec") or {}
-        metric_label = agg_spec.get("metric_label") or "Metric"
-        _gb          = agg_spec.get("group_by") or "Group"
-        group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
+        agg_spec      = result.get("aggregation_spec") or {}
+        _metrics_list = agg_spec.get("metrics") or []
+        metric_labels = [m["label"] for m in _metrics_list if m.get("label")]
+        metric_label  = metric_labels[0] if metric_labels else (agg_spec.get("metric_label") or "Metric")
+        _gb           = agg_spec.get("group_by") or "Group"
+        group_col     = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
+        header_title  = " · ".join(metric_labels) if metric_labels else metric_label
 
         st.markdown(f"""
         <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
                     padding:16px 20px;margin:0 0 16px 0;">
           <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:6px;letter-spacing:1px;">
-            📊 AGGREGATION RESULT - {metric_label.upper()}
+            📊 AGGREGATION RESULT - {header_title.upper()}
           </div>
           <div style="font-size:12px;color:#94a3b8;">
             {plain}&nbsp; &nbsp;
@@ -280,8 +284,8 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
                         cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">#{rank_val}</td>'
                     elif c == group_col:
                         cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{val}</td>'
-                    elif c == metric_label:
-                        _disp = int(val) if isinstance(val, (int, float)) and val == int(val) else round(val, 4)
+                    elif c in metric_labels or c == metric_label:
+                        _disp = int(val) if isinstance(val, (int, float)) and val == int(val) else round(val, 2)
                         cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{_disp}</td>'
                     else:
                         cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else val}</td>'

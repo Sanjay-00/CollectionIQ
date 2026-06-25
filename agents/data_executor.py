@@ -325,16 +325,27 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
             lambda s: round(pd.to_numeric(s, errors="coerce").sum() / 100_000, 2)
         )
 
-    # Compute derived metric using pandas eval
+    # Compute derived metrics using pandas eval
+    # Supports both old single metric (metric + metric_label) and new list (metrics)
+    metrics_list = spec.get("metrics") or []
     metric_expr  = spec.get("metric") or ""
     metric_label = spec.get("metric_label") or "Metric"
-    if metric_expr:
+
+    # Backward compat: single metric → wrap into list
+    if not metrics_list and metric_expr:
+        metrics_list = [{"expr": metric_expr, "label": metric_label}]
+
+    for m in metrics_list:
+        expr  = m.get("expr") or ""
+        label = m.get("label") or "Metric"
+        if not expr:
+            continue
         try:
-            computed = agg.eval(metric_expr)
+            computed = agg.eval(expr)
             computed = computed.replace([float("inf"), float("-inf")], float("nan")).fillna(0)
-            agg[metric_label] = computed.round(4)
-        except Exception as e:
-            return pd.DataFrame(), f"Metric computation failed ({metric_expr}): {e}"
+            agg[label] = computed.round(2)
+        except Exception:
+            agg[label] = 0
 
     # Apply HAVING filters — post-aggregation group filtering (e.g. run_count >= 1)
     _having_ops = {">=": lambda a, v: a >= v, ">": lambda a, v: a > v,

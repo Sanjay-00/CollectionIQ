@@ -199,13 +199,19 @@ When aggregation_mode is true, populate aggregation_spec with this exact structu
   "sums": [
     {{"alias": "snake_case_name", "column": "numeric_column_name"}}
   ],
-  "metric": "pandas eval expression using alias names (e.g. mat_count / run_count)",
-  "metric_label": "Human Readable Metric Name",
+  "metrics": [
+    {{"expr": "pandas eval expression using alias names", "label": "Human Readable Name"}}
+  ],
   "sort_asc": true,
   "having": [
     {{"alias": "alias_name", "op": ">=", "value": 1}}
   ]
 }}
+
+METRICS — list of derived columns computed from counts/sums aliases using pandas eval.
+Use this to compute percentages, ratios, or any derived value. You can have multiple metrics.
+Each metric needs "expr" (the formula using alias names) and "label" (the column header).
+Example: {{"expr": "npa / total_cases * 100", "label": "NPA %"}}
 
 COUNTS op field — supported modes:
 - column "__total__" — counts ALL rows in the group (no condition needed, op and value are ignored). Use for "total cases", "total accounts", "total portfolio", "all cases".
@@ -231,7 +237,7 @@ Example — "executives with roll forward, roll backward and stable counts":
     {{"alias": "roll_backward", "column": "curr_bucket", "op": "bucket_better_than", "value": "prev_bucket"}},
     {{"alias": "stable", "column": "curr_bucket", "op": "bucket_stable", "value": "prev_bucket"}}
   ]
-  metric: "stable", metric_label: "Stable Count", sort_asc: false
+  metrics: [{{"expr": "stable", "label": "Stable Count"}}], sort_asc: false
 
 Example - "rank executives by roll backward count (most improved first)":
   group_by: ["MNT NAME", "Unit"]
@@ -239,9 +245,9 @@ Example - "rank executives by roll backward count (most improved first)":
     {{"alias": "roll_backward", "column": "curr_bucket", "op": "bucket_better_than", "value": "prev_bucket"}},
     {{"alias": "stable", "column": "curr_bucket", "op": "bucket_stable", "value": "prev_bucket"}}
   ]
-  metric: "roll_backward", metric_label: "Roll Backward Count", sort_asc: false
+  metrics: [{{"expr": "roll_backward", "label": "Roll Backward Count"}}], sort_asc: false
 
-Example — "regionwise total cases, zero closing arrears, SMA-2 and NPA count":
+Example — "regionwise total cases, zero closing arrears, SMA-2, NPA with percentages":
   aggregation_mode: true
   aggregation_spec: {{
     "group_by": "RegionName",
@@ -252,8 +258,11 @@ Example — "regionwise total cases, zero closing arrears, SMA-2 and NPA count":
       {{"alias": "npa", "column": "curr_bucket", "value": "NPA"}}
     ],
     "sums": [],
-    "metric": "",
-    "metric_label": "Total Cases",
+    "metrics": [
+      {{"expr": "zero_closing_arrears / total_cases * 100", "label": "Zero Arrears %"}},
+      {{"expr": "sma2 / total_cases * 100", "label": "SMA-2 %"}},
+      {{"expr": "npa / total_cases * 100", "label": "NPA %"}}
+    ],
     "sort_asc": false
   }}
 
@@ -266,16 +275,17 @@ Example — "branchwise accounts with arrears > 3 EMI":
       {{"alias": "high_arrears", "column": "Arrears / EMI", "op": ">", "value": 3}}
     ],
     "sums": [],
-    "metric": "high_arrears / total_cases * 100",
-    "metric_label": "High Arrears %",
+    "metrics": [
+      {{"expr": "high_arrears / total_cases * 100", "label": "High Arrears %"}}
+    ],
     "sort_asc": false
   }}
 
 HAVING rules - use "having" to filter groups AFTER aggregation (like SQL HAVING clause).
 Supported ops: >=, >, <=, <, ==, !=
-Use it whenever the query says: "must have at least N", "only if more than N", "exclude if zero", "with at least N", etc.
+Use ONLY when the user EXPLICITLY asks for a threshold like: "must have at least N", "only if more than N", "exclude if zero", "with at least N".
 Example: "must have at least 1 running case" → having: [{{"alias": "run_count", "op": ">=", "value": 1}}]
-If no such constraint exists, set having to an empty list [].
+IMPORTANT: If the user does NOT mention any threshold or minimum, ALWAYS set having to an empty list []. Do NOT add having clauses on your own.
 
 Example - "order executives by lowest MAT to RUN ratio, must have at least 1 running case":
   aggregation_mode: true
@@ -286,8 +296,9 @@ Example - "order executives by lowest MAT to RUN ratio, must have at least 1 run
       {{"alias": "run_count", "column": "Loan Status", "value": "RUN"}}
     ],
     "sums": [],
-    "metric": "mat_count / run_count",
-    "metric_label": "MAT/RUN Ratio",
+    "metrics": [
+      {{"expr": "mat_count / run_count", "label": "MAT/RUN Ratio"}}
+    ],
     "sort_asc": true,
     "having": [{{"alias": "run_count", "op": ">=", "value": 1}}]
   }}
