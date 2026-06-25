@@ -215,13 +215,13 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
 
 
 def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str) -> pd.DataFrame:
-    if df.empty:
+    if len(df.columns) == 0:
         return df
-    if region != "All":
+    if region != "All" and "RegionName" in df.columns:
         df = df[df["RegionName"] == region]
-    if branch != "All":
+    if branch != "All" and "Unit" in df.columns:
         df = df[df["Unit"] == branch]
-    if status != "All":
+    if status != "All" and "Loan Status" in df.columns:
         df = df[df["Loan Status"] == status]
     return df
 
