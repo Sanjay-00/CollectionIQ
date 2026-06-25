@@ -146,7 +146,7 @@ def execute_node(state: QueryState) -> QueryState:
             return {**state, "result_df": pd.DataFrame(), "error": err}
 
         if state.get("aggregation_mode"):
-            kpis     = {"Count": len(display_df)}
+            kpis = {"Count": len(display_df), "_agg_rows": display_df.head(5).to_dict(orient="records")}
             rankings = {}
         else:
             kpis     = compute_result_kpis(df, display_df)

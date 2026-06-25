@@ -292,8 +292,8 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
                 rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #0d1117;">{cells}</tr>'
 
             st.markdown(f"""
-            <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;overflow:hidden;margin-top:8px;">
-              <table style="width:100%;border-collapse:collapse;">
+            <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;overflow-x:auto;margin-top:8px;">
+              <table style="width:100%;border-collapse:collapse;min-width:600px;">
                 <thead><tr style="background:#0d1117;">{th_cells}</tr></thead>
                 <tbody>{rows_html}</tbody>
               </table>
