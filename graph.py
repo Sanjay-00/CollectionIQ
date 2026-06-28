@@ -15,6 +15,8 @@ from agents.data_executor import (
     validate_aggregation_spec,
     validate_filter_spec,
 )
+from agents.plan_executor import execute_plan, validate_plan
+from agents.plan_critic import critique_plan
 from agents.domain_expert import enrich_query
 from agents.insight_generator import generate_insights
 from agents.query_parser import parse_query
@@ -27,6 +29,7 @@ _tls = threading.local()
 
 _STEP_LABELS: dict[str, str] = {
     "expert":   "🧠  Domain Expert: enriching query with NBFC context",
+    "critic":   "🔍  Plan Critic: double-checking the plan against your question",
     "parse":    "📋  Query Parser: translating to filter conditions",
     "validate": "🔎  Validator: checking the query against your data",
     "execute":  "⚡  Data Executor: applying filters to portfolio",
@@ -68,7 +71,15 @@ class QueryState(TypedDict):
     priority_mode: bool
     aggregation_mode: bool
     aggregation_spec: dict
+    plan_mode: bool
+    plan: list
     result_type: str
+
+    # Clarification (set by Domain Expert when the query is materially ambiguous)
+    allow_clarification: bool
+    needs_clarification: bool
+    clarification_question: str
+    clarification_options: list
 
     # Agent 1 output — Query Parser
     parsed_filters: dict
@@ -92,7 +103,10 @@ class QueryState(TypedDict):
 def domain_expert_node(state: QueryState) -> QueryState:
     _announce("expert")
     try:
-        enriched = enrich_query(state["query"], state.get("snapshot_dates"))
+        enriched = enrich_query(
+            state["query"], state.get("snapshot_dates"),
+            allow_clarification=state.get("allow_clarification", True),
+        )
         return {
             **state,
             "enriched_query":   enriched.get("enriched_query") or state["query"],
@@ -104,6 +118,11 @@ def domain_expert_node(state: QueryState) -> QueryState:
             "priority_mode":    bool(enriched.get("priority_mode", False)),
             "aggregation_mode": bool(enriched.get("aggregation_mode", False)),
             "aggregation_spec": enriched.get("aggregation_spec") or {},
+            "plan_mode":        bool(enriched.get("plan_mode", False)),
+            "plan":             enriched.get("plan") or [],
+            "needs_clarification":    bool(enriched.get("needs_clarification", False)),
+            "clarification_question": enriched.get("clarification_question") or "",
+            "clarification_options":  enriched.get("clarification_options") or [],
             "result_type":      enriched.get("result_type") or "loan_table",
             "error": "",
         }
@@ -120,9 +139,33 @@ def domain_expert_node(state: QueryState) -> QueryState:
             "priority_mode":    False,
             "aggregation_mode": False,
             "aggregation_spec": {},
+            "plan_mode":        False,
+            "plan":             [],
+            "needs_clarification":    False,
+            "clarification_question": "",
+            "clarification_options":  [],
             "result_type":      "loan_table",
             "error": "",
         }
+
+
+# ── Plan Critic (Gemini) — self-review of a multi-step plan ───────────────────
+def critic_node(state: QueryState) -> QueryState:
+    """Only for plan_mode: have the model re-read its own plan against the query
+    for completeness/coherence and repair it. Non-fatal — the deterministic
+    validator downstream is the final gate."""
+    if not state.get("plan_mode") or not state.get("plan"):
+        return state
+    _announce("critic")
+    df: pd.DataFrame = state.get("result_df_full")
+    cols = list(df.columns) if df is not None else []
+    try:
+        revised, _issues = critique_plan(
+            state["query"], state["plan"], cols, state.get("snapshot_dates"),
+        )
+        return {**state, "plan": revised or state["plan"]}
+    except Exception:
+        return state
 
 
 # ── Agent 1: Query Parser (Gemini) ───────────────────────────────────────────
@@ -151,7 +194,9 @@ def validate_node(state: QueryState) -> QueryState:
     cols = list(df.columns)
 
     for attempt in range(_MAX_REPAIRS + 1):
-        if state.get("aggregation_mode"):
+        if state.get("plan_mode"):
+            errs = validate_plan(state.get("plan") or [], cols)
+        elif state.get("aggregation_mode"):
             errs = validate_aggregation_spec(state.get("aggregation_spec") or {}, cols)
         else:
             errs = validate_filter_spec(state.get("parsed_filters") or {}, cols)
@@ -172,7 +217,10 @@ def validate_node(state: QueryState) -> QueryState:
             "Return corrected JSON using ONLY these exact column names."
         )
         try:
-            if state.get("aggregation_mode"):
+            if state.get("plan_mode"):
+                fixed = enrich_query(state["query"], state.get("snapshot_dates"), repair_feedback=feedback)
+                state = {**state, "plan": fixed.get("plan") or []}
+            elif state.get("aggregation_mode"):
                 fixed = enrich_query(state["query"], state.get("snapshot_dates"), repair_feedback=feedback)
                 state = {**state, "aggregation_spec": fixed.get("aggregation_spec") or {}}
             else:
@@ -191,7 +239,9 @@ def execute_node(state: QueryState) -> QueryState:
     if df is None or len(df) == 0:
         return {**state, "error": "No data loaded."}
     try:
-        if state.get("priority_mode"):
+        if state.get("plan_mode"):
+            display_df, err = execute_plan(df, state.get("plan") or [])
+        elif state.get("priority_mode"):
             display_df, err = execute_priority_mode(df)
         elif state.get("aggregation_mode"):
             display_df, err = execute_aggregation(df, state.get("aggregation_spec") or {})
@@ -201,7 +251,7 @@ def execute_node(state: QueryState) -> QueryState:
         if err:
             return {**state, "result_df": pd.DataFrame(), "error": err}
 
-        if state.get("aggregation_mode"):
+        if state.get("aggregation_mode") or state.get("plan_mode"):
             kpis = {"Count": len(display_df), "_agg_rows": display_df.head(5).to_dict(orient="records")}
             rankings = {}
         else:
@@ -233,9 +283,20 @@ def error_node(state: QueryState) -> QueryState:
     return state
 
 
+# ── Clarification handler ─────────────────────────────────────────────────────
+def clarify_node(state: QueryState) -> QueryState:
+    """Terminal node: the query is ambiguous. Carry the question + options back to
+    the UI without parsing or executing anything."""
+    return state
+
+
 # ── Routing ───────────────────────────────────────────────────────────────────
 def _route_expert(state: QueryState) -> str:
-    return "error" if state.get("error") else "parse"
+    if state.get("error"):
+        return "error"
+    if state.get("needs_clarification"):
+        return "clarify"
+    return "critic"
 
 def _route_parse(state: QueryState) -> str:
     return "error" if state.get("error") else "validate"
@@ -250,18 +311,22 @@ def _route_execute(state: QueryState) -> str:
 # ── Build graph ───────────────────────────────────────────────────────────────
 _graph = StateGraph(QueryState)
 _graph.add_node("expert",   domain_expert_node)
+_graph.add_node("critic",   critic_node)
 _graph.add_node("parse",    parse_node)
 _graph.add_node("validate", validate_node)
 _graph.add_node("execute",  execute_node)
 _graph.add_node("analyze",  analyze_node)
+_graph.add_node("clarify",  clarify_node)
 _graph.add_node("error",    error_node)
 
 _graph.add_edge(START, "expert")
-_graph.add_conditional_edges("expert",   _route_expert,   {"parse":    "parse",    "error": "error"})
+_graph.add_conditional_edges("expert",   _route_expert,   {"critic": "critic", "clarify": "clarify", "error": "error"})
+_graph.add_edge("critic", "parse")
 _graph.add_conditional_edges("parse",    _route_parse,    {"validate": "validate", "error": "error"})
 _graph.add_conditional_edges("validate", _route_validate, {"execute":  "execute",  "error": "error"})
 _graph.add_conditional_edges("execute",  _route_execute,  {"analyze":  "analyze",  "error": "error"})
 _graph.add_edge("analyze", END)
+_graph.add_edge("clarify", END)
 _graph.add_edge("error",   END)
 
 _compiled = _graph.compile()
@@ -272,6 +337,7 @@ def run_query(
     df: pd.DataFrame,
     on_step: Optional[Callable[[str], None]] = None,
     snapshot_dates: Optional[dict] = None,
+    allow_clarification: bool = True,
 ) -> QueryState:
     """Run the 4-agent query pipeline.
 
@@ -294,7 +360,13 @@ def run_query(
         "priority_mode":    False,
         "aggregation_mode": False,
         "aggregation_spec": {},
+        "plan_mode":        False,
+        "plan":             [],
         "result_type":      "loan_table",
+        "allow_clarification":    allow_clarification,
+        "needs_clarification":    False,
+        "clarification_question": "",
+        "clarification_options":  [],
         "parsed_filters":   {},
         "result_df":        pd.DataFrame(),
         "result_kpis":      {},

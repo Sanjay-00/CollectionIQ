@@ -143,10 +143,14 @@ def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
         text=text_matrix,
         texttemplate="%{text}",
         textfont={"size": 13, "color": "#000"},
+        # zmid=0 anchors "no change" (direction == 0) to the white midpoint of the
+        # colorscale, so every diagonal / same-bucket cell (e.g. SMA-1 → SMA-1)
+        # renders white regardless of how lopsided the improvements vs worsenings are.
+        zmid=0,
         colorscale=[
             [0.0,  "#dcfce7"],   # strong green (improved)
             [0.45, "#f9fafb"],   # near white (stable)
-            [0.5,  "#f9fafb"],   # diagonal
+            [0.5,  "#f9fafb"],   # diagonal / no change
             [0.55, "#fef2f2"],   # near white (mild worsening)
             [1.0,  "#991b1b"],   # dark red (severe worsening)
         ],

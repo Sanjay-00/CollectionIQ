@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-FF4B4B?logo=streamlit&logoColor=white)
-![Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash-4285F4?logo=google&logoColor=white)
+![Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash%20Lite-4285F4?logo=google&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)
 &nbsp;
 
@@ -96,7 +96,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 </table>
 &nbsp;
 
-**AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash + LangGraph**
+**AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash-Lite + LangGraph**
 
 ![AI Query](docs/screenshots/07-ai-query.png)
 &nbsp;
@@ -134,7 +134,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 &nbsp;
 ## Core Capabilities
 
-**Plain English Query Engine** : Ask any question in NBFC language. Get back a filtered loan table, a ranked executive comparison, or a single stat answer. Every result includes AI observations and an Excel download.
+**Plain English Query Engine** : Ask any question in NBFC language. Get back a filtered loan table, a ranked executive comparison, or a single stat answer. Multi-step questions (for example "customers per branch with more than 3 loans" or "fleet owners who have not paid this month") are answered by a composable step-plan engine that chains group-by, conditional counts, derive, sort and limit to any depth. When a question is genuinely ambiguous, the agent asks a short clarifying question with 3 to 5 options instead of guessing. Every result includes AI observations and an Excel download.
 
 **Multi-Region File Support** : Upload multiple regional LCC files at once for a unified view. Supports `.xlsx`, `.xls`, and `.xlsb` with automatic deduplication and datetime normalisation across files.
 
@@ -185,27 +185,35 @@ CollectionIQ runs two independent AI pipelines orchestrated with LangGraph - one
 
 ### Query Pipeline
 
-Every question typed in plain English passes through four agents in sequence before a result appears on screen.
+Every question typed in plain English flows through a LangGraph state machine. The Domain Expert routes it: a clear query goes through planning, validation and execution; an ambiguous query gets a clarifying question first; a multi-step (nested) query gets an extra Plan Critic pass that reviews the plan before it runs.
 
 ```mermaid
 flowchart TD
-    User(["Plain English Query\ne.g. rank executives by MAT/RUN ratio"])
+    User(["Plain English Query\ne.g. customers per branch with more than 3 loans"])
 
     User --> DE
 
     subgraph QP ["  Query Pipeline  (LangGraph)  "]
         direction TB
-        DE["Domain Expert Agent\nGemini 2.5 Flash\n\nUnderstands NBFC terminology · Maps intent to columns\nDecides result shape · Detects priority mode\nInjects today's date for relative time filters"]
-        PP["Query Parser Agent\nGemini 2.5 Flash\n\nTranslates enriched query into structured filter spec\nHandles conditions · GROUP BY · HAVING · sort"]
-        EX["Data Executor\nPandas\n\nApplies row filters · Aggregations · Priority rules\nComputes KPIs and executive rankings"]
-        IG["Insight Generator Agent\nGemini 2.5 Flash\n\nReads computed KPIs and rankings\nGenerates domain-aware observations and recommendations"]
-        DE --> PP --> EX --> IG
+        DE["Domain Expert Agent\nGemini 2.5 Flash-Lite\n\nNBFC terminology · Maps intent to columns\nRoutes: priority / aggregation / plan mode\nAsks to clarify when materially ambiguous\nInjects today's date and snapshot dates"]
+        CL["Clarify\n\nAmbiguous query becomes a question plus\n3 to 5 options · user picks · query re-runs"]
+        CR["Plan Critic Agent\nGemini 2.5 Flash-Lite (plan mode only)\n\nRe-reads the plan against the question\nCatches dropped conditions and incoherent steps"]
+        PP["Query Parser Agent\nGemini 2.5 Flash-Lite\n\nTranslates enriched query into a filter spec\nconditions · display columns · sort"]
+        VAL2["Validator\nPandas plus one LLM repair\n\nChecks spec or plan against ACTUAL columns\nRepairs hallucinated columns, else clear error"]
+        EX["Data Executor\nPandas\n\nStep-plan engine · Aggregation · Priority · Filters\nComputes KPIs and rankings"]
+        IG["Insight Generator Agent\nGemini 2.5 Flash-Lite\n\nReads computed KPIs, rankings and rows\nGenerates domain-aware observations"]
+        DE -->|ambiguous| CL
+        DE -->|else| CR
+        CR --> PP --> VAL2 --> EX --> IG
     end
 
+    CL --> RQ["Clarifying question\nuser answers, query re-runs"]
     IG --> R1["Loan Table\nFiltered customer records"]
-    IG --> R2["Ranked Table\nOne row per executive / branch / region"]
+    IG --> R2["Ranked / Aggregated Table\nOne row per group, incl. nested plans"]
     IG --> R3["Single Stat\nDirect answer with supporting context"]
 ```
+
+The step-plan engine (`agents/plan_executor.py`) exists because a single GROUP BY counts rows per group and cannot express nested analytics. A plan is an ordered list of steps (group_aggregate with optional conditional `where`, filter, derive, sort, limit); each step transforms the previous step's table, so arbitrary depth composes without special-casing. Only whitelisted operations run, never arbitrary code.
 
 &nbsp;
 ### Report Pipeline
@@ -221,7 +229,7 @@ flowchart TD
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
         PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
-        RN["Risk Narrator\nGemini 2.5 Flash\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
+        RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
         RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
         ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
         PA --> RN --> RB --> ED
@@ -258,10 +266,12 @@ CollectionIQ/
 ├── smart_alerts.py                 # 6 rule-based risk alerts (pure pandas, no LLM)
 │
 ├── agents/
-│   ├── domain_expert.py            # Agent 1 - query enrichment + NBFC intent detection
-│   ├── query_parser.py             # Agent 2 - natural language to structured filter spec
-│   ├── data_executor.py            # Agent 3 - pandas filter / aggregation / priority mode
-│   └── insight_generator.py        # Agent 4 - AI observations on query results
+│   ├── domain_expert.py            # Query enrichment, routing flags, clarification
+│   ├── plan_critic.py              # Reviews a multi-step plan vs the question (plan mode)
+│   ├── query_parser.py             # Natural language to structured filter spec
+│   ├── data_executor.py            # Pandas filter / aggregation / priority + spec validators
+│   ├── plan_executor.py            # Composable step-plan engine + plan validator
+│   └── insight_generator.py        # AI observations on query results
 │
 ├── analysis/
 │   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
@@ -288,8 +298,8 @@ CollectionIQ/
 | Layer | Technology | Role |
 |---|---|---|
 | UI and Dashboard | Streamlit | Interactive web interface, session state, multi-file upload |
-| AI Models | Google Gemini 2.5 Flash | All four AI agents across both pipelines |
-| Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing |
+| AI Models | Google Gemini 2.5 Flash-Lite | All LLM agents across both pipelines (query and report) |
+| Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, clarification and plan critique |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
 | Charts | Plotly | DPD distribution, bucket migration heatmap, branch charts |
 | AI SDK | google-genai | Gemini API with retry and exponential backoff |
@@ -299,6 +309,8 @@ CollectionIQ/
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
 The domain knowledge layer: NBFC terminology, loan status values, strike rate definition, SOH calculation, priority framework, insurance delinquency logic - is embedded in the agent system prompts and verified against real portfolio data. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
+
+Correctness is enforced outside the model, not by model depth. The LLM only translates a question into a structured spec or a step-plan; pure pandas computes every number. A deterministic validator checks each spec or plan against the actual columns and asks the relevant agent to repair a bad one before anything runs. For multi-step plans, a Plan Critic re-reads the plan against the question to catch a dropped condition or a step that uses a column an earlier step removed. When a question is materially ambiguous, the agent asks a clarifying question instead of assuming. The aim is general, composable reasoning rather than a hardcoded answer per question.
 
 Both pipelines are stateless between runs. Each query or report generation starts fresh, no stale context, no memory leak, no shared state between users.
 

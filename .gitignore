@@ -6,5 +6,5 @@ __pycache__/
 .streamlit/secrets.toml
 .claude/
 generate_sample_data.py
-tests/
-pytest.ini
+
+bash.exe.stackdump
