@@ -255,7 +255,12 @@ with tabs[3]:
 
 with tabs[4]:
     try:
-        render_ai_query_tab(df_curr)
+        # Map uploaded files to their dated bucket columns so the AI can resolve
+        # date references ("on 20th June") to curr_bucket / prev_bucket.
+        _snapshot_dates = {"curr": curr_month_input.strftime("%Y-%m-%d")}
+        if prev_month and len(df_prev_raw) > 0:
+            _snapshot_dates["prev"] = prev_month_input.strftime("%Y-%m-%d")
+        render_ai_query_tab(df_curr, _snapshot_dates)
     except Exception as _e:
         _tab_error("AI Query", _e)
 

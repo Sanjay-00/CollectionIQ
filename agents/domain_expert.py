@@ -68,6 +68,28 @@ PRIORITY_RULES = [
 ]
 
 
+def build_snapshot_context(snapshot_dates: dict | None) -> str:
+    """Build the per-query SNAPSHOTS block that maps uploaded files to dated bucket
+    columns, so the LLM can resolve a date the user names ("on 20th June") to the
+    correct column (prev_bucket / curr_bucket). Shared by both Gemini agents.
+    Returns "" when no snapshot info is available."""
+    if not snapshot_dates:
+        return ""
+    curr = snapshot_dates.get("curr")
+    prev = snapshot_dates.get("prev")
+    parts = ["[SNAPSHOTS - map any date the user names to the matching bucket column:"]
+    if curr:
+        parts.append(f"curr_bucket = the snapshot dated {curr} (the LATER / 'current' / 'now' / 'today' file).")
+    if prev:
+        parts.append(f"prev_bucket = the snapshot dated {prev} (the EARLIER / 'previous' file).")
+    parts.append(
+        "Resolve the EARLIER date the user mentions to prev_bucket and the LATER date to curr_bucket. "
+        "A point-in-time distribution at two dates is a SNAPSHOT COMPARISON (separate counts on "
+        "prev_bucket and curr_bucket), NOT a roll-forward/roll-backward query.] "
+    )
+    return " ".join(parts)
+
+
 def _build_priority_text() -> str:
     """Auto-generate system prompt priority section from PRIORITY_RULES - single source of truth."""
     lines = ["BUSINESS PRIORITY FRAMEWORK (apply when query is vague about what to look at):"]
@@ -209,6 +231,7 @@ When aggregation_mode is true, populate aggregation_spec with this exact structu
     {{"expr": "pandas eval expression using alias names", "label": "Human Readable Name"}}
   ],
   "sort_asc": true,
+  "limit": null,
   "having": [
     {{"alias": "alias_name", "op": ">=", "value": 1}}
   ]
@@ -287,6 +310,50 @@ Example — "branchwise accounts with arrears > 3 EMI":
     "sort_asc": false
   }}
 
+SNAPSHOT COMPARISON - CRITICAL distinction from roll-rate:
+When the user asks for a bucket distribution AT TWO POINTS IN TIME ("how many were NPA on <date1> and how many now / on <date2>", "compare <date1> vs <date2>"), this is a SNAPSHOT COMPARISON, NOT a roll-forward/backward query.
+- prev_bucket holds the EARLIER snapshot, curr_bucket holds the LATER snapshot (see the SNAPSHOTS block injected with the query for the exact dates).
+- Emit SEPARATE counts: one on prev_bucket for the earlier date, one on curr_bucket for the later date.
+- Do NOT use bucket_worse_than / bucket_better_than for snapshot comparisons - those measure per-account movement, not the count in each bucket at each date.
+- Bucket value mapping: "0-1 bucket" / "0-30 DPD" / "0-30 dpd" -> "1-30 DPD". "SMA-2" -> "SMA-2". "NPA" -> "NPA".
+
+Example - "regionwise how many accounts were in NPA, SMA-2 and 0-30 DPD earlier vs now":
+  aggregation_mode: true, result_type: "aggregation_table"
+  aggregation_spec: {{
+    "group_by": "RegionName",
+    "counts": [
+      {{"alias": "npa_prev",  "column": "prev_bucket", "value": "NPA"}},
+      {{"alias": "sma2_prev", "column": "prev_bucket", "value": "SMA-2"}},
+      {{"alias": "dpd_prev",  "column": "prev_bucket", "op": "in", "value": ["1-30 DPD"]}},
+      {{"alias": "npa_curr",  "column": "curr_bucket", "value": "NPA"}},
+      {{"alias": "sma2_curr", "column": "curr_bucket", "value": "SMA-2"}},
+      {{"alias": "dpd_curr",  "column": "curr_bucket", "op": "in", "value": ["1-30 DPD"]}}
+    ],
+    "sums": [],
+    "metrics": [],
+    "sort_asc": false
+  }}
+
+Example - "which branch has the maximum NPA reduction %, top 5 branches":
+  This compares the NPA count between the earlier (prev_bucket) and later (curr_bucket) snapshot.
+  Reduction % = (earlier_count - later_count) / earlier_count * 100. A positive value means NPA went down (good).
+  aggregation_mode: true, result_type: "aggregation_table"
+  aggregation_spec: {{
+    "group_by": "Unit",
+    "counts": [
+      {{"alias": "npa_prev", "column": "prev_bucket", "value": "NPA"}},
+      {{"alias": "npa_curr", "column": "curr_bucket", "value": "NPA"}}
+    ],
+    "sums": [],
+    "metrics": [{{"expr": "(npa_prev - npa_curr) / npa_prev * 100", "label": "NPA Reduction %"}}],
+    "sort_asc": false,
+    "limit": 5
+  }}
+
+LIMIT rules - use "limit" to keep only the top N groups AFTER sorting.
+Set limit ONLY when the user explicitly asks for "top N", "first N", "best N", "N branches/regions/executives" (e.g. "top 5 branches" -> limit: 5).
+If the user does NOT ask for a fixed number, set limit to null. Do NOT invent a limit.
+
 HAVING rules - use "having" to filter groups AFTER aggregation (like SQL HAVING clause).
 Supported ops: >=, >, <=, <, ==, !=
 Use ONLY when the user EXPLICITLY asks for a threshold like: "must have at least N", "only if more than N", "exclude if zero", "with at least N".
@@ -350,7 +417,7 @@ Use a single hyphen (-) when a dash is needed. Never use double dash (--), em da
 
 
 @traceable(run_type="chain", name="DomainExpert", tags=["gemini", "nbfc", "query-enrichment"])
-def enrich_query(raw_query: str) -> dict:
+def enrich_query(raw_query: str, snapshot_dates: dict | None = None, repair_feedback: str = "") -> dict:
     from datetime import date as _date
     from dateutil.relativedelta import relativedelta as _rd
 
@@ -365,9 +432,11 @@ def enrich_query(raw_query: str) -> dict:
         f"6 months ago: {(today - _rd(months=6)).isoformat()} | "
         f"3 months ago: {(today - _rd(months=3)).isoformat()}] "
     )
+    snapshot_context = build_snapshot_context(snapshot_dates)
+    repair_context = f"[REPAIR - {repair_feedback}] " if repair_feedback else ""
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, GEMINI_MODEL, date_context + raw_query,
+        client, GEMINI_MODEL, repair_context + snapshot_context + date_context + raw_query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)

@@ -12,6 +12,8 @@ from agents.data_executor import (
     execute_aggregation,
     execute_filters,
     execute_priority_mode,
+    validate_aggregation_spec,
+    validate_filter_spec,
 )
 from agents.domain_expert import enrich_query
 from agents.insight_generator import generate_insights
@@ -24,11 +26,15 @@ from agents.query_parser import parse_query
 _tls = threading.local()
 
 _STEP_LABELS: dict[str, str] = {
-    "expert":  "🧠  Domain Expert: enriching query with NBFC context",
-    "parse":   "📋  Query Parser: translating to filter conditions",
-    "execute": "⚡  Data Executor: applying filters to portfolio",
-    "analyze": "💡  Insight Generator: writing AI observations",
+    "expert":   "🧠  Domain Expert: enriching query with NBFC context",
+    "parse":    "📋  Query Parser: translating to filter conditions",
+    "validate": "🔎  Validator: checking the query against your data",
+    "execute":  "⚡  Data Executor: applying filters to portfolio",
+    "analyze":  "💡  Insight Generator: writing AI observations",
 }
+
+# How many times the validator may send a bad spec back to the LLM for repair.
+_MAX_REPAIRS = 1
 
 
 def _announce(node: str) -> None:
@@ -50,6 +56,7 @@ class QueryState(TypedDict):
     # Input
     query: str
     result_df_full: Any         # full unfiltered DataFrame
+    snapshot_dates: dict        # {"curr": "YYYY-MM-DD", "prev": "YYYY-MM-DD"} - maps files to dated bucket columns
 
     # Agent 0 output — Domain Expert
     enriched_query: str
@@ -85,7 +92,7 @@ class QueryState(TypedDict):
 def domain_expert_node(state: QueryState) -> QueryState:
     _announce("expert")
     try:
-        enriched = enrich_query(state["query"])
+        enriched = enrich_query(state["query"], state.get("snapshot_dates"))
         return {
             **state,
             "enriched_query":   enriched.get("enriched_query") or state["query"],
@@ -122,10 +129,59 @@ def domain_expert_node(state: QueryState) -> QueryState:
 def parse_node(state: QueryState) -> QueryState:
     _announce("parse")
     try:
-        parsed = parse_query(state["enriched_query"])
+        parsed = parse_query(state["enriched_query"], state.get("snapshot_dates"))
         return {**state, "parsed_filters": parsed, "error": ""}
     except Exception as e:
         return {**state, "parsed_filters": {}, "error": f"Query parsing failed: {e}"}
+
+
+# ── Validator + repair (pandas check, then one LLM repair attempt) ────────────
+def validate_node(state: QueryState) -> QueryState:
+    """Check the generated spec against the ACTUAL columns before executing.
+    On a mismatch (hallucinated column / undefined metric alias), send the error
+    back to the LLM once for a corrected spec. Priority mode is skipped — its
+    rules are static and already guarded inside the executor."""
+    _announce("validate")
+    if state.get("priority_mode"):
+        return state
+
+    df: pd.DataFrame = state.get("result_df_full")
+    if df is None or len(df) == 0:
+        return state
+    cols = list(df.columns)
+
+    for attempt in range(_MAX_REPAIRS + 1):
+        if state.get("aggregation_mode"):
+            errs = validate_aggregation_spec(state.get("aggregation_spec") or {}, cols)
+        else:
+            errs = validate_filter_spec(state.get("parsed_filters") or {}, cols)
+
+        if not errs:
+            return state
+
+        if attempt == _MAX_REPAIRS:
+            msg = "; ".join(errs)
+            if "prev_bucket" in msg:
+                msg += ". Tip: upload a previous-period file to enable snapshot comparisons."
+            return {**state, "error": f"Could not build a valid query for your data: {msg}"}
+
+        feedback = (
+            "Your previous output referenced columns/names that are NOT in the dataset. "
+            f"Errors: {'; '.join(errs)}. "
+            f"The ONLY valid column names are: {', '.join(map(str, cols))}. "
+            "Return corrected JSON using ONLY these exact column names."
+        )
+        try:
+            if state.get("aggregation_mode"):
+                fixed = enrich_query(state["query"], state.get("snapshot_dates"), repair_feedback=feedback)
+                state = {**state, "aggregation_spec": fixed.get("aggregation_spec") or {}}
+            else:
+                fixed = parse_query(state["enriched_query"], state.get("snapshot_dates"), repair_feedback=feedback)
+                state = {**state, "parsed_filters": fixed}
+        except Exception as e:
+            return {**state, "error": f"Query repair failed: {e}"}
+
+    return state
 
 
 # ── Agent 2: Data Executor (pandas) ──────────────────────────────────────────
@@ -182,6 +238,9 @@ def _route_expert(state: QueryState) -> str:
     return "error" if state.get("error") else "parse"
 
 def _route_parse(state: QueryState) -> str:
+    return "error" if state.get("error") else "validate"
+
+def _route_validate(state: QueryState) -> str:
     return "error" if state.get("error") else "execute"
 
 def _route_execute(state: QueryState) -> str:
@@ -190,16 +249,18 @@ def _route_execute(state: QueryState) -> str:
 
 # ── Build graph ───────────────────────────────────────────────────────────────
 _graph = StateGraph(QueryState)
-_graph.add_node("expert",  domain_expert_node)
-_graph.add_node("parse",   parse_node)
-_graph.add_node("execute", execute_node)
-_graph.add_node("analyze", analyze_node)
-_graph.add_node("error",   error_node)
+_graph.add_node("expert",   domain_expert_node)
+_graph.add_node("parse",    parse_node)
+_graph.add_node("validate", validate_node)
+_graph.add_node("execute",  execute_node)
+_graph.add_node("analyze",  analyze_node)
+_graph.add_node("error",    error_node)
 
 _graph.add_edge(START, "expert")
-_graph.add_conditional_edges("expert",  _route_expert,  {"parse":   "parse",   "error": "error"})
-_graph.add_conditional_edges("parse",   _route_parse,   {"execute": "execute", "error": "error"})
-_graph.add_conditional_edges("execute", _route_execute, {"analyze": "analyze", "error": "error"})
+_graph.add_conditional_edges("expert",   _route_expert,   {"parse":    "parse",    "error": "error"})
+_graph.add_conditional_edges("parse",    _route_parse,    {"validate": "validate", "error": "error"})
+_graph.add_conditional_edges("validate", _route_validate, {"execute":  "execute",  "error": "error"})
+_graph.add_conditional_edges("execute",  _route_execute,  {"analyze":  "analyze",  "error": "error"})
 _graph.add_edge("analyze", END)
 _graph.add_edge("error",   END)
 
@@ -210,6 +271,7 @@ def run_query(
     query: str,
     df: pd.DataFrame,
     on_step: Optional[Callable[[str], None]] = None,
+    snapshot_dates: Optional[dict] = None,
 ) -> QueryState:
     """Run the 4-agent query pipeline.
 
@@ -222,6 +284,7 @@ def run_query(
     initial: QueryState = {
         "query":            query,
         "result_df_full":   df,
+        "snapshot_dates":   snapshot_dates or {},
         "enriched_query":   "",
         "query_category":   "",
         "query_title":      "",

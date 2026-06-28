@@ -7,7 +7,7 @@ from utils import fmt_value
 from ui.components import _dl_btn, _safe_df, _send_feedback
 
 
-def render_ai_query_tab(df_curr: pd.DataFrame) -> None:
+def render_ai_query_tab(df_curr: pd.DataFrame, snapshot_dates: dict | None = None) -> None:
     from graph import run_query
 
     # ── Example chips (cross-frame JS fill) ──────────────────────────────────
@@ -45,7 +45,7 @@ body { background: #f2f2f2; font-family: 'Inter', sans-serif; padding: 2px 0 0 0
   </div>
   <div class="sub">Ask any question about your loan portfolio in plain English. Click an example to try:</div>
   <button class="chip" onclick="fill('Show customers who haven\\'t paid for last 3 months')">Show customers who haven't paid for last 3 months</button>
-  <button class="chip" onclick="fill('List NPA accounts in MAHAD with POS above 1 lakh')">List NPA accounts in MAHAD with POS above 1 lakh</button>
+  <button class="chip" onclick="fill('Give me all branches with previous NPA count and current NPA count, sorted descending with the biggest reduction on top')">Branches with the biggest NPA drop vs last month</button>
   <button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 onward advances')">Show all accounts &gt;2 bucket from Nov 2025 onward advances</button>
   <button class="chip" onclick="fill('Show those accounts that need immediate action')">Show accounts that need immediate action</button>
 </div>
@@ -87,7 +87,8 @@ function fill(text) {
             with st.status("Running AI pipeline...", expanded=True) as _status:
                 def _on_step(label: str) -> None:
                     _status.write(label)
-                _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step)
+                _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step,
+                                       snapshot_dates=snapshot_dates)
                 _status.update(label="Query complete", state="complete", expanded=False)
             st.session_state["ai_result"] = _ai_result
 
