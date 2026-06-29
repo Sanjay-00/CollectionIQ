@@ -5,6 +5,7 @@ import time
 from google import genai
 from langsmith import traceable
 from config import GEMINI_MODEL
+from agents.domain_expert import build_snapshot_context
 
 
 def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
@@ -115,6 +116,7 @@ SPECIAL INTERPRETATIONS:
 - "no nach" or "nach inactive" or "no auto debit" → NACHStatus == "N"
 - "legal accounts" or "legal action" or "under legal" → LGL_FLAG == "Y"
 - "co-lending" or "co lending" or "colending" or "co-lending cases" or "colending loans" → CoLending_Loans == "Y" (all co-lending loans)
+- "0-1 bucket" or "0-30 DPD" or "0-30 dpd" or "0 to 30 dpd" -> bucket value "1-30 DPD" (use on curr_bucket for the current snapshot, prev_bucket for the earlier snapshot)
 - "co-lending at risk" or "co-lending delinquent" or "co-lending with arrears" or "co-lending defaults" or "co-lending overdue" → CoLending_Loans == "Y" AND Arrears / EMI > 0. These are partner bank co-lending loans showing delinquency - highest priority, SLA breach risk.
 - "dead customer" or "deceased" → CUSTOMER_STATUS == "Dead" (or similar value)
 - "no strike" or "no full payment" or "payment not received" → Strike == "N"
@@ -151,7 +153,7 @@ Use a single hyphen (-) when a dash is needed. Never use double dash (--), em da
 
 
 @traceable(run_type="chain", name="QueryParser", tags=["gemini", "nbfc", "filter-generation"])
-def parse_query(query: str) -> dict:
+def parse_query(query: str, snapshot_dates: dict | None = None, repair_feedback: str = "") -> dict:
     from datetime import date as _date
     from dateutil.relativedelta import relativedelta as _rd
 
@@ -166,9 +168,11 @@ def parse_query(query: str) -> dict:
         f"6 months ago: {(today - _rd(months=6)).isoformat()} | "
         f"3 months ago: {(today - _rd(months=3)).isoformat()}] "
     )
+    snapshot_context = build_snapshot_context(snapshot_dates)
+    repair_context = f"[REPAIR - {repair_feedback}] " if repair_feedback else ""
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, GEMINI_MODEL, date_context + query,
+        client, GEMINI_MODEL, repair_context + snapshot_context + date_context + query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)

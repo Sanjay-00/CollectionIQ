@@ -68,6 +68,28 @@ PRIORITY_RULES = [
 ]
 
 
+def build_snapshot_context(snapshot_dates: dict | None) -> str:
+    """Build the per-query SNAPSHOTS block that maps uploaded files to dated bucket
+    columns, so the LLM can resolve a date the user names ("on 20th June") to the
+    correct column (prev_bucket / curr_bucket). Shared by both Gemini agents.
+    Returns "" when no snapshot info is available."""
+    if not snapshot_dates:
+        return ""
+    curr = snapshot_dates.get("curr")
+    prev = snapshot_dates.get("prev")
+    parts = ["[SNAPSHOTS - map any date the user names to the matching bucket column:"]
+    if curr:
+        parts.append(f"curr_bucket = the snapshot dated {curr} (the LATER / 'current' / 'now' / 'today' file).")
+    if prev:
+        parts.append(f"prev_bucket = the snapshot dated {prev} (the EARLIER / 'previous' file).")
+    parts.append(
+        "Resolve the EARLIER date the user mentions to prev_bucket and the LATER date to curr_bucket. "
+        "A point-in-time distribution at two dates is a SNAPSHOT COMPARISON (separate counts on "
+        "prev_bucket and curr_bucket), NOT a roll-forward/roll-backward query.] "
+    )
+    return " ".join(parts)
+
+
 def _build_priority_text() -> str:
     """Auto-generate system prompt priority section from PRIORITY_RULES - single source of truth."""
     lines = ["BUSINESS PRIORITY FRAMEWORK (apply when query is vague about what to look at):"]
@@ -209,6 +231,7 @@ When aggregation_mode is true, populate aggregation_spec with this exact structu
     {{"expr": "pandas eval expression using alias names", "label": "Human Readable Name"}}
   ],
   "sort_asc": true,
+  "limit": null,
   "having": [
     {{"alias": "alias_name", "op": ">=", "value": 1}}
   ]
@@ -287,6 +310,50 @@ Example — "branchwise accounts with arrears > 3 EMI":
     "sort_asc": false
   }}
 
+SNAPSHOT COMPARISON - CRITICAL distinction from roll-rate:
+When the user asks for a bucket distribution AT TWO POINTS IN TIME ("how many were NPA on <date1> and how many now / on <date2>", "compare <date1> vs <date2>"), this is a SNAPSHOT COMPARISON, NOT a roll-forward/backward query.
+- prev_bucket holds the EARLIER snapshot, curr_bucket holds the LATER snapshot (see the SNAPSHOTS block injected with the query for the exact dates).
+- Emit SEPARATE counts: one on prev_bucket for the earlier date, one on curr_bucket for the later date.
+- Do NOT use bucket_worse_than / bucket_better_than for snapshot comparisons - those measure per-account movement, not the count in each bucket at each date.
+- Bucket value mapping: "0-1 bucket" / "0-30 DPD" / "0-30 dpd" -> "1-30 DPD". "SMA-2" -> "SMA-2". "NPA" -> "NPA".
+
+Example - "regionwise how many accounts were in NPA, SMA-2 and 0-30 DPD earlier vs now":
+  aggregation_mode: true, result_type: "aggregation_table"
+  aggregation_spec: {{
+    "group_by": "RegionName",
+    "counts": [
+      {{"alias": "npa_prev",  "column": "prev_bucket", "value": "NPA"}},
+      {{"alias": "sma2_prev", "column": "prev_bucket", "value": "SMA-2"}},
+      {{"alias": "dpd_prev",  "column": "prev_bucket", "op": "in", "value": ["1-30 DPD"]}},
+      {{"alias": "npa_curr",  "column": "curr_bucket", "value": "NPA"}},
+      {{"alias": "sma2_curr", "column": "curr_bucket", "value": "SMA-2"}},
+      {{"alias": "dpd_curr",  "column": "curr_bucket", "op": "in", "value": ["1-30 DPD"]}}
+    ],
+    "sums": [],
+    "metrics": [],
+    "sort_asc": false
+  }}
+
+Example - "which branch has the maximum NPA reduction %, top 5 branches":
+  This compares the NPA count between the earlier (prev_bucket) and later (curr_bucket) snapshot.
+  Reduction % = (earlier_count - later_count) / earlier_count * 100. A positive value means NPA went down (good).
+  aggregation_mode: true, result_type: "aggregation_table"
+  aggregation_spec: {{
+    "group_by": "Unit",
+    "counts": [
+      {{"alias": "npa_prev", "column": "prev_bucket", "value": "NPA"}},
+      {{"alias": "npa_curr", "column": "curr_bucket", "value": "NPA"}}
+    ],
+    "sums": [],
+    "metrics": [{{"expr": "(npa_prev - npa_curr) / npa_prev * 100", "label": "NPA Reduction %"}}],
+    "sort_asc": false,
+    "limit": 5
+  }}
+
+LIMIT rules - use "limit" to keep only the top N groups AFTER sorting.
+Set limit ONLY when the user explicitly asks for "top N", "first N", "best N", "N branches/regions/executives" (e.g. "top 5 branches" -> limit: 5).
+If the user does NOT ask for a fixed number, set limit to null. Do NOT invent a limit.
+
 HAVING rules - use "having" to filter groups AFTER aggregation (like SQL HAVING clause).
 Supported ops: >=, >, <=, <, ==, !=
 Use ONLY when the user EXPLICITLY asks for a threshold like: "must have at least N", "only if more than N", "exclude if zero", "with at least N".
@@ -311,6 +378,88 @@ Example - "order executives by lowest MAT to RUN ratio, must have at least 1 run
 
 When aggregation_mode is false, set aggregation_spec to null.
 
+MULTI-STEP PLAN MODE - CRITICAL for questions that need MORE THAN ONE aggregation pass.
+A single GROUP BY (aggregation_mode) counts ROWS per group. It CANNOT answer questions that
+first roll up to an intermediate entity and then aggregate again. For those, set plan_mode=true
+(and aggregation_mode=false, priority_mode=false) and emit an ordered "plan".
+
+Use plan_mode when the query involves ANY of:
+- counting ENTITIES (customers/borrowers) that satisfy a PER-ENTITY condition, e.g.
+  "how many customers per branch have more than 3 loans", "borrowers with 2+ NPA loans"
+- "fleet operators" / "multi-vehicle customers" (one customer owning several loans/vehicles)
+- any nested aggregation: aggregate, filter on the aggregate, then aggregate again
+- count-distinct of a key after a per-key filter
+
+A plan is an ORDERED list; each step transforms the previous step's table. Operations:
+- {{"op": "group_aggregate", "group_by": ["col", ...], "aggregations": [
+      {{"alias": "name", "func": "count|sum|nunique|mean|min|max", "column": "col"}} ]}}
+    func "count" counts rows in the group and needs no column; the others need a column.
+    An aggregation may add an optional "where": [conditions] (same format as filter) to
+    count/sum/nunique ONLY rows matching a per-row condition. Use this for things like
+    "number of unpaid loans per customer" — count where the unpaid condition holds.
+    After this step ONLY the group_by columns and the new aliases remain.
+- {{"op": "filter", "conditions": [{{"column": "col_or_alias", "op": ">|>=|<|<=|==|!=|in|contains", "value": v}}]}}
+- {{"op": "derive", "column": "new_name", "expr": "arithmetic over existing aliases"}}
+- {{"op": "sort", "by": "col_or_alias", "ascending": false}}
+- {{"op": "limit", "n": N}}
+
+CUSTOMER IDENTITY: use "Cust Mob No" as the customer key (one customer = one mobile number).
+
+Example - "number of customers each branch has with more than 3 loans":
+  plan_mode: true, aggregation_mode: false, result_type: "aggregation_table"
+  plan: [
+    {{"op": "group_aggregate", "group_by": ["Unit", "Cust Mob No"],
+      "aggregations": [{{"alias": "loan_count", "func": "nunique", "column": "Loan No"}}]}},
+    {{"op": "filter", "conditions": [{{"column": "loan_count", "op": ">", "value": 3}}]}},
+    {{"op": "group_aggregate", "group_by": ["Unit"],
+      "aggregations": [{{"alias": "customer_count", "func": "nunique", "column": "Cust Mob No"}}]}},
+    {{"op": "sort", "by": "customer_count", "ascending": false}}
+  ]
+
+Example - "fleet operators (customers with 3+ vehicles) per region, with their total exposure":
+  plan_mode: true, result_type: "aggregation_table"
+  plan: [
+    {{"op": "group_aggregate", "group_by": ["RegionName", "Cust Mob No"],
+      "aggregations": [{{"alias": "vehicle_count", "func": "nunique", "column": "Loan No"}},
+                       {{"alias": "exposure", "func": "sum", "column": "SOH"}}]}},
+    {{"op": "filter", "conditions": [{{"column": "vehicle_count", "op": ">=", "value": 3}}]}},
+    {{"op": "group_aggregate", "group_by": ["RegionName"],
+      "aggregations": [{{"alias": "fleet_operators", "func": "nunique", "column": "Cust Mob No"}},
+                       {{"alias": "total_exposure", "func": "sum", "column": "exposure"}}]}},
+    {{"op": "sort", "by": "fleet_operators", "ascending": false}}
+  ]
+
+PAID THIS MONTH (by receipt date): "paid this month" = Last Receipt Date falls in the CURRENT
+snapshot month (see SNAPSHOTS). Since a receipt cannot be dated after the snapshot, this reduces
+to: Last Receipt Date >= the first day of the current snapshot month. "unpaid this month" /
+"haven't paid" = NOT that. Compute unpaid as (total loans - paid loans) so loans with a missing
+or older receipt date correctly count as unpaid.
+
+CRITICAL: translate EVERY condition the user states into the plan (as a filter step or a "where"
+on an aggregation). NEVER silently drop a condition. If the user says "fleet owners who haven't
+paid", the plan MUST contain both the fleet rule AND the unpaid rule.
+
+Example - "count fleet owners (3+ loans) per branch who have at least 1 unpaid loan this month,
+also show their unpaid loan count, ordered by SOH" (current snapshot month starts 2026-03-01):
+  plan_mode: true, result_type: "aggregation_table"
+  plan: [
+    {{"op": "group_aggregate", "group_by": ["Unit", "Cust Mob No"], "aggregations": [
+        {{"alias": "loan_count", "func": "nunique", "column": "Loan No"}},
+        {{"alias": "paid_loans", "func": "count",
+          "where": [{{"column": "Last Receipt Date", "op": ">=", "value": "2026-03-01"}}]}},
+        {{"alias": "soh", "func": "sum", "column": "SOH"}}]}},
+    {{"op": "derive", "column": "unpaid_loans", "expr": "loan_count - paid_loans"}},
+    {{"op": "filter", "conditions": [{{"column": "loan_count", "op": ">=", "value": 3}},
+                                     {{"column": "unpaid_loans", "op": ">=", "value": 1}}]}},
+    {{"op": "group_aggregate", "group_by": ["Unit"], "aggregations": [
+        {{"alias": "fleet_owners", "func": "nunique", "column": "Cust Mob No"}},
+        {{"alias": "total_unpaid_loans", "func": "sum", "column": "unpaid_loans"}},
+        {{"alias": "total_soh", "func": "sum", "column": "soh"}}]}},
+    {{"op": "sort", "by": "total_soh", "ascending": false}}
+  ]
+
+When plan_mode is false, set plan to null. plan_mode takes precedence over aggregation_mode.
+
 RESULT TYPE - always decide what shape the answer should be:
 - "loan_table"       : user wants individual loan records. Signals: "show me", "list", "find accounts", "which customers", "filter by", "give me loans where".
 - "aggregation_table": user wants groups ranked/compared by a metric. Signals: "rank by", "order by", "sort executives by", "compare branches by", "top N groups".
@@ -324,6 +473,22 @@ Rules:
 - "show all MAT accounts" → loan_table
 - "list accounts with no strike" → loan_table
 
+CLARIFICATION - ask instead of assuming (this is general, not tied to any specific query):
+A query should FAIL ONLY when it cannot be answered - never from a silent wrong guess. If the query
+is genuinely AMBIGUOUS - more than one reasonable interpretation that would produce MATERIALLY
+DIFFERENT results - do NOT pick one silently. Set needs_clarification=true and return:
+  - clarification_question: one short question naming the specific ambiguity
+  - clarification_options: 3-5 concrete interpretations the user can choose from
+Ask ONLY for real, material ambiguity. Things that legitimately need asking:
+  - an undefined threshold ("high exposure", "many loans" - what cutoff?)
+  - an entity-level condition that could be ALL vs ANY ("customers who haven't paid" - all their
+    loans, or at least one?)
+  - a measure with several valid definitions ("paid" - by collection amount, or by receipt date?)
+  - a vague target column when several columns could fit
+If the query is clear and fully specified, set needs_clarification=false and proceed normally - do
+NOT interrupt a clear query. Do NOT ask about anything already defined in the NBFC meanings above
+(those are not ambiguous). When needs_clarification is true you may leave plan/aggregation_spec null.
+
 Your output must be a JSON object with this exact structure:
 {{
   "enriched_query": "A precise, detailed restatement - include exact column names and conditions.",
@@ -336,6 +501,11 @@ Your output must be a JSON object with this exact structure:
   "priority_mode": false,
   "aggregation_mode": false,
   "aggregation_spec": null,
+  "plan_mode": false,
+  "plan": null,
+  "needs_clarification": false,
+  "clarification_question": "",
+  "clarification_options": [],
   "result_type": "loan_table"
 }}
 
@@ -350,7 +520,8 @@ Use a single hyphen (-) when a dash is needed. Never use double dash (--), em da
 
 
 @traceable(run_type="chain", name="DomainExpert", tags=["gemini", "nbfc", "query-enrichment"])
-def enrich_query(raw_query: str) -> dict:
+def enrich_query(raw_query: str, snapshot_dates: dict | None = None, repair_feedback: str = "",
+                 allow_clarification: bool = True) -> dict:
     from datetime import date as _date
     from dateutil.relativedelta import relativedelta as _rd
 
@@ -365,9 +536,18 @@ def enrich_query(raw_query: str) -> dict:
         f"6 months ago: {(today - _rd(months=6)).isoformat()} | "
         f"3 months ago: {(today - _rd(months=3)).isoformat()}] "
     )
+    snapshot_context = build_snapshot_context(snapshot_dates)
+    repair_context = f"[REPAIR - {repair_feedback}] " if repair_feedback else ""
+    # On a re-run after the user has answered a clarifying question, do not ask again.
+    decision_context = (
+        "" if allow_clarification else
+        "[DECISION MODE: the user has already clarified their intent in this query. "
+        "Do NOT ask for clarification; make your best decision and produce a plan/spec.] "
+    )
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, GEMINI_MODEL, date_context + raw_query,
+        client, GEMINI_MODEL,
+        decision_context + repair_context + snapshot_context + date_context + raw_query,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)
@@ -387,13 +567,34 @@ def enrich_query(raw_query: str) -> dict:
     result.setdefault("priority_mode", False)
     result.setdefault("aggregation_mode", False)
     result.setdefault("aggregation_spec", None)
+    result.setdefault("plan_mode", False)
+    result.setdefault("plan", None)
+    result.setdefault("needs_clarification", False)
+    result.setdefault("clarification_question", "")
+    result.setdefault("clarification_options", [])
     result.setdefault("result_type", "loan_table")
 
     # Guard against Gemini returning "true"/"false" strings instead of booleans
-    pm = result.get("priority_mode", False)
-    result["priority_mode"] = pm is True or str(pm).lower() == "true"
-    am = result.get("aggregation_mode", False)
-    result["aggregation_mode"] = am is True or str(am).lower() == "true"
+    def _truthy(v):
+        return v is True or str(v).lower() == "true"
+
+    result["priority_mode"] = _truthy(result.get("priority_mode", False))
+    result["aggregation_mode"] = _truthy(result.get("aggregation_mode", False))
+    result["plan_mode"] = _truthy(result.get("plan_mode", False))
+
+    # A clarification is only valid if we actually have options to offer, and never
+    # on a post-clarification re-run.
+    result["needs_clarification"] = (
+        allow_clarification
+        and _truthy(result.get("needs_clarification", False))
+        and bool(result.get("clarification_options"))
+    )
+
+    # plan_mode is the most general path — it wins, and the simpler modes turn off
+    # so the executor branches unambiguously.
+    if result["plan_mode"]:
+        result["aggregation_mode"] = False
+        result["priority_mode"] = False
 
     # Validate result_type
     valid_result_types = {"loan_table", "aggregation_table", "single_stat"}

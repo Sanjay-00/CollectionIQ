@@ -7,7 +7,7 @@ from utils import fmt_value
 from ui.components import _dl_btn, _safe_df, _send_feedback
 
 
-def render_ai_query_tab(df_curr: pd.DataFrame) -> None:
+def render_ai_query_tab(df_curr: pd.DataFrame, snapshot_dates: dict | None = None) -> None:
     from graph import run_query
 
     # ── Example chips (cross-frame JS fill) ──────────────────────────────────
@@ -45,7 +45,7 @@ body { background: #f2f2f2; font-family: 'Inter', sans-serif; padding: 2px 0 0 0
   </div>
   <div class="sub">Ask any question about your loan portfolio in plain English. Click an example to try:</div>
   <button class="chip" onclick="fill('Show customers who haven\\'t paid for last 3 months')">Show customers who haven't paid for last 3 months</button>
-  <button class="chip" onclick="fill('List NPA accounts in MAHAD with POS above 1 lakh')">List NPA accounts in MAHAD with POS above 1 lakh</button>
+  <button class="chip" onclick="fill('Give me all branches with previous NPA count and current NPA count, sorted descending with the biggest reduction on top')">Branches with the biggest NPA drop vs last month</button>
   <button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 onward advances')">Show all accounts &gt;2 bucket from Nov 2025 onward advances</button>
   <button class="chip" onclick="fill('Show those accounts that need immediate action')">Show accounts that need immediate action</button>
 </div>
@@ -87,7 +87,8 @@ function fill(text) {
             with st.status("Running AI pipeline...", expanded=True) as _status:
                 def _on_step(label: str) -> None:
                     _status.write(label)
-                _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step)
+                _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step,
+                                       snapshot_dates=snapshot_dates)
                 _status.update(label="Query complete", state="complete", expanded=False)
             st.session_state["ai_result"] = _ai_result
 
@@ -98,6 +99,37 @@ function fill(text) {
 
     if result.get("error"):
         st.error(f"Query failed: {result['error']}")
+        return
+
+    # ── Clarification: query was ambiguous — ask instead of guessing ───────────
+    if result.get("needs_clarification"):
+        q_question = result.get("clarification_question") or "Your query could be read a few ways — which did you mean?"
+        q_options  = result.get("clarification_options") or []
+        orig_query = result.get("query") or ""
+
+        st.markdown(f"""
+        <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
+                    padding:16px 20px;margin:16px 0 10px 0;">
+          <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
+            🤔 NEED A QUICK CLARIFICATION
+          </div>
+          <div style="font-size:13px;color:#e6edf3;line-height:1.6;">{q_question}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for i, opt in enumerate(q_options):
+            if st.button(opt, key=f"clarify_opt_{i}", width='stretch'):
+                augmented = f"{orig_query} (interpretation: {opt})"
+                with st.status("Running AI pipeline...", expanded=True) as _status:
+                    def _on_step(label: str) -> None:
+                        _status.write(label)
+                    _res = run_query(augmented, df_curr, on_step=_on_step,
+                                     snapshot_dates=snapshot_dates, allow_clarification=False)
+                    _status.update(label="Query complete", state="complete", expanded=False)
+                st.session_state["ai_result"] = _res
+                st.rerun()
+
+        st.caption("None of these? Rephrase your question above with the detail you meant, and run again.")
         return
 
     filtered_df = result["result_df"]
@@ -186,6 +218,60 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             if len(disp) > 1000:
                 st.caption(f"Showing 1,000 of {len(disp):,} rows — download Excel for full list.")
             _dl_btn(disp, f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
+
+    elif result.get("plan_mode"):
+        # ── Multi-step plan result ────────────────────────────────────────────
+        plan = result.get("plan") or []
+
+        def _step_text(s: dict) -> str:
+            op = s.get("op")
+            if op == "group_aggregate":
+                gb = ", ".join(str(c) for c in (s.get("group_by") if isinstance(s.get("group_by"), list) else [s.get("group_by")]))
+                aggs = ", ".join(
+                    f"{a.get('func')}({a.get('column') or 'rows'}) as {a.get('alias')}"
+                    for a in (s.get("aggregations") or [])
+                )
+                return f"Group by [{gb}] → {aggs}"
+            if op == "filter":
+                conds = ", ".join(
+                    f"{c.get('column')} {c.get('op')} {c.get('value')}"
+                    for c in (s.get("conditions") or [])
+                )
+                return f"Keep rows where {conds}"
+            if op == "derive":
+                return f"Add column '{s.get('column')}' = {s.get('expr')}"
+            if op == "sort":
+                return f"Sort by {s.get('by')} ({'ascending' if s.get('ascending') else 'descending'})"
+            if op == "limit":
+                return f"Take top {s.get('n')}"
+            return str(op)
+
+        steps_html = "".join(
+            f'<div style="display:flex;gap:10px;margin:4px 0;font-size:12px;color:#94a3b8;">'
+            f'<span style="color:#FFC000;font-weight:800;min-width:18px;">{i}.</span>'
+            f'<span>{_step_text(s)}</span></div>'
+            for i, s in enumerate(plan, start=1)
+        )
+        st.markdown(f"""
+        <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
+                    padding:16px 20px;margin:0 0 16px 0;">
+          <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
+            🧩 MULTI-STEP PLAN — {len(filtered_df)} rows
+          </div>
+          <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">{plain}</div>
+          {steps_html}
+        </div>
+        """, unsafe_allow_html=True)
+
+        if len(filtered_df) > 0:
+            display_plan = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
+            st.dataframe(_safe_df(display_plan.head(1000)), width='stretch',
+                         height=min(420, 50 + min(len(display_plan), 1000) * 36), hide_index=True)
+            if len(display_plan) > 1000:
+                st.caption(f"Showing 1,000 of {len(display_plan):,} rows — download Excel for full list.")
+            _dl_btn(display_plan, "plan_result.xlsx", "dl_plan")
+        else:
+            st.warning("The plan returned no rows.")
 
     elif result_type == "single_stat" and not is_aggregation:
         # ── Scalar result ─────────────────────────────────────────────────────

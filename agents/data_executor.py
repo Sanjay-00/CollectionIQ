@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
@@ -357,12 +358,100 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     sort_asc = spec.get("sort_asc")
     if sort_asc is None:
         sort_asc = True
-    if metric_label in agg.columns:
-        agg = agg.sort_values(metric_label, ascending=sort_asc)
+    # Sort by the derived metric. metric_label is only populated in the legacy
+    # single-metric format; for the metrics-list format fall back to the first
+    # metric's label so "rank/order by <metric>" queries actually sort.
+    sort_label = metric_label if metric_label in agg.columns else None
+    if sort_label is None and metrics_list:
+        first_label = metrics_list[0].get("label")
+        if first_label in agg.columns:
+            sort_label = first_label
+    if sort_label:
+        agg = agg.sort_values(sort_label, ascending=sort_asc)
+
+    # Top-N limit — applied after sort so we keep the highest/lowest ranked groups.
+    # Set by the planner only when the user asks for "top N" / "first N" groups.
+    limit = spec.get("limit")
+    try:
+        limit = int(limit) if limit is not None else None
+    except (TypeError, ValueError):
+        limit = None
+    if limit and limit > 0:
+        agg = agg.head(limit)
 
     agg = agg.reset_index()
     agg.insert(0, "Rank", range(1, len(agg) + 1))
     return agg, ""
+
+
+# ── Spec validation (used by the validate-and-repair loop in graph.py) ─────────
+# Pure logic, no LLM. Catches hallucinated column names / undefined metric aliases
+# BEFORE execution, so a bad spec becomes a repair request instead of silently
+# returning wrong (unfiltered / all-zero) results.
+
+def validate_aggregation_spec(spec: dict, columns) -> list[str]:
+    """Return a list of human-readable problems with an aggregation_spec given the
+    actual DataFrame columns. Empty list = valid."""
+    cols = set(columns)
+    errs: list[str] = []
+
+    gb = spec.get("group_by")
+    gb_cols = gb if isinstance(gb, list) else [gb]
+    for c in gb_cols:
+        if not c or c not in cols:
+            errs.append(f"group_by column '{c}' does not exist")
+
+    aliases: set[str] = set()
+    for cnt in spec.get("counts") or []:
+        alias = cnt.get("alias")
+        if alias:
+            aliases.add(alias)
+        col = cnt.get("column")
+        op = cnt.get("op")
+        if col == "__total__":
+            continue
+        if not col or col not in cols:
+            errs.append(f"count column '{col}' does not exist")
+        if op in ("bucket_worse_than", "bucket_better_than", "bucket_stable"):
+            ref = cnt.get("value")
+            if not ref or ref not in cols:
+                errs.append(f"bucket comparison reference column '{ref}' does not exist")
+
+    for sm in spec.get("sums") or []:
+        alias = sm.get("alias")
+        if alias:
+            aliases.add(alias)
+        col = sm.get("column")
+        if not col or col not in cols:
+            errs.append(f"sum column '{col}' does not exist")
+
+    for m in spec.get("metrics") or []:
+        expr = m.get("expr") or ""
+        idents = set(re.findall(r"[A-Za-z_]\w*", expr))
+        unknown = sorted(i for i in idents if i not in aliases)
+        if unknown:
+            errs.append(
+                f"metric '{m.get('label')}' uses undefined names {unknown}; "
+                f"defined aliases are {sorted(aliases)}"
+            )
+
+    return errs
+
+
+def validate_filter_spec(parsed: dict, columns) -> list[str]:
+    """Return a list of problems with a parsed filter spec given actual columns."""
+    cols = set(columns)
+    errs: list[str] = []
+    for cond in parsed.get("conditions") or []:
+        col = cond.get("column")
+        op = cond.get("op")
+        if not col or col not in cols:
+            errs.append(f"filter column '{col}' does not exist")
+        if op in ("bucket_worse_than", "bucket_better_than"):
+            ref = cond.get("value")
+            if not ref or ref not in cols:
+                errs.append(f"bucket comparison reference column '{ref}' does not exist")
+    return errs
 
 
 def distribute_priority_accounts(df: pd.DataFrame, total_n: int) -> pd.DataFrame:
