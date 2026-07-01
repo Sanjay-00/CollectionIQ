@@ -13,13 +13,13 @@ from utils import (
 
 _KIND = {
     "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
-    "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct",
+    "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct", "SMA-2 %": "pct",
     "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct",
 }
 _KPI_TOP      = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %", "Hard Bucket %"]
 _KPI_BOT      = ["Count", "CMD %"]
 _KPI_EXPOSURE = ["SOH"]
-_INVERSE_MOM  = {"NPA %", "Hard Bucket %"}
+_INVERSE_MOM  = {"NPA %", "Hard Bucket %", "SMA-2 %"}
 
 
 def _kpi_card(label: str, value: str, mom: float) -> str:
@@ -79,12 +79,22 @@ def render_dashboard_tab(
         lcc_mom   = metrics["LCC%"][1]
         lcc_arrow = "▲" if lcc_mom >= 0 else "▼"
         lcc_cls   = "kpi-mom-up" if lcc_mom >= 0 else "kpi-mom-down"
+        sma2_val  = fmt_value(metrics.get("SMA-2 %", (0, 0))[0], "pct")
+        sma2_mom  = metrics.get("SMA-2 %", (0, 0))[1]
+        sma2_arrow = "▲" if sma2_mom >= 0 else "▼"
+        sma2_cls  = "kpi-mom-down" if sma2_mom >= 0 else "kpi-mom-up"
         st.markdown(f"""
-        <div class="kpi-card" style="height:100%;display:flex;flex-direction:column;
-             justify-content:center;align-items:center;text-align:center;margin-top:0;">
+        <div class="kpi-card" style="display:flex;flex-direction:column;
+             justify-content:center;align-items:center;text-align:center;margin-top:0;margin-bottom:12px;">
           <div class="kpi-label">LCC %</div>
           <div style="font-size:36px;font-weight:800;color:#111;line-height:1.1;">{lcc_val}</div>
           <div class="kpi-mom">MoM <span class="{lcc_cls}">{lcc_arrow} {abs(lcc_mom):.2f}%</span></div>
+        </div>
+        <div class="kpi-card" style="display:flex;flex-direction:column;
+             justify-content:center;align-items:center;text-align:center;margin-top:0;">
+          <div class="kpi-label">SMA-2 %</div>
+          <div style="font-size:36px;font-weight:800;color:#ef4444;line-height:1.1;">{sma2_val}</div>
+          <div class="kpi-mom">MoM <span class="{sma2_cls}">{sma2_arrow} {abs(sma2_mom):.2f}%</span></div>
         </div>
         """, unsafe_allow_html=True)
 

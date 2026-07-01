@@ -57,6 +57,27 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     background: #1a1a1a !important; border: 1px solid #2d2d2d !important;
     color: #fff !important; border-radius: 8px !important;
 }
+/* ── Sidebar segment expander (checkbox dropdown) ── */
+[data-testid="stSidebar"] .stExpander {
+    background: #1a1a1a !important; border: 1px solid #2d2d2d !important;
+    border-radius: 8px !important;
+}
+[data-testid="stSidebar"] .stExpander summary {
+    color: #FFC000 !important; font-weight: 600 !important; font-size: 11px !important;
+    text-transform: uppercase !important; letter-spacing: 0.8px !important;
+    padding: 10px 12px !important;
+}
+[data-testid="stSidebar"] .stExpander summary svg { fill: #FFC000 !important; }
+[data-testid="stSidebar"] .stExpander [data-testid="stExpanderDetails"] {
+    background: #111 !important; padding: 6px 12px 10px !important;
+    border-top: 1px solid #2d2d2d !important;
+}
+[data-testid="stSidebar"] .stCheckbox label {
+    color: #c8c8c8 !important; font-size: 12px !important;
+    text-transform: none !important; letter-spacing: normal !important;
+}
+[data-testid="stSidebar"] .stCheckbox input:checked + label { color: #FFC000 !important; font-weight: 600 !important; }
+
 [data-testid="stSidebar"] hr { border-color: #222 !important; }
 [data-testid="stSidebar"] [data-testid="stButton"][key="clear_cache_btn"] > button {
     background: transparent !important; color: #555 !important;

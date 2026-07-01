@@ -1,4 +1,4 @@
-"""
+﻿"""
 Field Executive Performance Scorecard
 Groups by MNT NAME and computes per-executive collection metrics.
 Performance tiers are quartile-based (relative to the dataset) - not hardcoded thresholds.
@@ -79,8 +79,10 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         if has_roll:
             row["Roll Fwd %"] = roll_fwd_pct
             row["Roll Bwd %"] = roll_bwd_pct
-        npa_pct = round(npa_count / n * 100, 1) if n > 0 else 0.0
+        npa_pct  = round(npa_count  / n * 100, 1) if n > 0 else 0.0
+        sma2_pct = round(sma2_count / n * 100, 1) if n > 0 else 0.0
         row.update({
+            "SMA-2 %":        sma2_pct,
             "NPA %":          npa_pct,
             "NPA":            npa_count,
             "SMA-2":          sma2_count,
@@ -97,7 +99,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
     sc = pd.DataFrame(rows).sort_values("_coll_pct_raw", ascending=False)
 
-    # Quartile-based tiers — relative to this dataset
+    # Quartile-based tiers  -  relative to this dataset
     q75 = sc["_coll_pct_raw"].quantile(0.75)
     q25 = sc["_coll_pct_raw"].quantile(0.25)
 

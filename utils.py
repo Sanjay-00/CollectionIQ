@@ -240,7 +240,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     return df, []
 
 
-def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str) -> pd.DataFrame:
+def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = ()) -> pd.DataFrame:
     if len(df.columns) == 0:
         return df
     if region != "All" and "RegionName" in df.columns:
@@ -249,6 +249,10 @@ def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str) -> pd
         df = df[df["Unit"] == branch]
     if status != "All" and "Loan Status" in df.columns:
         df = df[df["Loan Status"] == status]
+    if segment:
+        _seg_col = next((c for c in ["SegmentName", "Segment"] if c in df.columns), None)
+        if _seg_col:
+            df = df[df[_seg_col].isin(segment)]
     return df
 
 
@@ -267,7 +271,7 @@ def _mom_pct(curr, prev):
 def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     _zero = {
         "Month Demand": 0.0, "Total Collection": 0.0, "Collection %": 0.0,
-        "Strike %": 0.0, "NPA %": 0.0, "Hard Bucket %": 0.0,
+        "Strike %": 0.0, "NPA %": 0.0, "Hard Bucket %": 0.0, "SMA-2 %": 0.0,
         "Count": 0, "SOH": 0.0, "LCC%": 0.0, "CMD %": 0.0,
     }
 
@@ -294,6 +298,10 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             df[df["curr_bucket"] == "NPA"]["Loan No"].nunique(),
             n_accounts,
         )
+        sma2_pct = _safe_pct(
+            df[df["curr_bucket"] == "SMA-2"]["Loan No"].nunique() if "curr_bucket" in df.columns else 0,
+            n_accounts,
+        )
         hard_pct = _safe_pct(
             df[df["Arrears / EMI"] >= 6]["Loan No"].nunique(),
             n_accounts,
@@ -313,6 +321,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             "Strike %": strike_pct,
             "NPA %": npa_pct,
             "Hard Bucket %": hard_pct,
+            "SMA-2 %": sma2_pct,
             "Count": n_accounts,
             "SOH": pos,
             "LCC%": lcc_avg,
@@ -599,6 +608,7 @@ def build_html_export(
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Accounts"]}</td>'
                     f'<td style="padding:7px 10px;font-size:13px;font-weight:800;color:{coll_color};text-align:center;">{coll}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Strike Rate %"]}%</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{sma2_color};text-align:center;">{row.get("SMA-2 %", 0)}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row.get("NPA %", 0)}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{npa_color};text-align:center;">{npa_count}</td>'
                     f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{sma2_color};text-align:center;">{sma2}</td>'
@@ -609,7 +619,7 @@ def build_html_export(
             return rows
 
         def _exec_table(title, sub, color):
-            headers = ["Executive", "Accounts", "Coll %", "Strike %", "NPA %", "NPA", "SMA-2", "POS (L)", "SOH (L)"]
+            headers = ["Executive", "Accounts", "Coll %", "Strike %", "SMA-2 %", "NPA %", "NPA", "SMA-2", "POS (L)", "SOH (L)"]
             th = "".join(
                 f'<th style="padding:7px 10px;text-align:{"left" if i==0 else "center"};font-size:10px;'
                 f'color:#6b7280;font-weight:700;text-transform:uppercase;">{h}</th>'

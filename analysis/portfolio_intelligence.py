@@ -87,7 +87,7 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
     def _label(counts, total, b):
         n   = counts[b]
         pct = n / total * 100
-        return f"{n:,}<br><sub>{pct:.1f}%</sub>"
+        return f"{n:,} ({pct:.1f}%)"
 
     fig = go.Figure()
 
@@ -98,9 +98,9 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
             y=[prev_counts[b] for b in buckets],
             marker=dict(color="#d1d5db", line=dict(width=0)),
             text=[_label(prev_counts, total_p, b) for b in buckets],
-            textposition="inside",
-            insidetextanchor="middle",
-            textfont=dict(size=11, color="#4b5563"),
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=10, color="#4b5563"),
             hovertemplate="<b>%{x}</b>  -  Last Month<br>Count: %{y:,}<extra></extra>",
         ))
 
@@ -111,16 +111,16 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
         y=[curr_counts[b] for b in buckets],
         marker=dict(color=curr_colors, line=dict(width=0)),
         text=[_label(curr_counts, total_c, b) for b in buckets],
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=12, color="#fff"),
+        textposition="outside",
+        cliponaxis=False,
+        textfont=dict(size=10, color="#111"),
         hovertemplate="<b>%{x}</b>  -  This Month<br>Count: %{y:,}<extra></extra>",
     ))
 
     max_val = max(
         max(curr_counts.values()),
         max(prev_counts.values()) if has_prev else 0,
-    ) * 1.30 or 100
+    ) * 1.45 or 100
 
     if has_prev:
         for b in buckets:
@@ -132,12 +132,12 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
             color   = "#dc2626" if is_bad else "#16a34a"
             fig.add_annotation(
                 x=b,
-                y=max(curr_counts[b], prev_counts[b]) * 1.12,
-                text=f"<b style='color:{color}'>{arrow} {abs(delta):,}</b>",
+                y=max(curr_counts[b], prev_counts[b]) * 1.30,
+                text=f"<b>{arrow} {abs(delta):,}</b>",
                 showarrow=False,
-                font=dict(size=12, color=color),
+                font=dict(size=11, color=color),
                 xanchor="center",
-                bgcolor="rgba(255,255,255,0.8)",
+                bgcolor="rgba(255,255,255,0.85)",
                 borderpad=2,
             )
 
@@ -173,12 +173,13 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         arr = pd.to_numeric(df.get("Arrears / EMI", pd.Series(dtype=float)), errors="coerce")
         hard_pct = _safe_div((arr >= 3).sum(), total)
         coll = _coll_pct(df)
-        avg_arr = round(arr[arr > 0].mean(), 2) if (arr > 0).any() else 0.0
+        strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])] if "Strike" in df.columns else pd.DataFrame()
+        strike_pct = _safe_div((strike_valid["Strike"].astype(str).str.strip().str.upper() == "Y").sum(), len(strike_valid)) if not strike_valid.empty else 0.0
         return {
             "accounts": total, "soh": soh,
             "npa_count": npa_count, "npa_pct": npa_pct,
             "sma2_count": sma2_count, "sma2_pct": sma2_pct,
-            "hard_pct": hard_pct, "coll_pct": coll, "avg_arr": avg_arr,
+            "hard_pct": hard_pct, "coll_pct": coll, "strike_pct": strike_pct,
         }
 
     c = _calc(df_curr)
@@ -200,7 +201,7 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         {"label": "NPA Accounts",         "value": f"{c.get('npa_count',0):,}",       "delta": _delta("npa_count", inverse=True), "unit": "", "inverse": True},
         {"label": "NPA %",                "value": f"{c.get('npa_pct',0):.2f}%",     "delta": _delta("npa_pct", inverse=True),   "unit": "%","inverse": True},
         {"label": "Collection %",         "value": f"{c.get('coll_pct',0):.2f}%",    "delta": _delta("coll_pct"),                "unit": "%","inverse": False},
-        {"label": "Avg Arrears/EMI",      "value": f"{c.get('avg_arr',0):.2f}x",     "delta": _delta("avg_arr", inverse=True),   "unit": "x","inverse": True},
+        {"label": "Strike %",             "value": f"{c.get('strike_pct',0):.2f}%",  "delta": _delta("strike_pct", inverse=True), "unit": "%","inverse": True},
     ]
 
 
@@ -347,10 +348,12 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
         arr = pd.to_numeric(grp.get("Arrears / EMI", pd.Series(dtype=float)), errors="coerce")
         col3m = "No Coll 3 Months and >6 EMI"
         chronic = int((grp[col3m].astype(str).str.strip().str.upper() == "Y").sum()) if col3m in grp.columns else 0
+        sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
         rows.append({
             "Branch": str(branch),
             "Accounts": n,
             "Collection%": _coll_pct(grp),
+            "SMA-2%": _safe_div(sma2_n, n),
             "NPA%": _npa_pct(grp),
             "Hard Bucket%": _safe_div((arr >= 3).sum(), n),
             "SOH (Cr)": _soh_cr(grp),
@@ -429,6 +432,7 @@ def _build_quadrant_chart(df: pd.DataFrame) -> go.Figure:
     hover_text = [
         f"<b>{row['Branch']}</b><br>"
         f"Collection: {row['Collection%']:.1f}%<br>"
+        f"SMA-2: {row['SMA-2%']:.1f}%<br>"
         f"NPA: {row['NPA%']:.1f}%<br>"
         f"SOH: ₹{row['SOH (Cr)']:.2f}Cr<br>"
         f"Concern Score: {row['Concern Score']}"
@@ -528,9 +532,9 @@ def compute_good_bad(
         worst = branch_df.iloc[0]
         best  = branch_df.iloc[-1]
         if worst["Concern Score"] >= 60:
-            bad.append(f"{worst['Branch']}: Highest concern ({worst['Concern Score']})  -  NPA {worst['NPA%']:.1f}%, Coll {worst['Collection%']:.1f}%")
+            bad.append(f"{worst['Branch']}: Highest concern ({worst['Concern Score']})  -  SMA-2 {worst.get('SMA-2%',0):.1f}%, NPA {worst['NPA%']:.1f}%, Coll {worst['Collection%']:.1f}%")
         if best["Concern Score"] <= 35:
-            good.append(f"{best['Branch']}: Healthiest branch  -  NPA {best['NPA%']:.1f}%, Coll {best['Collection%']:.1f}%")
+            good.append(f"{best['Branch']}: Healthiest branch  -  SMA-2 {best.get('SMA-2%',0):.1f}%, NPA {best['NPA%']:.1f}%, Coll {best['Collection%']:.1f}%")
 
     if not exec_df.empty and has_prev:
         top_exec  = exec_df[exec_df["Net Recovery"] > 0].head(1)
@@ -547,7 +551,9 @@ def compute_good_bad(
         delta_abs = abs(ind.get("_delta", 0))
         threshold = 1 if ind.get("_is_count") else 0.3
         if d == "Improving" and delta_abs >= threshold:
-            good.append(f"{ind['Signal']}: {ind['Δ']} improvement")
+            # Strip leading sign  -  the word "improvement" already implies positive change
+            delta_display = str(ind["Δ"]).lstrip("+-").lstrip()
+            good.append(f"{ind['Signal']}: {delta_display} improvement")
         elif d == "Worsening" and delta_abs >= threshold:
             bad.append(f"{ind['Signal']}: {ind['Δ']}  -  {ind['Note']}")
 
@@ -603,8 +609,11 @@ def compute_product_analysis(df_curr: pd.DataFrame) -> dict:
     if "Ag_Date" in df_curr.columns:
         df_v = df_curr.copy()
         df_v["_cohort"] = pd.to_datetime(df_v["Ag_Date"], errors="coerce").dt.to_period("M")
+        _today_period = pd.Period.now("M")
         cohort_rows = []
         for cohort, grp in df_v.dropna(subset=["_cohort"]).groupby("_cohort"):
+            if cohort > _today_period:
+                continue  # exclude post-dated / future agreement dates
             n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
             if n < 10:
                 continue
@@ -647,9 +656,11 @@ def _group_npa_table(df: pd.DataFrame, group_col: str, label: str, min_n: int) -
         n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
         if n < min_n:
             continue
+        sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
         rows.append({
             label: val_str,
             "Accounts": n,
+            "SMA-2%": _safe_div(sma2_n, n),
             "NPA%": _npa_pct(grp),
             "Collection%": _coll_pct(grp),
             "SOH (Cr)": _soh_cr(grp),
@@ -826,31 +837,54 @@ def compute_concentration_treemap(df_curr: pd.DataFrame) -> go.Figure:
     """
     Two-level treemap: Region → Branch.
     Size = SOH (Cr). Color = NPA% (green→red).
+
+    Values are built leaf-up (branch → region → root) so each parent value
+    equals the exact sum of its children  -  avoiding the branchvalues="total"
+    blank-render bug caused by rounding drift when _soh_cr rounds independently
+    at each level.
     """
     if "RegionName" not in df_curr.columns or "Unit" not in df_curr.columns:
         return go.Figure()
 
+    def _raw_soh(df: pd.DataFrame) -> float:
+        return float(pd.to_numeric(df.get("SOH", pd.Series(dtype=float)), errors="coerce").sum() / 1e7)
+
     ids, labels, parents, values, colors, texts = ["portfolio"], ["Portfolio"], [""], [0.0], [0.0], [""]
 
-    region_soh_total = 0.0
+    portfolio_total = 0.0
     for region, rgrp in df_curr.groupby("RegionName"):
-        r_soh = _soh_cr(rgrp)
-        r_npa = _npa_pct(rgrp)
         r_id  = f"r_{region}"
-        ids.append(r_id); labels.append(str(region)); parents.append("portfolio")
-        values.append(r_soh); colors.append(r_npa)
-        texts.append(f"{region}<br>₹{r_soh:.1f}Cr<br>NPA {r_npa:.1f}%")
-        region_soh_total += r_soh
+        r_npa = _npa_pct(rgrp)
 
+        # Compute branches first, accumulate their sum for the region value
+        branch_sum = 0.0
+        branch_buf: list[tuple] = []
         for branch, bgrp in rgrp.groupby("Unit"):
-            b_soh = _soh_cr(bgrp)
+            b_soh = _raw_soh(bgrp)
             b_npa = _npa_pct(bgrp)
             b_id  = f"b_{region}_{branch}"
-            ids.append(b_id); labels.append(str(branch)); parents.append(r_id)
-            values.append(b_soh); colors.append(b_npa)
-            texts.append(f"{branch}<br>₹{b_soh:.1f}Cr<br>NPA {b_npa:.1f}%")
+            branch_buf.append((b_id, str(branch), r_id, b_soh, b_npa,
+                                f"{branch}<br>SOH ₹{b_soh:.1f}Cr<br>NPA {b_npa:.1f}%"))
+            branch_sum += b_soh
 
-    values[0] = region_soh_total
+        # Region value = exact branch sum (no independent rounding)
+        ids.append(r_id); labels.append(str(region)); parents.append("portfolio")
+        values.append(branch_sum); colors.append(r_npa)
+        texts.append(f"{region}<br>SOH ₹{branch_sum:.1f}Cr<br>NPA {r_npa:.1f}%")
+        portfolio_total += branch_sum
+
+        for (bid, bl, bp, bsoh, bnpa, btxt) in branch_buf:
+            ids.append(bid); labels.append(bl); parents.append(bp)
+            values.append(bsoh); colors.append(bnpa); texts.append(btxt)
+
+    # Root value = exact sum of region values
+    values[0] = portfolio_total
+
+    if len(ids) < 3:
+        return go.Figure()
+
+    leaf_npas = [c for c in colors[1:] if isinstance(c, (int, float))]
+    cmax = max(max(leaf_npas, default=0), 1.0)
 
     fig = go.Figure(go.Treemap(
         ids=ids, labels=labels, parents=parents, values=values,
@@ -861,7 +895,7 @@ def compute_concentration_treemap(df_curr: pd.DataFrame) -> go.Figure:
         marker=dict(
             colors=colors,
             colorscale=[[0, "#16a34a"], [0.1, "#86efac"], [0.3, "#fef08a"], [0.6, "#f97316"], [1.0, "#991b1b"]],
-            cmin=0, cmax=max(colors) if colors else 30,
+            cmin=0, cmax=cmax,
             showscale=True,
             colorbar=dict(title="NPA %", thickness=12, len=0.6),
         ),
@@ -995,7 +1029,62 @@ def compute_repossession_list(df_curr: pd.DataFrame) -> pd.DataFrame:
     if "Arrears / EMI" in repo_df.columns:
         repo_df["Arrears / EMI"] = pd.to_numeric(repo_df["Arrears / EMI"], errors="coerce")
     if "Ag_Date" in repo_df.columns:
-        repo_df["Ag_Date"] = pd.to_datetime(repo_df["Ag_Date"], errors="coerce")
+        repo_df["Ag_Date"] = pd.to_datetime(repo_df["Ag_Date"], errors="coerce").dt.date
 
     cols = [c for c in _REPO_DISPLAY_COLS if c in repo_df.columns]
     return repo_df[cols].reset_index(drop=True)
+
+
+# ── Good Customers ────────────────────────────────────────────────────────────
+
+_GOOD_CUST_DISPLAY_COLS = [
+    "Loan No", "Cust Name", "RegionName", "Unit",
+    "Ag_Date", "Tenure", "VehEMI Accrued",
+    "Arrears against Inst+Exp", "SOH", "Arrears / EMI",
+    "LCC%", "Tenure Completed %",
+]
+
+
+def compute_good_customers(df_curr: pd.DataFrame) -> pd.DataFrame:
+    """
+    Loyal / high-quality customers eligible for refinance or relationship management.
+    Criteria:
+      - VehEMI Accrued / Tenure >= 70%  (completed at least 70% of loan term)
+      - LCC% >= 100%                     (collected everything ever due, no lifetime shortfall)
+    Sorted by SOH ascending (lowest exposure first - easiest refinance targets).
+    """
+    if df_curr.empty:
+        return pd.DataFrame()
+
+    df = df_curr.copy()
+
+    # Tenure completed %
+    tenure_mask = pd.Series(False, index=df.index)
+    if "VehEMI Accrued" in df.columns and "Tenure" in df.columns:
+        emi_paid = pd.to_numeric(df["VehEMI Accrued"], errors="coerce")
+        tenure   = pd.to_numeric(df["Tenure"],         errors="coerce")
+        df["Tenure Completed %"] = (emi_paid / tenure * 100).round(1)
+        tenure_mask = (df["Tenure Completed %"] >= 70) & tenure.notna() & (tenure > 0)
+    else:
+        df["Tenure Completed %"] = None
+        tenure_mask = pd.Series(False, index=df.index)
+
+    # LCC% hard cutoff at 100
+    lcc_mask = pd.Series(False, index=df.index)
+    if "LCC%" in df.columns:
+        lcc = pd.to_numeric(df["LCC%"], errors="coerce")
+        lcc_mask = lcc >= 100.0
+
+    good_df = df[tenure_mask & lcc_mask].copy()
+    if good_df.empty:
+        return pd.DataFrame()
+
+    # Numeric clean-up for display
+    for col in ["SOH", "Arrears / EMI", "LCC%", "Arrears against Inst+Exp"]:
+        if col in good_df.columns:
+            good_df[col] = pd.to_numeric(good_df[col], errors="coerce")
+
+    good_df = good_df.sort_values("SOH", ascending=True)
+
+    cols = [c for c in _GOOD_CUST_DISPLAY_COLS if c in good_df.columns]
+    return good_df[cols].reset_index(drop=True)

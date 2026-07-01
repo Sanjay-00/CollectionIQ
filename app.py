@@ -30,6 +30,7 @@ from analysis.portfolio_intelligence import (
     compute_concentration_treemap, compute_fleet_exposure,
     compute_top_accounts, compute_repossession_list,
     compute_risk_flag_comparison, compute_npa_sma2_comparison,
+    compute_good_customers,
 )
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.report import render_report_tab
@@ -156,13 +157,13 @@ if prev_file and len(df_prev_raw) == 0:
         df_prev_raw = _prev_tmp
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
-sel_region, sel_branch, sel_status = render_sidebar(df_curr_raw, curr_month)
+sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, curr_month)
 
 # ── Cached computation wrappers (module-level  -  registered once, not per rerun) ──
 @st.cache_data(show_spinner=False)
-def _cached_filter(df_c: pd.DataFrame, df_p_raw: pd.DataFrame, region: str, branch: str, status: str):
-    df = apply_filters(df_c.copy(), region, branch, status)
-    df_p = apply_filters(df_p_raw.copy(), region, branch, status)
+def _cached_filter(df_c: pd.DataFrame, df_p_raw: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = ()):
+    df = apply_filters(df_c.copy(), region, branch, status, segment)
+    df_p = apply_filters(df_p_raw.copy(), region, branch, status, segment)
     if len(df_p_raw) > 0 and "Loan No" in df.columns and "curr_bucket" in df_p_raw.columns:
         # Carry over the prev-month bucket plus a curated set of numeric columns
         # (renamed prev_*) so the AI can compute month-over-month reductions.
@@ -213,18 +214,19 @@ def _cached_portfolio_intel(
     top_accounts            = compute_top_accounts(df_c)
     repo_df                 = compute_repossession_list(df_c)
     npa_sma2_cmp            = compute_npa_sma2_comparison(df_c, df_p)
+    good_customers          = compute_good_customers(df_c)
     return (
         pulse_kpis, fig_waterfall,
         region_df, branch_df, fig_quadrant,
         exec_recovery_df, product_data, risk_indicators, good_bad,
-        fig_treemap, fleet, top_accounts, repo_df, npa_sma2_cmp,
+        fig_treemap, fleet, top_accounts, repo_df, npa_sma2_cmp, good_customers,
     )
 
 # ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
-df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, sel_region, sel_branch, sel_status)
+df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, sel_region, sel_branch, sel_status, tuple(sel_segment))
 
 # Clear AI/report results when filters change
-_filter_key = f"{sel_region}|{sel_branch}|{sel_status}"
+_filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}"
 if st.session_state.get("_last_filter_key") != _filter_key:
     st.session_state.pop("ai_result", None)
     st.session_state.pop("report_result", None)
@@ -253,7 +255,7 @@ _rr = rr_meta or {}
     pi_pulse_kpis, pi_fig_wf,
     pi_region, pi_branch, pi_fig_quad,
     pi_exec, pi_product, pi_risk, pi_good_bad,
-    pi_fig_treemap, pi_fleet, pi_top_accounts, pi_repo_df, pi_npa_sma2_cmp,
+    pi_fig_treemap, pi_fleet, pi_top_accounts, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
 ) = _cached_portfolio_intel(
     df_curr, df_prev,
     int(_rr.get("matched_count", 0)),
@@ -265,7 +267,10 @@ _rr = rr_meta or {}
 )
 
 # ── Active filter bar ─────────────────────────────────────────────────────────
-active_filters = {k: v for k, v in {"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status}.items() if v != "All"}
+active_filters = {k: v for k, v in {
+    "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
+    "Segment": ", ".join(sel_segment) if sel_segment else "All",
+}.items() if v != "All"}
 if active_filters:
     chips = " ".join(
         f'<span class="filter-chip">{k}: {v}</span>'
@@ -339,6 +344,7 @@ with tabs[4]:
             rr_meta=rr_meta,
             repo_df=pi_repo_df,
             npa_sma2_cmp=pi_npa_sma2_cmp,
+            good_customers=pi_good_customers,
         )
     except Exception as _e:
         _tab_error("Portfolio Intelligence", _e)

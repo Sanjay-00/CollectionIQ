@@ -57,8 +57,10 @@ def _delta_html(val, unit: str = "pp") -> str:
 def _count_delta_html(val) -> str:
     if val is None:
         return '<span style="color:#9ca3af;"> - </span>'
-    color = "#dc2626" if val > 0 else ("#16a34a" if val < 0 else "#9ca3af")
-    arrow = "▲" if val > 0 else ("▼" if val < 0 else "-")
+    if val == 0:
+        return '<span style="color:#9ca3af;font-weight:700;">-</span>'
+    color = "#dc2626" if val > 0 else "#16a34a"
+    arrow = "▲" if val > 0 else "▼"
     return f'<span style="color:{color};font-weight:700;">{arrow} {abs(int(val))}</span>'
 
 
@@ -67,11 +69,12 @@ def _count_delta_html(val) -> str:
 def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: bool) -> None:
     _section("Section 1  -  Portfolio Pulse: State of the Book in 30 Seconds")
 
-    html = "".join(
-        _kpi_mini(k["label"], k["value"], k["delta"], k["unit"], k["inverse"])
-        for k in kpis
-    )
-    st.markdown(f'<div class="kpi-row">{html}</div>', unsafe_allow_html=True)
+    def _kpi_row(items):
+        return "".join(_kpi_mini(k["label"], k["value"], k["delta"], k["unit"], k["inverse"]) for k in items)
+
+    st.markdown(f'<div class="kpi-row">{_kpi_row(kpis[:4])}</div>', unsafe_allow_html=True)
+    if len(kpis) > 4:
+        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[4:])}</div>', unsafe_allow_html=True)
 
     col_wf, col_npa = st.columns([3, 1])
     with col_wf:
@@ -452,8 +455,11 @@ def _render_risk_flags(flag_df: pd.DataFrame, alerts_curr: list) -> None:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-top:16px;">Account Drilldown (click to expand)</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-top:20px;">Account Drilldown</div>', unsafe_allow_html=True)
     st.caption("Accounts pre-filtered per flag  -  instant, no AI call needed.")
+
+    _BG = {"critical": "#fff5f5", "high": "#fff7ed", "medium": "#fffbea", "low": "#f0fdf4"}
+
     for _, row in flag_df.iterrows():
         title = row["Risk Type"]
         cnt   = int(row["Accounts"])
@@ -462,10 +468,44 @@ def _render_risk_flags(flag_df: pd.DataFrame, alerts_curr: list) -> None:
         alert = alerts_by_title.get(title)
         if not alert or "df" not in alert or alert["df"].empty:
             continue
-        sev   = row.get("Severity", "medium")
-        color = _SEV_COLOR.get(sev, "#d97706")
-        with st.expander(f"{title}   -   {cnt} accounts  |  ₹{row['SOH (Cr)']:.2f}Cr SOH", expanded=False):
-            st.caption(alert.get("action", ""))
+        sev    = row.get("Severity", "medium")
+        color  = _SEV_COLOR.get(sev, "#d97706")
+        bg     = _BG.get(sev, "#fffbea")
+        icon   = alert.get("icon", "⚠️")
+        sub    = alert.get("subtitle", "")
+        action = alert.get("action", "")
+        pos    = f"₹{alert.get('pos', 0) / 1e7:.2f}Cr"
+        arrears = f"₹{alert.get('closing_arrears', 0) / 1e7:.2f}Cr"
+
+        st.markdown(f"""
+        <div style="background:{bg};border-radius:12px;border-left:4px solid {color};
+                    padding:14px 18px;margin-bottom:4px;box-shadow:0 2px 6px rgba(0,0,0,0.05);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <span style="font-size:20px;">{icon}</span>
+            <span style="font-size:14px;font-weight:700;color:{color};">{title}</span>
+          </div>
+          <div style="font-size:12px;color:#666;margin-bottom:10px;">{sub}</div>
+          <div style="display:flex;gap:24px;margin-bottom:10px;">
+            <div>
+              <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Accounts</div>
+              <div style="font-size:24px;font-weight:800;color:{color};">{cnt:,}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">POS</div>
+              <div style="font-size:20px;font-weight:800;color:#111;">{pos}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Closing Arrears</div>
+              <div style="font-size:20px;font-weight:800;color:{color};">{arrears}</div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#555;font-style:italic;border-top:1px solid rgba(0,0,0,0.08);padding-top:8px;">
+            💬 {action}
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.expander(f"View {cnt:,} accounts", expanded=False):
             st.dataframe(_safe_df(alert["df"]), use_container_width=True, hide_index=True)
             _dl_btn(alert["df"], f"flag_{title.lower().replace(' ','_')}.xlsx", f"dl_flag_{title[:8]}")
 
@@ -490,6 +530,9 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
             style = f"padding:6px 10px;font-size:12px;text-align:{align};"
             if col == npa_col:
                 c = "#dc2626" if (val or 0) > 10 else ("#d97706" if (val or 0) > 5 else "#16a34a")
+                cells += f'<td style="{style}color:{c};font-weight:700;">{val:.1f}%</td>'
+            elif col == "SMA-2%":
+                c = "#ef4444" if (val or 0) > 10 else ("#d97706" if (val or 0) > 5 else "#374151")
                 cells += f'<td style="{style}color:{c};font-weight:700;">{val:.1f}%</td>'
             elif isinstance(val, float) and "%" in col:
                 cells += f'<td style="{style}">{val:.1f}%</td>'
@@ -592,7 +635,7 @@ def _render_vintage_sourcing(product_data: dict) -> None:
                 )
                 granularity = st.radio(
                     "Group by", ["Monthly", "Quarterly", "Half-Yearly", "Yearly"],
-                    horizontal=True, key="vintage_gran",
+                    horizontal=True, key="vintage_gran", index=1,
                 )
                 plot_df = _roll_vintage(df, granularity)
                 from analysis.portfolio_intelligence import build_vintage_chart
@@ -753,6 +796,47 @@ def _render_risk_indicators(indicators: list[dict]) -> None:
     )
 
 
+# ── Shared: Top-5 region/branch breakdown ─────────────────────────────────────
+
+def _top5_breakdown(df: pd.DataFrame, accent: str = "#ef4444") -> None:
+    """Render top-5 region and top-5 branch by account count side-by-side."""
+    col_r, col_b = st.columns(2)
+
+    def _table_html(title: str, rows: list[tuple[str, int]], total: int) -> str:
+        header = (
+            f'<div style="font-size:12px;font-weight:700;color:#6b7280;'
+            f'text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">{title}</div>'
+        )
+        body = ""
+        for rank, (name, cnt) in enumerate(rows, 1):
+            pct = cnt / total * 100 if total else 0
+            bar_w = max(int(pct * 1.8), 2)
+            body += (
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+                f'<span style="min-width:16px;font-size:11px;color:#9ca3af;font-weight:700;">#{rank}</span>'
+                f'<span style="flex:1;font-size:12px;color:#111;white-space:nowrap;overflow:hidden;'
+                f'text-overflow:ellipsis;" title="{name}">{name}</span>'
+                f'<div style="width:{bar_w}px;height:6px;background:{accent};border-radius:3px;flex-shrink:0;"></div>'
+                f'<span style="min-width:28px;font-size:12px;font-weight:700;color:{accent};text-align:right;">{cnt}</span>'
+                f'</div>'
+            )
+        return f'<div style="background:#fafafa;border-radius:8px;padding:12px 14px;">{header}{body}</div>'
+
+    total = len(df)
+    with col_r:
+        if "RegionName" in df.columns:
+            top = df["RegionName"].value_counts().head(5).items()
+            st.markdown(_table_html("Top 5 Regions", list(top), total), unsafe_allow_html=True)
+        else:
+            st.caption("Region data unavailable")
+    with col_b:
+        if "Unit" in df.columns:
+            top = df["Unit"].value_counts().head(5).items()
+            st.markdown(_table_html("Top 5 Branches", list(top), total), unsafe_allow_html=True)
+        else:
+            st.caption("Branch data unavailable")
+
+
 # ── Repossession Analysis ─────────────────────────────────────────────────────
 
 def _render_repossession(repo_df: pd.DataFrame) -> None:
@@ -801,6 +885,8 @@ def _render_repossession(repo_df: pd.DataFrame) -> None:
             unsafe_allow_html=True,
         )
 
+    st.markdown("<br>", unsafe_allow_html=True)
+    _top5_breakdown(repo_df, accent="#ef4444")
     st.markdown("<br>", unsafe_allow_html=True)
 
     sub_tabs = st.tabs(["By Recency", "By LCC% (Worst Payers)", "By SOH (Largest Exposure)"])
@@ -854,6 +940,7 @@ def render_portfolio_intelligence_tab(
     rr_meta: dict | None,
     repo_df: pd.DataFrame | None = None,
     npa_sma2_cmp: dict | None = None,
+    good_customers: pd.DataFrame | None = None,
 ) -> None:
     if not has_prev:
         st.info(
@@ -883,3 +970,52 @@ def render_portfolio_intelligence_tab(
     st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
 
     _render_repossession(repo_df if repo_df is not None else pd.DataFrame())
+    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+
+    _render_good_customers(good_customers if good_customers is not None else pd.DataFrame())
+
+
+# ── Section 8: Good Customers ─────────────────────────────────────────────────
+
+def _render_good_customers(good_df: pd.DataFrame) -> None:
+    st.markdown('<div class="section-label">Section 8 - Good Customers: Refinance &amp; Relationship Candidates</div>', unsafe_allow_html=True)
+    st.caption("Criteria: 70%+ tenure completed AND LCC% >= 100%. Flag for refinance offer or relationship management.")
+
+    if good_df.empty:
+        st.info("No accounts meet the good customer criteria (70%+ tenure + LCC% >= 100%) in the current selection.")
+        return
+
+    n = len(good_df)
+    soh_col = "SOH" if "SOH" in good_df.columns else None
+    tenure_col = "Tenure Completed %" if "Tenure Completed %" in good_df.columns else None
+
+    total_soh_cr = round(pd.to_numeric(good_df[soh_col], errors="coerce").sum() / 1e7, 2) if soh_col else 0.0
+    avg_tenure = round(pd.to_numeric(good_df[tenure_col], errors="coerce").mean(), 1) if tenure_col else 0.0
+
+    st.markdown(
+        f'<div class="kpi-row">'
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">Good Customers</div>'
+        f'<div class="kpi-value">{n:,}</div>'
+        f'<div class="kpi-mom">Refinance eligible</div>'
+        f'</div>'
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">Total SOH (Cr)</div>'
+        f'<div class="kpi-value">&#8377;{total_soh_cr:,.2f}</div>'
+        f'<div class="kpi-mom">Outstanding principal</div>'
+        f'</div>'
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">Avg Tenure Completed</div>'
+        f'<div class="kpi-value">{avg_tenure}%</div>'
+        f'<div class="kpi-mom">Across all good customers</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    _top5_breakdown(good_df, accent="#16a34a")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.dataframe(_safe_df(good_df), use_container_width=True, hide_index=True)
+    _dl_btn(good_df, "good_customers.xlsx", "dl_good_customers")
