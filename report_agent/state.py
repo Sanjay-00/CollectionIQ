@@ -1,4 +1,4 @@
-from typing import TypedDict, Any, Optional
+﻿from typing import TypedDict, Any, Optional
 
 
 class ReportState(TypedDict):
@@ -11,18 +11,18 @@ class ReportState(TypedDict):
     filters_applied: dict
     skip_ai: bool
 
-    # Node 1 — portfolio_analyzer
+    # Node 1  -  portfolio_analyzer
     section_data: dict
 
-    # Node 2 — risk_narrator
+    # Node 2  -  risk_narrator
     executive_narrative: str
     action_plan: str
     ai_skipped: bool
 
-    # Node 3 — report_builder
+    # Node 3  -  report_builder
     html_report: str
 
-    # Node 4 — email_dispatcher
+    # Node 4  -  email_dispatcher
     email_to: str
     email_sent: bool
     email_error: str

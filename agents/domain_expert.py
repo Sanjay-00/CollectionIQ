@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import re
 import time
@@ -6,66 +6,11 @@ from google import genai
 from langsmith import traceable
 from config import GEMINI_MODEL
 
-# Business Priority Framework ───────────────────────────────────────────────
-# Defined here as ground truth - used both in the system prompt and by the
-# data executor when priority_mode is active.
-PRIORITY_RULES = [
-    {
-        "rank": 1,
-        "label": "Non Starters",
-        "why": "Never paid even 1st EMI - highest credit risk, possible fraud or disbursement issue",
-        "conditions": [{"column": "Non Starter", "op": "==", "value": "Y"}],
-    },
-    {
-        "rank": 2,
-        "label": "Easy Settlements",
-        "why": "Closing arrears < ₹1000 - one call can clear these, quick wins for collection team",
-        "conditions": [
-            {"column": "Closing Arrears", "op": ">",  "value": 0},
-            {"column": "Closing Arrears", "op": "<",  "value": 1000},
-        ],
-    },
-    {
-        "rank": 3,
-        "label": "Recent Advances - High Bucket",
-        "why": "Loans sanctioned within last 12 months already in SMA-1 or worse — early warning of sourcing quality issues",
-        "conditions": [
-            {"column": "Ag_Date",       "op": ">=", "value": "__CUTOFF_1Y__"},
-            {"column": "Arrears / EMI", "op": ">=", "value": 1},
-        ],
-    },
-    {
-        "rank": 4,
-        "label": "Insurance-Driven Delinquency",
-        "why": "Customer paid EMI (no arrears against installment) but unpaid insurance/expense charge is creating artificial arrears - fixable via cash or child loan",
-        "conditions": [
-            {"column": "ARREARS AGAINST INST", "op": "<=", "value": 0},
-            {"column": "ARREARS AGAINST EXP",  "op": ">",  "value": 5000},
-            {"column": "Arrears / EMI",         "op": ">",  "value": 0},
-        ],
-    },
-    {
-        "rank": 5,
-        "label": "Co-lending at Risk",
-        "why": "Partner bank co-lending loans with any delinquency - SLA breach risk",
-        "conditions": [
-            {"column": "CoLending_Loans", "op": "==", "value": "Y"},
-            {"column": "Arrears / EMI",   "op": ">",  "value": 0},
-        ],
-    },
-    {
-        "rank": 6,
-        "label": "No Collection 3 Months",
-        "why": "No payment for 3+ months AND >6 EMI arrears - pre-NPA deterioration signal",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
-    },
-    {
-        "rank": 7,
-        "label": "NPA Accounts",
-        "why": "Fully non-performing - requires legal/recovery escalation",
-        "conditions": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
-    },
-]
+# Business Priority Framework  -  canonical definition now lives in the registry
+# (registry/ontology.py). Re-exported here so existing consumers keep working:
+# this module's prompt builder (_build_priority_text) and the lazy import in
+# agents.data_executor.execute_priority_mode both reference PRIORITY_RULES.
+from registry.ontology import PRIORITY_RULES
 
 
 def build_snapshot_context(snapshot_dates: dict | None) -> str:
@@ -149,24 +94,24 @@ You deeply understand NBFC terminology:
 - SMA-2 = Special Mention Account 2 (Arrears/EMI between 2-3, severely stressed)
 - STD = Standard / current accounts (Arrears/EMI = 0, no dues)
 - Hard bucket = where "Arrears / EMI" >6 (very very risky accounts)
-- Strike = account is effectively current on its installment (EMI) obligation for this month. Strike=Y when ANY of: (1) Month Collection (Excluding Reserve Collection) >= Month Due-Inst, OR (2) LCC% = 100 (max value, means fully current on all cumulative inst+exp dues), OR (3) ARREARS AGAINST INST <= 0 (no pending installment arrears — customer may be pre-paid). Strike is ONLY about the installment component — insurance/expense arrears do NOT affect Strike.
+- Strike = account is effectively current on its installment (EMI) obligation for this month. Strike=Y when ANY of: (1) Month Collection (Excluding Reserve Collection) >= Month Due-Inst, OR (2) LCC% = 100 (max value, means fully current on all cumulative inst+exp dues), OR (3) ARREARS AGAINST INST <= 0 (no pending installment arrears  -  customer may be pre-paid). Strike is ONLY about the installment component  -  insurance/expense arrears do NOT affect Strike.
 - POS = Principal Outstanding = future principal balance remaining on the loan (NOT penal charges). Can be 0 for MAT/S&S accounts where principal is fully amortised.
 - SOH = Sum of Hire = POS + Closing Arrears = TOTAL exposure if customer defaults. Always use SOH for exposure/risk queries, not POS alone. For MAT/S&S accounts POS=0 but SOH correctly shows the remaining arrears exposure.
 - ClosingPC = Closing Penal Charges = accumulated penalties on the loan. Completely different from POS or SOH.
-- Closing Arrears = Total overdue amount at month close in rupees — key recovery KPI for arrears exposure analysis
+- Closing Arrears = Total overdue amount at month close in rupees  -  key recovery KPI for arrears exposure analysis
 - LCC% = Cumulative collection efficiency = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) × 100. Capped at 100 (max value is 100). LCC% = 100 means customer has paid all cumulative installment + expense dues till date. LCC% < 100 means some historical dues are still unpaid.
 - Month Receipt Amount = total cash received this month including reserve/advance collection
 - Month Collection (Excluding Reserve Collection) = effective collection that clears current demand AND pending arrears. Reserve collection = excess payment beyond all dues (only builds when no arrears remain). Example: demand=₹10K, arrears=₹4K, paid=₹15K → Collection(Excl Reserve)=₹14K, Reserve=₹1K.
-- Non Starter = Customer has NOT paid even 1st EMI (Y). CRITICAL — highest risk.
+- Non Starter = Customer has NOT paid even 1st EMI (Y). CRITICAL  -  highest risk.
 - NACHStatus = Y = NACH active, N = inactive (field collection only option)
 - LGL_FLAG = Y = legal proceedings ongoing
 - CoLending_Loans = Y = high-priority co-lending loan (MUST NOT default)
-- No Coll 3 Months and >6 EMI = Y = no payment for 3+ consecutive months AND arrears exceed 6 EMIs. Use this column ONLY when the query mentions a time period like "3 months", "last 3 months", "no collection for 3 months". Do NOT use this for "3 bucket" or "3 EMI arrears" — those refer to Arrears/EMI >= 3.
+- No Coll 3 Months and >6 EMI = Y = no payment for 3+ consecutive months AND arrears exceed 6 EMIs. Use this column ONLY when the query mentions a time period like "3 months", "last 3 months", "no collection for 3 months". Do NOT use this for "3 bucket" or "3 EMI arrears"  -  those refer to Arrears/EMI >= 3.
 - MNT NAME = Field collection executive
 - SRC Name = Sourcing dealer or DSA
 - CUSTOMER_STATUS = Alive or Dead
 - scheme = Loan product type
-- Month Due-Inst = Monthly installment demand (always normal — not an indicator of insurance delinquency)
+- Month Due-Inst = Monthly installment demand (always normal  -  not an indicator of insurance delinquency)
 - Month Due-Exp = Monthly expense demand (insurance, etc.)
 - ARREARS AGAINST INST = Closing arrears on installment component. If <= 0, customer has paid their EMI.
 - ARREARS AGAINST EXP = Closing arrears on expense/insurance component. If > 0, insurance charge is unpaid, This becomes our insurance case.
@@ -184,10 +129,36 @@ BUCKET ORDER AND MOVEMENT (when previous month file is uploaded):
 - When query mentions "roll backward", "cured", "improved", "recovered" → filter where curr_bucket severity < prev_bucket severity.
 - Accounts with no prev_bucket (new accounts this month) should be excluded from roll analysis.
 
-LOAN STATUS — three exact values in the "Loan Status" column:
+PREVIOUS-MONTH NUMERIC COLUMNS (exist ONLY when a previous file is uploaded - same condition as prev_bucket):
+These mirror the current-month numbers as they were in the previous file, matched per loan. Use them
+for "reduction", "change", "drop", "increase vs last month" questions. Eval-safe names (no spaces/slashes):
+- prev_SOH            = SOH last month            (current month column: SOH)
+- prev_POS            = POS last month            (current: POS)
+- prev_Closing_Arrears = Closing Arrears last month (current: Closing Arrears)
+- prev_ClosingPC      = ClosingPC last month       (current: ClosingPC)
+- prev_Arrears_EMI    = Arrears / EMI last month   (current: Arrears / EMI)
+- prev_Arrears_Inst   = ARREARS AGAINST INST last month (current: ARREARS AGAINST INST)
+- prev_Arrears_Exp    = ARREARS AGAINST EXP last month  (current: ARREARS AGAINST EXP)
+
+REDUCTION / CHANGE vs LAST MONTH (always a SNAPSHOT comparison of prev_* vs current columns - NOT roll-forward/backward):
+- "reduction in X" = previous value MINUS current value (positive = X went down; for arrears/SOH/NPA a drop is GOOD).
+- "increase in X" = current MINUS previous.
+- Amount reduction per group (SOH, closing arrears, POS, penal charges): sum the prev_* column and the
+  current column separately, then a metric = prev_sum - curr_sum. This is a single GROUP BY -> aggregation_mode.
+- Case-count reduction where the "case" is ONE bucket value (NPA, SMA-2 ...): count(prev_bucket==X) - count(curr_bucket==X).
+  Single GROUP BY -> aggregation_mode (two counts + a metric).
+- Case-count reduction where the "case" is a MULTI-CONDITION rule (e.g. insurance cases, no-collection cases):
+  you need a conditional count on the prev_* columns AND on the current columns, then subtract. A count with
+  more than one condition can ONLY be done with a plan-mode "where" -> use plan_mode for these.
+- For the previous-month version of any computed rule, swap each current column for its prev_* twin:
+  insurance case previously = prev_Arrears_Inst <= 0 AND prev_Arrears_Exp > 5000 AND prev_Arrears_EMI > 0.
+- If the user asks for a reduction/change but NO previous file is uploaded (prev_* columns absent), the query
+  cannot be answered - do not invent numbers; the validator will flag the missing prev_* column.
+
+LOAN STATUS  -  three exact values in the "Loan Status" column:
 - "RUN" = Loan is active and within its original tenure. Standard running portfolio account.
-- "MAT" = Loan has matured — tenure is over but closing arrears are still pending. Customer still owes money after loan end date. Recovery mode.
-- "S&S" = Seized and Sold — vehicle was seized and auctioned/sold, but a balance remains outstanding in closing arrears. Most severe status — requires legal/recovery escalation.
+- "MAT" = Loan has matured  -  tenure is over but closing arrears are still pending. Customer still owes money after loan end date. Recovery mode.
+- "S&S" = Seized and Sold  -  vehicle was seized and auctioned/sold, but a balance remains outstanding in closing arrears. Most severe status  -  requires legal/recovery escalation.
 Mapping rule: "mature/matured cases" = Loan Status == "MAT" | "running/active cases" = Loan Status == "RUN" | "seized/sold" = Loan Status == "S&S"
 
 {_build_priority_text()}
@@ -198,14 +169,25 @@ VAGUE QUERY DETECTION - set priority_mode to true when the query contains phrase
 "top cases", "critical cases", "immediate attention", or any similar intent.
 
 AGGREGATION MODE - CRITICAL: you MUST set aggregation_mode to true for ANY of these patterns:
-- The query uses "region wise", "branch wise", "executive wise", "by region", "by branch", "by executive" — these ALWAYS mean aggregation
-- The query asks for a count, summary, or breakdown grouped by a dimension — "how many cases per region", "give me X region wise", "X by region/branch/executive"
-- The query explicitly lists output columns in a [col1, col2, col3] format to be shown per group — this is ALWAYS aggregation
+- The query uses "region wise", "branch wise", "executive wise", "by region", "by branch", "by executive"  -  these ALWAYS mean aggregation
+- The query asks for a count, summary, or breakdown grouped by a dimension  -  "how many cases per region", "give me X region wise", "X by region/branch/executive"
+- The query explicitly lists output columns in a [col1, col2, col3] format to be shown per group  -  this is ALWAYS aggregation
 - Rank, order, or sort a GROUP by a ratio or derived metric
 - "Which executive has the highest/lowest X" implying ALL executives should be ranked
-- "Compare executives/branches by X" — result is one row per group, not per loan
+- "Compare executives/branches by X"  -  result is one row per group, not per loan
 DEFAULT RULE: if the result should have ONE ROW PER REGION/BRANCH/EXECUTIVE, set aggregation_mode to true. If the result should have one row per LOAN/CUSTOMER, set aggregation_mode to false.
 Do NOT set aggregation_mode for individual loan row filters or priority queries.
+
+CRITICAL EXCEPTION - MULTI-CONDITION CASES NEED plan_mode, NOT aggregation_mode:
+An aggregation_mode COUNT takes exactly ONE condition (one column/op/value). So any "case" defined by
+TWO OR MORE conditions ANDed together CANNOT be counted in aggregation_mode - the count would silently
+capture only one condition and return a WRONG number. These multi-condition cases include:
+insurance cases (3 conditions), no-collection / short / under-collected cases (2 conditions),
+co-lending-at-risk (2 conditions), easy settlements (2 conditions), recent-advances-high-bucket (2 conditions).
+If a query needs to COUNT, COMPARE, or measure the REDUCTION of any such multi-condition case PER GROUP
+(region/branch/executive), you MUST use plan_mode with a "where" on each count - even though the result is
+one row per group. Single-condition cases (one bucket value, one flag, one numeric threshold) stay in
+aggregation_mode as normal.
 
 GROUP_BY RULES - CRITICAL:
 - Grouping by EXECUTIVE: ALWAYS use group_by: ["MNT NAME", "Unit"] - never just "MNT NAME".
@@ -214,7 +196,7 @@ GROUP_BY RULES - CRITICAL:
 - Grouping by BRANCH: use group_by: "Unit"
 - Grouping by REGION: use group_by: "RegionName"
 
-COLUMN RENAMING — if the user says "X as Y" or "X called Y", use Y (converted to snake_case) as the alias for that count or sum, and as the base for the metric label. Example: "npa cases as total_npa" → alias: "total_npa", metric label: "total_npa_%".
+COLUMN RENAMING  -  if the user says "X as Y" or "X called Y", use Y (converted to snake_case) as the alias for that count or sum, and as the base for the metric label. Example: "npa cases as total_npa" → alias: "total_npa", metric label: "total_npa_%".
 
 When aggregation_mode is true, populate aggregation_spec with this exact structure:
 {{
@@ -237,19 +219,19 @@ When aggregation_mode is true, populate aggregation_spec with this exact structu
   ]
 }}
 
-METRICS — list of derived columns computed from counts/sums aliases using pandas eval.
+METRICS  -  list of derived columns computed from counts/sums aliases using pandas eval.
 Use this to compute percentages, ratios, or any derived value. You can have multiple metrics.
 Each metric needs "expr" (the formula using alias names) and "label" (the column header).
 Example: {{"expr": "npa / total_cases * 100", "label": "NPA %"}}
 
-COUNTS op field — supported modes:
-- column "__total__" — counts ALL rows in the group (no condition needed, op and value are ignored). Use for "total cases", "total accounts", "total portfolio", "all cases".
-- Omit op (or op "==") — count rows where column == value (default equality check)
-- op ">", ">=", "<", "<=" — numeric comparison. Use for "Closing Arrears <= 0", "Arrears / EMI > 3", etc. value must be a number.
-- op "in" — count rows where column value is in a list. value must be a list like ["SMA-1", "SMA-2"].
-- op "bucket_worse_than" — count rows where curr_bucket moved to a WORSE bucket vs prev_bucket (roll forward - BAD)
-- op "bucket_better_than" — count rows where curr_bucket moved to a BETTER bucket vs prev_bucket (roll backward - GOOD)
-- op "bucket_stable" — count rows where curr_bucket == prev_bucket (no change - stable accounts)
+COUNTS op field  -  supported modes:
+- column "__total__"  -  counts ALL rows in the group (no condition needed, op and value are ignored). Use for "total cases", "total accounts", "total portfolio", "all cases".
+- Omit op (or op "==")  -  count rows where column == value (default equality check)
+- op ">", ">=", "<", "<="  -  numeric comparison. Use for "Closing Arrears <= 0", "Arrears / EMI > 3", etc. value must be a number.
+- op "in"  -  count rows where column value is in a list. value must be a list like ["SMA-1", "SMA-2"].
+- op "bucket_worse_than"  -  count rows where curr_bucket moved to a WORSE bucket vs prev_bucket (roll forward - BAD)
+- op "bucket_better_than"  -  count rows where curr_bucket moved to a BETTER bucket vs prev_bucket (roll backward - GOOD)
+- op "bucket_stable"  -  count rows where curr_bucket == prev_bucket (no change - stable accounts)
 
 Bucket change terminology:
 - Roll Forward = worsened bucket = BAD for collections
@@ -259,7 +241,7 @@ Bucket change terminology:
 IMPORTANT: When query asks about roll forward AND roll backward executives, always include stable_count too.
 When query asks for "stable" accounts per executive, use op "bucket_stable".
 
-Example — "executives with roll forward, roll backward and stable counts":
+Example  -  "executives with roll forward, roll backward and stable counts":
   group_by: ["MNT NAME", "Unit"]
   counts: [
     {{"alias": "roll_forward", "column": "curr_bucket", "op": "bucket_worse_than", "value": "prev_bucket"}},
@@ -276,7 +258,7 @@ Example - "rank executives by roll backward count (most improved first)":
   ]
   metrics: [{{"expr": "roll_backward", "label": "Roll Backward Count"}}], sort_asc: false
 
-Example — "regionwise total cases, zero closing arrears, SMA-2, NPA with percentages":
+Example  -  "regionwise total cases, zero closing arrears, SMA-2, NPA with percentages":
   aggregation_mode: true
   aggregation_spec: {{
     "group_by": "RegionName",
@@ -295,7 +277,7 @@ Example — "regionwise total cases, zero closing arrears, SMA-2, NPA with perce
     "sort_asc": false
   }}
 
-Example — "branchwise accounts with arrears > 3 EMI":
+Example  -  "branchwise accounts with arrears > 3 EMI":
   aggregation_mode: true
   aggregation_spec: {{
     "group_by": "Unit",
@@ -334,12 +316,13 @@ Example - "regionwise how many accounts were in NPA, SMA-2 and 0-30 DPD earlier 
     "sort_asc": false
   }}
 
-Example - "which branch has the maximum NPA reduction %, top 5 branches":
+Example - "NPA reduction % by branch / region / executive":
   This compares the NPA count between the earlier (prev_bucket) and later (curr_bucket) snapshot.
   Reduction % = (earlier_count - later_count) / earlier_count * 100. A positive value means NPA went down (good).
+  group_by dimension mapping: branch → "Unit" | region → "RegionName" | executive → ["MNT NAME", "Unit"]
   aggregation_mode: true, result_type: "aggregation_table"
   aggregation_spec: {{
-    "group_by": "Unit",
+    "group_by": <see dimension mapping above>,
     "counts": [
       {{"alias": "npa_prev", "column": "prev_bucket", "value": "NPA"}},
       {{"alias": "npa_curr", "column": "curr_bucket", "value": "NPA"}}
@@ -347,7 +330,21 @@ Example - "which branch has the maximum NPA reduction %, top 5 branches":
     "sums": [],
     "metrics": [{{"expr": "(npa_prev - npa_curr) / npa_prev * 100", "label": "NPA Reduction %"}}],
     "sort_asc": false,
-    "limit": 5
+    "limit": null
+  }}
+
+Example - "rank regions in descending order by their SOH reduction last month (biggest drop first)":
+  This is an AMOUNT reduction = sum of prev_SOH minus sum of current SOH per region. aggregation_mode.
+  aggregation_mode: true, result_type: "aggregation_table"
+  aggregation_spec: {{
+    "group_by": "RegionName",
+    "counts": [],
+    "sums": [
+      {{"alias": "prev_soh", "column": "prev_SOH"}},
+      {{"alias": "curr_soh", "column": "SOH"}}
+    ],
+    "metrics": [{{"expr": "prev_soh - curr_soh", "label": "SOH Reduction"}}],
+    "sort_asc": false
   }}
 
 LIMIT rules - use "limit" to keep only the top N groups AFTER sorting.
@@ -389,6 +386,9 @@ Use plan_mode when the query involves ANY of:
 - "fleet operators" / "multi-vehicle customers" (one customer owning several loans/vehicles)
 - any nested aggregation: aggregate, filter on the aggregate, then aggregate again
 - count-distinct of a key after a per-key filter
+- counting / comparing / measuring the reduction of a MULTI-CONDITION case per group
+  (insurance cases, no-collection cases, co-lending-at-risk, easy settlements, etc.), because an
+  aggregation_mode count can only hold ONE condition - use a "where" with all the conditions instead
 
 A plan is an ORDERED list; each step transforms the previous step's table. Operations:
 - {{"op": "group_aggregate", "group_by": ["col", ...], "aggregations": [
@@ -396,7 +396,7 @@ A plan is an ORDERED list; each step transforms the previous step's table. Opera
     func "count" counts rows in the group and needs no column; the others need a column.
     An aggregation may add an optional "where": [conditions] (same format as filter) to
     count/sum/nunique ONLY rows matching a per-row condition. Use this for things like
-    "number of unpaid loans per customer" — count where the unpaid condition holds.
+    "number of unpaid loans per customer"  -  count where the unpaid condition holds.
     After this step ONLY the group_by columns and the new aliases remain.
 - {{"op": "filter", "conditions": [{{"column": "col_or_alias", "op": ">|>=|<|<=|==|!=|in|contains", "value": v}}]}}
 - {{"op": "derive", "column": "new_name", "expr": "arithmetic over existing aliases"}}
@@ -458,6 +458,24 @@ also show their unpaid loan count, ordered by SOH" (current snapshot month start
     {{"op": "sort", "by": "total_soh", "ascending": false}}
   ]
 
+Example - "rank regions by biggest reduction in insurance cases vs last month":
+  An insurance case is a MULTI-CONDITION rule, so the previous-month and current-month counts each need a
+  conditional "where" (only plan-mode can count on more than one condition). Subtract, then sort. plan_mode.
+  plan_mode: true, result_type: "aggregation_table"
+  plan: [
+    {{"op": "group_aggregate", "group_by": ["RegionName"], "aggregations": [
+        {{"alias": "ins_prev", "func": "count", "where": [
+            {{"column": "prev_Arrears_Inst", "op": "<=", "value": 0}},
+            {{"column": "prev_Arrears_Exp", "op": ">", "value": 5000}},
+            {{"column": "prev_Arrears_EMI", "op": ">", "value": 0}}]}},
+        {{"alias": "ins_curr", "func": "count", "where": [
+            {{"column": "ARREARS AGAINST INST", "op": "<=", "value": 0}},
+            {{"column": "ARREARS AGAINST EXP", "op": ">", "value": 5000}},
+            {{"column": "Arrears / EMI", "op": ">", "value": 0}}]}}]}},
+    {{"op": "derive", "column": "insurance_reduction", "expr": "ins_prev - ins_curr"}},
+    {{"op": "sort", "by": "insurance_reduction", "ascending": false}}
+  ]
+
 When plan_mode is false, set plan to null. plan_mode takes precedence over aggregation_mode.
 
 RESULT TYPE - always decide what shape the answer should be:
@@ -466,11 +484,13 @@ RESULT TYPE - always decide what shape the answer should be:
 - "single_stat"      : user wants ONE summary answer - a count, total, average, or the name of the best/worst group. Signals: "how many", "total", "what is the", "count of", "which executive has the most/least", "average", "sum of".
 
 Rules:
-- "rank executives by X" → aggregation_table (full ranked list)
+- Any query that asks for a METRIC computed PER GROUP (per executive / per branch / per region) → aggregation_table.
+  This applies regardless of phrasing: "give me all", "show", "list", "rank", "compare", "sort"  -  if the answer
+  is one row per group with a computed number, it is aggregation_table, NOT loan_table.
 - "which executive has the highest X" → single_stat (the answer is one name + value)
 - "how many MAT accounts" → single_stat
 - "total POS of NPA accounts" → single_stat
-- "show all MAT accounts" → loan_table
+- "show all MAT accounts" → loan_table (individual account records, no grouping)
 - "list accounts with no strike" → loan_table
 
 CLARIFICATION - ask instead of assuming (this is general, not tied to any specific query):
@@ -485,6 +505,16 @@ Ask ONLY for real, material ambiguity. Things that legitimately need asking:
     loans, or at least one?)
   - a measure with several valid definitions ("paid" - by collection amount, or by receipt date?)
   - a vague target column when several columns could fit
+  - an UNKNOWN term, abbreviation, or acronym that is NOT in the NBFC meanings above and does not clearly
+    map to one known column - especially a GROUPING/entity term. Do NOT guess which column it means;
+    mapping the wrong grouping column produces a completely different, wrong answer. Ask what it refers to
+    and offer the plausible known columns as options.
+    Example - query "give me RCH ranking in decreasing order by their SOH reduction last month":
+      "RCH" is not a defined term and could be several grouping levels. Set needs_clarification=true with:
+      clarification_question: "What does 'RCH' refer to in your data, so I rank the right entity?"
+      clarification_options: ["Region (RegionName)", "Branch (Unit)",
+        "Collection executive (MNT NAME)", "Sourcing dealer (SRC Name)"]
+    (Once the user picks one, the re-run will carry their answer and you proceed without asking again.)
 If the query is clear and fully specified, set needs_clarification=false and proceed normally - do
 NOT interrupt a clear query. Do NOT ask about anything already defined in the NBFC meanings above
 (those are not ambiguous). When needs_clarification is true you may leave plan/aggregation_spec null.
@@ -515,7 +545,7 @@ For single_stat that requires GROUP BY (e.g. "which executive has the most"), se
 For single_stat that is a simple count/sum (e.g. "how many MAT"), set aggregation_mode false AND result_type "single_stat".
 
 Return ONLY valid JSON. No markdown, no explanation outside the JSON.
-Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
+Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash ( - ), or en dash ( - ).
 """
 
 
@@ -590,7 +620,7 @@ def enrich_query(raw_query: str, snapshot_dates: dict | None = None, repair_feed
         and bool(result.get("clarification_options"))
     )
 
-    # plan_mode is the most general path — it wins, and the simpler modes turn off
+    # plan_mode is the most general path  -  it wins, and the simpler modes turn off
     # so the executor branches unambiguously.
     if result["plan_mode"]:
         result["aggregation_mode"] = False

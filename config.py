@@ -1,7 +1,15 @@
 # Single source of truth for shared configuration values.
 # Import from here rather than hardcoding strings across modules.
 
+import os
+
 GEMINI_MODEL = "gemini-2.5-flash-lite"
+
+# v2 shadow mode: when enabled, each query ALSO runs the new
+# LLM -> IR-1 -> compiler -> engine path and records a comparison against the
+# legacy result, WITHOUT changing what the user sees. Off by default; enable with
+# COLLECTIONIQ_SHADOW=1 to validate the v2 path against real traffic.
+SHADOW_MODE = os.environ.get("COLLECTIONIQ_SHADOW", "").strip().lower() in ("1", "true", "yes", "on")
 
 #  Smart Alert thresholds ────────────────────────────────────────────────────
 # Tune these to adjust sensitivity without touching business logic code.

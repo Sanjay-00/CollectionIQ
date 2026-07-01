@@ -1,4 +1,4 @@
-"""
+﻿"""
 Smart Alerts - pre-computed, rule-based flags that run on every LCC upload.
 No LLM. Pure pandas. Always accurate.
 """
@@ -147,7 +147,7 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
 
 def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     """Accounts where Inst+Exp+BC arrears exceed 50% of original loan amount.
-    Signals deep distress regardless of DPD bucket — potential write-off risk."""
+    Signals deep distress regardless of DPD bucket  -  potential write-off risk."""
     arr_inst = _to_num(df, "ARREARS AGAINST INST")
     arr_exp  = _to_num(df, "ARREARS AGAINST EXP")
     arr_bc   = _to_num(df, "ARREARS AGAINST BC")
@@ -157,7 +157,7 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     mask = (total_arr > HIGH_ARREARS_LOAN_RATIO * loan_amt) & (loan_amt > 0)
     subset = df[mask].copy()
 
-    # Add ratio column — sorted worst-first so >100% cases surface immediately
+    # Add ratio column  -  sorted worst-first so >100% cases surface immediately
     if len(subset) > 0:
         loan = pd.to_numeric(subset["Loan Amount"], errors="coerce").replace(0, float("nan"))
         t_arr = (_to_num(subset, "ARREARS AGAINST INST") +

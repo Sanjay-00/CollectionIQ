@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 from google import genai
 from langsmith import traceable
@@ -37,7 +37,7 @@ Write exactly 4-5 bullet points.
 Each bullet must start with "• ".
 Be specific - use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
-Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
+Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash ( - ), or en dash ( - ).
 """
 
 
@@ -64,7 +64,7 @@ def generate_insights(
     agg_rows = kpis.get("_agg_rows")
 
     if agg_rows:
-        # Aggregation result — build context from the grouped table rows
+        # Aggregation result  -  build context from the grouped table rows
         rows_text = "\n".join(
             "  " + ", ".join(f"{k}: {v}" for k, v in row.items() if k != "Rank")
             for row in agg_rows

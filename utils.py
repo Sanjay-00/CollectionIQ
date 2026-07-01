@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -24,7 +24,7 @@ COL_ALIASES = {
     "Cum Coll (Inst+Exp+BC)": "Cum Coll (Inst+Exp)",
 }
 
-# All expected columns (used for reference only — missing ones show a warning, not error)
+# All expected columns (used for reference only  -  missing ones show a warning, not error)
 REQUIRED_COLS = [
     "SNo", "Loan No", "CHANNEL", "BU", "StateName", "Zone", "RegionName", "Unit",
     "Ag_Date", "SRC Code", "SRC Name", "MNT CODE", "MNT NAME", "Due Dt", "Tenure",
@@ -52,6 +52,26 @@ REQUIRED_COLS = [
 BUCKET_ORDER = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"]
 BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4, "NA": -1}
 
+# Numeric columns carried over from the previous-month file into the current-month
+# DataFrame as prev_* columns (matched per Loan No), so the AI can compute
+# month-over-month change/reduction queries (e.g. "regions by max SOH reduction",
+# "branches with biggest drop in insurance cases").
+#
+# Keys are the source column names in the prev file; values are the eval-safe
+# target names (no spaces or slashes) so the plan engine's derive expressions and
+# the column validator work on them directly. This is a curated set that covers the
+# vast majority of "change vs last month" questions  -  extend it here in ONE place
+# to support a new prev metric; nothing else needs to change.
+PREV_CARRYOVER_COLS = {
+    "SOH":                  "prev_SOH",
+    "POS":                  "prev_POS",
+    "Closing Arrears":      "prev_Closing_Arrears",
+    "ClosingPC":            "prev_ClosingPC",
+    "Arrears / EMI":        "prev_Arrears_EMI",
+    "ARREARS AGAINST INST": "prev_Arrears_Inst",
+    "ARREARS AGAINST EXP":  "prev_Arrears_Exp",
+}
+
 
 def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -73,10 +93,10 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalize uploaded column names to our standard names.
 
-    Pass 1 — Strip leading/trailing spaces from every column.
-    Pass 2 — Apply COL_ALIASES (exact known truncations / variations).
-    Pass 3 — Case-insensitive exact match (handles capitalisation differences).
-    Pass 4 — Prefix match for truncated long names.
+    Pass 1  -  Strip leading/trailing spaces from every column.
+    Pass 2  -  Apply COL_ALIASES (exact known truncations / variations).
+    Pass 3  -  Case-insensitive exact match (handles capitalisation differences).
+    Pass 4  -  Prefix match for truncated long names.
               Targets sorted longest-first so the more-specific column wins
               when a shorter column name is a prefix of a longer one
               (e.g. "Net Collection Demand Inst+Exp+BC" beats "NET Collection
@@ -84,10 +104,10 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     all_standard = list(dict.fromkeys(CRITICAL_COLS + REQUIRED_COLS))  # critical first, no dupes
 
-    # Pass 1 — strip spaces
+    # Pass 1  -  strip spaces
     df.columns = pd.Index([str(c).strip() for c in df.columns])
 
-    # Pass 2 — known aliases
+    # Pass 2  -  known aliases
     df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
 
     # Build case-insensitive lookup; longest targets first so more-specific
@@ -108,14 +128,14 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
         col_lower = col.lower()
 
-        # Pass 3 — case-insensitive exact match
+        # Pass 3  -  case-insensitive exact match
         if col_lower in target_ci and target_ci[col_lower] not in claimed:
             target = target_ci[col_lower]
             rename_map[col] = target
             claimed.add(target)
             continue
 
-        # Pass 4 — prefix match (file col is truncated version of target)
+        # Pass 4  -  prefix match (file col is truncated version of target)
         # Skip short columns (< 15 chars) to avoid false matches.
         if len(col) < 15:
             continue
@@ -189,7 +209,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         else:
             df[date_col] = pd.to_datetime(col, errors="coerce")
 
-    # Due Dt is a numeric EMI due day (5, 10, 15, 20) — keep as number
+    # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
 
     # Additive cash flows - zero is the correct default when missing
@@ -211,6 +231,12 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
 
     df = assign_buckets(df)
+
+    # Drop duplicate Loan Nos  -  keep the first occurrence.
+    # Duplicates inflate every count-based metric (NPA count, roll rates, etc.).
+    if "Loan No" in df.columns:
+        df = df.drop_duplicates(subset=["Loan No"])
+
     return df, []
 
 
@@ -387,7 +413,7 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
-    """Arrears exposure by DPD bucket — SUM(Closing Arrears) per bucket.
+    """Arrears exposure by DPD bucket  -  SUM(Closing Arrears) per bucket.
     Shows how much money is stuck at each risk level."""
     if df.empty or "Closing Arrears" not in df.columns or "curr_bucket" not in df.columns:
         return go.Figure()
@@ -526,8 +552,8 @@ def build_html_export(
         for alert in alerts:
             is_clear = alert["count"] == 0
             color = "#16a34a" if is_clear else SEVERITY_COLOR.get(alert["severity"], "#d97706")
-            pos_fmt = fmt_value(alert["pos"], "money") if not is_clear else "—"
-            arr_fmt = fmt_value(alert["closing_arrears"], "money") if not is_clear else "—"
+            pos_fmt = fmt_value(alert["pos"], "money") if not is_clear else " - "
+            arr_fmt = fmt_value(alert["closing_arrears"], "money") if not is_clear else " - "
             cards_html += (
                 f'<div style="background:#fff;border:1px solid #e5e7eb;border-left:4px solid {color};'
                 f'border-radius:10px;padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
@@ -638,7 +664,7 @@ def build_html_export(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Shriram Finance – Regional Collection Dashboard {month_label}</title>
+<title>Shriram Finance  -  Regional Collection Dashboard {month_label}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>

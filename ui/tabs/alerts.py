@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import streamlit as st
 
 from utils import fmt_value
@@ -63,11 +63,11 @@ def render_alerts_tab(df_curr: pd.DataFrame, alerts: list) -> None:
                     </div>
                     <div>
                       <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">POS</div>
-                      <div style="font-size:22px;font-weight:800;color:#111;">{pos_fmt if not is_clear else "—"}</div>
+                      <div style="font-size:22px;font-weight:800;color:#111;">{pos_fmt if not is_clear else " - "}</div>
                     </div>
                     <div>
                       <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Closing Arrears</div>
-                      <div style="font-size:22px;font-weight:800;color:{title_color};">{pc_fmt if not is_clear else "—"}</div>
+                      <div style="font-size:22px;font-weight:800;color:{title_color};">{pc_fmt if not is_clear else " - "}</div>
                     </div>
                   </div>
                   <div style="font-size:11px;color:#555;font-style:italic;border-top:1px solid rgba(0,0,0,0.08);

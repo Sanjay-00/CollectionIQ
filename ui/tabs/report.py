@@ -1,4 +1,4 @@
-import os
+﻿import os
 
 import pandas as pd
 import streamlit as st
@@ -59,7 +59,7 @@ def render_report_tab(
         )
     else:
         rpt_email_to = ""
-        st.caption("Email not configured — add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
+        st.caption("Email not configured  -  add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
 
     # ── Buttons ──────────────────────────────────────────────────────────────
     _gc, _sc, _ = st.columns([2, 1, 3])
@@ -94,7 +94,7 @@ def render_report_tab(
         if st.session_state.get("rpt_exec"):    enabled_sections.append("executive_rankings")
 
         _skip_ai = not st.session_state.get("rpt_ai", True)
-        _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30–60 seconds)..."
+        _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30 - 60 seconds)..."
         with st.spinner(_spinner_msg):
             _rpt_result = run_report(
                 df_curr=df_curr, df_prev=df_prev,

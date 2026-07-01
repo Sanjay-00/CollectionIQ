@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 import pytest
 
@@ -7,7 +7,7 @@ from helpers import make_df
 
 
 class TestAssignBuckets:
-    """Bucket assignment is the foundation — every downstream calculation depends on it."""
+    """Bucket assignment is the foundation  -  every downstream calculation depends on it."""
 
     @pytest.mark.parametrize("arrears_emi,expected", [
         (np.nan,  "NA"),       # unknown → NA

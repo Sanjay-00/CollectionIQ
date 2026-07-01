@@ -1,5 +1,5 @@
-"""
-Report Builder — assembles a fully self-contained HTML report.
+﻿"""
+Report Builder  -  assembles a fully self-contained HTML report.
 Email-safe: all multi-column layouts use <table> instead of CSS grid/flex.
 """
 import datetime

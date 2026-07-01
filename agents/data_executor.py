@@ -1,10 +1,17 @@
-import re
+﻿import re
 import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
 # Bucket severity scores - higher = worse
 _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
+
+# The only operations a single-condition aggregation count may use. Anything else
+# (e.g. an improvised "and"/"filter" op) is rejected by the validator so a
+# malformed conditional count triggers a repair instead of silently counting all
+# rows. Multi-condition counts go through 'where' (see _extract_where), not these.
+_KNOWN_COUNT_OPS = {"==", "!=", ">", ">=", "<", "<=", "in",
+                    "bucket_worse_than", "bucket_better_than", "bucket_stable"}
 
 
 def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
@@ -78,6 +85,45 @@ def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
     return df
 
 
+def _extract_where(cnt: dict) -> list:
+    """Normalize a conditional count's conditions into a single list.
+
+    The planner reliably WANTS a multi-condition count but expresses it in several
+    shapes (the canonical 'where', or improvised 'conditions' / 'filter.and' /
+    op:filter with a list value). Collapsing them all here means a multi-condition
+    "case" count is honored instead of silently falling back to counting all rows.
+    Returns [] when the count is a plain (single-condition or __total__) count.
+
+    Guard: the legitimate 'in' operator carries value=[scalars]; we only treat a
+    list value as conditions when its items are dicts, so 'in' is never misread.
+    """
+    w = cnt.get("where")
+    if isinstance(w, list):
+        return w
+    c = cnt.get("conditions")
+    if isinstance(c, list):
+        return c
+    f = cnt.get("filter")
+    if isinstance(f, list):
+        return f
+    if isinstance(f, dict) and isinstance(f.get("and"), list):
+        return f["and"]
+    v = cnt.get("value")
+    if isinstance(v, list) and v and isinstance(v[0], dict):
+        return v
+    return []
+
+
+def _build_mask(df: pd.DataFrame, conditions) -> pd.Series:
+    """Boolean mask of rows matching ALL conditions (AND), reusing the type-aware
+    _apply_condition logic. Shared by the plan engine and by aggregation-mode
+    'where' counts so a multi-condition case can be counted in either engine."""
+    matched = df
+    for cond in conditions or []:
+        matched = _apply_condition(matched, cond)
+    return df.index.isin(matched.index)
+
+
 QUERY_DISPLAY_COLS = [
     "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME",
     "Due Dt", "Tenure", "Loan Status", "Loan Amount", "Veh ID", "Cust Name",
@@ -128,11 +174,24 @@ def execute_filters(df: pd.DataFrame, parsed: dict) -> tuple[pd.DataFrame, str]:
 
 
 def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
-    """Compute query-specific KPIs from the filtered DataFrame.
-    Operates directly on filtered to avoid index-alignment bugs after concat/sort.
-    df_full is kept in signature for API compatibility but is not used.
+    """Compute query-specific KPIs for the matching loans.
+
+    Uses df_full re-filtered by Loan No so KPI columns (SOH, Demand, Collection,
+    Arrears/EMI) are always present  -  even when filtered has been column-narrowed
+    by a display-column select step. Falls back to filtered directly when Loan No
+    is unavailable (e.g. aggregation results).
     """
-    work = filtered.drop(columns=["Priority", "_rank"], errors="ignore")
+    if (
+        df_full is not None
+        and not df_full.empty
+        and "Loan No" in filtered.columns
+        and "Loan No" in df_full.columns
+    ):
+        loan_nos = set(filtered["Loan No"])
+        work = df_full[df_full["Loan No"].isin(loan_nos)].copy()
+    else:
+        work = filtered.copy()
+    work = work.drop(columns=["Priority", "_rank"], errors="ignore")
 
     n = work["Loan No"].nunique() if "Loan No" in work.columns else len(work)
 
@@ -194,7 +253,7 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
         if len(subset) == 0:
             continue
 
-        # Deduplicate — each loan appears only under its highest priority rule
+        # Deduplicate  -  each loan appears only under its highest priority rule
         loan_col = "Loan No" if "Loan No" in subset.columns else subset.columns[0]
         subset = subset[~subset[loan_col].isin(seen_loans)]
         seen_loans.update(subset[loan_col].tolist())
@@ -226,7 +285,7 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     group_by_spec = spec.get("group_by") or ""
     df = df.copy()
 
-    # Support multi-column group_by — combine into a single display column
+    # Support multi-column group_by  -  combine into a single display column
     if isinstance(group_by_spec, list) and len(group_by_spec) >= 2:
         col1, col2 = str(group_by_spec[0]), str(group_by_spec[1])
         missing = [c for c in [col1, col2] if c not in df.columns]
@@ -247,13 +306,25 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     grouped = df.groupby(group_col, sort=False)
     agg = pd.DataFrame({group_col: list(grouped.groups.keys())}).set_index(group_col)
 
-    # Count rows per group — supports total, equality, numeric comparison, and bucket ops
+    # Count rows per group  -  supports total, equality, numeric comparison, and bucket ops
     for cnt in spec.get("counts") or []:
         alias = cnt.get("alias") or ""
         col   = cnt.get("column") or ""
         op    = cnt.get("op") or "=="
         val   = cnt.get("value")
         if not alias:
+            continue
+
+        # Optional multi-condition 'where' (mirrors plan-mode conditional counts):
+        # count rows matching ALL conditions per group. Lets aggregation_mode answer
+        # multi-condition "case" counts (insurance, no-collection, ...) that a single
+        # column/op/value cannot express  -  so the answer is correct no matter which
+        # mode the LLM routes the query through, or which conditional-count syntax it
+        # improvises (see _extract_where).
+        where = _extract_where(cnt)
+        if where:
+            mask = _build_mask(df, where)
+            agg[alias] = df[mask].groupby(group_col).size().reindex(agg.index, fill_value=0)
             continue
 
         if col == "__total__":
@@ -341,7 +412,7 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
         except Exception:
             agg[label] = 0
 
-    # Apply HAVING filters — post-aggregation group filtering (e.g. run_count >= 1)
+    # Apply HAVING filters  -  post-aggregation group filtering (e.g. run_count >= 1)
     _having_ops = {">=": lambda a, v: a >= v, ">": lambda a, v: a > v,
                    "<=": lambda a, v: a <= v, "<": lambda a, v: a < v,
                    "==": lambda a, v: a == v, "!=": lambda a, v: a != v}
@@ -369,7 +440,7 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
     if sort_label:
         agg = agg.sort_values(sort_label, ascending=sort_asc)
 
-    # Top-N limit — applied after sort so we keep the highest/lowest ranked groups.
+    # Top-N limit  -  applied after sort so we keep the highest/lowest ranked groups.
     # Set by the planner only when the user asks for "top N" / "first N" groups.
     limit = spec.get("limit")
     try:
@@ -380,6 +451,17 @@ def execute_aggregation(df: pd.DataFrame, spec: dict) -> tuple[pd.DataFrame, str
         agg = agg.head(limit)
 
     agg = agg.reset_index()
+
+    # Reorder columns so prev-period always precedes curr-period.
+    # Final order: group_col | prev_* | curr_* | derived metrics
+    metric_labels = {m.get("label") for m in metrics_list if m.get("label")}
+    group_cols    = [group_col] if group_col in agg.columns else []
+    prev_cols     = [c for c in agg.columns if "prev" in c.lower() and c not in group_cols and c not in metric_labels]
+    curr_cols     = [c for c in agg.columns if "curr" in c.lower() and c not in group_cols and c not in metric_labels]
+    derived_cols  = [c for c in agg.columns if c in metric_labels]
+    rest          = [c for c in agg.columns if c not in group_cols + prev_cols + curr_cols + derived_cols]
+    agg = agg[group_cols + prev_cols + curr_cols + rest + derived_cols]
+
     agg.insert(0, "Rank", range(1, len(agg) + 1))
     return agg, ""
 
@@ -406,8 +488,30 @@ def validate_aggregation_spec(spec: dict, columns) -> list[str]:
         alias = cnt.get("alias")
         if alias:
             aliases.add(alias)
+        # A 'where' count is multi-condition  -  validate each where column and skip
+        # the single-column check (a where count needs no top-level column).
+        where = _extract_where(cnt)
+        if where:
+            for cond in where:
+                wc = cond.get("column")
+                if not wc or wc not in cols:
+                    errs.append(f"count '{alias}' where column '{wc}' does not exist")
+            continue
         col = cnt.get("column")
         op = cnt.get("op")
+        # Whitelist defense: a count that carries condition-like keys we could not
+        # extract, or an op outside the known set (an improvised "and"/"filter"/etc.),
+        # is malformed. Reject it -> repair, so it can NEVER silently fall back to
+        # counting all rows and return a wrong answer.
+        if (cnt.get("conditions") is not None or cnt.get("filter") is not None
+                or cnt.get("filters") is not None
+                or (op is not None and op not in _KNOWN_COUNT_OPS)):
+            errs.append(
+                f"count '{alias}' is malformed; for a multi-condition count use "
+                f"'where': [{{column, op, value}}, ...]; for a single-condition count "
+                f"use column + op + value with op one of {sorted(_KNOWN_COUNT_OPS)}"
+            )
+            continue
         if col == "__total__":
             continue
         if not col or col not in cols:
@@ -479,9 +583,24 @@ def distribute_priority_accounts(df: pd.DataFrame, total_n: int) -> pd.DataFrame
 
 
 def compute_contextual_rankings(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
-    """Compute top-N breakdowns: region, branch, bucket distribution."""
-    idx = filtered.index if len(filtered) > 0 else pd.Index([])
-    sub = df_full.loc[df_full.index.isin(idx)] if len(idx) > 0 else pd.DataFrame(columns=df_full.columns)
+    """Compute top-N breakdowns: region, branch, bucket distribution.
+
+    execute_plan resets the filtered index to 0-N, so we cannot use it to
+    join back to df_full. Rejoin on Loan No (same approach as compute_result_kpis)
+    so the breakdown cards reflect the actual matching accounts.
+    """
+    if (
+        df_full is not None and not df_full.empty
+        and len(filtered) > 0
+        and "Loan No" in filtered.columns
+        and "Loan No" in df_full.columns
+    ):
+        loan_nos = set(filtered["Loan No"])
+        sub = df_full[df_full["Loan No"].isin(loan_nos)]
+    elif len(filtered) > 0:
+        sub = filtered
+    else:
+        sub = pd.DataFrame(columns=df_full.columns if df_full is not None else [])
 
     rankings = {}
 
@@ -490,7 +609,7 @@ def compute_contextual_rankings(df_full: pd.DataFrame, filtered: pd.DataFrame) -
         rankings["region_counts"] = region_counts.head(5).to_dict()
 
     if "MNT NAME" in sub.columns and "Unit" in sub.columns and len(sub) > 0:
-        # One row per (MNT NAME, Unit) — sorted by account count desc, top 8 rows total
+        # One row per (MNT NAME, Unit)  -  sorted by account count desc, top 8 rows total
         grp_cols = sub.groupby(["MNT NAME", "Unit"])
         mnt_branch = grp_cols["Loan No"].nunique().reset_index(name="count")
         if "SOH" in sub.columns:

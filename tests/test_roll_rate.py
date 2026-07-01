@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import pytest
 
 from analysis.roll_rate import (
@@ -90,11 +90,11 @@ class TestComputeRollRateMatrix:
     def test_new_entries_and_exits_counted(self):
         curr = make_df([
             {"Loan No": "L001", "curr_bucket": "STD"},
-            {"Loan No": "L002", "curr_bucket": "STD"},   # new — not in prev
+            {"Loan No": "L002", "curr_bucket": "STD"},   # new  -  not in prev
         ])
         prev = make_df([
             {"Loan No": "L001", "curr_bucket": "STD"},
-            {"Loan No": "L999", "curr_bucket": "STD"},   # exited — not in curr
+            {"Loan No": "L999", "curr_bucket": "STD"},   # exited  -  not in curr
         ])
         _, meta = compute_roll_rate_matrix(curr, prev)
         assert meta["new_entries"] == 1

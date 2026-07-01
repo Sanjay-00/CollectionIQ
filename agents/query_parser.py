@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import re
 import time
@@ -51,7 +51,7 @@ CATEGORY COLUMNS:
   "S&S" = vehicle seized and sold, balance still outstanding (most severe)
 - RegionName: Region name (e.g. "PUNE", "MUMBAI")
 - Unit: Branch name (e.g. "MAHAD", "BELAP", "PNJIM")
-- Strike: Whether the account is current on its installment (EMI) obligation this month. Y = current (at least one of: collection >= Month Due-Inst, OR LCC%=100, OR ARREARS AGAINST INST<=0). N = not current on installment. Strike is ONLY about installment — insurance/expense arrears do NOT affect it.
+- Strike: Whether the account is current on its installment (EMI) obligation this month. Y = current (at least one of: collection >= Month Due-Inst, OR LCC%=100, OR ARREARS AGAINST INST<=0). N = not current on installment. Strike is ONLY about installment  -  insurance/expense arrears do NOT affect it.
 - CHANNEL: Loan channel
 - Segment: Loan segment
 - NACHStatus: NACH payment status
@@ -69,6 +69,16 @@ NUMERIC COLUMNS:
 - Net Collection Demand Inst+Exp+BC: Total monthly demand (installment + expense + bounce charges). Collection % = Month Collection (Excluding Reserve Collection) / Net Collection Demand Inst+Exp+BC * 100
 - DelinquencyDays: Days past due (alternative to Arrears/EMI)
 
+PREVIOUS-MONTH NUMERIC COLUMNS (present ONLY when a previous month file is uploaded, matched per loan).
+Use these for "reduction"/"change vs last month" comparisons (previous value minus current value):
+- prev_SOH: SOH in the previous month (current month column is SOH)
+- prev_POS: POS in the previous month
+- prev_Closing_Arrears: Closing Arrears in the previous month
+- prev_ClosingPC: ClosingPC in the previous month
+- prev_Arrears_EMI: Arrears / EMI in the previous month
+- prev_Arrears_Inst: ARREARS AGAINST INST in the previous month
+- prev_Arrears_Exp: ARREARS AGAINST EXP in the previous month
+
 STRING COLUMNS:
 - Loan No: Unique loan identifier
 - Cust Name: Customer full name
@@ -76,12 +86,12 @@ STRING COLUMNS:
 - MNT NAME / MNT CODE: Field collection executive assigned to the account
 - SRC Name / SRC Code: Sourcing dealer or DSA who originated the loan
 - scheme: Loan product type (e.g. New Passenger Vehicle, Used Light Commercial Vehicle)
-- NACHStatus: Whether NACH (auto-debit mandate) is enabled — Y = enabled, N = not enabled. N means field collection required.
-- Non Starter: Customer has not paid even their 1st EMI — Y = non-starter. CRITICAL accounts to monitor.
-- LGL_FLAG: Legal proceedings ongoing — Y = yes, N = no
+- NACHStatus: Whether NACH (auto-debit mandate) is enabled  -  Y = enabled, N = not enabled. N means field collection required.
+- Non Starter: Customer has not paid even their 1st EMI  -  Y = non-starter. CRITICAL accounts to monitor.
+- LGL_FLAG: Legal proceedings ongoing  -  Y = yes, N = no
 - LGL_DESCRIPTION: Description of legal action taken
 - CUSTOMER_STATUS: Whether customer is alive or dead
-- CoLending_Loans: High-priority co-lending loan — Y = yes. These should NOT go into default.
+- CoLending_Loans: High-priority co-lending loan  -  Y = yes. These should NOT go into default.
 - No Coll 3 Months and >6 EMI: Y = no collection for 3+ months AND arrears exceed 6 EMIs, N = no, NA = not applicable
 
 FLAG COLUMNS (all Y/N unless noted):
@@ -103,7 +113,7 @@ SPECIAL INTERPRETATIONS:
 - "running cases" or "running loans" or "active loans" → Loan Status == "RUN"
 - "seized" or "seized and sold" or "S&S cases" → Loan Status == "S&S"
 - "haven't paid for 3 months" or "no collection for 3 months" or "no collection last 3 months" or "3 months no payment" → No Coll 3 Months and >6 EMI == "Y"
-- "3 bucket" or "bucket 3" or "3 EMI arrears" or "arrears >= 3" or "3 or more EMI" → Arrears / EMI >= 3 (NPA threshold — do NOT use No Coll 3 Months column for this)
+- "3 bucket" or "bucket 3" or "3 EMI arrears" or "arrears >= 3" or "3 or more EMI" → Arrears / EMI >= 3 (NPA threshold  -  do NOT use No Coll 3 Months column for this)
 - CRITICAL RULE: "3 months" (time period) → No Coll 3 Months and >6 EMI column. "3 bucket/EMI" (delinquency level) → Arrears / EMI >= 3. Never mix these two.
 - "overdue" or "defaulter" → curr_bucket in ["SMA-1", "SMA-2", "NPA"]
 - "at risk" or "risky" → curr_bucket in ["SMA-2", "NPA"]
@@ -148,7 +158,7 @@ Operators: ==, !=, >, >=, <, <=, in (value must be a list), contains, bucket_wor
 For "in" operator, value must be a JSON array: ["val1", "val2"]
 Always include these in display_columns: Loan No, Cust Name, Cust Mob No, RegionName, Unit, ARREARS AGAINST INST, ARREARS AGAINST EXP
 Add relevant columns based on the query (e.g. Ag_Date if date filter, POS if amount mentioned).
-Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash (—), or en dash (–).
+Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash ( - ), or en dash ( - ).
 """
 
 

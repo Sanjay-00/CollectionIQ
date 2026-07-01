@@ -1,4 +1,4 @@
-"""All CSS and JS for CollectionIQ — injected once at app startup."""
+﻿"""All CSS and JS for CollectionIQ  -  injected once at app startup."""
 
 import streamlit as st
 

@@ -1,8 +1,8 @@
-"""Plan critic — a self-review pass over a generated step-plan.
+﻿"""Plan critic  -  a self-review pass over a generated step-plan.
 
 The column-validator (plan_executor.validate_plan) catches *structurally invalid*
 plans (hallucinated columns). It cannot catch a plan that is structurally valid
-but does not match intent — e.g. a DROPPED condition, or a step that references a
+but does not match intent  -  e.g. a DROPPED condition, or a step that references a
 column an earlier group_aggregate removed. This LLM pass reviews the plan against
 the original question for completeness and coherence and returns a corrected plan.
 
@@ -85,7 +85,7 @@ def critique_plan(query: str, plan: list, columns, snapshot_dates: dict | None =
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
     except Exception:
-        return plan, ""  # non-fatal — keep original, validator is the safety net
+        return plan, ""  # non-fatal  -  keep original, validator is the safety net
 
     revised = parsed.get("plan")
     if isinstance(revised, list) and revised:

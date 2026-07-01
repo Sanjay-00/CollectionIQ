@@ -1,5 +1,5 @@
-"""
-Shared test helpers. Not pytest fixtures — plain functions imported directly.
+﻿"""
+Shared test helpers. Not pytest fixtures  -  plain functions imported directly.
 """
 import pandas as pd
 

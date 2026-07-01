@@ -1,4 +1,4 @@
-import os
+﻿import os
 
 import pandas as pd
 import streamlit as st
@@ -101,9 +101,9 @@ function fill(text) {
         st.error(f"Query failed: {result['error']}")
         return
 
-    # ── Clarification: query was ambiguous — ask instead of guessing ───────────
+    # ── Clarification: query was ambiguous  -  ask instead of guessing ───────────
     if result.get("needs_clarification"):
-        q_question = result.get("clarification_question") or "Your query could be read a few ways — which did you mean?"
+        q_question = result.get("clarification_question") or "Your query could be read a few ways  -  which did you mean?"
         q_options  = result.get("clarification_options") or []
         orig_query = result.get("query") or ""
 
@@ -216,7 +216,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             st.dataframe(_safe_df(disp.head(1000)), width='stretch',
                          height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
             if len(disp) > 1000:
-                st.caption(f"Showing 1,000 of {len(disp):,} rows — download Excel for full list.")
+                st.caption(f"Showing 1,000 of {len(disp):,} rows  -  download Excel for full list.")
             _dl_btn(disp, f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
 
     elif result.get("plan_mode"):
@@ -256,7 +256,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
         <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
                     padding:16px 20px;margin:0 0 16px 0;">
           <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
-            🧩 MULTI-STEP PLAN — {len(filtered_df)} rows
+            🧩 MULTI-STEP PLAN  -  {len(filtered_df)} rows
           </div>
           <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">{plain}</div>
           {steps_html}
@@ -268,7 +268,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             st.dataframe(_safe_df(display_plan.head(1000)), width='stretch',
                          height=min(420, 50 + min(len(display_plan), 1000) * 36), hide_index=True)
             if len(display_plan) > 1000:
-                st.caption(f"Showing 1,000 of {len(display_plan):,} rows — download Excel for full list.")
+                st.caption(f"Showing 1,000 of {len(display_plan):,} rows  -  download Excel for full list.")
             _dl_btn(display_plan, "plan_result.xlsx", "dl_plan")
         else:
             st.warning("The plan returned no rows.")
@@ -307,7 +307,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             sort_asc = True
         if len(filtered_df) > 0 and metric_label in filtered_df.columns:
             top_row   = filtered_df.iloc[0]
-            top_name  = top_row.get(group_col, "—")
+            top_name  = top_row.get(group_col, " - ")
             top_val   = top_row.get(metric_label, 0)
             direction = "lowest" if sort_asc else "highest"
             st.markdown(f"""

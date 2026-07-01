@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 
 from smart_alerts import (
     alert_non_starters,
@@ -46,8 +46,8 @@ class TestAlertEasySettlements:
     def test_flags_small_positive_arrears(self):
         df = make_df([
             {"Loan No": "L001", "Closing Arrears": 500.0},   # flagged
-            {"Loan No": "L002", "Closing Arrears": 0.0},     # zero — not flagged
-            {"Loan No": "L003", "Closing Arrears": 1_500.0}, # too large — not flagged
+            {"Loan No": "L002", "Closing Arrears": 0.0},     # zero  -  not flagged
+            {"Loan No": "L003", "Closing Arrears": 1_500.0}, # too large  -  not flagged
         ])
         assert alert_easy_settlements(df)["count"] == 1
 
@@ -146,7 +146,7 @@ class TestAlertHighArrears:
     def test_not_flagged_below_50pct(self):
         df = make_df([{
             "Loan Amount":          2_00_000.0,
-            "ARREARS AGAINST INST": 80_000.0,  # 40% — not flagged
+            "ARREARS AGAINST INST": 80_000.0,  # 40%  -  not flagged
             "ARREARS AGAINST EXP":  0.0,
             "ARREARS AGAINST BC":   0.0,
         }])
