@@ -444,3 +444,150 @@ class TestColumnVsColumnComparison:
         }
         plan, errs = compile_logical(ir1, cols)
         assert any("prev_bucket" in e for e in errs)
+
+
+# ── count_ratio measure kind (hard_bucket_pct / strike_pct) ────────────────
+# "Collection %"-style metrics sum two COLUMNS; Hard Bucket %/Strike % are a
+# different shape entirely -- count rows matching a condition, divide by
+# another count. Registered as real named metrics (not left as a manual
+# count+derive the AI had to reconstruct every time) via a new "count_ratio"
+# measure kind, following the same handler-registration pattern as "ratio".
+
+class TestCountRatioMetrics:
+    def _cols(self):
+        return ["Loan No", "Unit", "Arrears / EMI", "prev_Arrears_EMI", "Strike", "prev_Strike"]
+
+    def _df(self):
+        return pd.DataFrame({
+            "Loan No": [f"L{i}" for i in range(10)],
+            "Unit": ["A"] * 5 + ["B"] * 5,
+            "Arrears / EMI": [7, 8, 0, 1, 2, 6, 6, 0, 0, 0],
+            "Strike": ["Y", "Y", "Y", "N", "N", "Y", "N", "N", "N", "N"],
+        })
+
+    def test_hard_bucket_pct_current_period(self):
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["branch"],
+            "measures": [{"metric": "hard_bucket_pct", "alias": "hb"}],
+            "metrics": [], "having": [], "order_by": [], "limit": None,
+            "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, self._cols())
+        assert errs == []
+        result, err = execute_plan(self._df(), plan)
+        assert err == ""
+        by_unit = dict(zip(result["Unit"], result["hb"]))
+        assert by_unit == {"A": 40.0, "B": 40.0}  # 2/5 each, matching the manual test earlier
+
+    def test_strike_pct_current_period(self):
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["branch"],
+            "measures": [{"metric": "strike_pct", "alias": "sp"}],
+            "metrics": [], "having": [], "order_by": [], "limit": None,
+            "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, self._cols())
+        assert errs == []
+        result, err = execute_plan(self._df(), plan)
+        assert err == ""
+        by_unit = dict(zip(result["Unit"], result["sp"]))
+        assert by_unit == {"A": 60.0, "B": 20.0}
+
+    def test_strike_pct_time_compare_produces_prev_and_change(self):
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["branch"],
+            "measures": [{"metric": "strike_pct", "alias": "curr_sp"}],
+            "metrics": [], "having": [], "order_by": [], "limit": None, "display_columns": [],
+            "time": {"grain": "month", "compare": {"type": "change", "from": "prev", "to": "curr"}},
+        }
+        plan, errs = compile_logical(ir1, self._cols())
+        assert errs == []
+        df = self._df()
+        df["prev_Strike"] = ["Y", "N", "N", "N", "N", "Y", "Y", "N", "N", "N"]
+        result, err = execute_plan(df, plan)
+        assert err == ""
+        row_a = result[result["Unit"] == "A"].iloc[0]
+        assert row_a["curr_sp"] == 60.0
+        assert row_a["prev_curr_sp"] == 20.0
+        assert row_a["curr_sp_change"] == 40.0
+
+    def test_standalone_prev_strike_pct_without_time_compare(self):
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["branch"],
+            "measures": [{"metric": "prev_strike_pct", "alias": "prev_sp"}],
+            "metrics": [], "having": [], "order_by": [], "limit": None,
+            "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, self._cols())
+        assert errs == []
+        df = self._df()
+        df["prev_Strike"] = ["Y", "N", "N", "N", "N", "Y", "Y", "N", "N", "N"]
+        result, err = execute_plan(df, plan)
+        assert err == ""
+        by_unit = dict(zip(result["Unit"], result["prev_sp"]))
+        assert by_unit == {"A": 20.0, "B": 40.0}
+
+    def test_helper_columns_never_reach_the_display(self):
+        # ratio/count_ratio measures compute via internal "{alias}__n0"/"{alias}__d0"
+        # scratch columns before dividing -- these must never leak into the table
+        # a lead actually sees.
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["branch"],
+            "measures": [{"metric": "strike_pct", "alias": "curr_sp"}],
+            "metrics": [], "having": [], "order_by": [], "limit": None, "display_columns": [],
+            "time": {"grain": "month", "compare": {"type": "change", "from": "prev", "to": "curr"}},
+        }
+        plan, errs = compile_logical(ir1, self._cols())
+        assert errs == []
+        df = self._df()
+        df["prev_Strike"] = ["Y", "N", "N", "N", "N", "Y", "Y", "N", "N", "N"]
+        result, err = execute_plan(df, plan)
+        assert err == ""
+        assert not any(c.endswith(("__n0", "__d0")) for c in result.columns)
+        assert set(result.columns) == {"Rank", "Unit", "curr_sp", "prev_curr_sp", "curr_sp_change"}
+
+
+# ── Deep-audit fixes: grain-ambiguity message + time.compare column threading ──
+
+class TestDeepAuditFixes:
+    def test_grain_ambiguity_message_interpolates_the_column_name(self):
+        # Bug: the error ended in the literal text "'{pcol}'" instead of the real
+        # column name, because the third string segment of the f-string
+        # concatenation was missing its "f" prefix.
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["region"],
+            "entity_filters": [{"entity": "customer", "having": [
+                {"agg": "nunique", "column": "Unit", "op": ">=", "value": 2}
+            ]}],
+            "measures": [], "metrics": [], "having": [], "order_by": [], "limit": None,
+            "display_columns": [], "time": None,
+        }
+        cols = ["Loan No", "Unit", "RegionName", "Cust Mob No"]
+        plan, errs = compile_logical(ir1, cols)
+        assert any("'Unit' should be counted" in e for e in errs)
+        assert not any("{pcol}" in e for e in errs)
+
+    def test_time_compare_resolves_raw_column_guess_metrics(self):
+        # Bug: _resolve_time_compare called _measure_def without 'columns', so the
+        # last-resort raw-column-guess fallback (e.g. "soh" -> "SOH") couldn't
+        # resolve inside time.compare specifically -- silently producing the
+        # current-period value with NO prev/change columns, no error either.
+        ir1 = {
+            "intent": "aggregation", "view": None, "filters": [], "dimensions": ["branch"],
+            "measures": [{"metric": "soh", "alias": "curr_soh"}],
+            "metrics": [], "having": [], "order_by": [], "limit": None, "display_columns": [],
+            "time": {"grain": "month", "compare": {"type": "change", "from": "prev", "to": "curr"}},
+        }
+        cols = ["Loan No", "Unit", "SOH", "prev_SOH"]
+        plan, errs = compile_logical(ir1, cols)
+        assert errs == []
+        df = pd.DataFrame({
+            "Loan No": [f"L{i}" for i in range(6)], "Unit": ["A"] * 3 + ["B"] * 3,
+            "SOH": [100, 200, 300, 50, 60, 70], "prev_SOH": [90, 180, 270, 40, 55, 65],
+        })
+        result, err = execute_plan(df, plan)
+        assert err == ""
+        row_a = result[result["Unit"] == "A"].iloc[0]
+        assert row_a["curr_soh"] == 600
+        assert row_a["prev_curr_soh"] == 540
+        assert row_a["curr_soh_change"] == 60

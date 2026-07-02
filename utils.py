@@ -87,6 +87,9 @@ PREV_CARRYOVER_COLS = {
     # previous-period version under time.compare.
     "Month Collection (Excluding Reserve Collection)": "prev_Month_Collection",
     "Net Collection Demand Inst+Exp+BC":               "prev_Net_Collection_Demand",
+    # Not numeric (Y/N flag), but carried forward the same way -- needed for the
+    # strike_pct count_ratio metric's previous-period version (registry/ontology.py).
+    "Strike":               "prev_Strike",
 }
 
 

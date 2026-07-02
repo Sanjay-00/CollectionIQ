@@ -192,6 +192,14 @@ _OPS = {
     "select":          _op_select,
 }
 
+# Internal scratch columns the "ratio"/"count_ratio" measure handlers generate
+# (compiler/measures.py: f"{alias}__n{i}" / f"{alias}__d{i}", e.g.
+# "collection_pct__n0") to hold the raw sum/count before dividing. The AI never
+# sees or authors these names -- they exist purely so the derive step has
+# something to divide -- so they should never reach the displayed table.
+# Matched by suffix only, since the alias prefix is arbitrary/AI-chosen.
+_HELPER_COL_RE = re.compile(r"__[nd]\d+$")
+
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
@@ -213,6 +221,9 @@ def execute_plan(df: pd.DataFrame, plan: list) -> tuple[pd.DataFrame, str]:
             return pd.DataFrame(), f"Step {i} ({op}) returned None."
 
     result = result.reset_index(drop=True)
+    helper_cols = [c for c in result.columns if _HELPER_COL_RE.search(str(c))]
+    if helper_cols:
+        result = result.drop(columns=helper_cols)
     if "Rank" not in result.columns:
         result.insert(0, "Rank", range(1, len(result) + 1))
     return result, ""

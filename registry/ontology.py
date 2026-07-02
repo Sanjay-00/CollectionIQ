@@ -59,6 +59,7 @@ from config import (
     INSURANCE_EXP_ARREARS_MIN,
     FLEET_MIN_LOANS,
     RECENT_ADVANCES_MONTHS,
+    HARD_BUCKET_ARREARS_EMI_MIN,
 )
 
 # ── Business Priority Framework (migrated verbatim  -  single source of truth) ───
@@ -282,5 +283,31 @@ METRICS: dict[str, dict] = {
         "scale": 100,
         "grain": "loan",
         "description": "This month's collection efficiency = month collection / month demand, as a percent.",
+    },
+    "hard_bucket_pct": {
+        "label": "Hard Bucket %",
+        "kind": "count_ratio",
+        # % of accounts >= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue -- a COUNT ratio
+        # (accounts matching a condition / all accounts), not a column-sum ratio
+        # like collection_pct, so it needs the count_ratio kind (compiler/measures.py).
+        "numerator_where": [{"column": "Arrears / EMI", "op": ">=", "value": HARD_BUCKET_ARREARS_EMI_MIN}],
+        "denominator_where": [],  # empty = count all rows in the group
+        "scale": 100,
+        "grain": "loan",
+        "description": f"% of accounts >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue - a narrower, more severe signal than NPA.",
+    },
+    "strike_pct": {
+        "label": "Strike %",
+        "kind": "count_ratio",
+        # % of accounts current on their installment obligation this month, among
+        # accounts with a valid (Y/N) Strike value. Matches analysis/portfolio_
+        # intelligence.py::compute_pulse_kpis's own strike_pct calculation (same
+        # numerator/denominator definition, kept in sync by hand -- there is no
+        # shared source of truth between the two today).
+        "numerator_where": [{"column": "Strike", "op": "==", "value": "Y"}],
+        "denominator_where": [{"column": "Strike", "op": "in", "value": ["Y", "N"]}],
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",
     },
 }

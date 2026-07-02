@@ -87,8 +87,11 @@ class TestConceptIntegrity:
 
 class TestMetricIntegrity:
     def test_metric_columns_exist(self):
-        # A metric is either column-based (additive/semi-additive) or defined by a
-        # numerator/denominator (ratio). Validate whichever columns it references.
+        # A metric is column-based (additive/semi-additive), numerator/denominator
+        # COLUMNS (ratio), or numerator/denominator WHERE-CLAUSES (count_ratio --
+        # a count-of-rows-matching-a-condition ratio, e.g. hard_bucket_pct/
+        # strike_pct, distinct from "ratio"'s sum-of-a-column shape). Validate
+        # whichever columns each shape references.
         for name, m in METRICS.items():
             cols = []
             if "column" in m:
@@ -99,7 +102,15 @@ class TestMetricIntegrity:
                     cols.extend(v)
                 elif v:
                     cols.append(v)
-            assert cols, f"metric {name}: no column / numerator / denominator"
+            for key in ("numerator_where", "denominator_where"):
+                for cond in m.get(key) or []:
+                    cols.append(cond["column"])
+            if m.get("kind") == "count_ratio":
+                # denominator_where may legitimately be [] ("count all rows") --
+                # only require at least the numerator side to reference something.
+                assert m.get("numerator_where"), f"metric {name}: count_ratio needs numerator_where"
+            else:
+                assert cols, f"metric {name}: no column / numerator / denominator"
             for c in cols:
                 assert c in _KNOWN_COLS, f"metric {name}: unknown column '{c}'"
 

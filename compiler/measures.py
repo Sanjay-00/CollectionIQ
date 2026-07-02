@@ -166,6 +166,33 @@ def _ratio(mdef: dict, ctx: dict) -> Lowered:
     return Lowered(aggregations=aggs, post_derives=[final])
 
 
+@measure_handler("count_ratio")
+def _count_ratio(mdef: dict, ctx: dict) -> Lowered:
+    """Non-additive ratio of two ROW COUNTS (as opposed to "ratio", which sums two
+    COLUMNS) -- e.g. Hard Bucket % = count(Arrears/EMI>=6) / count(all rows) * 100.
+    numerator_where/denominator_where are pre-expanded condition lists (concepts
+    already resolved, same shape as a "count" measure's 'where'); an empty/absent
+    list means "count all rows" (e.g. the denominator of Hard Bucket %). Computed
+    as count(num)/count(den) AT THE TARGET GRAIN, never averaged per-row -- same
+    non-averaging principle as "ratio"."""
+    alias = mdef["alias"]
+    num_where = mdef.get("numerator_where") or []
+    den_where = mdef.get("denominator_where") or []
+
+    n_alias, d_alias = f"{alias}__n0", f"{alias}__d0"
+    aggs = [{"alias": n_alias, "func": "count"}]
+    if num_where:
+        aggs[0]["where"] = num_where
+    aggs.append({"alias": d_alias, "func": "count"})
+    if den_where:
+        aggs[1]["where"] = den_where
+
+    scale = mdef.get("scale", 1)
+    scale_suffix = f" * {scale}" if scale and scale != 1 else ""
+    final = _ratio_clip(mdef, {"column": alias, "expr": f"{n_alias} / {d_alias}{scale_suffix}"})
+    return Lowered(aggregations=aggs, post_derives=[final])
+
+
 def _ratio_clip(mdef: dict, derive: dict) -> dict:
     if mdef.get("cap") is not None:
         derive["clip_max"] = mdef["cap"]
@@ -267,3 +294,26 @@ def _r_ratio(mdef: dict, ctx: dict) -> RollupLowered:
     })
     return RollupLowered(intermediate_aggs=inter, terminal_aggs=terminal,
                          terminal_post_derives=[final])
+
+
+@measure_rollup("count_ratio")
+def _r_count_ratio(mdef: dict, ctx: dict) -> RollupLowered:
+    # Each side is a plain count, which is additive (same reasoning as _r_count):
+    # count per finer grain, then SUM those partial counts at the terminal grain,
+    # THEN divide once -- never average a per-entity percentage.
+    alias = mdef["alias"]
+    n_part, d_part = f"{alias}__n0", f"{alias}__d0"
+    inter = [{"alias": n_part, "func": "count"}]
+    if mdef.get("numerator_where"):
+        inter[0]["where"] = mdef["numerator_where"]
+    inter.append({"alias": d_part, "func": "count"})
+    if mdef.get("denominator_where"):
+        inter[1]["where"] = mdef["denominator_where"]
+    terminal = [
+        {"alias": n_part, "func": "sum", "column": n_part},
+        {"alias": d_part, "func": "sum", "column": d_part},
+    ]
+    scale = mdef.get("scale", 1)
+    scale_suffix = f" * {scale}" if scale and scale != 1 else ""
+    final = _ratio_clip(mdef, {"column": alias, "expr": f"{n_part} / {d_part}{scale_suffix}"})
+    return RollupLowered(intermediate_aggs=inter, terminal_aggs=terminal, terminal_post_derives=[final])

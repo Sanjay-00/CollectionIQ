@@ -217,6 +217,8 @@ def _infer_kind(d: dict):
         return d["additivity"]
     if "numerator" in d or "denominator" in d:
         return "ratio"
+    if "numerator_where" in d or "denominator_where" in d:
+        return "count_ratio"
     if "distinct" in d or (d.get("agg") or "").lower() == "nunique":
         return "count_distinct"
     if (d.get("agg") or "").lower() == "count" or "concept" in d or "where" in d:
@@ -257,6 +259,15 @@ def _resolve_prev_metric(name: str) -> dict | None:
             return None
         mdef = dict(base)
         mdef["column"] = prev_col
+        return mdef
+    if kind == "count_ratio":
+        prev_num_where = _map_where_to_prev(base.get("numerator_where") or [])
+        prev_den_where = _map_where_to_prev(base.get("denominator_where") or [])
+        if prev_num_where is None or prev_den_where is None:
+            return None  # no prev mapping for one of the where-clause columns
+        mdef = dict(base)
+        mdef["numerator_where"] = prev_num_where
+        mdef["denominator_where"] = prev_den_where
         return mdef
     return None  # count / count_distinct / semi_additive: no direct prev column to map
 
@@ -334,6 +345,14 @@ def _measure_def(m: dict, errs: list, columns=None):
         elif "where" in mdef:
             mdef["where"] = _expand_filters(mdef["where"], errs)
 
+    # Same expansion for count_ratio's two independent where-clauses (each side
+    # may itself reference a catalog concept, e.g. numerator_where: [{"concept": "npa"}]).
+    if mdef["kind"] == "count_ratio":
+        if mdef.get("numerator_where"):
+            mdef["numerator_where"] = _expand_filters(mdef["numerator_where"], errs)
+        if mdef.get("denominator_where"):
+            mdef["denominator_where"] = _expand_filters(mdef["denominator_where"], errs)
+
     # Nested-grain measures are a Step 2 capability  -  reject loudly for now.
     if mdef.get("grain") and mdef["grain"] != "loan":
         errs.append(
@@ -394,7 +413,25 @@ def _as_cols(x) -> list:
     return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
-def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list) -> tuple[list, list]:
+def _map_where_to_prev(conditions: list) -> list | None:
+    """Map each condition's column through PREV_CARRYOVER_COLS, for building the
+    previous-period version of a count_ratio where-clause (e.g. "Arrears / EMI"
+    -> "prev_Arrears_EMI"). Returns None if ANY condition's column has no prev
+    mapping -- the whole comparison then can't be built for the prior period,
+    matching "ratio"'s existing all-or-nothing per-column rule. An empty
+    conditions list ("count all rows") maps to itself unchanged -- always supported."""
+    if not conditions:
+        return []
+    mapped = []
+    for cond in conditions:
+        prev_col = PREV_CARRYOVER_COLS.get(cond.get("column"))
+        if not prev_col:
+            return None
+        mapped.append({**cond, "column": prev_col})
+    return mapped
+
+
+def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, columns=None) -> tuple[list, list]:
     """Expand a `time.compare` block into extra aggregations and optional derive steps.
 
     The LLM declares {"time": {"compare": {"type": "snapshot|change", "from": "prev",
@@ -429,7 +466,7 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list) -> tu
     local_errs: list = []  # non-fatal: only used to resolve mdef, not propagated
 
     for m in ir_measures:
-        mdef = _measure_def(m, local_errs)
+        mdef = _measure_def(m, local_errs, columns)
         if mdef is None:
             continue
         alias = mdef["alias"]
@@ -474,6 +511,31 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list) -> tu
                 scale_s = f" * {scale}" if scale and scale != 1 else ""
                 derive = {"column": prev_alias,
                           "expr": f"({' + '.join(prev_n)}) / ({' + '.join(prev_d)}){scale_s}"}
+                if mdef.get("cap") is not None:
+                    derive["clip_max"] = mdef["cap"]
+                extra_derives.append(derive)
+                if typ == "change":
+                    extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+
+        elif kind == "count_ratio":
+            # Same principle as "ratio": carry prev num/den counts through the
+            # same group_aggregate (via where-clauses mapped to prev_* columns),
+            # then divide once.
+            prev_num_where = _map_where_to_prev(mdef.get("numerator_where") or [])
+            prev_den_where = _map_where_to_prev(mdef.get("denominator_where") or [])
+            if prev_num_where is not None and prev_den_where is not None:
+                n_alias, d_alias = f"{prev_alias}__n0", f"{prev_alias}__d0"
+                agg_n = {"alias": n_alias, "func": "count"}
+                if prev_num_where:
+                    agg_n["where"] = prev_num_where
+                agg_d = {"alias": d_alias, "func": "count"}
+                if prev_den_where:
+                    agg_d["where"] = prev_den_where
+                extra_aggs.append(agg_n)
+                extra_aggs.append(agg_d)
+                scale = mdef.get("scale", 1)
+                scale_s = f" * {scale}" if scale and scale != 1 else ""
+                derive = {"column": prev_alias, "expr": f"{n_alias} / {d_alias}{scale_s}"}
                 if mdef.get("cap") is not None:
                     derive["clip_max"] = mdef["cap"]
                 extra_derives.append(derive)
@@ -529,7 +591,7 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
         # Time comparison: expand prev_* aggs and optional change derives.
         time_block = ir.get("time")
         if time_block and time_block.get("compare"):
-            t_aggs, t_derives = _resolve_time_compare(time_block, ir.get("measures") or [], errs)
+            t_aggs, t_derives = _resolve_time_compare(time_block, ir.get("measures") or [], errs, columns)
             aggs.extend(t_aggs)
             post_derives.extend(t_derives)
 
@@ -656,7 +718,7 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
                 errs.append(
                     f"grain ambiguity: the per-{g} predicate aggregates over '{pcol}', "
                     f"which crosses the output dimension {group_by}; clarify whether "
-                    "'{pcol}' should be counted globally per entity or within each group"
+                    f"'{pcol}' should be counted globally per entity or within each group"
                 )
 
     # Intermediate aggregations: predicate aggregates + measure rollup partials.

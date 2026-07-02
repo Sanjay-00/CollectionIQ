@@ -228,24 +228,22 @@ METRICS format (derived columns computed from measure aliases  -  use for differ
   If you wrote {{"metric": "prev_npa_count", "alias": "prev_npa"}}, use "prev_npa" in expr, NOT "prev_npa_count".
   Always add an order_by on the derived alias when the user asks to sort by it.
 
-COUNT-BASED PERCENTAGES (Strike %, Hard Bucket %, or any "% of accounts matching X"
-  that is NOT a registered catalog METRIC): build from two "count" measures + a METRICS
-  derive  -  do NOT invent a metric name like "strike_pct"/"hard_bucket_pct", they don't exist.
-  Example  -  "Strike % by branch":
+REGISTERED PERCENTAGE METRICS  -  Strike % and Hard Bucket % are catalog METRICS
+  (count_ratio kind), same as collection_pct/lcc_pct: reference them directly by
+  name, never hand-build them with a manual count+derive.
+    {{"metric": "strike_pct", "alias": "curr_strike_pct"}}
+    {{"metric": "hard_bucket_pct", "alias": "curr_hard_pct"}}
+  These also support the bare "prev_" prefix and time.compare, exactly like
+  collection_pct (e.g. "prev_strike_pct", or just add a time.compare block).
+
+COUNT-BASED PERCENTAGES (any other "% of accounts matching X" that is NOT a
+  registered catalog METRIC): build from two "count" measures + a METRICS derive.
+  Example  -  "% of accounts that are Non Starters, by branch":
     measures: [
-      {{"agg":"count","alias":"strike_y","where":[{{"column":"Strike","op":"==","value":"Y"}}]}},
-      {{"agg":"count","alias":"strike_valid","where":[{{"column":"Strike","op":"in","value":["Y","N"]}}]}}
-    ]
-    metrics: [{{"alias":"strike_pct","expr":"strike_y / strike_valid * 100"}}]
-  Example  -  "Hard Bucket % by branch" (Arrears/EMI >= 6):
-    measures: [
-      {{"agg":"count","alias":"hard_count","where":[{{"column":"Arrears / EMI","op":">=","value":6}}]}},
+      {{"agg":"count","alias":"ns_count","where":[{{"column":"Non Starter","op":"==","value":"Y"}}]}},
       {{"agg":"count","alias":"total_count"}}
     ]
-    metrics: [{{"alias":"hard_bucket_pct","expr":"hard_count / total_count * 100"}}]
-  For a REGISTERED ratio metric (exposure, lcc_pct, collection_pct), just reference it directly:
-    {{"metric": "collection_pct", "alias": "curr_collection_pct"}}  -- do NOT hand-build these two
-    with a manual count/derive; the catalog metric already computes sum(collected)/sum(demand) correctly.
+    metrics: [{{"alias":"non_starter_pct","expr":"ns_count / total_count * 100"}}]
 
 COLUMN ORDER for before/after comparisons: always list the earlier-period (prev) measure FIRST,
   then the current-period measure. Example: prev_npa first, curr_npa second.
