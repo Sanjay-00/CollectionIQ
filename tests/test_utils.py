@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile
 from helpers import make_df
 
 
@@ -174,7 +174,7 @@ class TestComputeMetrics:
         metrics = compute_metrics(df, make_df([]))
         expected_keys = {
             "Month Demand", "Total Collection", "Collection %", "Strike %",
-            "NPA %", "Hard Bucket %", "Count", "SOH", "LCC%", "CMD %",
+            "NPA %", "Hard Bucket %", "SMA-2 %", "Count", "SOH", "LCC%", "CMD %",
         }
         assert set(metrics.keys()) == expected_keys
 
@@ -207,3 +207,91 @@ class TestFmtValue:
     def test_count_crore(self):
         result = fmt_value(1_00_00_000, "count")
         assert "Cr" in result
+
+
+class TestToNum:
+    """Shared numeric-coercion helper used across analysis/ and smart_alerts.py."""
+
+    def test_coerces_valid_and_invalid_strings(self):
+        df = pd.DataFrame({"x": ["10", "20.5", "bad", None]})
+        result = to_num(df, "x")
+        assert result.tolist()[:2] == [10.0, 20.5]
+        assert pd.isna(result.iloc[2]) and pd.isna(result.iloc[3])
+
+    def test_missing_column_returns_nan_series_aligned_to_df(self):
+        df = pd.DataFrame({"other": [1, 2, 3]})
+        result = to_num(df, "missing")
+        assert len(result) == len(df)
+        assert result.index.equals(df.index)
+        assert result.isna().all()
+
+    def test_missing_column_with_fill_returns_filled_series_aligned_to_df(self):
+        df = pd.DataFrame({"other": [1, 2, 3]})
+        result = to_num(df, "missing", fill=0)
+        assert result.tolist() == [0, 0, 0]
+
+    def test_present_column_with_fill_fills_only_invalid_values(self):
+        df = pd.DataFrame({"x": ["10", "bad", None]})
+        result = to_num(df, "x", fill=0)
+        assert result.tolist() == [10.0, 0.0, 0.0]
+
+    def test_result_stays_usable_in_boolean_mask_against_df(self):
+        # Regression guard: a naive `df.get(col, pd.Series(dtype=float))` fallback
+        # returns an EMPTY series when col is missing, which silently breaks any
+        # boolean mask built against it (misaligned index -> mask always empty).
+        df = pd.DataFrame({"other": [1, 2, 3]})
+        mask = to_num(df, "missing", fill=0) > 5
+        assert mask.tolist() == [False, False, False]
+        assert len(df[mask]) == 0  # doesn't raise, just filters everything out
+
+
+class TestAccountCount:
+    def test_counts_distinct_loan_numbers(self):
+        df = pd.DataFrame({"Loan No": ["L1", "L1", "L2"]})
+        assert account_count(df) == 2
+
+    def test_falls_back_to_row_count_when_column_missing(self):
+        df = pd.DataFrame({"other": [1, 2, 3]})
+        assert account_count(df) == 3
+
+    def test_custom_column_name(self):
+        df = pd.DataFrame({"Cust Mob No": ["A", "A", "B", "C"]})
+        assert account_count(df, col="Cust Mob No") == 3
+
+
+class TestIsYes:
+    def test_matches_y_case_and_whitespace_insensitive(self):
+        df = pd.DataFrame({"flag": [" y", "Y", "n", "N", "yes", None]})
+        result = is_yes(df, "flag")
+        assert result.tolist() == [True, True, False, False, False, False]
+
+    def test_missing_column_returns_all_false_aligned_to_df(self):
+        df = pd.DataFrame({"other": [1, 2, 3]})
+        result = is_yes(df, "missing")
+        assert result.tolist() == [False, False, False]
+        assert result.index.equals(df.index)
+
+
+class TestCleanMobile:
+    """Regression guard: any blank mobile number in the Excel file upgrades the
+    whole column to float64, which renders every number as '9876543210.0'."""
+
+    def test_strips_decimal_artifact_from_float_upgraded_column(self):
+        # This is exactly what pandas produces when one row is blank (NaN).
+        series = pd.Series([9876543210.0, 9123456780.0, float("nan"), 9988776655.0])
+        result = clean_mobile(series)
+        assert result.tolist() == ["9876543210", "9123456780", "", "9988776655"]
+
+    def test_already_clean_strings_untouched(self):
+        series = pd.Series(["9876543210", "9123456780"])
+        assert clean_mobile(series).tolist() == ["9876543210", "9123456780"]
+
+    def test_clean_int_column_untouched(self):
+        series = pd.Series([9876543210, 9123456780])
+        assert clean_mobile(series).tolist() == ["9876543210", "9123456780"]
+
+    def test_nan_becomes_empty_string_not_literal_nan(self):
+        series = pd.Series([9876543210.0, float("nan")])
+        result = clean_mobile(series)
+        assert result.iloc[1] == ""
+        assert "nan" not in result.tolist()

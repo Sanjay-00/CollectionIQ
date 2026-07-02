@@ -3,6 +3,8 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from config import HARD_BUCKET_ARREARS_EMI_MIN
+
 YELLOW = "#FFC000"
 
 # Columns that MUST exist for calculations to work
@@ -51,6 +53,14 @@ REQUIRED_COLS = [
 
 BUCKET_ORDER = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"]
 BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4, "NA": -1}
+BUCKET_COLORS = {
+    "STD":      "#16a34a",
+    "1-30 DPD": "#FFC000",
+    "SMA-1":    "#f97316",
+    "SMA-2":    "#ef4444",
+    "NPA":      "#991b1b",
+    "NA":       "#9ca3af",
+}
 
 # Numeric columns carried over from the previous-month file into the current-month
 # DataFrame as prev_* columns (matched per Loan No), so the AI can compute
@@ -230,6 +240,13 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     if "Unit" in df.columns:
         df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
 
+    # Mobile numbers: if even one row is blank, Excel/pandas silently upgrades the
+    # whole column to float64, so every number renders as "9876543210.0" (or worse,
+    # scientific notation) everywhere it's displayed or exported. Strip that artifact.
+    for col in ["Cust Mob No", "Guar Mob No"]:
+        if col in df.columns:
+            df[col] = clean_mobile(df[col])
+
     df = assign_buckets(df)
 
     # Drop duplicate Loan Nos  -  keep the first occurrence.
@@ -262,6 +279,41 @@ def _safe_pct(num, den):
     return round(num / den * 100, 2)
 
 
+def to_num(df: pd.DataFrame, col: str, fill: float | None = None) -> pd.Series:
+    """Coerce `df[col]` to numeric, index-aligned to `df` even when `col` is absent
+    (so it's always safe to use in boolean masks or arithmetic against other columns).
+    Missing values (and a missing column entirely) become `fill`, or stay NaN if
+    `fill` is None."""
+    if col not in df.columns:
+        return pd.Series(fill if fill is not None else float("nan"), index=df.index)
+    s = pd.to_numeric(df[col], errors="coerce")
+    return s.fillna(fill) if fill is not None else s
+
+
+def account_count(df: pd.DataFrame, col: str = "Loan No") -> int:
+    """Distinct-loan count, falling back to row count when `col` is absent."""
+    return df[col].nunique() if col in df.columns else len(df)
+
+
+def clean_mobile(series: pd.Series) -> pd.Series:
+    """Strip the trailing ".0" that pandas adds when a numeric-looking column
+    (e.g. a mobile number) has any missing values and gets upgraded to float64.
+    Leaves already-clean strings and NaN (-> "") untouched."""
+    def _fmt(v):
+        if pd.isna(v):
+            return ""
+        s = str(v).strip()
+        return s[:-2] if s.endswith(".0") else s
+    return series.apply(_fmt)
+
+
+def is_yes(df: pd.DataFrame, col: str) -> pd.Series:
+    """Boolean mask for a Y/N flag column, index-aligned to `df` (False when `col` is absent)."""
+    if col not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df[col].astype(str).str.strip().str.upper() == "Y"
+
+
 def _mom_pct(curr, prev):
     if prev == 0:
         return 0.0
@@ -286,7 +338,9 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         pos = df[_soh_col].sum(min_count=1)
         pos = 0.0 if pd.isna(pos) else pos
         cum_coll_total = df["Total Cum Collection"].sum()
-        cum_coll_inst_exp = df["Cum Coll (Inst+Exp)"].sum()
+        # "Cum Coll (Inst+Exp)" is optional (REQUIRED_COLS, not CRITICAL_COLS) -
+        # a file missing it must not crash the whole Dashboard tab.
+        cum_coll_inst_exp = to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum()
 
         strike_valid = df[df["Strike"].isin(["Y", "N"])]
         strike_pct = _safe_pct(
@@ -303,7 +357,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             n_accounts,
         )
         hard_pct = _safe_pct(
-            df[df["Arrears / EMI"] >= 6]["Loan No"].nunique(),
+            df[df["Arrears / EMI"] >= HARD_BUCKET_ARREARS_EMI_MIN]["Loan No"].nunique(),
             n_accounts,
         )
         _cum_due = sum(
@@ -446,16 +500,7 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
 
     labels = [_fmt(v) for v in exposure.values]
 
-    # Colour-code buckets: STD=green, 1-30=yellow, SMA-1=orange, SMA-2=orangered, NPA=red, NA=grey
-    bucket_colors = {
-        "STD":      "#16a34a",
-        "1-30 DPD": YELLOW,
-        "SMA-1":    "#f97316",
-        "SMA-2":    "#ef4444",
-        "NPA":      "#991b1b",
-        "NA":       "#9ca3af",
-    }
-    colors = [bucket_colors.get(b, YELLOW) for b in exposure.index]
+    colors = [BUCKET_COLORS.get(b, YELLOW) for b in exposure.index]
 
     fig = go.Figure(go.Bar(
         x=exposure.index.tolist(),
@@ -475,21 +520,6 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
         height=300,
     )
     return fig
-
-
-def _kpi_card_html(label: str, value: str, mom: float, unit: str = "", inverse: bool = False) -> str:
-    arrow = "&#9650;" if mom >= 0 else "&#9660;"
-    color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
-    mom_str = f"{abs(mom):.2f}%"
-    return (
-        f'<div style="border:2px solid {YELLOW};border-radius:8px;padding:16px 12px;'
-        f'background:#fff;text-align:center;min-width:130px;flex:1;">'
-        f'<div style="font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">{label}</div>'
-        f'<div style="font-size:28px;font-weight:700;color:#000;line-height:1.1;">{value}{unit}</div>'
-        f'<div style="font-size:12px;margin-top:6px;">'
-        f'MoM %: <span style="color:{color};font-weight:600;">{arrow} {mom_str}</span>'
-        f'</div></div>'
-    )
 
 
 def build_html_export(

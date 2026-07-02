@@ -12,6 +12,7 @@ from config import (
     INSURANCE_EXP_ARREARS_MIN,
     RECENT_ADVANCES_MONTHS,
 )
+from utils import to_num, account_count, is_yes
 
 
 def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,18 +48,18 @@ def _safe_cols(df: pd.DataFrame, cols: list) -> list:
 
 
 def _to_num(df: pd.DataFrame, col: str) -> pd.Series:
-    return pd.to_numeric(df[col], errors="coerce").fillna(0) if col in df.columns else pd.Series(0, index=df.index)
+    return to_num(df, col, fill=0)
 
 
 def alert_non_starters(df: pd.DataFrame) -> dict:
     """Customers who have never paid even their 1st EMI."""
-    mask = df["Non Starter"].astype(str).str.strip().str.upper() == "Y" if "Non Starter" in df.columns else pd.Series(False, index=df.index)
+    mask = is_yes(df, "Non Starter")
     subset = df[mask]
     return {
         "title": "Non Starters",
         "subtitle": "Never paid 1st EMI",
         "severity": "critical",
-        "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
+        "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
@@ -79,7 +80,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
         "title": "Insurance-Driven Delinquency",
         "subtitle": "EMI paid but unpaid insurance charge causing delinquency",
         "severity": "high",
-        "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
+        "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
@@ -95,9 +96,9 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
     subset = df[mask]
     return {
         "title": "Easy Settlements",
-        "subtitle": "Closing arrears < ₹1,000 - quick wins",
+        "subtitle": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,} - quick wins",
         "severity": "medium",
-        "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
+        "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
@@ -117,7 +118,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
         "title": "Recent Advances at Risk",
         "subtitle": f"Sanctioned in last {months} months - already delinquent",
         "severity": "high",
-        "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
+        "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
@@ -128,15 +129,14 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
 
 def alert_colending_at_risk(df: pd.DataFrame) -> dict:
     """High-priority co-lending loans with any delinquency."""
-    colend = df["CoLending_Loans"].astype(str).str.strip().str.upper() if "CoLending_Loans" in df.columns else pd.Series("N", index=df.index)
     arrears = _to_num(df, "Arrears / EMI")
-    mask = (colend == "Y") & (arrears > 0)
+    mask = is_yes(df, "CoLending_Loans") & (arrears > 0)
     subset = df[mask]
     return {
         "title": "Co-lending Loans at Risk",
         "subtitle": "Partner bank exposure - must not default",
         "severity": "critical",
-        "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
+        "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
@@ -146,12 +146,12 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
 
 
 def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
-    """Accounts where Inst+Exp+BC arrears exceed 50% of original loan amount.
+    """Accounts where Inst+Exp+BC arrears exceed HIGH_ARREARS_LOAN_RATIO of original loan amount.
     Signals deep distress regardless of DPD bucket  -  potential write-off risk."""
     arr_inst = _to_num(df, "ARREARS AGAINST INST")
     arr_exp  = _to_num(df, "ARREARS AGAINST EXP")
     arr_bc   = _to_num(df, "ARREARS AGAINST BC")
-    loan_amt = pd.to_numeric(df["Loan Amount"], errors="coerce") if "Loan Amount" in df.columns else pd.Series(0.0, index=df.index)
+    loan_amt = to_num(df, "Loan Amount", fill=0)
 
     total_arr = arr_inst + arr_exp + arr_bc
     mask = (total_arr > HIGH_ARREARS_LOAN_RATIO * loan_amt) & (loan_amt > 0)
@@ -159,7 +159,7 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
 
     # Add ratio column  -  sorted worst-first so >100% cases surface immediately
     if len(subset) > 0:
-        loan = pd.to_numeric(subset["Loan Amount"], errors="coerce").replace(0, float("nan"))
+        loan = to_num(subset, "Loan Amount").replace(0, float("nan"))
         t_arr = (_to_num(subset, "ARREARS AGAINST INST") +
                  _to_num(subset, "ARREARS AGAINST EXP") +
                  _to_num(subset, "ARREARS AGAINST BC"))
@@ -169,9 +169,9 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     display_cols = ["Arrears Ratio %"] + _safe_cols(df, ALERT_DISPLAY_COLS)
     return {
         "title": "High Arrears: Loan at Risk",
-        "subtitle": "Inst+Exp+BC arrears exceed 50% of original loan - Highly critical cases: Potential Write-off",
+        "subtitle": f"Inst+Exp+BC arrears exceed {HIGH_ARREARS_LOAN_RATIO:.0%} of original loan - Highly critical cases: Potential Write-off",
         "severity": "critical",
-        "count": subset["Loan No"].nunique() if "Loan No" in subset.columns else len(subset),
+        "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[[c for c in display_cols if c in subset.columns]]),
@@ -180,7 +180,7 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     }
 
 
-def run_all_alerts(df: pd.DataFrame, recent_months: int = 12) -> list:
+def run_all_alerts(df: pd.DataFrame, recent_months: int = RECENT_ADVANCES_MONTHS) -> list:
     """Run all 6 alerts and return list sorted by severity."""
     alerts = [
         alert_non_starters(df),

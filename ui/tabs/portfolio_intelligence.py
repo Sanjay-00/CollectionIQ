@@ -5,7 +5,14 @@ Zero AI calls. Loads instantly.
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _safe_df
+from ui.components import (
+    _dl_btn, _safe_df, _kpi_card_html, _static_kpi_card_html,
+    _npa_pct_color, _sma2_pct_color, _chart_card, _divider,
+)
+from config import (
+    FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS,
+    GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
+)
 
 _STATUS_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706", "-": "#9ca3af"}
 _STATUS_ICON  = {"Improving": "🟢", "Worsening": "🔴", "Stable": "🟡", "-": "⚪"}
@@ -27,22 +34,6 @@ def _badge(status: str) -> str:
     return (
         f'<span style="background:{c}18;color:{c};font-size:11px;font-weight:700;'
         f'padding:2px 9px;border-radius:12px;white-space:nowrap;">{i} {status}</span>'
-    )
-
-
-def _kpi_mini(label: str, value: str, delta, unit: str = "", inverse: bool = False) -> str:
-    if delta is None:
-        mom_html = '<div class="kpi-mom" style="color:#9ca3af;">no prev data</div>'
-    else:
-        arrow = "▲" if delta >= 0 else "▼"
-        good  = (delta <= 0) if inverse else (delta >= 0)
-        cls   = "kpi-mom-up" if good else "kpi-mom-down"
-        mom_html = f'<div class="kpi-mom">MoM <span class="{cls}">{arrow} {abs(delta):.2f}{unit}</span></div>'
-    return (
-        f'<div class="kpi-card">'
-        f'<div class="kpi-label">{label}</div>'
-        f'<div class="kpi-value">{value}</div>'
-        f'{mom_html}</div>'
     )
 
 
@@ -70,7 +61,10 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
     _section("Section 1  -  Portfolio Pulse: State of the Book in 30 Seconds")
 
     def _kpi_row(items):
-        return "".join(_kpi_mini(k["label"], k["value"], k["delta"], k["unit"], k["inverse"]) for k in items)
+        return "".join(
+            _kpi_card_html(k["label"], k["value"], k["delta"], unit=k["unit"], inverse=k["inverse"])
+            for k in items
+        )
 
     st.markdown(f'<div class="kpi-row">{_kpi_row(kpis[:4])}</div>', unsafe_allow_html=True)
     if len(kpis) > 4:
@@ -78,9 +72,7 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
     col_wf, col_npa = st.columns([3, 1])
     with col_wf:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_waterfall, width='stretch')
-        st.markdown('</div>', unsafe_allow_html=True)
+        _chart_card(fig_waterfall)
 
     with col_npa:
         if rr_meta and rr_meta.get("matched_count", 0) > 0:
@@ -93,10 +85,7 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
                 ("Roll-Forward Rate",   f"{rfwd:.1f}%",     "#dc2626", "Accounts worsened"),
             ]:
                 st.markdown(
-                    f'<div class="kpi-card" style="border-top-color:{color};margin-bottom:8px;">'
-                    f'<div class="kpi-label">{label}</div>'
-                    f'<div class="kpi-value" style="color:{color};font-size:22px;">{val}</div>'
-                    f'<div class="kpi-mom" style="color:#9ca3af;">{tip}</div></div>',
+                    _static_kpi_card_html(label, val, tip, color=color, value_style="font-size:22px;", card_style="margin-bottom:8px;"),
                     unsafe_allow_html=True,
                 )
         else:
@@ -140,7 +129,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
             elif col == "Δ NPA%":
                 cells += f'<td style="{style}">{_delta_html(val)}</td>'
             elif col == "SMA-2%":
-                c = "#ef4444" if (val or 0) > 10 else ("#d97706" if (val or 0) > 5 else "#374151")
+                c = _sma2_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
             elif col == "SMA-2":
@@ -148,7 +137,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
                 display = f"{int(val):,}" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};">{display}</td>'
             elif col in ("NPA% (Curr)", "NPA% (Prev)"):
-                c = "#dc2626" if (val or 0) > 10 else ("#d97706" if (val or 0) > 5 else "#16a34a")
+                c = _npa_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
             elif col == "Roll Fwd%":
@@ -195,12 +184,7 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
                 (c3, "Stable Regions", n_stbl, "#d97706"),
             ]:
                 with col:
-                    st.markdown(
-                        f'<div class="kpi-card" style="border-top-color:{color};">'
-                        f'<div class="kpi-label">{label}</div>'
-                        f'<div class="kpi-value" style="color:{color};">{val}</div></div>',
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown(_static_kpi_card_html(label, val, color=color), unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True)
             _render_region_scorecard(region_df, has_prev)
         else:
@@ -210,9 +194,7 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
         if not branch_df.empty:
             col_chart, col_legend = st.columns([3, 1])
             with col_chart:
-                st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-                st.plotly_chart(fig_quadrant, width='stretch')
-                st.markdown('</div>', unsafe_allow_html=True)
+                _chart_card(fig_quadrant)
             with col_legend:
                 for label, color, desc in [
                     ("Intervene Now", "#dc2626", "High NPA, Low Collection"),
@@ -306,9 +288,7 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                 margin=dict(l=20, r=20, t=60, b=90),
                 height=430,
             )
-            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-            st.plotly_chart(fig, width='stretch')
-            st.markdown('</div>', unsafe_allow_html=True)
+            _chart_card(fig)
 
             # ── delta table ──────────────────────────────────────────────────
             st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin:12px 0 6px;">Detailed Comparison Table</div>', unsafe_allow_html=True)
@@ -409,14 +389,12 @@ def _render_good_bad(good_bad: dict, has_prev: bool) -> None:
 
 # ── Section 4: Risk Flag Deep Dive ────────────────────────────────────────────
 
-def _render_risk_flags(flag_df: pd.DataFrame, alerts_curr: list) -> None:
+def _render_risk_flags(flag_df: pd.DataFrame) -> None:
     _section("Section 4  -  Risk Flag Deep Dive", margin_top="24px")
 
     if flag_df.empty:
         st.info("No risk flag data available.")
         return
-
-    alerts_by_title = {a["title"]: a for a in (alerts_curr or [])}
 
     sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     flag_df = flag_df.copy()
@@ -455,59 +433,7 @@ def _render_risk_flags(flag_df: pd.DataFrame, alerts_curr: list) -> None:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-top:20px;">Account Drilldown</div>', unsafe_allow_html=True)
-    st.caption("Accounts pre-filtered per flag  -  instant, no AI call needed.")
-
-    _BG = {"critical": "#fff5f5", "high": "#fff7ed", "medium": "#fffbea", "low": "#f0fdf4"}
-
-    for _, row in flag_df.iterrows():
-        title = row["Risk Type"]
-        cnt   = int(row["Accounts"])
-        if cnt == 0:
-            continue
-        alert = alerts_by_title.get(title)
-        if not alert or "df" not in alert or alert["df"].empty:
-            continue
-        sev    = row.get("Severity", "medium")
-        color  = _SEV_COLOR.get(sev, "#d97706")
-        bg     = _BG.get(sev, "#fffbea")
-        icon   = alert.get("icon", "⚠️")
-        sub    = alert.get("subtitle", "")
-        action = alert.get("action", "")
-        pos    = f"₹{alert.get('pos', 0) / 1e7:.2f}Cr"
-        arrears = f"₹{alert.get('closing_arrears', 0) / 1e7:.2f}Cr"
-
-        st.markdown(f"""
-        <div style="background:{bg};border-radius:12px;border-left:4px solid {color};
-                    padding:14px 18px;margin-bottom:4px;box-shadow:0 2px 6px rgba(0,0,0,0.05);">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-            <span style="font-size:20px;">{icon}</span>
-            <span style="font-size:14px;font-weight:700;color:{color};">{title}</span>
-          </div>
-          <div style="font-size:12px;color:#666;margin-bottom:10px;">{sub}</div>
-          <div style="display:flex;gap:24px;margin-bottom:10px;">
-            <div>
-              <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Accounts</div>
-              <div style="font-size:24px;font-weight:800;color:{color};">{cnt:,}</div>
-            </div>
-            <div>
-              <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">POS</div>
-              <div style="font-size:20px;font-weight:800;color:#111;">{pos}</div>
-            </div>
-            <div>
-              <div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Closing Arrears</div>
-              <div style="font-size:20px;font-weight:800;color:{color};">{arrears}</div>
-            </div>
-          </div>
-          <div style="font-size:11px;color:#555;font-style:italic;border-top:1px solid rgba(0,0,0,0.08);padding-top:8px;">
-            💬 {action}
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        with st.expander(f"View {cnt:,} accounts", expanded=False):
-            st.dataframe(_safe_df(alert["df"]), use_container_width=True, hide_index=True)
-            _dl_btn(alert["df"], f"flag_{title.lower().replace(' ','_')}.xlsx", f"dl_flag_{title[:8]}")
+    st.caption("Open the 🚨 Alerts tab to drill into the accounts behind any of these flags.")
 
 
 # ── Section 5: Vintage & Sourcing ─────────────────────────────────────────────
@@ -529,10 +455,10 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
             align = "left" if i == 0 else "right"
             style = f"padding:6px 10px;font-size:12px;text-align:{align};"
             if col == npa_col:
-                c = "#dc2626" if (val or 0) > 10 else ("#d97706" if (val or 0) > 5 else "#16a34a")
+                c = _npa_pct_color(val)
                 cells += f'<td style="{style}color:{c};font-weight:700;">{val:.1f}%</td>'
             elif col == "SMA-2%":
-                c = "#ef4444" if (val or 0) > 10 else ("#d97706" if (val or 0) > 5 else "#374151")
+                c = _sma2_pct_color(val)
                 cells += f'<td style="{style}color:{c};font-weight:700;">{val:.1f}%</td>'
             elif isinstance(val, float) and "%" in col:
                 cells += f'<td style="{style}">{val:.1f}%</td>'
@@ -641,9 +567,7 @@ def _render_vintage_sourcing(product_data: dict) -> None:
                 from analysis.portfolio_intelligence import build_vintage_chart
                 fig_v = build_vintage_chart(plot_df)
                 if fig_v.data:
-                    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-                    st.plotly_chart(fig_v, width='stretch')
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    _chart_card(fig_v)
                     st.markdown("<br>", unsafe_allow_html=True)
                 _render_product_table(plot_df.drop(columns=["NPA Count", "SMA-2 Count"], errors="ignore"))
             elif key == "source":
@@ -699,48 +623,31 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
     _dl_btn(df, "executive_recovery.xlsx", "dl_exec_recovery")
 
 
-def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame) -> None:
+def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, top_accounts_summary: dict | None = None) -> None:
     _section("Section 6  -  Concentration & Exposure Map", margin_top="24px")
 
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    st.plotly_chart(fig_treemap, width='stretch')
-    st.markdown('</div>', unsafe_allow_html=True)
+    _chart_card(fig_treemap)
     st.caption("Size = SOH (Cr). Color = NPA% (green = low risk → red = high risk). Click a region to drill into its branches.")
 
     st.markdown("<br>", unsafe_allow_html=True)
     col_fleet, col_top = st.columns(2)
 
     with col_fleet:
-        st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure (3+ Loans per Customer)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure ({FLEET_MIN_LOANS}+ Loans per Customer)</div>', unsafe_allow_html=True)
         cnt     = fleet.get("count", 0)
         soh     = fleet.get("total_soh_cr", 0.0)
         npa_ops = fleet.get("npa_operators", 0)
         if cnt == 0:
-            st.info("No fleet operators found (no customer with 3+ loans). Uses Cust Mob No as customer identifier.")
+            st.info(f"No fleet operators found (no customer with {FLEET_MIN_LOANS}+ loans). Uses Cust Mob No as customer identifier.")
         else:
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.markdown(
-                    f'<div class="kpi-card"><div class="kpi-label">Fleet Operators</div>'
-                    f'<div class="kpi-value">{cnt:,}</div>'
-                    f'<div class="kpi-mom">≥3 loans per customer</div></div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(_static_kpi_card_html("Fleet Operators", f"{cnt:,}", f"≥{FLEET_MIN_LOANS} loans per customer"), unsafe_allow_html=True)
             with c2:
-                st.markdown(
-                    f'<div class="kpi-card" style="border-top-color:#dc2626;"><div class="kpi-label">SOH</div>'
-                    f'<div class="kpi-value" style="color:#dc2626;">₹{soh:.2f}Cr</div>'
-                    f'<div class="kpi-mom">Fleet total exposure</div></div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(_static_kpi_card_html("SOH", f"₹{soh:.2f}Cr", "Fleet total exposure", color="#dc2626"), unsafe_allow_html=True)
             with c3:
                 npa_color = "#dc2626" if npa_ops > 0 else "#16a34a"
-                st.markdown(
-                    f'<div class="kpi-card" style="border-top-color:{npa_color};"><div class="kpi-label">Operators with NPA</div>'
-                    f'<div class="kpi-value" style="color:{npa_color};">{npa_ops}</div>'
-                    f'<div class="kpi-mom">≥1 NPA loan in fleet</div></div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(_static_kpi_card_html("Operators with NPA", npa_ops, "≥1 NPA loan in fleet", color=npa_color), unsafe_allow_html=True)
             top_fleet = fleet.get("top_df", pd.DataFrame())
             if not top_fleet.empty:
                 st.caption("⚠️ Customer identity uses Cust Mob No  -  same person with different numbers may appear separately.")
@@ -749,13 +656,33 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame) 
                     _dl_btn(top_fleet, "fleet_operators.xlsx", "dl_fleet")
 
     with col_top:
-        st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Top 20 Accounts by SOH</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Top 20 At-Risk Accounts by SOH</div>', unsafe_allow_html=True)
         if not top_accounts.empty:
-            with st.expander("View Top 20 Accounts", expanded=False):
+            summary = top_accounts_summary or {}
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(
+                    _static_kpi_card_html("Total SOH", f"₹{summary.get('total_soh_cr', 0.0):.2f}Cr", "Top 20 combined exposure", color="#dc2626"),
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                st.markdown(
+                    _static_kpi_card_html("% of Portfolio SOH", f"{summary.get('pct_of_portfolio', 0.0):.1f}%", "Single-borrower concentration"),
+                    unsafe_allow_html=True,
+                )
+            with c3:
+                npa_count = summary.get("npa_count", 0)
+                npa_color = "#dc2626" if npa_count > 0 else "#16a34a"
+                st.markdown(
+                    _static_kpi_card_html("NPA Accounts", npa_count, "Already worst-case, within top 20", color=npa_color),
+                    unsafe_allow_html=True,
+                )
+            st.caption("Largest exposures among delinquent accounts only (any non-STD bucket)  -  healthy loans are excluded regardless of size.")
+            with st.expander("View Top 20 At-Risk Accounts", expanded=False):
                 st.dataframe(_safe_df(top_accounts), use_container_width=True, hide_index=True)
-                _dl_btn(top_accounts, "top_accounts_soh.xlsx", "dl_top_accounts")
+                _dl_btn(top_accounts, "top_at_risk_accounts_soh.xlsx", "dl_top_accounts")
         else:
-            st.info("SOH column not found.")
+            st.info("No delinquent accounts found, or SOH/curr_bucket column not available.")
 
 
 # ── Risk Indicators table ─────────────────────────────────────────────────────
@@ -842,12 +769,12 @@ def _top5_breakdown(df: pd.DataFrame, accent: str = "#ef4444") -> None:
 def _render_repossession(repo_df: pd.DataFrame) -> None:
     _section("Section 7  -  Repossession Priority List", margin_top="24px")
     st.caption(
-        "Accounts in SMA-2 or NPA bucket sanctioned within the last 18 months. "
+        f"Accounts in SMA-2 or NPA bucket sanctioned within the last {REPOSSESSION_WINDOW_MONTHS} months. "
         "These still have collateral value  -  act now before the asset depreciates further."
     )
 
     if repo_df.empty:
-        st.info("No accounts match repossession criteria (SMA-2/NPA + sanctioned ≤ 18 months ago).")
+        st.info(f"No accounts match repossession criteria (SMA-2/NPA + sanctioned ≤ {REPOSSESSION_WINDOW_MONTHS} months ago).")
         return
 
     n_total = len(repo_df)
@@ -859,18 +786,12 @@ def _render_repossession(repo_df: pd.DataFrame) -> None:
     npa_n  = int((repo_df["curr_bucket"] == "NPA").sum())  if "curr_bucket" in repo_df.columns else 0
     with c1:
         st.markdown(
-            f'<div class="kpi-card" style="border-top-color:#ef4444;">'
-            f'<div class="kpi-label">Eligible Accounts</div>'
-            f'<div class="kpi-value" style="color:#ef4444;">{n_total:,}</div>'
-            f'<div class="kpi-mom">SMA-2: {sma2_n:,} | NPA: {npa_n:,}</div></div>',
+            _static_kpi_card_html("Eligible Accounts", f"{n_total:,}", f"SMA-2: {sma2_n:,} | NPA: {npa_n:,}", color="#ef4444"),
             unsafe_allow_html=True,
         )
     with c2:
         st.markdown(
-            f'<div class="kpi-card" style="border-top-color:#dc2626;">'
-            f'<div class="kpi-label">Total SOH at Risk</div>'
-            f'<div class="kpi-value" style="color:#dc2626;">₹{total_soh:.2f}Cr</div>'
-            f'<div class="kpi-mom">Asset value to be recovered</div></div>',
+            _static_kpi_card_html("Total SOH at Risk", f"₹{total_soh:.2f}Cr", "Asset value to be recovered", color="#dc2626"),
             unsafe_allow_html=True,
         )
     with c3:
@@ -878,10 +799,7 @@ def _render_repossession(repo_df: pd.DataFrame) -> None:
         avg_lcc = repo_df["LCC%"].dropna().mean() if lcc_col else 0.0
         lcc_color = "#dc2626" if avg_lcc < 50 else "#d97706"
         st.markdown(
-            f'<div class="kpi-card" style="border-top-color:{lcc_color};">'
-            f'<div class="kpi-label">Avg LCC %</div>'
-            f'<div class="kpi-value" style="color:{lcc_color};">{avg_lcc:.1f}%</div>'
-            f'<div class="kpi-mom">Lower = worse payer history</div></div>',
+            _static_kpi_card_html("Avg LCC %", f"{avg_lcc:.1f}%", "Lower = worse payer history", color=lcc_color),
             unsafe_allow_html=True,
         )
 
@@ -935,12 +853,12 @@ def render_portfolio_intelligence_tab(
     fig_treemap,
     fleet: dict,
     top_accounts: pd.DataFrame,
-    alerts_curr: list,
     has_prev: bool,
     rr_meta: dict | None,
     repo_df: pd.DataFrame | None = None,
     npa_sma2_cmp: dict | None = None,
     good_customers: pd.DataFrame | None = None,
+    top_accounts_summary: dict | None = None,
 ) -> None:
     if not has_prev:
         st.info(
@@ -949,28 +867,28 @@ def render_portfolio_intelligence_tab(
         )
 
     _render_pulse(pulse_kpis, fig_waterfall, rr_meta, has_prev)
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _divider()
 
     _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp or {})
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _divider()
 
     _render_good_bad(good_bad, has_prev)
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _divider()
 
-    _render_risk_flags(flag_df, alerts_curr)
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _render_risk_flags(flag_df)
+    _divider()
 
     _render_vintage_sourcing(product_data)
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _divider()
 
     _render_risk_indicators(risk_indicators)
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _divider()
 
-    _render_concentration(fig_treemap, fleet, top_accounts)
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _render_concentration(fig_treemap, fleet, top_accounts, top_accounts_summary)
+    _divider()
 
     _render_repossession(repo_df if repo_df is not None else pd.DataFrame())
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0;"></div>', unsafe_allow_html=True)
+    _divider()
 
     _render_good_customers(good_customers if good_customers is not None else pd.DataFrame())
 
@@ -979,10 +897,10 @@ def render_portfolio_intelligence_tab(
 
 def _render_good_customers(good_df: pd.DataFrame) -> None:
     st.markdown('<div class="section-label">Section 8 - Good Customers: Refinance &amp; Relationship Candidates</div>', unsafe_allow_html=True)
-    st.caption("Criteria: 70%+ tenure completed AND LCC% >= 100%. Flag for refinance offer or relationship management.")
+    st.caption(f"Criteria: {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ tenure completed AND LCC% >= {GOOD_CUSTOMER_MIN_LCC_PCT}%. Flag for refinance offer or relationship management.")
 
     if good_df.empty:
-        st.info("No accounts meet the good customer criteria (70%+ tenure + LCC% >= 100%) in the current selection.")
+        st.info(f"No accounts meet the good customer criteria ({GOOD_CUSTOMER_MIN_TENURE_PCT}%+ tenure + LCC% >= {GOOD_CUSTOMER_MIN_LCC_PCT}%) in the current selection.")
         return
 
     n = len(good_df)
@@ -992,26 +910,12 @@ def _render_good_customers(good_df: pd.DataFrame) -> None:
     total_soh_cr = round(pd.to_numeric(good_df[soh_col], errors="coerce").sum() / 1e7, 2) if soh_col else 0.0
     avg_tenure = round(pd.to_numeric(good_df[tenure_col], errors="coerce").mean(), 1) if tenure_col else 0.0
 
-    st.markdown(
-        f'<div class="kpi-row">'
-        f'<div class="kpi-card">'
-        f'<div class="kpi-label">Good Customers</div>'
-        f'<div class="kpi-value">{n:,}</div>'
-        f'<div class="kpi-mom">Refinance eligible</div>'
-        f'</div>'
-        f'<div class="kpi-card">'
-        f'<div class="kpi-label">Total SOH (Cr)</div>'
-        f'<div class="kpi-value">&#8377;{total_soh_cr:,.2f}</div>'
-        f'<div class="kpi-mom">Outstanding principal</div>'
-        f'</div>'
-        f'<div class="kpi-card">'
-        f'<div class="kpi-label">Avg Tenure Completed</div>'
-        f'<div class="kpi-value">{avg_tenure}%</div>'
-        f'<div class="kpi-mom">Across all good customers</div>'
-        f'</div>'
-        f'</div>',
-        unsafe_allow_html=True,
+    cards = (
+        _static_kpi_card_html("Good Customers", f"{n:,}", "Refinance eligible")
+        + _static_kpi_card_html("Total SOH (Cr)", f"&#8377;{total_soh_cr:,.2f}", "Outstanding principal")
+        + _static_kpi_card_html("Avg Tenure Completed", f"{avg_tenure}%", "Across all good customers")
     )
+    st.markdown(f'<div class="kpi-row">{cards}</div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     _top5_breakdown(good_df, accent="#16a34a")

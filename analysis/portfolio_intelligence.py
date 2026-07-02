@@ -6,17 +6,27 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-from utils import BUCKET_ORDER, BUCKET_SCORE
+from utils import BUCKET_ORDER, BUCKET_SCORE, BUCKET_COLORS, to_num, account_count, is_yes
+from config import (
+    MIN_ACCOUNTS_DIMENSION_BREAKDOWN,
+    MIN_ACCOUNTS_PRODUCT_SEGMENT,
+    MIN_ACCOUNTS_SOURCE_VINTAGE,
+    HARD_BUCKET_ARREARS_EMI_MIN,
+    REPOSSESSION_WINDOW_MONTHS,
+    GOOD_CUSTOMER_MIN_TENURE_PCT,
+    GOOD_CUSTOMER_MIN_LCC_PCT,
+    FLEET_MIN_LOANS,
+    REGION_STATUS_DELTA_PP,
+    GOOD_BAD_REGION_DELTA_PP,
+    CONCERN_SCORE_BAD_THRESHOLD,
+    CONCERN_SCORE_GOOD_THRESHOLD,
+    CONCERN_SCORE_WEIGHTS,
+    RISK_INDICATOR_STABLE_PP,
+    RISK_INDICATOR_MATERIALITY_PP,
+    RISK_INDICATOR_MATERIALITY_COUNT,
+)
 
 YELLOW = "#FFC000"
-BUCKET_COLORS = {
-    "STD":      "#16a34a",
-    "1-30 DPD": "#FFC000",
-    "SMA-1":    "#f97316",
-    "SMA-2":    "#ef4444",
-    "NPA":      "#991b1b",
-    "NA":       "#9ca3af",
-}
 VALID_BUCKETS = [b for b in BUCKET_ORDER if b != "NA"]
 
 
@@ -34,18 +44,13 @@ def _npa_pct(df: pd.DataFrame) -> float:
 
 
 def _coll_pct(df: pd.DataFrame) -> float:
-    demand = pd.to_numeric(
-        df.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce"
-    ).sum()
-    coll = pd.to_numeric(
-        df.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce"
-    ).sum()
+    demand = to_num(df, "Net Collection Demand Inst+Exp+BC").sum()
+    coll = to_num(df, "Month Collection (Excluding Reserve Collection)").sum()
     return _safe_div(coll, demand)
 
 
 def _soh_cr(df: pd.DataFrame) -> float:
-    soh = pd.to_numeric(df.get("SOH", pd.Series(dtype=float)), errors="coerce").sum()
-    return round(soh / 1e7, 2)
+    return round(to_num(df, "SOH").sum() / 1e7, 2)
 
 
 def _roll_rates(grp: pd.DataFrame) -> tuple[float | None, float | None]:
@@ -164,17 +169,16 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
     def _calc(df):
         if df.empty:
             return {}
-        total = df["Loan No"].nunique() if "Loan No" in df.columns else len(df)
+        total = account_count(df)
         soh = _soh_cr(df)
         npa_pct = _npa_pct(df)
         npa_count = int((df["curr_bucket"] == "NPA").sum()) if "curr_bucket" in df.columns else 0
         sma2_count = int((df["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in df.columns else 0
         sma2_pct = _safe_div(sma2_count, total)
-        arr = pd.to_numeric(df.get("Arrears / EMI", pd.Series(dtype=float)), errors="coerce")
-        hard_pct = _safe_div((arr >= 3).sum(), total)
+        hard_pct = _safe_div((to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), total)
         coll = _coll_pct(df)
         strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])] if "Strike" in df.columns else pd.DataFrame()
-        strike_pct = _safe_div((strike_valid["Strike"].astype(str).str.strip().str.upper() == "Y").sum(), len(strike_valid)) if not strike_valid.empty else 0.0
+        strike_pct = _safe_div(is_yes(strike_valid, "Strike").sum(), len(strike_valid)) if not strike_valid.empty else 0.0
         return {
             "accounts": total, "soh": soh,
             "npa_count": npa_count, "npa_pct": npa_pct,
@@ -214,12 +218,11 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
 
     rows = []
     for region, grp in df_curr.groupby("RegionName"):
-        n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
+        n = account_count(grp)
         curr_npa = _npa_pct(grp)
         curr_coll = _coll_pct(grp)
         soh = _soh_cr(grp)
-        arr = pd.to_numeric(grp.get("Arrears / EMI", pd.Series(dtype=float)), errors="coerce")
-        hard_pct = _safe_div((arr >= 3).sum(), n)
+        hard_pct = _safe_div((to_num(grp, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), n)
         roll_fwd, roll_bwd = _roll_rates(grp)
 
         sma2_count = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
@@ -236,7 +239,7 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
         delta = round(curr_npa - prev_npa, 2) if has_prev_region else None
         status = "-"
         if delta is not None:
-            status = "Worsening" if delta > 1.0 else ("Improving" if delta < -1.0 else "Stable")
+            status = "Worsening" if delta > REGION_STATUS_DELTA_PP else ("Improving" if delta < -REGION_STATUS_DELTA_PP else "Stable")
 
         rows.append({
             "Region": region,
@@ -282,8 +285,8 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
 
         for grp_key, grp in df_c.groupby(col):
             name = str(grp_key)
-            n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
-            if n < 3:
+            n = account_count(grp)
+            if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
                 continue
             npa_c  = int((grp["curr_bucket"] == "NPA").sum())  if "curr_bucket" in grp.columns else 0
             sma2_c = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
@@ -341,13 +344,11 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
 
     rows = []
     for branch, grp in df_curr.groupby("Unit"):
-        n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
-        if n < 3:
+        n = account_count(grp)
+        if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
             continue
         roll_fwd, _ = _roll_rates(grp)
-        arr = pd.to_numeric(grp.get("Arrears / EMI", pd.Series(dtype=float)), errors="coerce")
-        col3m = "No Coll 3 Months and >6 EMI"
-        chronic = int((grp[col3m].astype(str).str.strip().str.upper() == "Y").sum()) if col3m in grp.columns else 0
+        chronic = int(is_yes(grp, "No Coll 3 Months and >6 EMI").sum())
         sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
         rows.append({
             "Branch": str(branch),
@@ -355,7 +356,7 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
             "Collection%": _coll_pct(grp),
             "SMA-2%": _safe_div(sma2_n, n),
             "NPA%": _npa_pct(grp),
-            "Hard Bucket%": _safe_div((arr >= 3).sum(), n),
+            "Hard Bucket%": _safe_div((to_num(grp, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), n),
             "SOH (Cr)": _soh_cr(grp),
             "Roll Fwd%": roll_fwd if roll_fwd is not None else 0.0,
             "Chronic (3M+)": chronic,
@@ -365,7 +366,7 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
         return pd.DataFrame(), go.Figure()
 
     df = pd.DataFrame(rows)
-    for col, w in [("NPA%", 0.45), ("Hard Bucket%", 0.25), ("Roll Fwd%", 0.2), ("Chronic (3M+)", 0.1)]:
+    for col, w in CONCERN_SCORE_WEIGHTS.items():
         df[f"_r_{col}"] = df[col].rank(ascending=True, pct=True) * w
     df["Concern Score"] = df[[c for c in df.columns if c.startswith("_r_")]].sum(axis=1).mul(100).round(0).astype(int)
     df = df.drop(columns=[c for c in df.columns if c.startswith("_r_")])
@@ -483,8 +484,8 @@ def compute_executive_recovery(df_curr: pd.DataFrame) -> pd.DataFrame:
     for keys, grp in df_curr.groupby(group_cols):
         exec_name = str(keys[0]) if isinstance(keys, tuple) else str(keys)
         branch    = str(keys[1]) if isinstance(keys, tuple) and len(keys) > 1 else ""
-        n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
-        if n < 3:
+        n = account_count(grp)
+        if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
             continue
         curr_sc = grp["curr_bucket"].map(BUCKET_SCORE)
         prev_sc = grp["prev_bucket"].map(BUCKET_SCORE)
@@ -521,19 +522,22 @@ def compute_good_bad(
     bad:  list[str] = []
 
     if has_prev and not region_df.empty and "Δ NPA%" in region_df.columns:
-        imp = region_df.dropna(subset=["Δ NPA%"]).query("`Δ NPA%` < -0.5").sort_values("Δ NPA%")
-        wor = region_df.dropna(subset=["Δ NPA%"]).query("`Δ NPA%` > 0.5").sort_values("Δ NPA%", ascending=False)
-        for r in imp.head(2).itertuples():
-            good.append(f"{r.Region}: NPA% fell {abs(r._4):.1f}pp  -  delinquency improving")
-        for r in wor.head(2).itertuples():
-            bad.append(f"{r.Region}: NPA% rose {r._4:.1f}pp  -  escalate field visits")
+        imp = region_df.dropna(subset=["Δ NPA%"]).query(f"`Δ NPA%` < {-GOOD_BAD_REGION_DELTA_PP}").sort_values("Δ NPA%")
+        wor = region_df.dropna(subset=["Δ NPA%"]).query(f"`Δ NPA%` > {GOOD_BAD_REGION_DELTA_PP}").sort_values("Δ NPA%", ascending=False)
+        # Use .iterrows() (not itertuples) - "Δ NPA%"/"SMA-2%" etc. aren't valid
+        # Python identifiers, so itertuples() silently renames them to positional
+        # _N attrs and _4 does NOT reliably point at "Δ NPA%".
+        for _, r in imp.head(2).iterrows():
+            good.append(f"{r['Region']}: NPA% fell {abs(r['Δ NPA%']):.1f}pp  -  delinquency improving")
+        for _, r in wor.head(2).iterrows():
+            bad.append(f"{r['Region']}: NPA% rose {r['Δ NPA%']:.1f}pp  -  escalate field visits")
 
     if not branch_df.empty and "Concern Score" in branch_df.columns:
         worst = branch_df.iloc[0]
         best  = branch_df.iloc[-1]
-        if worst["Concern Score"] >= 60:
+        if worst["Concern Score"] >= CONCERN_SCORE_BAD_THRESHOLD:
             bad.append(f"{worst['Branch']}: Highest concern ({worst['Concern Score']})  -  SMA-2 {worst.get('SMA-2%',0):.1f}%, NPA {worst['NPA%']:.1f}%, Coll {worst['Collection%']:.1f}%")
-        if best["Concern Score"] <= 35:
+        if best["Concern Score"] <= CONCERN_SCORE_GOOD_THRESHOLD:
             good.append(f"{best['Branch']}: Healthiest branch  -  SMA-2 {best.get('SMA-2%',0):.1f}%, NPA {best['NPA%']:.1f}%, Coll {best['Collection%']:.1f}%")
 
     if not exec_df.empty and has_prev:
@@ -549,7 +553,7 @@ def compute_good_bad(
     for ind in risk_indicators:
         d = ind["_direction"]
         delta_abs = abs(ind.get("_delta", 0))
-        threshold = 1 if ind.get("_is_count") else 0.3
+        threshold = RISK_INDICATOR_MATERIALITY_COUNT if ind.get("_is_count") else RISK_INDICATOR_MATERIALITY_PP
         if d == "Improving" and delta_abs >= threshold:
             # Strip leading sign  -  the word "improvement" already implies positive change
             delta_display = str(ind["Δ"]).lstrip("+-").lstrip()
@@ -597,12 +601,12 @@ def compute_product_analysis(df_curr: pd.DataFrame) -> dict:
 
     seg_col = next((c for c in ["SegmentName", "Segment"] if c in df_curr.columns), None)
     if seg_col:
-        rows = _group_npa_table(df_curr, seg_col, "Segment", min_n=5)
+        rows = _group_npa_table(df_curr, seg_col, "Segment", min_n=MIN_ACCOUNTS_PRODUCT_SEGMENT)
         if rows:
             results["segment"] = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
     if "FUEL_TYPE" in df_curr.columns:
-        rows = _group_npa_table(df_curr, "FUEL_TYPE", "Fuel Type", min_n=5)
+        rows = _group_npa_table(df_curr, "FUEL_TYPE", "Fuel Type", min_n=MIN_ACCOUNTS_PRODUCT_SEGMENT)
         if rows:
             results["fuel"] = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
@@ -614,11 +618,11 @@ def compute_product_analysis(df_curr: pd.DataFrame) -> dict:
         for cohort, grp in df_v.dropna(subset=["_cohort"]).groupby("_cohort"):
             if cohort > _today_period:
                 continue  # exclude post-dated / future agreement dates
-            n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
-            if n < 10:
+            n = account_count(grp)
+            if n < MIN_ACCOUNTS_SOURCE_VINTAGE:
                 continue
             soh = _soh_cr(grp)
-            avg_loan = pd.to_numeric(grp.get("Loan Amount", pd.Series(dtype=float)), errors="coerce").mean()
+            avg_loan = to_num(grp, "Loan Amount").mean()
             npa_n  = int((grp["curr_bucket"] == "NPA").sum())   if "curr_bucket" in grp.columns else 0
             sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
             cohort_rows.append({
@@ -640,7 +644,7 @@ def compute_product_analysis(df_curr: pd.DataFrame) -> dict:
             )
 
     if "SRC Name" in df_curr.columns:
-        rows = _group_npa_table(df_curr, "SRC Name", "Source", min_n=10)
+        rows = _group_npa_table(df_curr, "SRC Name", "Source", min_n=MIN_ACCOUNTS_SOURCE_VINTAGE)
         if rows:
             results["source"] = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
@@ -653,7 +657,7 @@ def _group_npa_table(df: pd.DataFrame, group_col: str, label: str, min_n: int) -
         val_str = str(val).strip()
         if not val_str or val_str.lower() in ("nan", "none", ""):
             continue
-        n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
+        n = account_count(grp)
         if n < min_n:
             continue
         sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
@@ -765,8 +769,7 @@ def compute_risk_indicators(
     rr_meta: dict | None,
 ) -> list[dict]:
     indicators: list[dict] = []
-    total_curr = df_curr["Loan No"].nunique() if "Loan No" in df_curr.columns else len(df_curr)
-    total_prev = df_prev["Loan No"].nunique() if len(df_prev) > 0 and "Loan No" in df_prev.columns else 0
+    total_prev = account_count(df_prev) if len(df_prev) > 0 else 0
     has_prev = total_prev > 0
 
     def _add(label, curr_val, prev_val, unit, good_dir, note, is_count=False):
@@ -776,7 +779,7 @@ def compute_risk_indicators(
         elif is_count:
             direction = ("Improving" if delta < 0 else ("Worsening" if delta > 0 else "Stable")) if good_dir == "down" else ("Improving" if delta > 0 else ("Worsening" if delta < 0 else "Stable"))
         else:
-            direction = "Stable" if abs(delta) < 0.2 else (("Improving" if delta < 0 else "Worsening") if good_dir == "down" else ("Improving" if delta > 0 else "Worsening"))
+            direction = "Stable" if abs(delta) < RISK_INDICATOR_STABLE_PP else (("Improving" if delta < 0 else "Worsening") if good_dir == "down" else ("Improving" if delta > 0 else "Worsening"))
         fmt      = f"{int(curr_val):,}{unit}" if is_count else f"{curr_val:.1f}{unit}"
         prev_fmt = (f"{int(prev_val):,}{unit}" if is_count else f"{prev_val:.1f}{unit}") if has_prev else " - "
         sign     = "+" if delta >= 0 else ""
@@ -790,9 +793,8 @@ def compute_risk_indicators(
 
     if "curr_bucket" in df_curr.columns:
         def _pct(df, bucket):
-            t = df["Loan No"].nunique() if "Loan No" in df.columns else len(df)
             n = (df["curr_bucket"] == bucket).sum()
-            return _safe_div(n, t)
+            return _safe_div(n, account_count(df))
 
         _add("SMA-1 Pool (Early Warning)", _pct(df_curr, "SMA-1"),
              _pct(df_prev, "SMA-1") if has_prev else 0.0,
@@ -810,22 +812,20 @@ def compute_risk_indicators(
 
     col3m = "No Coll 3 Months and >6 EMI"
     if col3m in df_curr.columns:
-        c = int((df_curr[col3m].astype(str).str.strip().str.upper() == "Y").sum())
-        p = int((df_prev[col3m].astype(str).str.strip().str.upper() == "Y").sum()) if has_prev and col3m in df_prev.columns else 0
+        c = int(is_yes(df_curr, col3m).sum())
+        p = int(is_yes(df_prev, col3m).sum()) if has_prev and col3m in df_prev.columns else 0
         _add("Chronic Defaulters (3M+)", c, p, "", "down", "Zero payment ≥3 months AND >6 EMI arrears", is_count=True)
 
     if "Non Starter" in df_curr.columns:
-        c = int((df_curr["Non Starter"].astype(str).str.strip().str.upper() == "Y").sum())
-        p = int((df_prev["Non Starter"].astype(str).str.strip().str.upper() == "Y").sum()) if has_prev and "Non Starter" in df_prev.columns else 0
+        c = int(is_yes(df_curr, "Non Starter").sum())
+        p = int(is_yes(df_prev, "Non Starter").sum()) if has_prev and "Non Starter" in df_prev.columns else 0
         _add("Non-Starters", c, p, "", "down", "Never paid first EMI  -  highest NPA risk", is_count=True)
 
     if "CoLending_Loans" in df_curr.columns and "Arrears / EMI" in df_curr.columns:
-        arr_c = pd.to_numeric(df_curr["Arrears / EMI"], errors="coerce")
-        c = int(((df_curr["CoLending_Loans"].astype(str).str.strip().str.upper() == "Y") & (arr_c > 0)).sum())
+        c = int((is_yes(df_curr, "CoLending_Loans") & (to_num(df_curr, "Arrears / EMI") > 0)).sum())
         p_val = 0
         if has_prev and "CoLending_Loans" in df_prev.columns and "Arrears / EMI" in df_prev.columns:
-            arr_p = pd.to_numeric(df_prev["Arrears / EMI"], errors="coerce")
-            p_val = int(((df_prev["CoLending_Loans"].astype(str).str.strip().str.upper() == "Y") & (arr_p > 0)).sum())
+            p_val = int((is_yes(df_prev, "CoLending_Loans") & (to_num(df_prev, "Arrears / EMI") > 0)).sum())
         _add("Co-Lending At Risk", c, p_val, "", "down", "Partner-bank loans showing delinquency", is_count=True)
 
     return indicators
@@ -847,7 +847,7 @@ def compute_concentration_treemap(df_curr: pd.DataFrame) -> go.Figure:
         return go.Figure()
 
     def _raw_soh(df: pd.DataFrame) -> float:
-        return float(pd.to_numeric(df.get("SOH", pd.Series(dtype=float)), errors="coerce").sum() / 1e7)
+        return float(to_num(df, "SOH").sum() / 1e7)
 
     ids, labels, parents, values, colors, texts = ["portfolio"], ["Portfolio"], [""], [0.0], [0.0], [""]
 
@@ -921,7 +921,7 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
         return {"count": 0, "total_soh_cr": 0.0, "npa_operators": 0, "top_df": pd.DataFrame()}
 
     cust_loan_counts = df_curr.groupby("Cust Mob No")["Loan No"].nunique()
-    fleet_customers  = cust_loan_counts[cust_loan_counts >= 3].index
+    fleet_customers  = cust_loan_counts[cust_loan_counts >= FLEET_MIN_LOANS].index
 
     fleet_df = df_curr[df_curr["Cust Mob No"].isin(fleet_customers)]
     if fleet_df.empty:
@@ -966,24 +966,51 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
     }
 
 
-def compute_top_accounts(df_curr: pd.DataFrame, n: int = 20) -> pd.DataFrame:
-    """Top N accounts by SOH  -  individual accounts that matter most."""
-    if df_curr.empty or "SOH" not in df_curr.columns:
-        return pd.DataFrame()
+def compute_top_accounts(df_curr: pd.DataFrame, n: int = 20) -> tuple[pd.DataFrame, dict]:
+    """
+    Top N accounts by SOH among DELINQUENT accounts (any non-STD bucket)  -  the
+    largest single exposures actually at risk, not just the largest loans overall
+    (a big healthy STD loan isn't a collections priority).
 
+    Returns (top_df, summary): total SOH of these N accounts, what % of the
+    whole portfolio's SOH they represent (single-borrower concentration), and
+    how many are already NPA  -  the most severe subset of an already-delinquent
+    list.
+    """
+    empty_summary = {"total_soh_cr": 0.0, "pct_of_portfolio": 0.0, "npa_count": 0}
+    if df_curr.empty or "SOH" not in df_curr.columns or "curr_bucket" not in df_curr.columns:
+        return pd.DataFrame(), empty_summary
+
+    # NA = missing Arrears/EMI data (not a real delinquency state) - exclude it
+    # alongside STD, same as VALID_BUCKETS elsewhere in this module.
+    delinquent = df_curr[~df_curr["curr_bucket"].isin(["STD", "NA"])]
+    if delinquent.empty:
+        return pd.DataFrame(), empty_summary
+
+    seg_col = next((c for c in ["SegmentName", "Segment"] if c in delinquent.columns), None)
     cols = [c for c in [
-        "Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit", "MNT NAME",
-        "curr_bucket", "SOH", "Closing Arrears", "Arrears / EMI",
+        "Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit", seg_col, "MNT NAME",
+        "curr_bucket", "SOH", "Closing Arrears", "Arrears / EMI", "VehEMI Accrued", "LCC%",
         "Loan Status", "Ag_Date", "Non Starter", "CoLending_Loans",
-    ] if c in df_curr.columns]
+    ] if c and c in delinquent.columns]
 
-    return (
-        df_curr[cols]
-        .assign(SOH=lambda d: pd.to_numeric(d["SOH"], errors="coerce"))
+    top_df = (
+        delinquent[cols]
+        .assign(SOH=lambda d: to_num(d, "SOH"))
         .sort_values("SOH", ascending=False)
         .head(n)
         .reset_index(drop=True)
     )
+
+    total_portfolio_soh = to_num(df_curr, "SOH").sum()
+    top_soh = top_df["SOH"].sum()
+    npa_count = int((top_df["curr_bucket"] == "NPA").sum())
+    summary = {
+        "total_soh_cr": round(top_soh / 1e7, 2),
+        "pct_of_portfolio": round(top_soh / total_portfolio_soh * 100, 1) if total_portfolio_soh > 0 else 0.0,
+        "npa_count": npa_count,
+    }
+    return top_df, summary
 
 
 # ── Repossession Analysis ─────────────────────────────────────────────────────
@@ -1007,7 +1034,7 @@ def compute_repossession_list(df_curr: pd.DataFrame) -> pd.DataFrame:
     if df_curr.empty:
         return pd.DataFrame()
 
-    cutoff = pd.Timestamp.today() - pd.DateOffset(months=18)
+    cutoff = pd.Timestamp.today() - pd.DateOffset(months=REPOSSESSION_WINDOW_MONTHS)
 
     bucket_mask = pd.Series(False, index=df_curr.index)
     if "curr_bucket" in df_curr.columns:
@@ -1022,12 +1049,9 @@ def compute_repossession_list(df_curr: pd.DataFrame) -> pd.DataFrame:
     if repo_df.empty:
         return pd.DataFrame()
 
-    if "SOH" in repo_df.columns:
-        repo_df["SOH"] = pd.to_numeric(repo_df["SOH"], errors="coerce")
-    if "LCC%" in repo_df.columns:
-        repo_df["LCC%"] = pd.to_numeric(repo_df["LCC%"], errors="coerce")
-    if "Arrears / EMI" in repo_df.columns:
-        repo_df["Arrears / EMI"] = pd.to_numeric(repo_df["Arrears / EMI"], errors="coerce")
+    for col in ["SOH", "LCC%", "Arrears / EMI"]:
+        if col in repo_df.columns:
+            repo_df[col] = to_num(repo_df, col)
     if "Ag_Date" in repo_df.columns:
         repo_df["Ag_Date"] = pd.to_datetime(repo_df["Ag_Date"], errors="coerce").dt.date
 
@@ -1059,21 +1083,17 @@ def compute_good_customers(df_curr: pd.DataFrame) -> pd.DataFrame:
     df = df_curr.copy()
 
     # Tenure completed %
-    tenure_mask = pd.Series(False, index=df.index)
     if "VehEMI Accrued" in df.columns and "Tenure" in df.columns:
-        emi_paid = pd.to_numeric(df["VehEMI Accrued"], errors="coerce")
-        tenure   = pd.to_numeric(df["Tenure"],         errors="coerce")
+        emi_paid = to_num(df, "VehEMI Accrued")
+        tenure   = to_num(df, "Tenure")
         df["Tenure Completed %"] = (emi_paid / tenure * 100).round(1)
-        tenure_mask = (df["Tenure Completed %"] >= 70) & tenure.notna() & (tenure > 0)
+        tenure_mask = (df["Tenure Completed %"] >= GOOD_CUSTOMER_MIN_TENURE_PCT) & tenure.notna() & (tenure > 0)
     else:
         df["Tenure Completed %"] = None
         tenure_mask = pd.Series(False, index=df.index)
 
-    # LCC% hard cutoff at 100
-    lcc_mask = pd.Series(False, index=df.index)
-    if "LCC%" in df.columns:
-        lcc = pd.to_numeric(df["LCC%"], errors="coerce")
-        lcc_mask = lcc >= 100.0
+    # LCC% hard cutoff
+    lcc_mask = to_num(df, "LCC%") >= GOOD_CUSTOMER_MIN_LCC_PCT
 
     good_df = df[tenure_mask & lcc_mask].copy()
     if good_df.empty:
@@ -1082,7 +1102,7 @@ def compute_good_customers(df_curr: pd.DataFrame) -> pd.DataFrame:
     # Numeric clean-up for display
     for col in ["SOH", "Arrears / EMI", "LCC%", "Arrears against Inst+Exp"]:
         if col in good_df.columns:
-            good_df[col] = pd.to_numeric(good_df[col], errors="coerce")
+            good_df[col] = to_num(good_df, col)
 
     good_df = good_df.sort_values("SOH", ascending=True)
 

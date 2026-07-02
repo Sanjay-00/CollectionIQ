@@ -1,18 +1,15 @@
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _safe_df
+from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _empty_state
 
 
 def render_scorecard_tab(df_curr: pd.DataFrame, scorecard_df) -> None:
     if "MNT NAME" not in df_curr.columns:
-        st.markdown("""
-        <div class="empty-state">
-          <div class="empty-state-icon">👤</div>
-          <div class="empty-state-title">MNT NAME column not found</div>
-          <div class="empty-state-sub">The Executive Scorecard requires a field executive column (MNT NAME) in your LCC extract.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        _empty_state(
+            "👤", "MNT NAME column not found",
+            "The Executive Scorecard requires a field executive column (MNT NAME) in your LCC extract.",
+        )
         return
 
     if scorecard_df is None or len(scorecard_df) == 0:
@@ -31,42 +28,17 @@ def render_scorecard_tab(df_curr: pd.DataFrame, scorecard_df) -> None:
     st.markdown('<div class="section-label">Performance Summary</div>', unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color:#16a34a;">
-          <div class="kpi-label">Top Performers</div>
-          <div class="kpi-value" style="color:#16a34a;">{top_count}</div>
-          <div class="kpi-mom">Top 25% by collection %</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(_static_kpi_card_html("Top Performers", top_count, "Top 25% by collection %", color="#16a34a"), unsafe_allow_html=True)
     with c2:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color:#dc2626;">
-          <div class="kpi-label">Need Attention</div>
-          <div class="kpi-value" style="color:#dc2626;">{bot_count}</div>
-          <div class="kpi-mom">Bottom 25% by collection %</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(_static_kpi_card_html("Need Attention", bot_count, "Bottom 25% by collection %", color="#dc2626"), unsafe_allow_html=True)
     with c3:
-        st.markdown(f"""
-        <div class="kpi-card">
-          <div class="kpi-label">Avg Collection %</div>
-          <div class="kpi-value">{avg_coll:.1f}%</div>
-          <div class="kpi-mom">{len(scorecard_df)} executives ranked</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(_static_kpi_card_html("Avg Collection %", f"{avg_coll:.1f}%", f"{len(scorecard_df)} executives ranked"), unsafe_allow_html=True)
     with c4:
         strike_color = "#16a34a" if avg_strike >= 70 else "#d97706" if avg_strike >= 50 else "#dc2626"
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color:{strike_color};">
-          <div class="kpi-label">Avg Strike Rate %</div>
-          <div class="kpi-value" style="color:{strike_color};">{avg_strike:.1f}%</div>
-          <div class="kpi-mom">EMI obligation cleared this month</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(_static_kpi_card_html("Avg Strike Rate %", f"{avg_strike:.1f}%", "EMI obligation cleared this month", color=strike_color), unsafe_allow_html=True)
     with c5:
         npa_color = "#16a34a" if avg_npa < 5 else "#d97706" if avg_npa < 10 else "#dc2626"
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color:{npa_color};">
-          <div class="kpi-label">Avg NPA %</div>
-          <div class="kpi-value" style="color:{npa_color};">{avg_npa:.1f}%</div>
-          <div class="kpi-mom">Across all executives</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(_static_kpi_card_html("Avg NPA %", f"{avg_npa:.1f}%", "Across all executives", color=npa_color), unsafe_allow_html=True)
 
     # ── Scorecard table ──────────────────────────────────────────────────────
     st.markdown('<div class="section-label" style="margin-top:24px;">Full Rankings</div>', unsafe_allow_html=True)

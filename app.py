@@ -211,7 +211,7 @@ def _cached_portfolio_intel(
     good_bad                = compute_good_bad(region_df, branch_df, risk_indicators, exec_df_for_gb, has_prev)
     fig_treemap             = compute_concentration_treemap(df_c)
     fleet                   = compute_fleet_exposure(df_c)
-    top_accounts            = compute_top_accounts(df_c)
+    top_accounts, top_accounts_summary = compute_top_accounts(df_c)
     repo_df                 = compute_repossession_list(df_c)
     npa_sma2_cmp            = compute_npa_sma2_comparison(df_c, df_p)
     good_customers          = compute_good_customers(df_c)
@@ -219,7 +219,7 @@ def _cached_portfolio_intel(
         pulse_kpis, fig_waterfall,
         region_df, branch_df, fig_quadrant,
         exec_recovery_df, product_data, risk_indicators, good_bad,
-        fig_treemap, fleet, top_accounts, repo_df, npa_sma2_cmp, good_customers,
+        fig_treemap, fleet, top_accounts, top_accounts_summary, repo_df, npa_sma2_cmp, good_customers,
     )
 
 # ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
@@ -255,7 +255,7 @@ _rr = rr_meta or {}
     pi_pulse_kpis, pi_fig_wf,
     pi_region, pi_branch, pi_fig_quad,
     pi_exec, pi_product, pi_risk, pi_good_bad,
-    pi_fig_treemap, pi_fleet, pi_top_accounts, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
+    pi_fig_treemap, pi_fleet, pi_top_accounts, pi_top_accounts_summary, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
 ) = _cached_portfolio_intel(
     df_curr, df_prev,
     int(_rr.get("matched_count", 0)),
@@ -339,7 +339,7 @@ with tabs[4]:
             fig_treemap=pi_fig_treemap,
             fleet=pi_fleet,
             top_accounts=pi_top_accounts,
-            alerts_curr=alerts,
+            top_accounts_summary=pi_top_accounts_summary,
             has_prev=len(df_prev) > 0,
             rr_meta=rr_meta,
             repo_df=pi_repo_df,

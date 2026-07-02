@@ -150,8 +150,9 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .kpi-label { font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
 .kpi-value { font-size: 26px; font-weight: 800; color: #111827; line-height: 1; letter-spacing: -0.5px; white-space: nowrap; }
 .kpi-mom   { font-size: 11px; margin-top: 8px; color: #9ca3af; font-weight: 500; }
-.kpi-mom-up   { color: #059669; font-weight: 700; }
-.kpi-mom-down { color: #dc2626; font-weight: 700; }
+.kpi-mom-up      { color: #059669; font-weight: 700; }
+.kpi-mom-down    { color: #dc2626; font-weight: 700; }
+.kpi-mom-neutral { color: #9ca3af; font-weight: 700; }
 
 /* ── Chart containers ── */
 .chart-card {

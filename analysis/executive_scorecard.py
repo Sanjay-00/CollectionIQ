@@ -6,6 +6,7 @@ Performance tiers are quartile-based (relative to the dataset) - not hardcoded t
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
+from utils import BUCKET_SCORE, to_num, account_count, is_yes
 
 
 def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_MIN_ACCOUNTS) -> pd.DataFrame:
@@ -21,7 +22,6 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
     if "MNT NAME" not in df.columns:
         return pd.DataFrame()
 
-    _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
     has_roll = "prev_bucket" in df.columns and "curr_bucket" in df.columns
 
     group_cols = ["MNT NAME", "Unit"] if "Unit" in df.columns else ["MNT NAME"]
@@ -33,20 +33,20 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         else:
             exec_name, branch = str(keys), ""
 
-        n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
+        n = account_count(grp)
         if n < min_accounts:
             continue
 
         # Strike rate = % of accounts where full EMI payment was received this month
         strike_valid = grp[grp["Strike"].isin(["Y", "N"])] if "Strike" in grp.columns else pd.DataFrame()
         strike_rate = round(
-            (strike_valid["Strike"] == "Y").sum() / len(strike_valid) * 100, 1
+            is_yes(strike_valid, "Strike").sum() / len(strike_valid) * 100, 1
         ) if len(strike_valid) > 0 else 0.0
 
-        demand    = pd.to_numeric(grp.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce").sum()
-        collected = pd.to_numeric(grp.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce").sum()
-        total_soh = pd.to_numeric(grp.get("SOH", pd.Series(dtype=float)), errors="coerce").sum()
-        total_pos = pd.to_numeric(grp.get("POS", pd.Series(dtype=float)), errors="coerce").sum()
+        demand    = to_num(grp, "Net Collection Demand Inst+Exp+BC").sum()
+        collected = to_num(grp, "Month Collection (Excluding Reserve Collection)").sum()
+        total_soh = to_num(grp, "SOH").sum()
+        total_pos = to_num(grp, "POS").sum()
         coll_pct  = round(collected / demand * 100, 1) if demand > 0 else 0.0
 
         # NPA and SMA-2 counts
@@ -58,8 +58,8 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
         roll_fwd_pct = roll_bwd_pct = None
         if has_roll:
-            curr_score = grp["curr_bucket"].map(_BUCKET_SCORE)
-            prev_score = grp["prev_bucket"].map(_BUCKET_SCORE)
+            curr_score = grp["curr_bucket"].map(BUCKET_SCORE)
+            prev_score = grp["prev_bucket"].map(BUCKET_SCORE)
             valid = curr_score.notna() & prev_score.notna()
             total_valid = int(valid.sum())
             if total_valid > 0:

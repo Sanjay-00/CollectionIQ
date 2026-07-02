@@ -7,7 +7,7 @@ import streamlit as st
 @st.cache_data(show_spinner=False)
 def _fetch_sample_from_github():
     import urllib.request
-    from utils import assign_buckets, COL_ALIASES
+    from utils import load_and_validate
 
     BASE  = "https://raw.githubusercontent.com/Sanjay-00/CollectionIQ/main/sample_data/"
     FILES = {"curr": "Current_Month_Demo.xlsx", "prev": "Previous_Month_Demo.xlsx"}
@@ -15,25 +15,18 @@ def _fetch_sample_from_github():
     def _load(fname):
         with urllib.request.urlopen(BASE + fname, timeout=20) as resp:
             buf = io.BytesIO(resp.read())
-        df = pd.read_excel(buf, engine="openpyxl")
-        df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
-        for col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
-        df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
-        for col in ["Month Receipt Amount", "Month Collection (Excluding Reserve Collection)",
-                    "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-        for col in ["NET Collection Demand Inst+Exp", "Net Collection Demand Inst+Exp+BC",
-                    "POS", "Arrears / EMI"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["LCC%"]   = pd.to_numeric(df["LCC%"], errors="coerce")
-        df["Strike"] = df["Strike"].astype(str).str.strip().str.upper()
-        if "Unit" in df.columns:
-            df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
-        return assign_buckets(df)
+        buf.name = fname
+        # Route through the same pipeline every uploaded file goes through, so
+        # the sample data gets identical normalization (mobile-number cleanup,
+        # duplicate Loan No handling, etc.) instead of a hand-duplicated copy
+        # that silently drifts out of sync. Call the unwrapped function directly:
+        # this whole outer function is already @st.cache_data'd, and Streamlit's
+        # cache hasher chokes on a BytesIO with a fake .name (tries os.path.getmtime
+        # on it as if it were a real file on disk).
+        df, errs = load_and_validate.__wrapped__(buf)
+        if errs:
+            raise ValueError(errs[0])
+        return df
 
     return _load(FILES["curr"]), _load(FILES["prev"])
 

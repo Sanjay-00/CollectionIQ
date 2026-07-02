@@ -10,6 +10,7 @@ from utils import (
     build_status_bar_chart,
     fmt_value,
 )
+from ui.components import _kpi_card_html, _chart_card, _divider
 
 _KIND = {
     "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
@@ -22,25 +23,24 @@ _KPI_EXPOSURE = ["SOH"]
 _INVERSE_MOM  = {"NPA %", "Hard Bucket %", "SMA-2 %"}
 
 
-def _kpi_card(label: str, value: str, mom: float) -> str:
-    arrow = "▲" if mom >= 0 else "▼"
-    cls   = ("kpi-mom-down" if mom >= 0 else "kpi-mom-up") if label in _INVERSE_MOM \
-            else ("kpi-mom-up" if mom >= 0 else "kpi-mom-down")
-    return (
-        f'<div class="kpi-card">'
-        f'<div class="kpi-label">{label}</div>'
-        f'<div class="kpi-value">{value}</div>'
-        f'<div class="kpi-mom">MoM <span class="{cls}">{arrow} {abs(mom):.2f}%</span></div>'
-        f'</div>'
-    )
-
-
-def _kpi_row(keys: list, metrics: dict) -> None:
+def _kpi_row(keys: list, metrics: dict, count_deltas: dict | None = None) -> None:
+    count_deltas = count_deltas or {}
     html = "".join(
-        _kpi_card(k, fmt_value(metrics[k][0], _KIND[k]), metrics[k][1])
+        _kpi_card_html(
+            k, fmt_value(metrics[k][0], _KIND[k]), metrics[k][1],
+            inverse=k in _INVERSE_MOM, zero_delta_bad=True,
+            count_delta=count_deltas.get(k),
+        )
         for k in keys if k in metrics and k in _KIND
     )
     st.markdown(f'<div class="kpi-row">{html}</div>', unsafe_allow_html=True)
+
+
+def _npa_count_delta(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> int | None:
+    """Raw NPA account-count movement, used to break NPA %'s zero-delta tie."""
+    if "curr_bucket" not in df_curr.columns or df_prev.empty or "curr_bucket" not in df_prev.columns:
+        return None
+    return int((df_curr["curr_bucket"] == "NPA").sum()) - int((df_prev["curr_bucket"] == "NPA").sum())
 
 
 def render_dashboard_tab(
@@ -57,7 +57,7 @@ def render_dashboard_tab(
 ) -> None:
     # ── KPIs ────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-label">Key Performance Indicators</div>', unsafe_allow_html=True)
-    _kpi_row(_KPI_TOP, metrics)
+    _kpi_row(_KPI_TOP, metrics, count_deltas={"NPA %": _npa_count_delta(df_curr, df_prev)})
 
     # ── Charts ──────────────────────────────────────────────────────────────
     st.markdown('<div class="section-label">Portfolio Analysis</div>', unsafe_allow_html=True)
@@ -67,13 +67,9 @@ def render_dashboard_tab(
 
     col_bar, col_hbar, col_lcc = st.columns([2, 2, 1])
     with col_bar:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_status, width='stretch')
-        st.markdown('</div>', unsafe_allow_html=True)
+        _chart_card(fig_status)
     with col_hbar:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_branch, width='stretch')
-        st.markdown('</div>', unsafe_allow_html=True)
+        _chart_card(fig_branch)
     with col_lcc:
         lcc_val   = fmt_value(metrics["LCC%"][0], "pct")
         lcc_mom   = metrics["LCC%"][1]
@@ -100,16 +96,14 @@ def render_dashboard_tab(
 
     col_trend, col_bot = st.columns([3, 2])
     with col_trend:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        st.plotly_chart(fig_closing, width='stretch')
-        st.markdown('</div>', unsafe_allow_html=True)
+        _chart_card(fig_closing)
     with col_bot:
         st.markdown("<br>", unsafe_allow_html=True)
         _kpi_row(_KPI_BOT, metrics)
         _kpi_row(_KPI_EXPOSURE, metrics)
 
     # ── HTML export ─────────────────────────────────────────────────────────
-    st.markdown('<div style="border-top:1px solid #e5e7eb;margin:24px 0 16px 0;"></div>', unsafe_allow_html=True)
+    _divider("24px 0 16px 0")
     col_dl, _ = st.columns([1, 3])
     with col_dl:
         filters_applied = {
