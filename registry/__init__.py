@@ -1,18 +1,20 @@
-﻿"""CollectionIQ knowledge registry  -  the deterministic source of truth that the
-v2 compiler will read instead of the LLM re-deriving business logic from prose.
+﻿"""CollectionIQ knowledge registry  -  the deterministic source of truth the v2
+compiler reads instead of the LLM re-deriving business logic from prose.
 
-Two coherent layers (see the architecture design of record):
+Three coherent layers (see the architecture design of record):
 
 - semantic_model  -  STRUCTURE: entities, their key columns, and the grain lattice
   ("how the data is connected"). For this single denormalized table it is a grain
   lattice + entity-key map, NOT a join graph.
 - ontology  -  VOCABULARY: named business concepts (multi-condition rules) and
   metrics, with deterministic definitions ("what" each concept means).
+- views  -  FAST PATH: precomputed analysis/ answers the AI Query pipeline can
+  return directly for a matching question, bypassing the compiler entirely.
 
-Phase 0 status: these structures are the canonical home for business logic.
-PRIORITY_RULES has been migrated here and is re-exported from agents.domain_expert
-for back-compat. The broader CONCEPTS/METRICS/semantic-model structures are
-additive and not yet wired into the LLM prompt, so behavior is unchanged.
+Status: this is the live, sole vocabulary source for agents/logical_planner.py's
+prompt (via build_catalog()/build_views_catalog()) and for compiler/core.py's
+lowering -- not an additive/inert scaffold. PRIORITY_RULES is also re-exported
+from agents.domain_expert for back-compat with that module's still-live helpers.
 """
 
 from registry.semantic_model import (
@@ -25,6 +27,7 @@ from registry.semantic_model import (
     resolve_dimension,
 )
 from registry.ontology import CONCEPTS, METRICS, PRIORITY_RULES, ENTITY_CONCEPTS
+from registry.views import VIEWS
 
 __all__ = [
     "ENTITIES",
@@ -38,4 +41,5 @@ __all__ = [
     "METRICS",
     "PRIORITY_RULES",
     "ENTITY_CONCEPTS",
+    "VIEWS",
 ]

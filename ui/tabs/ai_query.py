@@ -4,10 +4,18 @@ import pandas as pd
 import streamlit as st
 
 from utils import fmt_value
-from ui.components import _dl_btn, _safe_df, _send_feedback
+from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html
 
 
-def render_ai_query_tab(df_curr: pd.DataFrame, snapshot_dates: dict | None = None) -> None:
+def render_ai_query_tab(
+    df_curr: pd.DataFrame,
+    snapshot_dates: dict | None = None,
+    df_prev: pd.DataFrame | None = None,
+    precomputed_views: dict | None = None,
+    alerts_curr: list | None = None,
+    alerts_prev: list | None = None,
+    rr_meta: dict | None = None,
+) -> None:
     from graph import run_query
 
     # ── Example chips (cross-frame JS fill) ──────────────────────────────────
@@ -88,7 +96,10 @@ function fill(text) {
                 def _on_step(label: str) -> None:
                     _status.write(label)
                 _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step,
-                                       snapshot_dates=snapshot_dates)
+                                       snapshot_dates=snapshot_dates, df_prev=df_prev,
+                                       precomputed_views=precomputed_views,
+                                       alerts_curr=alerts_curr, alerts_prev=alerts_prev,
+                                       rr_meta=rr_meta)
                 _status.update(label="Query complete", state="complete", expanded=False)
             st.session_state["ai_result"] = _ai_result
 
@@ -124,7 +135,10 @@ function fill(text) {
                     def _on_step(label: str) -> None:
                         _status.write(label)
                     _res = run_query(augmented, df_curr, on_step=_on_step,
-                                     snapshot_dates=snapshot_dates, allow_clarification=False)
+                                     snapshot_dates=snapshot_dates, allow_clarification=False,
+                                     df_prev=df_prev, precomputed_views=precomputed_views,
+                                     alerts_curr=alerts_curr, alerts_prev=alerts_prev,
+                                     rr_meta=rr_meta)
                     _status.update(label="Query complete", state="complete", expanded=False)
                 st.session_state["ai_result"] = _res
                 st.rerun()
@@ -141,6 +155,7 @@ function fill(text) {
     is_priority    = result.get("priority_mode", False)
     is_aggregation = result.get("aggregation_mode", False)
     result_type    = result.get("result_type") or "loan_table"
+    view_render    = result.get("view_render") or ""
     category       = (result.get("query_category") or "general").replace("_", " ").title()
     query_title    = result.get("query_title") or ""
     enriched       = result.get("enriched_query") or ""
@@ -165,8 +180,112 @@ function fill(text) {
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Fast-path view: KPI cards (e.g. portfolio pulse) ──────────────────────
+    if view_render == "kpi_cards":
+        rows = (kpis_q.get("_agg_rows") or []).copy()
+        # _agg_rows is capped at 5 by view_node (shared with the insight-generator
+        # context); re-derive the FULL card set straight from filtered_df so every
+        # KPI is shown, not just the first 5.
+        if len(filtered_df) and {"label", "value", "delta"}.issubset(filtered_df.columns):
+            rows = filtered_df.to_dict(orient="records")
+        cards_html = "".join(
+            _kpi_card_html(
+                r.get("label", ""), r.get("value", ""), r.get("delta"),
+                unit=r.get("unit") or "%", inverse=bool(r.get("inverse")),
+            )
+            for r in rows
+        )
+        st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;">{cards_html}</div>', unsafe_allow_html=True)
+
+        # Comparison table: This Month | Previous Month | Delta | % Change, using
+        # the raw (unformatted) curr_raw/prev_raw numbers so Delta/%Change are the
+        # literal arithmetic difference, not the sign-flipped-for-card-color delta.
+        if rows and any(r.get("prev_raw") is not None for r in rows):
+            def _fmt_side(val, unit):
+                if val is None:
+                    return "-"
+                if unit == "Cr":
+                    return f"₹{val:.2f}Cr"
+                if unit == "%":
+                    return f"{val:.2f}%"
+                return f"{val:,.0f}"
+
+            table_rows = ""
+            for r in rows:
+                cv, pv = r.get("curr_raw"), r.get("prev_raw")
+                unit, inverse = r.get("unit") or "", bool(r.get("inverse"))
+                if pv is None:
+                    delta_cell, pct_cell = "-", "-"
+                    color = "#9ca3af"
+                else:
+                    diff = cv - pv
+                    pct = (diff / pv * 100) if pv else None
+                    good = (diff < 0) if inverse else (diff > 0)
+                    color = "#16a34a" if (diff != 0 and good) else ("#dc2626" if diff != 0 else "#9ca3af")
+                    arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "-")
+                    delta_cell = f"{arrow} {abs(diff):,.2f}" if unit != "" else f"{arrow} {abs(int(diff)):,}"
+                    pct_cell = f"{pct:+.1f}%" if pct is not None else "-"
+                table_rows += (
+                    f'<tr style="background:#161b22;border-bottom:1px solid #0d1117;">'
+                    f'<td style="padding:8px 14px;font-size:12px;font-weight:700;color:#e6edf3;">{r.get("label","")}</td>'
+                    f'<td style="padding:8px 14px;font-size:13px;font-weight:800;text-align:right;color:#e6edf3;">{_fmt_side(cv, unit)}</td>'
+                    f'<td style="padding:8px 14px;font-size:12px;text-align:right;color:#8b949e;">{_fmt_side(pv, unit)}</td>'
+                    f'<td style="padding:8px 14px;font-size:12px;font-weight:700;text-align:right;color:{color};">{delta_cell}</td>'
+                    f'<td style="padding:8px 14px;font-size:12px;font-weight:700;text-align:right;color:{color};">{pct_cell}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                "<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
+                "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>This Month vs Previous Month</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div style="background:#161b22;border:1px solid #21262d;border-radius:10px;overflow-x:auto;">'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr>'
+                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:left;">KPI</th>'
+                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">This Month</th>'
+                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">Previous Month</th>'
+                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">Δ</th>'
+                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">% Change</th>'
+                f'</tr></thead><tbody>{table_rows}</tbody></table></div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Fast-path view: risk indicator signal table ───────────────────────────
+    elif view_render == "risk_indicator_table":
+        rows = filtered_df.to_dict(orient="records") if len(filtered_df) else []
+        _DIR_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706"}
+        headers = ["Signal", "This Month", "Last Month", "Δ", "Direction", "Note"]
+        th = "".join(
+            f'<th style="background:#0d1117;color:#FFC000;padding:7px 12px;font-size:11px;'
+            f'text-align:{"left" if h in ("Signal","Note") else "center"};white-space:nowrap;">{h}</th>'
+            for h in headers
+        )
+        rows_html = ""
+        for r in rows:
+            d = r.get("Direction", "-")
+            dc = _DIR_COLOR.get(d, "#9ca3af")
+            rows_html += (
+                f'<tr style="background:#161b22;border-bottom:1px solid #0d1117;">'
+                f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:#e6edf3;">{r.get("Signal","")}</td>'
+                f'<td style="padding:7px 12px;font-size:13px;font-weight:800;text-align:center;color:#e6edf3;">{r.get("This Month","")}</td>'
+                f'<td style="padding:7px 12px;font-size:12px;color:#8b949e;text-align:center;">{r.get("Last Month","")}</td>'
+                f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:{dc};text-align:center;">{r.get("Δ","")}</td>'
+                f'<td style="padding:7px 12px;text-align:center;color:{dc};font-weight:700;font-size:12px;">{d}</td>'
+                f'<td style="padding:7px 12px;font-size:11px;color:#8b949e;">{r.get("Note","")}</td>'
+                f'</tr>'
+            )
+        st.markdown(
+            f'<div style="background:#161b22;border:1px solid #21262d;border-radius:10px;overflow-x:auto;">'
+            f'<table style="width:100%;border-collapse:collapse;">'
+            f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+
     # ── Priority mode ─────────────────────────────────────────────────────────
-    if is_priority:
+    elif is_priority:
         from agents.data_executor import distribute_priority_accounts
 
         st.markdown(f"""
@@ -403,8 +522,11 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
                   "Total Demand":"money","Total Collection":"money","Collection %":"pct"}
         kpi_html = "".join(
             f'<div class="result-kpi"><div class="result-kpi-label">{k}</div>'
-            f'<div class="result-kpi-value">{fmt_value(v, _QKIND[k])}</div></div>'
-            for k, v in kpis_q.items()
+            f'<div class="result-kpi-value">{fmt_value(v, _QKIND.get(k, "count"))}</div></div>'
+            # Keys starting with "_" (e.g. "_agg_rows") are internal-only, consumed
+            # by the insight generator, never meant to render as a KPI card -- they
+            # aren't scalars, so fmt_value would crash on them (e.g. abs() on a list).
+            for k, v in kpis_q.items() if not str(k).startswith("_")
         )
         st.markdown(
             f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">{kpi_html}</div>',

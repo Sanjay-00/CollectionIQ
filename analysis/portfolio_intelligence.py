@@ -197,15 +197,29 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         d = round(cv - pv, 2)
         return d if not inverse else -d
 
+    # curr_raw/prev_raw: the literal unrounded numeric values behind "value" and
+    # the (possibly sign-flipped-for-display) "delta" -- exposed additively so a
+    # true comparison table (This Month | Previous Month | Delta | % Change) can
+    # be built without reverse-engineering a flipped delta back into a raw prior
+    # value (which would be fragile/easy to get subtly wrong). Existing consumers
+    # (e.g. the Portfolio Pulse dashboard cards) only read label/value/delta/unit/
+    # inverse and are unaffected by these extra keys.
+    def _card(label, key, value, unit, inverse):
+        return {
+            "label": label, "value": value, "delta": _delta(key, inverse=inverse),
+            "unit": unit, "inverse": inverse,
+            "curr_raw": c.get(key, 0), "prev_raw": p.get(key, 0) if p else None,
+        }
+
     return [
-        {"label": "Total Accounts",       "value": f"{c.get('accounts',0):,}",       "delta": _delta("accounts"),            "unit": "",  "inverse": False},
-        {"label": "Total SOH",            "value": f"₹{c.get('soh',0):.2f}Cr",       "delta": _delta("soh", inverse=True),   "unit": "Cr","inverse": True},
-        {"label": "SMA-2 Accounts",       "value": f"{c.get('sma2_count',0):,}",      "delta": _delta("sma2_count", inverse=True), "unit": "", "inverse": True},
-        {"label": "SMA-2 %",              "value": f"{c.get('sma2_pct',0):.2f}%",    "delta": _delta("sma2_pct", inverse=True),  "unit": "%","inverse": True},
-        {"label": "NPA Accounts",         "value": f"{c.get('npa_count',0):,}",       "delta": _delta("npa_count", inverse=True), "unit": "", "inverse": True},
-        {"label": "NPA %",                "value": f"{c.get('npa_pct',0):.2f}%",     "delta": _delta("npa_pct", inverse=True),   "unit": "%","inverse": True},
-        {"label": "Collection %",         "value": f"{c.get('coll_pct',0):.2f}%",    "delta": _delta("coll_pct"),                "unit": "%","inverse": False},
-        {"label": "Strike %",             "value": f"{c.get('strike_pct',0):.2f}%",  "delta": _delta("strike_pct", inverse=True), "unit": "%","inverse": True},
+        _card("Total Accounts", "accounts",  f"{c.get('accounts',0):,}",      "",   False),
+        _card("Total SOH",      "soh",       f"₹{c.get('soh',0):.2f}Cr",      "Cr", True),
+        _card("SMA-2 Accounts", "sma2_count", f"{c.get('sma2_count',0):,}",   "",   True),
+        _card("SMA-2 %",        "sma2_pct",  f"{c.get('sma2_pct',0):.2f}%",  "%",  True),
+        _card("NPA Accounts",   "npa_count", f"{c.get('npa_count',0):,}",    "",   True),
+        _card("NPA %",          "npa_pct",   f"{c.get('npa_pct',0):.2f}%",   "%",  True),
+        _card("Collection %",   "coll_pct",  f"{c.get('coll_pct',0):.2f}%",  "%",  False),
+        _card("Strike %",       "strike_pct", f"{c.get('strike_pct',0):.2f}%", "%", True),
     ]
 
 

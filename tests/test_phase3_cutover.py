@@ -270,7 +270,7 @@ class TestGraphNodes:
         return base
 
     def test_compiler_node_produces_plan(self):
-        from graph import compiler_node
+        from graph import compile_and_validate_node
         ir1 = {
             "intent": "aggregation",
             "filters": [],
@@ -278,20 +278,28 @@ class TestGraphNodes:
             "measures": [{"metric": "exposure", "alias": "soh"}],
         }
         state = self._stub_state(ir1=ir1)
-        out = compiler_node(state)
+        out = compile_and_validate_node(state)
         assert out["error"] == ""
         assert isinstance(out["plan"], list) and len(out["plan"]) > 0
 
-    def test_compiler_node_errors_on_bad_concept(self):
-        from graph import compiler_node
-        ir1 = {
+    def test_compiler_node_errors_on_bad_concept(self, monkeypatch):
+        # compile_and_validate_node now retries a compile failure once via
+        # plan_logical (see graph.py's merged repair loop) -- stub it so this
+        # stays a fast, deterministic, network-free unit test (module docstring
+        # guarantee: "no live Gemini calls"). The stub keeps returning the same
+        # bad concept, so the repair attempt is exercised and still fails.
+        import graph
+
+        bad_ir1 = {
             "intent": "aggregation",
             "filters": [{"concept": "totally_fake_concept"}],
             "dimensions": ["branch"],
             "measures": [{"metric": "exposure", "alias": "soh"}],
         }
-        state = self._stub_state(ir1=ir1)
-        out = compiler_node(state)
+        monkeypatch.setattr(graph, "plan_logical", lambda *a, **k: bad_ir1)
+
+        state = self._stub_state(ir1=bad_ir1)
+        out = graph.compile_and_validate_node(state)
         assert out["error"] != ""
 
     def test_execute_node_loan_table(self):

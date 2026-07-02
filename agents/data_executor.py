@@ -3,6 +3,8 @@ import pandas as pd
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
+from config import RECENT_ADVANCES_MONTHS
+
 # Bucket severity scores - higher = worse
 _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
 
@@ -226,7 +228,7 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     """Run all priority rules in ranked order, combine results with a Priority column."""
     from agents.domain_expert import PRIORITY_RULES
 
-    cutoff_1y = pd.Timestamp(date.today() - relativedelta(months=12))
+    cutoff_1y = pd.Timestamp(date.today() - relativedelta(months=RECENT_ADVANCES_MONTHS))
 
     all_rows = []
     seen_loans = set()

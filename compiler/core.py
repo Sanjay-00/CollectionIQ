@@ -25,10 +25,11 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 
 from registry.ontology import CONCEPTS, METRICS, ENTITY_CONCEPTS
-from registry.semantic_model import ENTITIES, entity_key, resolve_dimension, is_coarser
+from registry.semantic_model import ENTITIES, DIMENSIONS, entity_key, resolve_dimension, is_coarser
 from agents.plan_executor import validate_plan
 from compiler.measures import MEASURE_HANDLERS, MEASURE_ROLLUPS
 from utils import PREV_CARRYOVER_COLS
+from config import RECENT_ADVANCES_MONTHS
 
 # Key columns of loan-level "dimension" entities (branch/region/executive). A
 # per-entity predicate that aggregates over one of these  -  when it is not the output
@@ -48,9 +49,12 @@ def _snake(name: str) -> str:
 def _resolve_cutoff(value):
     """Resolve the dynamic __CUTOFF_1Y__ placeholder to a concrete timestamp.
     Mirrors agents.data_executor.execute_priority_mode so concept definitions that
-    use the placeholder (recent_advance_high_bucket) behave identically."""
+    use the placeholder (recent_advance_high_bucket) behave identically. Despite
+    the "1Y" name the window is config.RECENT_ADVANCES_MONTHS (the same constant
+    smart_alerts.py uses for the identical "recent advances" concept), not a
+    hardcoded 12  -  changing that one setting now changes this everywhere."""
     if value == "__CUTOFF_1Y__":
-        return pd.Timestamp(date.today() - relativedelta(months=12))
+        return pd.Timestamp(date.today() - relativedelta(months=RECENT_ADVANCES_MONTHS))
     return value
 
 
@@ -118,6 +122,9 @@ def _resolve_count_metric(name: str) -> dict | None:
       1. total / all → count all rows
       2. {movement} / {movement}_count → bucket_worse/better_than where clause
       3. prev_{bucket}_count → count where prev_bucket == value
+      3b. curr_{bucket}_count → count where curr_bucket == value (symmetric with 3;
+          same as plain {bucket}_count below, accepted so the planner isn't punished
+          for guessing the explicit curr_ form when it already used prev_ for the twin)
       4. {concept}_count → expand from CONCEPTS registry
       5. {bucket}_count → count where curr_bucket == value
       6. {status}_count → count where Loan Status == value
@@ -145,10 +152,27 @@ def _resolve_count_metric(name: str) -> dict | None:
     # 3. prev_{bucket}_count → count where prev_bucket == bucket
     if prefix.startswith("prev_"):
         bucket_part = prefix[5:]
+        if bucket_part in {"total", "all", "total_cases"}:
+            # prev_total_count: how many accounts existed in the previous period
+            # -- rows with a genuine matched prev_bucket value. Match against the
+            # known bucket set rather than a None/NaN check, since string-column
+            # comparison stringifies missing values inconsistently (NaN -> "nan").
+            return {"agg": "count", "kind": "count", "where": [
+                {"column": "prev_bucket", "op": "in",
+                 "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]}
+            ]}
         bucket_val = _BUCKET_ALIASES.get(bucket_part)
         if bucket_val:
             return {"agg": "count", "kind": "count",
                     "where": [{"column": "prev_bucket", "op": "==", "value": bucket_val}]}
+
+    # 3b. curr_{bucket}_count → count where curr_bucket == bucket
+    if prefix.startswith("curr_"):
+        bucket_part = prefix[5:]
+        bucket_val = _BUCKET_ALIASES.get(bucket_part)
+        if bucket_val:
+            return {"agg": "count", "kind": "count",
+                    "where": [{"column": "curr_bucket", "op": "==", "value": bucket_val}]}
 
     # 4. {concept}_count → expand from registry
     concept = CONCEPTS.get(prefix)
@@ -202,7 +226,57 @@ def _infer_kind(d: dict):
     return None
 
 
-def _measure_def(m: dict, errs: list):
+def _resolve_prev_metric(name: str) -> dict | None:
+    """A bare 'prev_{metric}' name (e.g. 'prev_collection_pct', 'prev_exposure'),
+    referenced WITHOUT a time.compare block -- symmetric with 'prev_{bucket}_count'
+    support in _resolve_count_metric. Maps a registered metric's source column(s)
+    through PREV_CARRYOVER_COLS to build the previous-period version directly, so
+    'prev_X' works standalone the same way 'prev_npa_count' already does, instead
+    of only being reachable via a time.compare block. Covers both measure kinds
+    that have a source column: additive (single column) and ratio (numerator/
+    denominator columns) -- count-kind metrics have no natural 'prev' column to
+    map and are handled separately by _resolve_count_metric's own prev_ support."""
+    if not name.startswith("prev_"):
+        return None
+    base = METRICS.get(name[5:])
+    if base is None:
+        return None
+    kind = base.get("kind")
+    if kind == "ratio":
+        num = [PREV_CARRYOVER_COLS.get(c) for c in _as_cols(base.get("numerator"))]
+        den = [PREV_CARRYOVER_COLS.get(c) for c in _as_cols(base.get("denominator"))]
+        if not all(num) or not all(den):
+            return None  # no prev mapping for one of the columns -- can't build it
+        mdef = dict(base)
+        mdef["numerator"] = num
+        mdef["denominator"] = den
+        return mdef
+    if kind == "additive":
+        prev_col = PREV_CARRYOVER_COLS.get(base.get("column"))
+        if not prev_col:
+            return None
+        mdef = dict(base)
+        mdef["column"] = prev_col
+        return mdef
+    return None  # count / count_distinct / semi_additive: no direct prev column to map
+
+
+def _resolve_metric_as_column(name: str, columns) -> str | None:
+    """Last-resort fallback when a 'metric' name matches neither METRICS nor the
+    count-pattern resolver: the planner sometimes guesses a plausible metric name
+    that is actually just the raw column, lowercased/underscored (e.g. "soh" for
+    the "SOH" column). Case-insensitive, space/underscore-normalized match against
+    the real column list. Returns the exact real column name, or None."""
+    if not columns:
+        return None
+    norm = name.lower().replace("_", "").replace(" ", "")
+    for col in columns:
+        if str(col).lower().replace("_", "").replace(" ", "") == norm:
+            return str(col)
+    return None
+
+
+def _measure_def(m: dict, errs: list, columns=None):
     """Resolve an IR measure into a uniform measure-definition (mdef): a metric ref
     is expanded from the registry; an inline measure is used directly. Concepts on
     a count measure are expanded to a concrete 'where' HERE (core owns concept
@@ -221,6 +295,23 @@ def _measure_def(m: dict, errs: list):
                 mdef["alias"] = m.get("alias") or m["metric"]
                 mdef["kind"] = _infer_kind(mdef)
                 return mdef
+            # Or a bare 'prev_{metric}' name (e.g. "prev_collection_pct",
+            # "prev_exposure") referenced standalone, without a time.compare block.
+            prev_metric = _resolve_prev_metric(m["metric"])
+            if prev_metric is not None:
+                mdef = dict(prev_metric)
+                mdef["alias"] = m.get("alias") or m["metric"]
+                return mdef
+            # Last resort: the "metric" name is actually just a raw column, guessed
+            # case-insensitively (e.g. "soh" -> "SOH"). Treat as a sum measure.
+            real_col = _resolve_metric_as_column(m["metric"], columns)
+            if real_col is not None:
+                return {
+                    "alias": m.get("alias") or m["metric"],
+                    "column": real_col,
+                    "agg": m.get("agg") or "sum",
+                    "kind": "additive",
+                }
             errs.append(f"unknown metric '{m['metric']}'")
             return None
         mdef = dict(md)
@@ -261,7 +352,7 @@ def _resolve_measures(measures: list, ctx: dict, errs: list) -> tuple[list, list
     post: list = []
     grains: list = []
     for m in measures or []:
-        mdef = _measure_def(m, errs)
+        mdef = _measure_def(m, errs, ctx.get("columns"))
         if mdef is None:
             continue
         handler = MEASURE_HANDLERS.get(mdef["kind"])
@@ -407,7 +498,15 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
     dims_raw = ir.get("dimensions") or []
     group_by: list[str] = []
     for d in dims_raw:
-        group_by.extend(resolve_dimension(d))
+        if d in DIMENSIONS:
+            group_by.extend(resolve_dimension(d))
+        elif d in columns:
+            group_by.append(d)
+        else:
+            errs.append(
+                f"unknown dimension alias '{d}': valid aliases are "
+                f"{', '.join(DIMENSIONS.keys())} (or an exact existing column name)"
+            )
 
     entity_filters = ir.get("entity_filters") or []
 
@@ -417,11 +516,11 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
 
     if entity_filters:
         # NESTED path: the compiler derives a multi-pass plan from the grain lattice.
-        plan += _build_nested(ir, group_by, entity_filters, errs)
+        plan += _build_nested(ir, group_by, entity_filters, errs, columns)
     elif group_by:
         # SINGLE-PASS path (Step 1 shapes).
         ctx = {"dimensions": dims_raw, "group_by": group_by,
-               "time": ir.get("time"), "aggregating_over": set()}
+               "time": ir.get("time"), "aggregating_over": set(), "columns": columns}
         pre_derives, aggs, post_derives, measure_grains = _resolve_measures(
             ir.get("measures") or [], ctx, errs
         )
@@ -446,11 +545,21 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
             if expr and label:
                 plan.append({"op": "derive", "column": label, "expr": expr})
         for h in ir.get("having") or []:
-            alias = h.get("alias")
+            # Accept any of the key names the model might use for the target
+            # measure alias (mirrors _append_sort_limit's order_by fallback below --
+            # "column" is what the model naturally reaches for, matching the FILTER
+            # format used everywhere else in the schema).
+            alias = h.get("alias") or h.get("column") or h.get("measure") or h.get("field")
             if alias:
                 plan.append({"op": "filter", "conditions": [
                     {"column": alias, "op": h.get("op") or ">=", "value": h.get("value", 0)}
                 ]})
+            else:
+                # A having entry with no resolvable target is silently dropping the
+                # user's threshold -- never do that. Fail loud so it's caught (and,
+                # after this repair loop, gets a chance to self-correct) instead of
+                # producing a technically-successful but wrong answer.
+                errs.append(f"having entry has no resolvable alias/column: {h!r}")
     elif not conditions:
         errs.append("empty query: no filters and no dimensions to compute")
 
@@ -503,7 +612,7 @@ def _build_having_pred(pred: dict, alias: str, errs: list) -> tuple[dict, dict]:
     return a, cond
 
 
-def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list) -> list:
+def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, columns=None) -> list:
     """Derive an intermediate→filter→terminal plan from the grain lattice. The LLM
     supplied only entity names + declarative predicates + measure names; ALL of the
     structure below (keys, pass order, rollup decomposition) is derived here."""
@@ -563,7 +672,7 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list) ->
     term_post: list = []
     measures = ir.get("measures") or []
     for m in measures:
-        mdef = _measure_def(m, errs)
+        mdef = _measure_def(m, errs, columns)
         if mdef is None:
             continue
         rollup = MEASURE_ROLLUPS.get(mdef["kind"])

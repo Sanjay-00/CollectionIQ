@@ -266,6 +266,29 @@ _rr = rr_meta or {}
     tuple((a["count"], a["title"]) for a in alerts_prev),
 )
 
+# Precomputed analysis/ results, keyed for the AI Query tab's fast-path view
+# layer (registry/views.py) to reuse directly -- guarantees AI Query answers are
+# numerically identical to what these same tabs already show, no recomputation.
+precomputed_views = {
+    "pi_top_accounts":    (pi_top_accounts, pi_top_accounts_summary),
+    "pi_fleet":           pi_fleet,
+    "scorecard_df":       scorecard_df,
+    # Wrapped as tuples to match what a FRESH call to compute_roll_rate_matrix /
+    # compute_branch_quadrant returns -- registry/views.py normalizers handle
+    # the cached and freshly-computed cases identically this way.
+    "rr_matrix":          (rr_matrix, rr_meta),
+    "pi_region":          pi_region,
+    "pi_branch":          (pi_branch, pi_fig_quad),
+    "pi_exec":            pi_exec,
+    "pi_risk":            pi_risk,
+    "pi_repo_df":         pi_repo_df,
+    "pi_good_customers":  pi_good_customers,
+    "pi_npa_sma2_cmp":    pi_npa_sma2_cmp,
+    "pi_product":         pi_product,
+    "pi_pulse_kpis":      pi_pulse_kpis,
+    "pi_good_bad":        pi_good_bad,
+}
+
 # ── Active filter bar ─────────────────────────────────────────────────────────
 active_filters = {k: v for k, v in {
     "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
@@ -356,7 +379,10 @@ with tabs[5]:
         _snapshot_dates = {"curr": curr_month_input.strftime("%Y-%m-%d")}
         if prev_month and len(df_prev_raw) > 0:
             _snapshot_dates["prev"] = prev_month_input.strftime("%Y-%m-%d")
-        render_ai_query_tab(df_curr, _snapshot_dates)
+        render_ai_query_tab(
+            df_curr, _snapshot_dates, df_prev=df_prev, precomputed_views=precomputed_views,
+            alerts_curr=alerts, alerts_prev=alerts_prev, rr_meta=rr_meta,
+        )
     except Exception as _e:
         _tab_error("AI Query", _e)
 

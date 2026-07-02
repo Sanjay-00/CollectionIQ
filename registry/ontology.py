@@ -27,6 +27,16 @@ Three things live here:
   deferred until the compiler grows that primitive  -  they are not encoded here yet
   rather than encoded in a form the engine cannot run.
 
+  Same reason "strike" (Strike=Y) is NOT encoded as a CONCEPT: its real definition is
+  an OR of three legs (Month Collection >= Month Due-Inst [column-vs-column, same
+  blocker as above] OR LCC%==100 OR ARREARS AGAINST INST<=0), and this schema's
+  "conditions" list is ANDed only. Encoding it as an AND of the two column-only legs
+  would silently compute a narrower, WRONG criterion -- worse than not having the
+  concept at all. Defer until the compiler supports both column-vs-column comparisons
+  AND OR'd condition groups; until then the "Strike" column itself is documented
+  correctly in agents/logical_planner.py's glossary and usable directly as a raw
+  column filter (Strike == "Y" / "N").
+
   __CUTOFF_1Y__ is a dynamic placeholder (loan agreement date within last 12
   months); execute_priority_mode resolves it today, and the v2 compiler resolves
   it at lowering time. Same convention as PRIORITY_RULES.
@@ -38,6 +48,17 @@ Three things live here:
 Nothing here except PRIORITY_RULES is consumed yet  -  CONCEPTS/METRICS are additive
 in Phase 0, so they cannot change behavior.
 """
+
+# Thresholds shared with the dashboard (analysis/, smart_alerts.py) -- imported
+# rather than re-hardcoded, so a business-rule change in config.py can't silently
+# desync the AI Query pipeline's definition of the same concept from what the
+# dashboard tabs already show.
+from config import (
+    EASY_SETTLEMENT_MAX_ARREARS,
+    INSURANCE_EXP_ARREARS_MIN,
+    FLEET_MIN_LOANS,
+    RECENT_ADVANCES_MONTHS,
+)
 
 # ── Business Priority Framework (migrated verbatim  -  single source of truth) ───
 # Used by the system prompt's generated priority section AND by the data executor
@@ -52,16 +73,16 @@ PRIORITY_RULES = [
     {
         "rank": 2,
         "label": "Easy Settlements",
-        "why": "Closing arrears < ₹1000 - one call can clear these, quick wins for collection team",
+        "why": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,} - one call can clear these, quick wins for collection team",
         "conditions": [
             {"column": "Closing Arrears", "op": ">",  "value": 0},
-            {"column": "Closing Arrears", "op": "<",  "value": 1000},
+            {"column": "Closing Arrears", "op": "<",  "value": EASY_SETTLEMENT_MAX_ARREARS},
         ],
     },
     {
         "rank": 3,
         "label": "Recent Advances - High Bucket",
-        "why": "Loans sanctioned within last 12 months already in SMA-1 or worse  -  early warning of sourcing quality issues",
+        "why": f"Loans sanctioned within last {RECENT_ADVANCES_MONTHS} months already in SMA-1 or worse  -  early warning of sourcing quality issues",
         "conditions": [
             {"column": "Ag_Date",       "op": ">=", "value": "__CUTOFF_1Y__"},
             {"column": "Arrears / EMI", "op": ">=", "value": 1},
@@ -73,7 +94,7 @@ PRIORITY_RULES = [
         "why": "Customer paid EMI (no arrears against installment) but unpaid insurance/expense charge is creating artificial arrears - fixable via cash or child loan",
         "conditions": [
             {"column": "ARREARS AGAINST INST", "op": "<=", "value": 0},
-            {"column": "ARREARS AGAINST EXP",  "op": ">",  "value": 5000},
+            {"column": "ARREARS AGAINST EXP",  "op": ">",  "value": INSURANCE_EXP_ARREARS_MIN},
             {"column": "Arrears / EMI",         "op": ">",  "value": 0},
         ],
     },
@@ -120,10 +141,10 @@ CONCEPTS: dict[str, dict] = {
     },
     "easy_settlement": {
         "label": "Easy Settlement",
-        "description": "Closing arrears between 0 and ₹1000 - one call can clear these.",
+        "description": f"Closing arrears between 0 and ₹{EASY_SETTLEMENT_MAX_ARREARS:,} - one call can clear these.",
         "conditions": [
             {"column": "Closing Arrears", "op": ">", "value": 0},
-            {"column": "Closing Arrears", "op": "<", "value": 1000},
+            {"column": "Closing Arrears", "op": "<", "value": EASY_SETTLEMENT_MAX_ARREARS},
         ],
     },
     "colending_at_risk": {
@@ -136,16 +157,16 @@ CONCEPTS: dict[str, dict] = {
     },
     "insurance_driven_delinquency": {
         "label": "Insurance-Driven Delinquency",
-        "description": "EMI paid but unpaid insurance/expense charge (> ₹5000) creates artificial arrears.",
+        "description": f"EMI paid but unpaid insurance/expense charge (> ₹{INSURANCE_EXP_ARREARS_MIN:,}) creates artificial arrears.",
         "conditions": [
             {"column": "ARREARS AGAINST INST", "op": "<=", "value": 0},
-            {"column": "ARREARS AGAINST EXP", "op": ">", "value": 5000},
+            {"column": "ARREARS AGAINST EXP", "op": ">", "value": INSURANCE_EXP_ARREARS_MIN},
             {"column": "Arrears / EMI", "op": ">", "value": 0},
         ],
     },
     "recent_advance_high_bucket": {
         "label": "Recent Advance - High Bucket",
-        "description": "Loan sanctioned within last 12 months already in SMA-1 or worse.",
+        "description": f"Loan sanctioned within last {RECENT_ADVANCES_MONTHS} months already in SMA-1 or worse.",
         "conditions": [
             {"column": "Ag_Date", "op": ">=", "value": "__CUTOFF_1Y__"},
             {"column": "Arrears / EMI", "op": ">=", "value": 1},
@@ -177,8 +198,8 @@ ENTITY_CONCEPTS: dict[str, dict] = {
     "fleet_operator": {
         "entity": "customer",
         "label": "Fleet Operator",
-        "description": "A customer holding 3 or more loans/vehicles.",
-        "having": [{"agg": "nunique", "column": "Loan No", "op": ">=", "value": 3}],
+        "description": f"A customer holding {FLEET_MIN_LOANS} or more loans/vehicles.",
+        "having": [{"agg": "nunique", "column": "Loan No", "op": ">=", "value": FLEET_MIN_LOANS}],
     },
 }
 
@@ -236,5 +257,19 @@ METRICS: dict[str, dict] = {
         "cap": 100,
         "grain": "loan",
         "description": "Cumulative collection efficiency = cum collection / cum dues, as a percent (capped at 100).",
+    },
+    "collection_pct": {
+        "label": "Collection %",
+        "kind": "ratio",
+        # This-month collection efficiency: sum(collected) / sum(demand) * 100.
+        # Same shape as lcc_pct -- computed at the target grain, never averaged
+        # per-loan. Registering this (rather than leaving it for the planner to
+        # invent as a bare name) also means time.compare auto-derives a correct
+        # prev_collection_pct for free, the same way it already does for lcc_pct.
+        "numerator": ["Month Collection (Excluding Reserve Collection)"],
+        "denominator": ["Net Collection Demand Inst+Exp+BC"],
+        "scale": 100,
+        "grain": "loan",
+        "description": "This month's collection efficiency = month collection / month demand, as a percent.",
     },
 }

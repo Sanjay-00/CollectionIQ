@@ -8,11 +8,12 @@ These lock in two things:
    consistent with the concept ontology so they can't silently drift apart while
    both exist during the transition.
 """
+import importlib
 import re
 
 from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS
 from registry import (
-    CONCEPTS, METRICS, PRIORITY_RULES, ENTITIES, DIMENSIONS,
+    CONCEPTS, METRICS, PRIORITY_RULES, ENTITIES, DIMENSIONS, ENTITY_CONCEPTS, VIEWS,
     entity_key, is_coarser, resolve_dimension,
 )
 
@@ -130,3 +131,84 @@ class TestSemanticModel:
     def test_branch_alias_maps_to_unit(self):
         assert resolve_dimension("branch") == ["Unit"]
         assert resolve_dimension("executive") == ["MNT NAME", "Unit"]
+
+
+class TestEntityConceptIntegrity:
+    """ENTITY_CONCEPTS (per-entity rollup predicates, e.g. fleet_operator) --
+    previously untested; the CONCEPTS/METRICS suites above don't cover this dict
+    at all, so a typo'd column/entity here would only surface at query time."""
+
+    def test_entity_concepts_reference_known_entity(self):
+        for name, ec in ENTITY_CONCEPTS.items():
+            assert ec.get("entity") in ENTITIES, f"entity concept {name}: unknown entity '{ec.get('entity')}'"
+
+    def test_entity_concepts_having_reference_real_columns(self):
+        for name, ec in ENTITY_CONCEPTS.items():
+            having = ec.get("having")
+            assert having, f"entity concept {name} has no having predicates"
+            for pred in having:
+                col = pred.get("distinct") or pred.get("column")
+                assert col in _KNOWN_COLS, f"entity concept {name}: unknown column '{col}'"
+                assert pred.get("op"), f"entity concept {name}: predicate missing op"
+
+    def test_entity_concepts_required_fields(self):
+        for name, ec in ENTITY_CONCEPTS.items():
+            assert ec.get("label"), f"entity concept {name} missing label"
+            assert ec.get("description"), f"entity concept {name} missing description"
+
+
+class TestCrossRegistryNameCollisions:
+    """The planner picks a name from one of FOUR parallel vocabularies (CONCEPTS,
+    METRICS, ENTITY_CONCEPTS, VIEWS) based on context (filters vs measures vs
+    entity_filters vs the top-level "view" field). A name reused across two of
+    these is a real confusion risk we've hit live (fleet_operator misrouted
+    between CONCEPTS/ENTITY_CONCEPTS; "pulse_kpis" -- a VIEW name -- referenced
+    as if it were a METRIC). This guards against ever reintroducing that class
+    of ambiguity as the vocabularies keep growing."""
+
+    def test_no_name_shared_across_registries(self):
+        registries = {
+            "CONCEPTS": set(CONCEPTS), "METRICS": set(METRICS),
+            "ENTITY_CONCEPTS": set(ENTITY_CONCEPTS), "VIEWS": set(VIEWS),
+        }
+        names = list(registries.items())
+        for i, (name_a, keys_a) in enumerate(names):
+            for name_b, keys_b in names[i + 1:]:
+                overlap = keys_a & keys_b
+                assert not overlap, f"name(s) {overlap} exist in both {name_a} and {name_b}"
+
+
+class TestViewsIntegrity:
+    """VIEWS entries are only ever exercised at runtime by whichever query happens
+    to match them -- a typo'd 'fn' dotted path or 'subkey' would sit undetected
+    until a real user hits that exact view. Resolve every one at test time."""
+
+    def test_every_view_fn_resolves(self):
+        from registry.views import resolve_view_fn
+        for name in VIEWS:
+            fn = resolve_view_fn(name)
+            assert callable(fn), f"view {name}: 'fn' did not resolve to a callable"
+
+    def test_every_view_has_required_fields(self):
+        _VALID_OUTPUTS = {"df", "df_dict_tuple", "dict_with_top_df", "matrix_tuple",
+                           "tuple_df_fig", "list_of_dicts", "dict_subkey_df", "good_bad_dict"}
+        _VALID_INPUTS = {"df_curr", "df_prev", "rr_meta"}
+        for name, spec in VIEWS.items():
+            assert spec.get("label"), f"view {name} missing label"
+            assert spec.get("description"), f"view {name} missing description"
+            assert spec.get("fn"), f"view {name} missing fn"
+            assert spec.get("output") in _VALID_OUTPUTS, f"view {name}: unknown output kind '{spec.get('output')}'"
+            for inp in spec.get("inputs") or []:
+                assert inp in _VALID_INPUTS, f"view {name}: unknown input '{inp}'"
+            if spec.get("output") == "dict_subkey_df":
+                assert spec.get("subkey"), f"view {name}: dict_subkey_df output requires a 'subkey'"
+            for req in spec.get("requires") or []:
+                assert req in _VALID_INPUTS, f"view {name}: unknown 'requires' entry '{req}'"
+
+    def test_view_module_paths_resolve_without_importing_agents_or_compiler(self):
+        # analysis/ must stay a leaf dependency (no import cycle risk) -- every
+        # VIEWS 'fn' should live under the analysis package.
+        for name, spec in VIEWS.items():
+            assert spec["fn"].startswith("analysis."), f"view {name}: fn '{spec['fn']}' is not under analysis."
+            module_path = spec["fn"].rsplit(".", 1)[0]
+            importlib.import_module(module_path)  # raises if it doesn't exist

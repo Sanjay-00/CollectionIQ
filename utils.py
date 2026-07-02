@@ -80,6 +80,13 @@ PREV_CARRYOVER_COLS = {
     "Arrears / EMI":        "prev_Arrears_EMI",
     "ARREARS AGAINST INST": "prev_Arrears_Inst",
     "ARREARS AGAINST EXP":  "prev_Arrears_Exp",
+    # Flow columns (this month's transactional collection/demand, not a stock
+    # balance) -- still meaningful to carry forward matched by Loan No for
+    # "collection % this month vs previous" comparisons. Without these, the
+    # collection_pct ratio metric (registry/ontology.py) silently has no
+    # previous-period version under time.compare.
+    "Month Collection (Excluding Reserve Collection)": "prev_Month_Collection",
+    "Net Collection Demand Inst+Exp+BC":               "prev_Net_Collection_Demand",
 }
 
 

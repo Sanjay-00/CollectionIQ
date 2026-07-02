@@ -6,15 +6,17 @@ import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
 from agents.data_executor import (
+    _build_mask,
     compute_contextual_rankings,
     compute_result_kpis,
     execute_priority_mode,
 )
-from agents.plan_executor import execute_plan, validate_plan
+from agents.plan_executor import execute_plan
 from agents.logical_planner import plan_logical
 from agents.insight_generator import generate_insights
-from compiler.core import compile_logical
+from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
+from registry.views import VIEWS, normalize_view_output, resolve_view_fn
 
 
 # ── Per-thread step callback ──────────────────────────────────────────────────
@@ -22,8 +24,8 @@ _tls = threading.local()
 
 _STEP_LABELS: dict[str, str] = {
     "planner":  "🧠  Query Planner: understanding your question",
-    "compile":  "⚙️   Compiler: building the execution plan",
-    "validate": "🔎  Validator: checking the plan against your data",
+    "compile":  "⚙️   Compiler: building and validating the execution plan",
+    "view":     "⚡  Fast Path: fetching a pre-computed answer",
     "execute":  "⚡  Data Executor: computing the answer",
     "analyze":  "💡  Insight Generator: writing AI observations",
 }
@@ -51,6 +53,13 @@ class QueryState(TypedDict):
     result_df_full: Any
     snapshot_dates: dict
 
+    # Fast-path view inputs (threaded from app.py's already-cached analysis/ results)
+    df_prev: Any
+    precomputed_views: dict
+    alerts_curr: list
+    alerts_prev: list
+    rr_meta: dict
+
     # IR-1 (from logical planner)
     ir1: dict
 
@@ -67,6 +76,7 @@ class QueryState(TypedDict):
     plan_mode: bool
     plan: list
     result_type: str
+    view_render: str  # UI hint from a fast-path view (e.g. "kpi_cards"); "" for the normal compiler path
 
     # Clarification
     allow_clarification: bool
@@ -180,67 +190,188 @@ def logical_planner_node(state: QueryState) -> QueryState:
         return {**state, "error": f"Query planning failed: {e}"}
 
 
-# ── Node 2: Compiler (deterministic) ─────────────────────────────────────────
-def compiler_node(state: QueryState) -> QueryState:
+# ── Node 1b: Fast-Path View (deterministic, reuses cached analysis/ results) ──
+# "If the query is already computed then just fetch that result, if not computed
+# then do v2 ai query search normally" -- this node IS that fetch. It never fails
+# hard: any reason a view can't serve the request (unknown name, missing df_prev,
+# a filter on a non-filterable view, filter-expansion errors, a runtime error
+# from the analysis/ function itself) clears ir1["view"] and routes back into the
+# normal compile_and_validate_node -> execute_node path with the SAME ir1, so the
+# query still gets answered via the general pipeline rather than failing outright.
+def view_node(state: QueryState) -> QueryState:
+    _announce("view")
+    ir1 = state.get("ir1") or {}
+    view_spec = ir1.get("view") or {}
+    name = view_spec.get("name")
+    spec = VIEWS.get(name)
+
+    def _fallthrough(new_state=None):
+        s = new_state if new_state is not None else state
+        return {**s, "ir1": {**ir1, "view": None}}
+
+    if spec is None:
+        return _fallthrough()
+
+    df_curr = state.get("result_df_full")
+    if df_curr is None or len(df_curr) == 0:
+        return _fallthrough()
+
+    df_prev = state.get("df_prev")
+    if "df_prev" in (spec.get("requires") or []) and (df_prev is None or len(df_prev) == 0):
+        return _fallthrough()
+
+    filters = view_spec.get("filters") or []
+    if filters and not spec.get("filterable", True):
+        # Planner attached a filter to a view that can't take one -- don't
+        # silently drop the user's requested restriction, fall through instead.
+        return _fallthrough()
+
+    param_specs = spec.get("params") or {}
+    requested_params = view_spec.get("params") or {}
+    non_default_params = {
+        k: v for k, v in requested_params.items()
+        if k in param_specs and v != param_specs[k].get("default")
+    }
+
+    precomputed = state.get("precomputed_views") or {}
+
+    rr_meta = state.get("rr_meta")
+
+    try:
+        if not filters and not non_default_params:
+            # Reuse the literal cached object -- zero recomputation, guarantees
+            # numeric identity with what the dashboard tabs already show.
+            cache_key = spec.get("cache_key")
+            if cache_key and cache_key in precomputed:
+                raw = precomputed[cache_key]
+            else:
+                raw = _call_view_fn(name, spec, df_curr, df_prev, {}, rr_meta)
+        else:
+            call_params = {k: d.get("default") for k, d in param_specs.items()}
+            call_params.update(non_default_params)
+
+            input_df, input_df_prev = df_curr, df_prev
+            if filters:
+                errs: list = []
+                conditions = _expand_filters(filters, errs)
+                if errs:
+                    return _fallthrough()
+                input_df = df_curr[_build_mask(df_curr, conditions)]
+                # Apply the SAME conditions to df_prev too -- a view that consumes
+                # both (e.g. region_scorecard) must compare like-for-like (e.g.
+                # "Pune this month" against "Pune last month", never "Pune this
+                # month" against "the whole portfolio last month"). Conditions on
+                # columns df_prev doesn't have (e.g. curr_bucket, which only
+                # exists post-merge on df_curr) are gracefully skipped by
+                # _apply_condition, not an error.
+                if input_df_prev is not None and len(input_df_prev):
+                    input_df_prev = input_df_prev[_build_mask(input_df_prev, conditions)]
+
+            raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
+    except Exception:
+        return _fallthrough()
+
+    try:
+        result_df, result_kpis, result_rankings = normalize_view_output(spec, raw)
+    except Exception:
+        return _fallthrough()
+
+    result_kpis = {"Count": len(result_df), **result_kpis}
+    # analyze_node's insight generator only understands two kpis shapes: an
+    # "aggregation result" (has "_agg_rows") or a "loan-level filter result"
+    # (expects Total POS/Avg Arrears/EMI/etc, defaulting missing keys to 0).
+    # View kpis never match the second shape, so without this it would silently
+    # describe a KPI-card view (e.g. pulse_kpis) as "8 accounts with zero POS" --
+    # a confidently fabricated narrative built from defaulted zeros. Always give
+    # it real sample rows to describe instead, regardless of which view this is.
+    if "_agg_rows" not in result_kpis and result_df is not None and len(result_df):
+        result_kpis["_agg_rows"] = result_df.head(5).to_dict(orient="records")
+
+    return {
+        **state,
+        "query_title":       ir1.get("query_title") or spec.get("label") or "Custom Query",
+        "enriched_query":    ir1.get("description") or state["query"],
+        "priority_mode":     False,
+        "aggregation_mode":  False,
+        "plan_mode":         False,
+        "plan":              [],
+        "result_type":       "loan_table",
+        "view_render":       spec.get("render") or "",
+        "parsed_filters":    {"plain_english": ir1.get("description") or state["query"]},
+        "result_df":         result_df,
+        "result_kpis":       result_kpis,
+        "result_rankings":   result_rankings,
+        "error":             "",
+    }
+
+
+def _call_view_fn(name: str, spec: dict, df_curr, df_prev, call_params: dict, rr_meta=None):
+    """Resolve and invoke a VIEWS entry's analysis/ function, supplying whichever
+    inputs it declares (df_curr / df_prev / rr_meta, in order) plus any accepted
+    params. A view with no fresh-callable inputs (e.g. good_bad_summary, which
+    composes from OTHER views' outputs) will TypeError here on a cache miss --
+    caught by view_node's try/except and treated as a normal fall-through."""
+    fn = resolve_view_fn(name)
+    args = []
+    for inp in spec.get("inputs") or []:
+        if inp == "df_curr":
+            args.append(df_curr)
+        elif inp == "df_prev":
+            args.append(df_prev)
+        elif inp == "rr_meta":
+            args.append(rr_meta or {})
+        else:
+            raise ValueError(f"view '{name}': unsupported input '{inp}'")
+    kwargs = {k: v for k, v in call_params.items() if v is not None}
+    return fn(*args, **kwargs)
+
+
+# ── Node 2: Compiler + Validator, with one-shot repair ────────────────────────
+# Merged: compile_logical() already calls validate_plan() internally as its final
+# gate (compiler/core.py), so a separate validate-only pass was largely redundant.
+# The repair loop now covers BOTH failure classes (unknown concept/metric/entity
+# from the compiler, AND unknown-column/structural errors from the validator) --
+# previously only validator failures got a retry, so any compiler-stage error
+# (e.g. "unknown metric 'curr_npa_count'") failed hard with zero chance to
+# self-correct. This was the root cause behind several real query failures.
+def compile_and_validate_node(state: QueryState) -> QueryState:
     _announce("compile")
     ir1 = state.get("ir1") or {}
     df: pd.DataFrame = state.get("result_df_full")
     cols = list(df.columns) if df is not None and len(df) > 0 else []
-    try:
-        plan, errs = compile_logical(ir1, cols)
-    except Exception as e:
-        return {**state, "error": f"Compiler failed: {e}"}
-    if errs:
-        err_msg = "; ".join(errs)
-        if "prev_bucket" in err_msg:
-            err_msg += ". Tip: upload a previous-period file to enable snapshot comparisons."
-        return {**state, "error": f"Could not compile query: {err_msg}"}
-    return {**state, "plan": plan}
-
-
-# ── Node 3: Validator + one-shot repair ───────────────────────────────────────
-def validate_node(state: QueryState) -> QueryState:
-    _announce("validate")
-    if state.get("priority_mode"):
-        return state  # priority executor uses registry directly  -  no plan to validate
-
-    df: pd.DataFrame = state.get("result_df_full")
-    if df is None or len(df) == 0:
-        return state
-    cols = list(df.columns)
 
     for attempt in range(_MAX_REPAIRS + 1):
-        errs = validate_plan(state.get("plan") or [], cols)
+        try:
+            plan, errs = compile_logical(ir1, cols)
+        except Exception as e:
+            return {**state, "error": f"Compiler failed: {e}"}
+
         if not errs:
-            return state
+            return {**state, "ir1": ir1, "plan": plan}
 
+        err_msg = "; ".join(errs)
         if attempt == _MAX_REPAIRS:
-            msg = "; ".join(errs)
-            if "prev_bucket" in msg:
-                msg += ". Tip: upload a previous-period file to enable snapshot comparisons."
-            return {**state, "error": f"Could not build a valid query for your data: {msg}"}
+            if "prev_bucket" in err_msg:
+                err_msg += ". Tip: upload a previous-period file to enable snapshot comparisons."
+            return {**state, "error": f"Could not compile query: {err_msg}"}
 
-        # One repair attempt: re-run the planner with the validation errors as context.
+        # One repair attempt: re-run the planner with the compile/validate errors as context.
         feedback = (
             f"Your previous output was invalid. "
-            f"Errors: {'; '.join(errs)}. "
+            f"Errors: {err_msg}. "
             f"The ONLY valid column names are: {', '.join(map(str, cols))}. "
-            "Correct the IR so every column reference matches an exact column from that list. "
-            "Return corrected JSON."
+            "Correct the IR so every column, concept, metric, entity, and dimension "
+            "alias reference is valid. Return corrected JSON."
         )
         try:
-            fixed_ir1 = plan_logical(
+            ir1 = plan_logical(
                 state["query"], state.get("snapshot_dates"),
                 repair_feedback=feedback, allow_clarification=False,
             )
-            new_plan, compile_errs = compile_logical(fixed_ir1, cols)
-            if compile_errs:
-                return {**state, "error": f"Repair compile failed: {'; '.join(compile_errs)}"}
-            state = {**state, "ir1": fixed_ir1, "plan": new_plan}
         except Exception as e:
             return {**state, "error": f"Query repair failed: {e}"}
 
-    return state
+    return state  # unreachable -- loop always returns on its final attempt
 
 
 # ── Node 4: Data Executor (pandas) ───────────────────────────────────────────
@@ -285,8 +416,12 @@ def execute_node(state: QueryState) -> QueryState:
             rankings = {}
         else:
             # Apply default curated columns when the planner didn't specify any.
-            # Only do this for loan_table rows (not aggregation results).
-            if not ir1.get("display_columns") and not display_df.empty:
+            # Only do this for loan_table rows (not aggregation results, and NOT
+            # priority_action -- execute_priority_mode already returns its own
+            # curated display columns led by "Priority", which QUERY_DISPLAY_COLS
+            # doesn't know about; overriding here silently dropped that column
+            # and crashed the UI's later groupby("Priority", ...) with a KeyError).
+            if intent != "priority_action" and not ir1.get("display_columns") and not display_df.empty:
                 from agents.data_executor import QUERY_DISPLAY_COLS
                 rank_col = ["Rank"] if "Rank" in display_df.columns else []
                 keep = rank_col + [c for c in QUERY_DISPLAY_COLS if c in display_df.columns]
@@ -341,14 +476,22 @@ def _route_planner(state: QueryState) -> str:
         return "clarify"
     if state.get("priority_mode"):
         return "execute"   # priority mode bypasses compile + validate
+    if (state.get("ir1") or {}).get("view"):
+        return "view"       # fast-path: try a pre-computed answer first
     return "compile"
 
 
+def _route_view(state: QueryState) -> str:
+    if state.get("error"):
+        return "error"
+    # view_node clears ir1["view"] on any failure to serve the request -- that's
+    # the "fall through to the normal path" signal, not an error.
+    if (state.get("ir1") or {}).get("view") is None:
+        return "compile"
+    return "analyze"
+
+
 def _route_compile(state: QueryState) -> str:
-    return "error" if state.get("error") else "validate"
-
-
-def _route_validate(state: QueryState) -> str:
     return "error" if state.get("error") else "execute"
 
 
@@ -359,8 +502,8 @@ def _route_execute(state: QueryState) -> str:
 # ── Build graph ───────────────────────────────────────────────────────────────
 _graph = StateGraph(QueryState)
 _graph.add_node("planner",  logical_planner_node)
-_graph.add_node("compile",  compiler_node)
-_graph.add_node("validate", validate_node)
+_graph.add_node("view",     view_node)
+_graph.add_node("compile",  compile_and_validate_node)
 _graph.add_node("execute",  execute_node)
 _graph.add_node("analyze",  analyze_node)
 _graph.add_node("clarify",  clarify_node)
@@ -369,10 +512,10 @@ _graph.add_node("error",    error_node)
 _graph.add_edge(START, "planner")
 _graph.add_conditional_edges(
     "planner", _route_planner,
-    {"compile": "compile", "execute": "execute", "clarify": "clarify", "error": "error"},
+    {"compile": "compile", "view": "view", "execute": "execute", "clarify": "clarify", "error": "error"},
 )
-_graph.add_conditional_edges("compile",  _route_compile,  {"validate": "validate", "error": "error"})
-_graph.add_conditional_edges("validate", _route_validate, {"execute":  "execute",  "error": "error"})
+_graph.add_conditional_edges("view",     _route_view,     {"analyze": "analyze", "compile": "compile", "error": "error"})
+_graph.add_conditional_edges("compile",  _route_compile,  {"execute": "execute", "error": "error"})
 _graph.add_conditional_edges("execute",  _route_execute,  {"analyze":  "analyze",  "error": "error"})
 _graph.add_edge("analyze", END)
 _graph.add_edge("clarify", END)
@@ -387,16 +530,30 @@ def run_query(
     on_step: Optional[Callable[[str], None]] = None,
     snapshot_dates: Optional[dict] = None,
     allow_clarification: bool = True,
+    df_prev: Optional[pd.DataFrame] = None,
+    precomputed_views: Optional[dict] = None,
+    alerts_curr: Optional[list] = None,
+    alerts_prev: Optional[list] = None,
+    rr_meta: Optional[dict] = None,
 ) -> QueryState:
-    """Run the IR-1 → compiler → executor → insights pipeline.
+    """Run the IR-1 → [fast-path view | compiler] → executor → insights pipeline.
 
     on_step fires a human-readable label at each node for a live progress UI.
+    df_prev/precomputed_views/alerts_curr/alerts_prev/rr_meta feed the fast-path
+    view layer (registry/views.py) -- precomputed_views lets it reuse the SAME
+    cached analysis/ results app.py already computed for the dashboard tabs,
+    instead of recomputing independently.
     """
     run_id = str(_uuid.uuid4())
     initial: QueryState = {
         "query":            query,
         "result_df_full":   df,
         "snapshot_dates":   snapshot_dates or {},
+        "df_prev":          df_prev if df_prev is not None else pd.DataFrame(),
+        "precomputed_views": precomputed_views or {},
+        "alerts_curr":      alerts_curr or [],
+        "alerts_prev":      alerts_prev or [],
+        "rr_meta":          rr_meta or {},
         "ir1":              {},
         "enriched_query":   "",
         "query_category":   "",
@@ -410,6 +567,7 @@ def run_query(
         "plan_mode":        False,
         "plan":             [],
         "result_type":      "loan_table",
+        "view_render":      "",
         "allow_clarification":    allow_clarification,
         "needs_clarification":    False,
         "clarification_question": "",

@@ -20,6 +20,17 @@ from agents.data_executor import _apply_condition, _build_mask
 
 _AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max"}
 
+# Belt-and-suspenders guard on 'derive' expressions (which reach pandas' df.eval).
+# The REAL gate is validate_plan()'s identifier whitelist -- every bare name in an
+# expr must already be a known column/alias, which already blocks sandbox-escape
+# patterns like "(1).__class__.__bases__[0].__subclasses__()" before a plan is even
+# allowed to execute (verified: pandas' own eval parser also already rejects
+# arbitrary function calls like __import__/open/getattr as "not a supported
+# function"). This regex is a second, independent layer here at the point of
+# execution itself, so a future code path that ever skips validate_plan still
+# can't reach dunder/attribute-escape tricks through this executor.
+_DANGEROUS_EXPR_RE = re.compile(r"__\w+__|\bimport\b|\bexec\b|\beval\b|\bopen\b|\bgetattr\b|\bsubprocess\b|\bos\.")
+
 
 def _as_list(x):
     if x is None:
@@ -95,6 +106,8 @@ def _op_derive(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     expr = step.get("expr") or ""
     if not col:
         raise ValueError("derive requires 'column'")
+    if _DANGEROUS_EXPR_RE.search(expr):
+        raise ValueError(f"derive expression rejected (disallowed pattern): {expr!r}")
     df = df.copy()
     try:
         computed = df.eval(expr)
@@ -238,6 +251,8 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
         elif op == "derive":
             col = step.get("column")
             expr = step.get("expr") or ""
+            if _DANGEROUS_EXPR_RE.search(expr):
+                errs.append(f"step {i}: derive expr rejected (disallowed pattern): {expr!r}")
             idents = set(re.findall(r"[A-Za-z_]\w*", expr))
             unknown = sorted(idn for idn in idents if idn not in cols)
             if unknown:
