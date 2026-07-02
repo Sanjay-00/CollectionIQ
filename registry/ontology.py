@@ -21,21 +21,22 @@ Three things live here:
   _build_mask already execute, so the compiler lowers a concept to existing
   engine primitives with no new execution code.
 
-  NOTE: Phase 0 includes only concepts expressible as an AND of column/op/value
-  conditions (which the current engine runs directly). Concepts that need a
-  column-vs-column comparison (short_collection, under_collected) are intentionally
-  deferred until the compiler grows that primitive  -  they are not encoded here yet
-  rather than encoded in a form the engine cannot run.
+  Column-vs-column comparisons ARE supported (op in col_lt/col_lte/col_gt/col_gte/
+  col_eq/col_ne, where "value" is another column NAME -- see _COL_COMPARE_OPS in
+  agents/data_executor.py). short_collection uses this (Month Receipt Amount
+  col_lte Net Collection Demand Inst+Exp+BC). under_collected would be a trivial
+  addition on the same primitive if ever needed -- not added since nobody has
+  asked for the "partial payers only, zero-payers excluded" distinction yet.
 
-  Same reason "strike" (Strike=Y) is NOT encoded as a CONCEPT: its real definition is
-  an OR of three legs (Month Collection >= Month Due-Inst [column-vs-column, same
-  blocker as above] OR LCC%==100 OR ARREARS AGAINST INST<=0), and this schema's
-  "conditions" list is ANDed only. Encoding it as an AND of the two column-only legs
-  would silently compute a narrower, WRONG criterion -- worse than not having the
-  concept at all. Defer until the compiler supports both column-vs-column comparisons
-  AND OR'd condition groups; until then the "Strike" column itself is documented
-  correctly in agents/logical_planner.py's glossary and usable directly as a raw
-  column filter (Strike == "Y" / "N").
+  "strike" (Strike=Y) is STILL NOT encoded as a CONCEPT, for a DIFFERENT reason
+  than before: its real definition is an OR of three legs (Month Collection >=
+  Month Due-Inst OR LCC%==100 OR ARREARS AGAINST INST<=0), and this schema's
+  "conditions" list is ANDed only -- there is no OR'd condition group primitive.
+  Encoding it as an AND of the two easier legs would silently compute a
+  narrower, WRONG criterion -- worse than not having the concept at all. Defer
+  until the compiler supports OR'd condition groups; until then the "Strike"
+  column itself is documented correctly in agents/logical_planner.py's glossary
+  and usable directly as a raw column filter (Strike == "Y" / "N").
 
   __CUTOFF_1Y__ is a dynamic placeholder (loan agreement date within last 12
   months); execute_priority_mode resolves it today, and the v2 compiler resolves
@@ -179,10 +180,20 @@ CONCEPTS: dict[str, dict] = {
     },
     "no_collection": {
         "label": "No Collection",
-        "description": "Zero payment this month despite a demand due.",
+        "description": "No cash received this month - Month Receipt Amount <= 0.",
         "conditions": [
-            {"column": "Month Collection (Excluding Reserve Collection)", "op": "==", "value": 0},
-            {"column": "Net Collection Demand Inst+Exp+BC", "op": ">", "value": 0},
+            {"column": "Month Receipt Amount", "op": "<=", "value": 0},
+        ],
+    },
+    "short_collection": {
+        "label": "Short Collection",
+        "description": (
+            "This month's cash received is at or below what was due - Month Receipt "
+            "Amount <= Net Collection Demand Inst+Exp+BC. Includes zero-payers (also "
+            "covered by no_collection) as well as partial payers."
+        ),
+        "conditions": [
+            {"column": "Month Receipt Amount", "op": "col_lte", "value": "Net Collection Demand Inst+Exp+BC"},
         ],
     },
 }

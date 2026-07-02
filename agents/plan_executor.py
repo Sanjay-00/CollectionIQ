@@ -16,9 +16,32 @@ Design constraints:
 import re
 import pandas as pd
 
-from agents.data_executor import _apply_condition, _build_mask
+from agents.data_executor import _apply_condition, _build_mask, _COL_COMPARE_OPS
 
 _AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max"}
+
+# Ops whose "value" is a COLUMN NAME to compare against, not a literal -- both
+# the left ("column") and right ("value") sides must exist for these.
+_COLUMN_VALUE_OPS = set(_COL_COMPARE_OPS) | {"bucket_worse_than", "bucket_better_than"}
+
+
+def _check_condition_columns(cond: dict, cols: set, where: str) -> list[str]:
+    """Validate a single {column, op, value} condition against the known column
+    set. For column-vs-column ops (col_lt/col_lte/.../bucket_worse_than/...),
+    "value" is itself a column reference and must also exist -- a hallucinated
+    reference column would otherwise silently no-op (see _apply_condition's
+    graceful `if ref_col not in df.columns: return df`) instead of failing loud."""
+    errs = []
+    c = cond.get("column")
+    if not c or c not in cols:
+        errs.append(f"{where}: column '{c}' does not exist")
+    op = (cond.get("op") or "").lower()
+    if op in _COLUMN_VALUE_OPS:
+        ref = cond.get("value")
+        if not ref or str(ref) not in cols:
+            errs.append(f"{where}: op '{op}' compares against column '{ref}', which does not exist")
+    return errs
+
 
 # Belt-and-suspenders guard on 'derive' expressions (which reach pandas' df.eval).
 # The REAL gate is validate_plan()'s identifier whitelist -- every bare name in an
@@ -235,18 +258,14 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
                 elif func != "count" and (not col or col not in cols):
                     errs.append(f"step {i}: agg column '{col}' does not exist")
                 for cond in (a.get("where") or []):
-                    wc = cond.get("column")
-                    if not wc or wc not in cols:
-                        errs.append(f"step {i}: where column '{wc}' does not exist")
+                    errs.extend(_check_condition_columns(cond, cols, f"step {i}: where"))
                 new_cols.add(alias)
             # A group_aggregate drops every column except the keys and new aliases.
             cols = new_cols
 
         elif op == "filter":
             for cond in step.get("conditions") or []:
-                c = cond.get("column")
-                if not c or c not in cols:
-                    errs.append(f"step {i}: filter column '{c}' does not exist")
+                errs.extend(_check_condition_columns(cond, cols, f"step {i}: filter"))
 
         elif op == "derive":
             col = step.get("column")

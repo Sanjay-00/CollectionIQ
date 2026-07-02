@@ -31,9 +31,14 @@ def _loan_df():
         "POS":           [450.0, 90.0, 270.0, 360.0, 180.0],
         "Strike":        ["Y", "N", "Y", "N", "Y"],
         "Month Collection (Excluding Reserve Collection)": [9000, 5000, 7000, 4000, 6000],
-        "Net Collection Demand Inst+Exp+BC":                [10000, 5000, 8000, 5000, 6000],
+        "Net Collection Demand Inst+Exp+BC":                [10000, 4000, 8000, 5000, 6000],
         "prev_Month_Collection":       [8000, 4500, 6500, 3800, 5800],
         "prev_Net_Collection_Demand":  [9500, 4800, 7800, 4900, 5900],
+        # Month Receipt Amount deliberately differs from Month Collection above,
+        # so no_collection/short_collection tests can't accidentally pass by
+        # reusing the wrong column. Mix of zero/over/partial/exact-match payers:
+        # L1 zero, L2 over-collected, L3 partial, L4 exactly at demand, L5 over.
+        "Month Receipt Amount":       [0, 5000, 6000, 5000, 9000],
     })
 
 
@@ -364,3 +369,78 @@ class TestPriorityModeKeepsPriorityColumn:
         out = execute_node(state)
         distributed = distribute_priority_accounts(out["result_df"], 30)
         assert "Priority" in distributed.columns
+
+
+# ── Column-vs-column comparison (no_collection / short_collection) ─────────
+# Built on request: "no collection" = Month Receipt Amount <= 0. "short
+# collection" = Month Receipt Amount <= Net Collection Demand Inst+Exp+BC
+# (column-vs-column, previously unsupported -- the compiler could only compare
+# a column against a fixed literal, never against another column).
+
+class TestColumnVsColumnComparison:
+    def test_col_lte_direct(self):
+        from agents.data_executor import _apply_condition
+        result = _apply_condition(_loan_df(), {
+            "column": "Month Receipt Amount", "op": "col_lte",
+            "value": "Net Collection Demand Inst+Exp+BC",
+        })
+        assert set(result["Loan No"]) == {"L1", "L3", "L4"}
+
+    def test_col_compare_missing_ref_column_is_graceful_noop(self):
+        from agents.data_executor import _apply_condition
+        result = _apply_condition(_loan_df(), {
+            "column": "Month Receipt Amount", "op": "col_lte", "value": "Nonexistent Col",
+        })
+        assert len(result) == len(_loan_df())  # unchanged, not an empty/crashed result
+
+    def test_no_collection_concept(self):
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"concept": "no_collection"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, list(_loan_df().columns))
+        assert errs == []
+        result, err = execute_plan(_loan_df(), plan)
+        assert err == ""
+        assert set(result["Loan No"]) == {"L1"}
+
+    def test_short_collection_concept(self):
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"concept": "short_collection"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, list(_loan_df().columns))
+        assert errs == []
+        result, err = execute_plan(_loan_df(), plan)
+        assert err == ""
+        assert set(result["Loan No"]) == {"L1", "L3", "L4"}
+
+    def test_col_compare_op_with_hallucinated_ref_column_fails_loud_at_compile_time(self):
+        # Never let a bad reference column silently no-op through to execution --
+        # validate_plan must catch it, same as an ordinary hallucinated column.
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"column": "Month Receipt Amount", "op": "col_lte", "value": "Not A Real Column"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, list(_loan_df().columns))
+        assert any("does not exist" in e for e in errs)
+
+    def test_bucket_worse_than_missing_prev_bucket_now_fails_loud_too(self):
+        # Same validation now also covers bucket_worse_than/bucket_better_than's
+        # reference column (previously unchecked -- a missing prev_bucket would
+        # have silently no-opped to "return everyone" instead of erroring).
+        cols = [c for c in _loan_df().columns if c != "prev_bucket"]
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"column": "curr_bucket", "op": "bucket_worse_than", "value": "prev_bucket"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, cols)
+        assert any("prev_bucket" in e for e in errs)

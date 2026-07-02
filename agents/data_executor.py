@@ -13,7 +13,24 @@ _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
 # malformed conditional count triggers a repair instead of silently counting all
 # rows. Multi-condition counts go through 'where' (see _extract_where), not these.
 _KNOWN_COUNT_OPS = {"==", "!=", ">", ">=", "<", "<=", "in",
-                    "bucket_worse_than", "bucket_better_than", "bucket_stable"}
+                    "bucket_worse_than", "bucket_better_than", "bucket_stable",
+                    "col_lt", "col_lte", "col_gt", "col_gte", "col_eq", "col_ne"}
+
+# Generic column-vs-column numeric comparison operators (e.g. "Month Receipt
+# Amount col_lte Net Collection Demand Inst+Exp+BC" -- short_collection). The
+# "col_" prefix makes the intent unambiguous: "value" holds a COLUMN NAME to
+# compare against, never a literal, so there's no ambiguity with the plain
+# ==/!=/>/>=/</<= ops (which always compare against a literal). Distinct from
+# bucket_worse_than/bucket_better_than, which are bucket-SEVERITY-aware (map
+# through _BUCKET_SCORE first) -- these are plain numeric column comparisons.
+_COL_COMPARE_OPS = {
+    "col_lt":  lambda a, b: a < b,
+    "col_lte": lambda a, b: a <= b,
+    "col_gt":  lambda a, b: a > b,
+    "col_gte": lambda a, b: a >= b,
+    "col_eq":  lambda a, b: a == b,
+    "col_ne":  lambda a, b: a != b,
+}
 
 
 def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
@@ -37,6 +54,16 @@ def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
             return df[valid & (curr_score > prev_score)]
         else:
             return df[valid & (curr_score < prev_score)]
+
+    # Generic column-vs-column numeric comparison
+    if op in _COL_COMPARE_OPS:
+        ref_col = str(val)
+        if ref_col not in df.columns:
+            return df
+        a = pd.to_numeric(df[col], errors="coerce")
+        b = pd.to_numeric(df[ref_col], errors="coerce")
+        valid = a.notna() & b.notna()
+        return df[valid & _COL_COMPARE_OPS[op](a, b)]
 
     series = df[col]
 

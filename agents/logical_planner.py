@@ -150,6 +150,15 @@ BUCKET MOVEMENT (requires snapshot file):
   "improved / cured / rolled back"        → {{"column":"curr_bucket","op":"bucket_better_than","value":"prev_bucket"}}
   These work in top-level "filters" and inside count measure "where" clauses.
 
+COLUMN-VS-COLUMN COMPARISON: use when comparing TWO COLUMNS on the same row (not a
+  column against a fixed number). "value" is a COLUMN NAME, not a literal.
+  Ops: col_lt | col_lte | col_gt | col_gte | col_eq | col_ne
+  Example - "accounts where this month's receipt is less than or equal to demand":
+    {{"column": "Month Receipt Amount", "op": "col_lte", "value": "Net Collection Demand Inst+Exp+BC"}}
+  Prefer the catalog concepts "no_collection" / "short_collection" when they fit
+  instead of rebuilding these by hand (see CONCEPTS catalog above).
+  These also work inside count measure "where" clauses, same as bucket_worse_than.
+
 ENTITY FILTERS (for nested "per-group with per-entity threshold"):
   Example: "branches with customers who have >3 loans"
   → entity_filters: [{{"entity":"customer","having":[{{"agg":"count","distinct":"Loan No","op":">","value":3}}]}}]
@@ -190,7 +199,8 @@ OUTPUT  -  return a JSON object with EXACTLY these keys:
 
 FILTER format:
   {{"concept": "<catalog concept name>"}}
-  {{"column": "<exact col>", "op": "==|!=|>|>=|<|<=|in|bucket_worse_than|bucket_better_than", "value": <v>}}
+  {{"column": "<exact col>", "op": "==|!=|>|>=|<|<=|in|bucket_worse_than|bucket_better_than|col_lt|col_lte|col_gt|col_gte|col_eq|col_ne", "value": <v>}}
+  (col_* ops: "value" is another COLUMN NAME -- see COLUMN-VS-COLUMN COMPARISON above)
 
 MEASURE format:
   {{"metric": "<catalog metric>", "alias": "<name>"}}
