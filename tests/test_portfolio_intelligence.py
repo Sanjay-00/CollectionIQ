@@ -303,19 +303,18 @@ class TestComputeGoodBad:
 # ── compute_risk_flag_comparison ─────────────────────────────────────────────
 
 class TestComputeRiskFlagComparison:
-    def test_merges_curr_and_prev_by_title(self):
+    @pytest.mark.parametrize("prev,expected_last_month,expected_delta", [
+        ([{"title": "Non Starters", "count": 8, "pos": 0, "severity": "high", "action": "Call"}], 8, 4),
+        ([], None, None),  # risk type didn't exist last month -> null prev/delta, not zero
+    ], ids=["matched_by_title", "new_risk_type"])
+    def test_merges_curr_and_prev_by_title(self, prev, expected_last_month, expected_delta):
         curr = [{"title": "Non Starters", "count": 12, "pos": 1_00_00_000, "severity": "high", "action": "Call"}]
-        prev = [{"title": "Non Starters", "count": 8, "pos": 0, "severity": "high", "action": "Call"}]
-        out = compute_risk_flag_comparison(curr, prev)
-        row = out.iloc[0]
-        assert row["Last Month"] == 8
-        assert row["Δ"] == 4
-
-    def test_new_risk_type_has_null_prev(self):
-        curr = [{"title": "Fresh Risk", "count": 5, "pos": 0, "severity": "medium", "action": "Watch"}]
-        out = compute_risk_flag_comparison(curr, [])
-        assert pd.isna(out.iloc[0]["Last Month"])
-        assert pd.isna(out.iloc[0]["Δ"])
+        row = compute_risk_flag_comparison(curr, prev).iloc[0]
+        if expected_last_month is None:
+            assert pd.isna(row["Last Month"]) and pd.isna(row["Δ"])
+        else:
+            assert row["Last Month"] == expected_last_month
+            assert row["Δ"] == expected_delta
 
     def test_empty_curr_returns_empty(self):
         assert compute_risk_flag_comparison([], [{"title": "X", "count": 1}]).empty
@@ -330,12 +329,14 @@ class TestComputeProductAnalysis:
         assert "segment" not in out or "TINY" not in out.get("segment", pd.DataFrame()).get("Segment", [])
 
     def test_segment_metrics_when_above_threshold(self):
+        # MIN_ACCOUNTS_PRODUCT_SEGMENT = 11 (strictly more than 10 accounts) --
+        # 12 total (4 NPA + 8 STD) clears it while keeping the same 33.33% ratio.
         curr = make_df([
-            *[{"SegmentName": "RETAIL", "curr_bucket": b} for b in ["NPA"] * 2 + ["STD"] * 4],
+            *[{"SegmentName": "RETAIL", "curr_bucket": b} for b in ["NPA"] * 4 + ["STD"] * 8],
         ])
         out = compute_product_analysis(curr)
         row = out["segment"].set_index("Segment").loc["RETAIL"]
-        assert row["Accounts"] == 6
+        assert row["Accounts"] == 12
         assert row["NPA%"] == pytest.approx(33.33, abs=0.01)
 
     def test_vintage_excludes_future_dated_cohorts(self):
@@ -388,6 +389,33 @@ class TestComputeRiskIndicators:
         out_without = compute_risk_indicators(curr, make_df([]), {"matched_count": 0})
         assert any(i["Signal"] == "Fresh NPA Formation" for i in out_with)
         assert not any(i["Signal"] == "Fresh NPA Formation" for i in out_without)
+
+    def test_fresh_npa_formation_never_reports_a_fabricated_worsening_trend(self):
+        # Fresh NPA Formation has no genuine prior-period value to compare against
+        # (it's a same-period roll-rate figure, not a MoM stat) -- it must render
+        # as a standalone reading ("-" direction, no Delta), never as "Worsening"
+        # just because it was compared against a hardcoded 0. Use a REAL, non-empty
+        # df_prev (unlike the "included_only_when_matched" test above) so has_prev
+        # is actually True and the bug's code path is exercised.
+        curr = make_df([{"curr_bucket": "STD"} for _ in range(10)])
+        prev = make_df([{"curr_bucket": "STD"} for _ in range(10)])
+        out = compute_risk_indicators(curr, prev, {"matched_count": 10, "npa_formation_rate": 4.5})
+        signal = next(i for i in out if i["Signal"] == "Fresh NPA Formation")
+        assert signal["_direction"] == " - "
+        assert signal["Δ"] == " - "
+        assert signal["Last Month"] == " - "
+        assert signal["This Month"] == "4.5%"
+
+    def test_fresh_npa_formation_excluded_from_good_bad_narrative(self):
+        # A "Worsening" Fresh NPA Formation signal used to always qualify for the
+        # Good/Bad verdict's bad-news list, regardless of actual trend. With no
+        # real direction, it must never be picked up there.
+        curr = make_df([{"curr_bucket": "STD"} for _ in range(10)])
+        prev = make_df([{"curr_bucket": "STD"} for _ in range(10)])
+        indicators = compute_risk_indicators(curr, prev, {"matched_count": 10, "npa_formation_rate": 4.5})
+        result = compute_good_bad(pd.DataFrame(), pd.DataFrame(), indicators, pd.DataFrame(), has_prev=True)
+        assert not any("Fresh NPA Formation" in b for b in result["bad"])
+        assert not any("Fresh NPA Formation" in g for g in result["good"])
 
 
 # ── compute_fleet_exposure ────────────────────────────────────────────────────
@@ -479,17 +507,18 @@ class TestComputeRepossessionList:
         curr = make_df([
             {"curr_bucket": "NPA", "Ag_Date": recent},
             {"curr_bucket": "SMA-2", "Ag_Date": recent},
-            {"curr_bucket": "STD", "Ag_Date": recent},   # wrong bucket
+            {"curr_bucket": "STD", "Ag_Date": recent},   # wrong bucket -> excluded
         ])
         out = compute_repossession_list(curr)
         assert len(out) == 2
         assert set(out["curr_bucket"]) == {"NPA", "SMA-2"}
 
     def test_old_agreement_excluded_even_if_delinquent(self):
+        # Eligibility requires BOTH conditions -- deep delinquency alone isn't
+        # enough once the loan is past the collateral-value window.
         old = pd.Timestamp.today() - pd.DateOffset(months=24)
         curr = make_df([{"curr_bucket": "NPA", "Ag_Date": old}])
-        out = compute_repossession_list(curr)
-        assert out.empty
+        assert compute_repossession_list(curr).empty
 
 
 # ── compute_good_customers ────────────────────────────────────────────────────

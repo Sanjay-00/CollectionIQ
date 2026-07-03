@@ -15,32 +15,18 @@ from query_log import classify_outcome, log_query_outcome, _prune_old_entries
 
 
 class TestClassifyOutcome:
-    def test_clarification_takes_priority(self):
-        state = {"needs_clarification": True, "error": "some error"}
-        assert classify_outcome(state) == "clarification"
-
-    def test_error_without_clarification(self):
-        state = {"needs_clarification": False, "error": "compile failed"}
-        assert classify_outcome(state) == "error"
-
-    def test_priority_mode(self):
-        state = {"priority_mode": True}
-        assert classify_outcome(state) == "priority_mode"
-
-    def test_view_hit(self):
-        state = {"ir1": {"view": {"name": "executive_scorecard", "params": {}}}}
-        assert classify_outcome(state) == "view_hit"
-
-    def test_view_hit_when_view_is_a_bare_string(self):
-        state = {"ir1": {"view": "executive_scorecard"}}
-        assert classify_outcome(state) == "view_hit"
-
-    def test_compiled_ok_default(self):
-        state = {"ir1": {"view": None}}
-        assert classify_outcome(state) == "compiled_ok"
-
-    def test_empty_state_is_compiled_ok(self):
-        assert classify_outcome({}) == "compiled_ok"
+    @pytest.mark.parametrize("state,expected", [
+        ({"needs_clarification": True, "error": "some error"}, "clarification"),  # takes priority over error
+        ({"needs_clarification": False, "error": "compile failed"}, "error"),
+        ({"priority_mode": True}, "priority_mode"),
+        ({"ir1": {"view": {"name": "executive_scorecard", "params": {}}}}, "view_hit"),
+        ({"ir1": {"view": "executive_scorecard"}}, "view_hit"),                    # bare-string view form
+        ({"ir1": {"view": None}}, "compiled_ok"),
+        ({}, "compiled_ok"),                                                        # empty state -> safe default
+    ], ids=["clarification_priority", "error", "priority_mode", "view_hit_dict",
+            "view_hit_bare_string", "compiled_ok_explicit", "compiled_ok_empty_state"])
+    def test_classify_outcome(self, state, expected):
+        assert classify_outcome(state) == expected
 
 
 class TestLogQueryOutcome:

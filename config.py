@@ -70,8 +70,9 @@ SCORECARD_MIN_ACCOUNTS = 5
 # quadrant, executive recovery leaderboard)
 MIN_ACCOUNTS_DIMENSION_BREAKDOWN = 3
 
-# Vehicle segment / fuel type breakdowns
-MIN_ACCOUNTS_PRODUCT_SEGMENT = 5
+# Vehicle segment / fuel type breakdowns. _group_npa_table keeps a group when
+# n >= this value, so 11 enforces "more than 10 accounts" (strictly >10).
+MIN_ACCOUNTS_PRODUCT_SEGMENT = 11
 
 # Sourcing channel and disbursement-vintage cohort breakdowns
 MIN_ACCOUNTS_SOURCE_VINTAGE = 10

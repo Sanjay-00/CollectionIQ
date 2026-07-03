@@ -370,6 +370,33 @@ class TestPriorityModeKeepsPriorityColumn:
         distributed = distribute_priority_accounts(out["result_df"], 30)
         assert "Priority" in distributed.columns
 
+    def test_dedup_respects_rank_even_if_rules_list_is_out_of_order(self, monkeypatch):
+        # "Each loan appears only under its highest priority rule" (agents/
+        # data_executor.py::execute_priority_mode) depends on visiting rules in
+        # ascending rank order, since a loan gets claimed by whichever rule
+        # reaches it first. PRIORITY_RULES happens to be authored in rank order
+        # today, but nothing enforced that -- scramble the list here and confirm
+        # a loan matching both a rank-1 and a rank-7 rule still lands under
+        # rank 1 (its true highest priority), not whichever rule came first
+        # in an out-of-order list.
+        import agents.domain_expert as domain_expert
+        rules = list(domain_expert.PRIORITY_RULES)
+        rank1 = next(r for r in rules if r["rank"] == 1)
+        rank7 = next(r for r in rules if r["rank"] == 7)
+        scrambled = [rank7, rank1] + [r for r in rules if r["rank"] not in (1, 7)]
+        monkeypatch.setattr(domain_expert, "PRIORITY_RULES", scrambled)
+
+        # A Non Starter (rank 1: Non Starters) that's also NPA (rank 7: NPA
+        # Accounts) -- matches both tiers, must be claimed by rank 1.
+        df = self._priority_df()
+        df["Non Starter"] = ["Y", "N", "N"]  # L1 matches both rank-1 and rank-7 rules
+
+        from agents.data_executor import execute_priority_mode
+        out, err = execute_priority_mode(df)
+        assert err == ""
+        l1_row = out[out["Loan No"] == "L1"].iloc[0]
+        assert l1_row["Priority"].startswith("P1:")
+
 
 # ── Column-vs-column comparison (no_collection / short_collection) ─────────
 # Built on request: "no collection" = Month Receipt Amount <= 0. "short

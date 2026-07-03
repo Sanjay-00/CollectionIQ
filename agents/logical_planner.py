@@ -276,10 +276,22 @@ TIME format:
   snapshot = both periods side-by-side; change = also compute the delta column (curr - prev)
 
 DISPLAY COLUMNS (for loan_table intent):
-  Leave display_columns EMPTY for all general queries  -  the system returns ALL columns by default.
-  Only populate display_columns when the user EXPLICITLY asks for specific columns
-  (e.g. "show me only Loan No, SOH and branch" or "give me just the contact details").
-  Never set display_columns just because a column is relevant to the query.
+  Leave display_columns EMPTY for general queries  -  the system then falls back to a
+  curated ~40-column default view (identifiers, region/branch/executive, dates, dues,
+  arrears, POS/SOH, LCC%, Strike, contact info), NOT every column in the source file.
+  Columns like CoLending_Loans, LGL_FLAG/LGL_DESCRIPTION, SegmentName/Segment,
+  CUSTOMER_STATUS, Make, and several cumulative-collection/arrears-open columns are
+  OUTSIDE that default view and will not appear unless explicitly requested.
+  Populate display_columns explicitly in two cases:
+    1. The user EXPLICITLY asks for specific columns (e.g. "show me only Loan No, SOH
+       and branch" or "give me just the contact details").
+    2. The query's own filter concept depends on a column outside the default view as
+       its evidence (e.g. a co-lending query should include CoLending_Loans; a legal/
+       recovery query should include LGL_FLAG and LGL_DESCRIPTION; a segment breakdown
+       should include SegmentName) - the reader needs to see WHY a row matched, not just
+       that it did. In this case, include the default-view columns you still want PLUS
+       the evidence column(s), since setting display_columns replaces the default set
+       rather than adding to it.
 
 INTENT RULES:
   loan_table:       result is individual loan/customer rows. Use filters + display_columns.

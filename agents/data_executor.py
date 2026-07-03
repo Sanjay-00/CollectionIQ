@@ -213,7 +213,12 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     all_rows = []
     seen_loans = set()
 
-    for rule in PRIORITY_RULES:
+    # Dedup below relies on processing highest-priority (lowest rank) rules
+    # first -- "each loan appears only under its highest priority rule" only
+    # holds if this loop visits rank order. PRIORITY_RULES is already authored
+    # in rank order, but sort explicitly so that invariant can't silently break
+    # if the list is ever reordered without updating ranks to match.
+    for rule in sorted(PRIORITY_RULES, key=lambda r: r["rank"]):
         conditions = rule["conditions"]
         subset = df.copy()
 

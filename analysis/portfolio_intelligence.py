@@ -794,17 +794,23 @@ def compute_risk_indicators(
     has_prev = total_prev > 0
 
     def _add(label, curr_val, prev_val, unit, good_dir, note, is_count=False):
-        delta = round(curr_val - prev_val, 2) if has_prev else 0.0
-        if not has_prev:
+        # prev_val=None means "no real prior-period value exists for this metric"
+        # (e.g. Fresh NPA Formation, a same-period roll-rate figure with nothing
+        # genuine to compare against) -- distinct from has_prev=False (no prev file
+        # uploaded at all). Treating None as if prev were 0 would make delta equal
+        # curr_val itself, so every non-zero reading falsely renders as "Worsening".
+        has_cmp = has_prev and prev_val is not None
+        delta = round(curr_val - prev_val, 2) if has_cmp else 0.0
+        if not has_cmp:
             direction = " - "
         elif is_count:
             direction = ("Improving" if delta < 0 else ("Worsening" if delta > 0 else "Stable")) if good_dir == "down" else ("Improving" if delta > 0 else ("Worsening" if delta < 0 else "Stable"))
         else:
             direction = "Stable" if abs(delta) < RISK_INDICATOR_STABLE_PP else (("Improving" if delta < 0 else "Worsening") if good_dir == "down" else ("Improving" if delta > 0 else "Worsening"))
         fmt      = f"{int(curr_val):,}{unit}" if is_count else f"{curr_val:.1f}{unit}"
-        prev_fmt = (f"{int(prev_val):,}{unit}" if is_count else f"{prev_val:.1f}{unit}") if has_prev else " - "
+        prev_fmt = (f"{int(prev_val):,}{unit}" if is_count else f"{prev_val:.1f}{unit}") if has_cmp else " - "
         sign     = "+" if delta >= 0 else ""
-        delta_s  = (f"{sign}{int(delta)}{unit}" if is_count else f"{sign}{delta:.1f}{unit}") if has_prev else " - "
+        delta_s  = (f"{sign}{int(delta)}{unit}" if is_count else f"{sign}{delta:.1f}{unit}") if has_cmp else " - "
         indicators.append({
             "Signal": label, "This Month": fmt, "Last Month": prev_fmt,
             "Δ": delta_s, "Direction": direction, "Note": note,
@@ -828,7 +834,10 @@ def compute_risk_indicators(
              "%", "down", "Current NPA accounts as % of total portfolio")
 
     if rr_meta and rr_meta.get("matched_count", 0) > 0:
-        _add("Fresh NPA Formation", rr_meta["npa_formation_rate"], 0.0, "%", "down",
+        # No real prior-period formation rate exists to compare against (it would
+        # require a THIRD month's data) -- pass prev_val=None so this renders as a
+        # standalone reading, not a fabricated "Worsening" trend every month.
+        _add("Fresh NPA Formation", rr_meta["npa_formation_rate"], None, "%", "down",
              "Non-NPA accounts that became NPA this month  -  more important than total NPA count")
 
     col3m = "No Coll 3 Months and >6 EMI"

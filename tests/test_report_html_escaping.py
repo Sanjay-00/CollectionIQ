@@ -7,20 +7,21 @@ stray "<") breaks the surrounding table markup from that point on. The report
 is also offered as a raw .html download/email attachment, not just rendered
 inside an email client's sandboxed viewer, so this isn't purely cosmetic.
 """
+import pytest
+
 from report_agent.nodes.report_builder import _esc, _render_top_accounts, _render_narrative
 
 
 class TestEscHelper:
-    def test_escapes_html_special_characters(self):
-        assert _esc("RAJESH & SONS") == "RAJESH &amp; SONS"
-        assert _esc("<script>alert(1)</script>") == "&lt;script&gt;alert(1)&lt;/script&gt;"
-        assert _esc("A < B > C") == "A &lt; B &gt; C"
-
-    def test_none_becomes_empty_string(self):
-        assert _esc(None) == ""
-
-    def test_plain_text_unchanged(self):
-        assert _esc("Yash Bhagoji Deve") == "Yash Bhagoji Deve"
+    @pytest.mark.parametrize("raw,expected", [
+        ("RAJESH & SONS", "RAJESH &amp; SONS"),
+        ("<script>alert(1)</script>", "&lt;script&gt;alert(1)&lt;/script&gt;"),
+        ("A < B > C", "A &lt; B &gt; C"),
+        (None, ""),
+        ("Yash Bhagoji Deve", "Yash Bhagoji Deve"),  # plain text unchanged
+    ], ids=["ampersand", "script_tag", "angle_brackets", "none", "plain_text"])
+    def test_escapes_html_special_characters(self, raw, expected):
+        assert _esc(raw) == expected
 
 
 class TestReportSectionsEscapeRawData:

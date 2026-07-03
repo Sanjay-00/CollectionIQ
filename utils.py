@@ -439,8 +439,17 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
             for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns
         )
-        lcc_avg = _safe_pct(df["Total Cum Collection"].sum(), _cum_due)
+        # LCC% = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) -- matches the
+        # documented business definition (agents/domain_expert.py) and the AI Query
+        # path's lcc_pct METRIC (registry/ontology.py). "Total Cum Collection" is a
+        # broader figure (includes BC/other components) and is the wrong numerator.
+        lcc_avg = _safe_pct(to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum(), _cum_due)
         lcc_avg = round(lcc_avg, 2) if not pd.isna(lcc_avg) else 0.0
+        # Capped at 100 -- matches the documented definition (agents/domain_expert.py:
+        # "LCC% = ... Capped at 100, max value is 100") and the AI Query path's
+        # lcc_pct METRIC (registry/ontology.py, cap=100). A customer who has paid
+        # ahead of cumulative dues can otherwise push this over 100%.
+        lcc_avg = min(lcc_avg, 100.0)
         cmd_pct = _safe_pct(cum_coll_total, cum_coll_inst_exp)
 
         return {

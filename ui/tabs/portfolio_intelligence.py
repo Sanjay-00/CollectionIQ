@@ -912,7 +912,7 @@ def _render_good_customers(good_df: pd.DataFrame) -> None:
 
     cards = (
         _static_kpi_card_html("Good Customers", f"{n:,}", "Refinance eligible")
-        + _static_kpi_card_html("Total SOH (Cr)", f"&#8377;{total_soh_cr:,.2f}", "Outstanding principal")
+        + _static_kpi_card_html("Total SOH (Cr)", f"&#8377;{total_soh_cr:,.2f}", "Outstanding exposure (POS + arrears)")
         + _static_kpi_card_html("Avg Tenure Completed", f"{avg_tenure}%", "Across all good customers")
     )
     st.markdown(f'<div class="kpi-row">{cards}</div>', unsafe_allow_html=True)

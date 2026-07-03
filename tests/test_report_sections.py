@@ -1,6 +1,8 @@
 import pandas as pd
+import pytest
 
 from report_agent.sections.verdict import compute_verdict
+from report_agent.sections.risk_flags import compute_risk_flags
 from report_agent.sections.top_accounts import compute_top_accounts_section
 from report_agent.sections.fleet_exposure import compute_fleet_exposure_section
 from report_agent.sections.region_scorecard import compute_region_scorecard_section
@@ -48,6 +50,31 @@ class TestComputeVerdict:
         if result is not None:
             assert len(result["good"]) <= 6
             assert len(result["bad"]) <= 6
+
+
+# ── compute_risk_flags ────────────────────────────────────────────────────────
+
+class TestComputeRiskFlags:
+    def test_closing_arrears_is_carried_through_not_dropped(self):
+        # Regression: this wrapper used to copy title/subtitle/severity/count/pos/
+        # action/icon from smart_alerts.run_all_alerts()'s per-alert dict but NOT
+        # closing_arrears -- report_builder.py's renderer then fell back to its
+        # `.get("closing_arrears", 0)` default, showing "Rs 0" on every risk-flag
+        # card in the report regardless of the real value (while POS, which WAS
+        # copied, rendered correctly) -- a real production report exhibited this.
+        df = make_df([
+            {"CoLending_Loans": "Y", "Arrears / EMI": 2.0, "Closing Arrears": 50_000.0},
+            {"CoLending_Loans": "Y", "Arrears / EMI": 3.0, "Closing Arrears": 30_000.0},
+        ])
+        result = compute_risk_flags(df)
+        assert result is not None
+        flag = next(f for f in result["flags"] if f["title"] == "Co-lending Loans at Risk")
+        assert flag["closing_arrears"] == 80_000.0
+
+    def test_no_active_alerts_returns_empty_flags(self):
+        df = make_df([{"Arrears / EMI": 0.0}])
+        result = compute_risk_flags(df)
+        assert result == {"flags": []}
 
 
 # ── compute_top_accounts_section ──────────────────────────────────────────────
@@ -267,7 +294,8 @@ class TestComputeProductAnalysisSection:
         assert compute_product_analysis_section(curr) is None
 
     def test_returns_segment_rows_only(self):
-        rows = [{"SegmentName": "AUTO", "curr_bucket": "NPA"}] * 5 + [{"SegmentName": "AUTO", "curr_bucket": "STD"}] * 5
+        # MIN_ACCOUNTS_PRODUCT_SEGMENT = 11 -- needs strictly more than 10 accounts.
+        rows = [{"SegmentName": "AUTO", "curr_bucket": "NPA"}] * 6 + [{"SegmentName": "AUTO", "curr_bucket": "STD"}] * 6
         curr = make_df(rows)
         result = compute_product_analysis_section(curr)
         assert result is not None
@@ -336,11 +364,9 @@ class TestComputeExecutiveStrikeRankings:
 # ── fig_to_base64 ──────────────────────────────────────────────────────────────
 
 class TestFigToBase64:
-    def test_empty_figure_returns_none(self):
-        assert fig_to_base64(go.Figure()) is None
-
-    def test_none_figure_returns_none(self):
-        assert fig_to_base64(None) is None
+    @pytest.mark.parametrize("fig", [go.Figure(), None], ids=["empty_figure", "none"])
+    def test_empty_or_missing_figure_returns_none(self, fig):
+        assert fig_to_base64(fig) is None
 
     def test_valid_figure_returns_data_uri(self):
         fig = go.Figure(go.Bar(x=[1, 2], y=[3, 4]))
