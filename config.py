@@ -11,6 +11,23 @@ GEMINI_MODEL = "gemini-2.5-flash-lite"
 # COLLECTIONIQ_SHADOW=1 to validate the v2 path against real traffic.
 SHADOW_MODE = os.environ.get("COLLECTIONIQ_SHADOW", "").strip().lower() in ("1", "true", "yes", "on")
 
+#  Date validation ──────────────────────────────────────────────────────────
+# Plausible range for Ag_Date / Last Receipt Date / ParentLDueDate after parsing
+# (utils.py::load_and_validate). A parsed date outside this range becomes NaT
+# instead of silently passing through as a wrong-but-still-a-valid-Timestamp
+# value. Found in real production data: a handful of rows where a RUPEE AMOUNT
+# (e.g. 150000, 400000) had ended up in the "Last Receipt Date" column of the
+# source LCC extract - numerically small enough to not overflow pandas'
+# Timestamp range, so it silently parsed as a real (nonsense, e.g. year 2170)
+# date. That's dangerous specifically because Last Receipt Date feeds live
+# business logic ("paid this month" / "unpaid this month" AI Query filters
+# compare it directly against a cutoff date) - a garbage far-future date makes
+# an account look paid when it isn't. 1990-2035 comfortably covers any real
+# loan in this portfolio (observed Ag_Date range in production data: 2005-2026)
+# with headroom for near-term future-dated schedules.
+LCC_DATE_MIN_YEAR = 1990
+LCC_DATE_MAX_YEAR = 2035
+
 #  Smart Alert thresholds ────────────────────────────────────────────────────
 # Tune these to adjust sensitivity without touching business logic code.
 

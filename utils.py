@@ -3,7 +3,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from config import HARD_BUCKET_ARREARS_EMI_MIN
+from config import HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR
 
 YELLOW = "#FFC000"
 
@@ -217,17 +217,56 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         ]
 
     _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+    # pandas Timestamp is nanosecond-precision and bounded (~1677 to ~2262); a serial
+    # number outside that range raises OutOfBoundsDatetime and used to crash the
+    # ENTIRE upload for every user of that file, not just null out the one bad row.
+    # One garbage cell (a placeholder sentinel, a fat-fingered huge number) took the
+    # whole app down. Bound the serial range BEFORE the arithmetic that can overflow,
+    # not after, so an out-of-range value becomes NaT like any other bad date instead
+    # of an unrecoverable crash.
+    # NOT (pd.Timestamp.max - _EXCEL_EPOCH).days -- that subtraction itself overflows,
+    # since pd.Timedelta's range (~106751 days) is narrower than the gap between the
+    # 1899 epoch and pd.Timestamp.max (~2262), so computing the bound that way raises
+    # the exact OutOfBoundsDatetime this code exists to prevent.
+    _MAX_SERIAL = pd.Timedelta.max.days - 1
     for date_col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
         if date_col not in df.columns:
             continue
         col = df[date_col]
-        if pd.api.types.is_numeric_dtype(col):
+        numeric = pd.to_numeric(col, errors="coerce")
+        # Decide serial-vs-already-a-date by CONTENT, not just the declared dtype.
+        # pyxlsb can hand back an "object" dtype column that is still overwhelmingly
+        # numeric Excel serial dates -- a single stray blank/string cell is enough to
+        # upgrade the whole column's dtype from int/float to object, so
+        # is_numeric_dtype(col) alone was False even though 99%+ of the values were
+        # real serial numbers. That used to fall into the pd.to_datetime() branch
+        # below, which doesn't know these are day-counts and silently reinterprets a
+        # bare number as NANOSECONDS SINCE 1970 -- every date in the column came out
+        # as "1970-01-01 plus a few microseconds", wrong for the entire column, not
+        # just the one bad cell. Threshold on the fraction that parses as numeric
+        # instead: a real date-string/datetime column has ~0% successful numeric
+        # parses, a serial-date column (even with a few corrupt cells) has ~100%.
+        frac_numeric = numeric.notna().mean() if len(col) else 0.0
+        if pd.api.types.is_numeric_dtype(col) or frac_numeric >= 0.5:
             # xlsb files store dates as Excel serial numbers (days since 1899-12-30)
-            numeric = pd.to_numeric(col, errors="coerce")
-            df[date_col] = _EXCEL_EPOCH + pd.to_timedelta(numeric, unit="D")
-            df[date_col] = df[date_col].where(numeric.notna() & (numeric > 0), pd.NaT)
+            in_range = numeric.notna() & (numeric > 0) & (numeric <= _MAX_SERIAL)
+            safe_numeric = numeric.where(in_range)  # out-of-range -> NaN before the arithmetic
+            df[date_col] = _EXCEL_EPOCH + pd.to_timedelta(safe_numeric, unit="D")
+            df[date_col] = df[date_col].where(in_range, pd.NaT)
         else:
             df[date_col] = pd.to_datetime(col, errors="coerce")
+
+        # Business-plausibility bound, applied to the final parsed date regardless
+        # of which branch produced it: a stray numeric value that isn't actually a
+        # date (e.g. a rupee amount that ended up in this column in the source
+        # extract) can be numerically small enough to parse into a "valid" but
+        # nonsense Timestamp (e.g. year 2170) without ever overflowing pandas'
+        # Timestamp range, so the crash-prevention bound above doesn't catch it.
+        # Reject anything outside a real loan portfolio's plausible date range
+        # instead of letting a wrong-but-well-formed date reach business logic
+        # (e.g. Last Receipt Date feeds "paid this month" AI Query filters directly).
+        plausible = df[date_col].dt.year.between(LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR)
+        df[date_col] = df[date_col].where(plausible | df[date_col].isna(), pd.NaT)
 
     # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
