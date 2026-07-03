@@ -11,6 +11,39 @@ GEMINI_MODEL = "gemini-2.5-flash-lite"
 # COLLECTIONIQ_SHADOW=1 to validate the v2 path against real traffic.
 SHADOW_MODE = os.environ.get("COLLECTIONIQ_SHADOW", "").strip().lower() in ("1", "true", "yes", "on")
 
+# Query outcome logging: every AI Query run appends one line (timestamp, raw query
+# text, outcome classification, matched view/intent, error if any) to a local
+# JSONL file. Purpose: find out what real users ask that the registry vocabulary
+# (registry/ontology.py CONCEPTS/METRICS, registry/views.py VIEWS) doesn't cover
+# yet, so it can grow from evidence instead of guesswork. Local disk only, never
+# a database, never sent anywhere -- gitignored. Query text can contain a name/
+# number a user typed into their question, so this is deliberately NOT committed
+# or shared, same spirit as .env.
+QUERY_LOG_ENABLED = os.environ.get("COLLECTIONIQ_QUERY_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
+QUERY_LOG_PATH = os.environ.get("COLLECTIONIQ_QUERY_LOG_PATH", "logs/query_log.jsonl")
+
+# Entries older than this are dropped the next time the log is pruned (query_log.py
+# checks at most once/day via a sidecar marker file, so a busy log doesn't pay a
+# full read+rewrite on every single query).
+QUERY_LOG_RETENTION_DAYS = int(os.environ.get("COLLECTIONIQ_QUERY_LOG_RETENTION_DAYS", "30"))
+
+#  Date validation ──────────────────────────────────────────────────────────
+# Plausible range for Ag_Date / Last Receipt Date / ParentLDueDate after parsing
+# (utils.py::load_and_validate). A parsed date outside this range becomes NaT
+# instead of silently passing through as a wrong-but-still-a-valid-Timestamp
+# value. Found in real production data: a handful of rows where a RUPEE AMOUNT
+# (e.g. 150000, 400000) had ended up in the "Last Receipt Date" column of the
+# source LCC extract - numerically small enough to not overflow pandas'
+# Timestamp range, so it silently parsed as a real (nonsense, e.g. year 2170)
+# date. That's dangerous specifically because Last Receipt Date feeds live
+# business logic ("paid this month" / "unpaid this month" AI Query filters
+# compare it directly against a cutoff date) - a garbage far-future date makes
+# an account look paid when it isn't. 1990-2035 comfortably covers any real
+# loan in this portfolio (observed Ag_Date range in production data: 2005-2026)
+# with headroom for near-term future-dated schedules.
+LCC_DATE_MIN_YEAR = 1990
+LCC_DATE_MAX_YEAR = 2035
+
 #  Smart Alert thresholds ────────────────────────────────────────────────────
 # Tune these to adjust sensitivity without touching business logic code.
 

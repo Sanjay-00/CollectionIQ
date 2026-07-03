@@ -17,6 +17,7 @@ from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
 from registry.views import VIEWS, normalize_view_output, resolve_view_fn
+from query_log import log_query_outcome
 
 
 # ── Per-thread step callback ──────────────────────────────────────────────────
@@ -588,4 +589,5 @@ def run_query(
     finally:
         _tls.step_callback = None
 
+    log_query_outcome(result)
     return result
