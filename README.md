@@ -142,7 +142,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 **Automated Priority Action List** : Seven-tier business priority framework ranks accounts by impact. Non-starters, easy settlements, insurance arrears, co-lending risk, and NPA accounts each get their own actionable tier.
 
-**Field Executive Performance Scorecard** : Every executive ranked by collection %, strike rate, NPA count, SMA-2 count, and bucket roll rates using quartile-based tiers relative to the current portfolio.
+**Field Executive Performance Scorecard** : Every executive ranked by collection %, strike rate, NPA count, SMA-2 count, and bucket roll rates using quartile-based tiers relative to the current portfolio. Toggle the ranking metric between Collection % and Strike % to see who's actually current on installment obligation this month, not just who collected the most.
 
 **Bucket Migration Analysis** : Two months of data reveal exactly how accounts moved between DPD buckets, the NPA formation rate, and which executives are improving or deteriorating.
 
@@ -159,7 +159,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 **SOH as the True Exposure Metric** : Uses Sum of Hire (POS + Closing Arrears) instead of POS alone. For MAT and S&S accounts where POS = 0, SOH correctly reflects what is actually owed.
 
-**Monthly Portfolio Intelligence Report** : Board-ready HTML report with AI narrative, branch league tables, executive rankings, and a five-point action plan. Email-safe layout. Generate once, send to any number of recipients without regenerating.
+**Monthly Portfolio Intelligence Report** : Board-ready, fully self-contained HTML report built from up to **18 independently toggleable sections**, verdict-first so a lead reads the AI narrative and five-point action plan before scrolling into supporting detail. Beyond branch and executive league tables, it includes embedded charts (bucket-distribution waterfall, region→branch concentration treemap, Collection% vs NPA% branch quadrant), month-over-month NPA/SMA-2 movement broken out by region/branch/executive, early-warning risk indicators, segment-wise NPA breakdown, top at-risk accounts, fleet exposure, repossession candidates, a good-customer retention list, and a rescued-vs-slipped executive recovery leaderboard, every number pulled from the same `analysis/` functions the dashboard tabs use, so a report figure and a dashboard figure never disagree. Email-safe layout. Generate once, send to any number of recipients without regenerating.
 &nbsp;
 
 
@@ -230,7 +230,7 @@ flowchart TD
 
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
-        PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
+        PA["Portfolio Analyzer\nPandas\n\nComputes up to 18 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns\nAccount lists · Branch & executive leaderboards"]
         RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
         RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
         ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
@@ -296,10 +296,13 @@ CollectionIQ/
 │
 ├── report_agent/
 │   ├── graph.py                    # Report pipeline (LangGraph)
+│   ├── charts.py                   # Plotly figure -> embedded base64 PNG (kaleido)
+│   ├── sections/                   # 18 independently toggleable report sections,
+│   │                               #   each a thin wrapper around an analysis/ function
 │   └── nodes/
-│       ├── portfolio_analyzer.py   # Computes all report sections
+│       ├── portfolio_analyzer.py   # Dispatches enabled_sections to sections/
 │       ├── risk_narrator.py        # AI executive narrative and action plan
-│       ├── report_builder.py       # Assembles an email-safe self-contained HTML report
+│       ├── report_builder.py       # Assembles the verdict-first, email-safe HTML report
 │       └── email_dispatcher.py     # SMTP delivery
 │
 ├── sample_data/
@@ -318,7 +321,7 @@ CollectionIQ/
 | AI Models | Google Gemini 2.5 Flash-Lite | All LLM agents across both pipelines (query and report) |
 | Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, fast-path views, and clarification |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
-| Charts | Plotly | DPD distribution, bucket migration heatmap, branch charts |
+| Charts | Plotly + Kaleido | Interactive dashboard charts; Kaleido renders three of them to embedded PNG for the HTML report |
 | AI SDK | google-genai | Gemini API with retry and exponential backoff |
 | Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
 | Observability | LangSmith | Query tracing and result quality feedback |

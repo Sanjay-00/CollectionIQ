@@ -6,7 +6,7 @@ Guidance for AI assistants working in this repo.
 
 - **Stack**: Streamlit (port 8502, see `.streamlit/config.toml`) + Pandas + Plotly + Google Gemini via `google-genai` + LangGraph
 - **Run**: `streamlit run app.py`
-- **Tests**: `pytest` (326 tests, all pandas/business-logic, no live Gemini calls)
+- **Tests**: `pytest` (358 tests, all pandas/business-logic, no live Gemini calls)
 - **Model config**: `GEMINI_MODEL` is defined once in `config.py` (currently `gemini-2.5-flash-lite`) and imported everywhere; never hardcode the model string in agent files
 - **Data**: single in-memory pandas DataFrame per session, loaded from an uploaded LCC Excel extract (~85 known columns, see `utils.py::REQUIRED_COLS`)
 
@@ -23,12 +23,12 @@ CollectionIQ is a self-serve portfolio intelligence dashboard for NBFC (Non-Bank
 Pre-computed, pure pandas, no LLM. These functions run once per upload (cached via `st.cache_data` in `app.py`) and feed both the dashboard tabs and, through `registry/views.py`, the AI Query fast path, so a dashboard number and an AI Query answer about the same thing are numerically identical.
 
 - **`analysis/portfolio_intelligence.py`**: the largest module, computing most of the Portfolio Intelligence and Alerts content: `compute_pulse_kpis` (headline KPI cards with month-over-month deltas), `compute_region_scorecard` / `compute_branch_quadrant` / `compute_executive_recovery` (per-entity performance tables), `compute_top_accounts` (top N by SOH restricted to delinquent accounts only, any non-STD bucket, since a large healthy STD loan is not a collections priority), `compute_fleet_exposure` (customers at or above `FLEET_MIN_LOANS` loans), `compute_risk_indicators` (signal-direction table gated by `RISK_INDICATOR_STABLE_PP`/materiality thresholds), `compute_good_bad` (synthesizes a good/bad narrative from a branch's composite Concern Score plus region NPA delta plus executive net recovery plus risk indicators), `compute_repossession_list`, `compute_good_customers`, `compute_product_analysis`, `compute_npa_sma2_comparison`, plus several Plotly chart builders (bucket waterfall, roll-rate heatmap, concentration treemap, vintage chart).
-- **`analysis/executive_scorecard.py`**: `compute_executive_scorecard`, ranks every field executive by collection percentage with quartile-based performance tiers computed relative to the current dataset, not hardcoded thresholds.
+- **`analysis/executive_scorecard.py`**: `compute_executive_scorecard`, ranks every field executive by collection percentage with quartile-based performance tiers computed relative to the current dataset, not hardcoded thresholds. `rank_by_metric(scorecard_df, metric_col)` re-sorts an already-computed scorecard by any other column (currently `"Strike Rate %"`, exposed as a toggle on the Scorecard tab and as a second report section) and recomputes quartile tiers relative to that column, without mutating or re-deriving the original Collection%-ranked scorecard.
 - **`analysis/roll_rate.py`**: the bucket-migration matrix and roll-forward/roll-backward rate KPIs between two uploaded periods.
 
 **Business rules worth knowing**: SOH (Sum of Hire = POS + Closing Arrears) is the exposure metric used everywhere instead of raw POS, so MAT and S&S accounts (where POS is legitimately 0) still show their true outstanding exposure. Hard Bucket percentage means `Arrears / EMI >= HARD_BUCKET_ARREARS_EMI_MIN` (currently 6), a single config constant in `config.py` shared by both the dashboard and the AI Query registry's `hard_bucket_pct` metric, since these two previously drifted (one used 3, the other 6) before being unified. Nearly every threshold that used to be a bare magic number (`FLEET_MIN_LOANS`, `REPOSSESSION_WINDOW_MONTHS`, `GOOD_CUSTOMER_MIN_TENURE_PCT`, `CONCERN_SCORE_*`, `RISK_INDICATOR_*`, and more) now lives in `config.py`, and the matching UI label text reads from the same constants so a retuned threshold cannot silently go stale in a label.
 
-**Known duplication risk**: `strike_pct` and `hard_bucket_pct` are each computed twice independently, once in `analysis/portfolio_intelligence.py::compute_pulse_kpis` for the dashboard, once in `registry/ontology.py` as a `count_ratio` METRIC for the AI Query pipeline. They are kept in sync by hand, there is no shared source of truth. If either definition is retuned, remember to update the other.
+**`strike_pct` / `hard_bucket_pct`**: computed by `utils.compute_strike_pct()` / `utils.compute_hard_bucket_pct()`, the single shared source of truth called by `utils.py::compute_metrics` (dashboard) and every Portfolio Intelligence table that reports either metric (`compute_pulse_kpis`, `compute_region_scorecard`, `compute_branch_quadrant`, `analysis/executive_scorecard.py::compute_executive_scorecard`). The AI Query pipeline can't call these directly, its `registry/ontology.py` `strike_pct`/`hard_bucket_pct` METRICs are declarative definitions consumed by `compiler/measures.py`'s `count_ratio` handler, a different execution path entirely, so it's a second, independent implementation of the same business rule by necessity of the architecture. `tests/test_metric_consistency.py` runs both paths against the same data and asserts they agree, so a retuned threshold that only reaches one side fails a test instead of silently drifting.
 
 ---
 
@@ -71,12 +71,48 @@ Only two Gemini calls happen per query: the Logical Planner and the Insight Gene
 - **Progress UI**: a `threading.local()`-based callback (`_announce`, driven by `_STEP_LABELS`) fires at the start of each node so `app.py` can show live step labels via `st.status()`, thread-safe per Streamlit session.
 - **Tracing**: every Gemini call is wrapped in `@traceable` (LangSmith), a `run_id` is generated per query and returned to the UI for thumbs up and thumbs down feedback.
 - **Guardrails**: `agents/logical_planner.py` enforces a query-length cap (`MAX_QUERY_CHARS`), returns a structured out-of-scope response for gibberish or off-topic input instead of calling Gemini, and resists prompt injection via an explicit prompt instruction. `agents/plan_executor.py` blocks dunder/sandbox-escape patterns in `derive` expressions at both compile time (`validate_plan`) and execute time (`_op_derive`), as two independent layers.
+- **Person-name filters** (`MNT NAME`, `Cust Name`, `Guar Name`): the planner is instructed to use `contains` (case-insensitive substring), never `==`. These are free text typed once at loan origination, not a controlled vocabulary like `RegionName`/`Unit`, so an exact match silently returns zero rows for a real person whose name in the data has any spelling/spacing variance from how the user types it. `agents/data_executor.py::_apply_condition` raises (rather than silently returning the full unfiltered table) if `contains` or any other op is ever misapplied to a numeric/date column, since nothing scopes the op to a column type beyond the prompt's own naming guidance.
 
 A second, independent LangGraph pipeline (`report_agent/graph.py`) follows the same node-and-state-passing pattern for the monthly HTML report: Portfolio Analyzer -> Risk Narrator -> Report Builder -> Email Dispatcher.
 
 ### Files that look related but are not on the live path
 
-`agents/domain_expert.py`'s `enrich_query`/`SYSTEM_PROMPT` (the old single-call architecture) is dead code, superseded by `agents/logical_planner.py`. The module's `PRIORITY_RULES` re-export, `build_snapshot_context`, and `_build_priority_text` are still live and imported by `agents/logical_planner.py` and `agents/data_executor.py`. `agents/query_parser.py` and `agents/plan_critic.py` are fully unreferenced by `graph.py` and by every other live module, they exist from an earlier architecture iteration and are not imported anywhere in the current pipeline. Roughly half of `agents/data_executor.py` (`execute_filters`, `execute_aggregation`, `validate_aggregation_spec`, `validate_filter_spec`) is likewise unused by `graph.py`, kept alive only by older test files.
+`agents/domain_expert.py`'s `enrich_query`/`SYSTEM_PROMPT` (the old single-call architecture) is dead code, superseded by `agents/logical_planner.py`. The module's `PRIORITY_RULES` re-export, `build_snapshot_context`, and `_build_priority_text` are still live and imported by `agents/logical_planner.py` and `agents/data_executor.py`.
+
+`agents/query_parser.py`, `agents/plan_critic.py`, and roughly half of `agents/data_executor.py` (`execute_filters`, `execute_aggregation`, `validate_aggregation_spec`, `validate_filter_spec`) were from an earlier architecture iteration, fully unreferenced by `graph.py` or any other live module, and kept alive only by older test files. All were deleted along with their dedicated tests; the scenarios they covered (`colending_at_risk` concept expansion, `HAVING` clause handling, an amount-reduction ranking) are independently covered live in `tests/test_compiler.py`, `tests/test_nested.py`, and `tests/test_temporal.py`.
+
+---
+
+## Report Layer (`report_agent/`)
+
+Same 4-node LangGraph shape as CLAUDE.md's AI Query section above (Portfolio Analyzer -> Risk Narrator -> Report Builder -> Email Dispatcher), but the Portfolio Analyzer node now fans out into **18 independently toggleable sections**, each a thin `report_agent/sections/<name>.py` wrapper around an `analysis/` function (so a report number and a dashboard number are computed by the literal same code, not just "kept in sync"). `report_agent/nodes/portfolio_analyzer.py`'s `_SECTION_FN` dict, `report_agent/graph.py`'s `ALL_SECTIONS` list, `report_agent/nodes/report_builder.py`'s `SECTION_ORDER`/`_RENDERERS` dicts, and `ui/tabs/report.py`'s checkboxes must all agree on the same section-name set, four separate registration points for one addition, it's easy to add a section and forget one of the four.
+
+**Layout is verdict-first**: the Gemini executive narrative and prioritized action plan render immediately after the header, before any KPI or table, so a lead gets the TL;DR before scrolling into supporting detail. `report_agent/charts.py::fig_to_base64` renders three of the sections' Plotly figures to embedded base64 PNG (bucket waterfall, concentration treemap, branch quadrant scatter) via `kaleido`, so the report stays a single self-contained HTML file with no external image hosting.
+
+The 18 sections, in render order:
+
+| Section | What it shows |
+|---|---|
+| `portfolio_health` | Headline KPI cards (Month Demand, Collection %, Strike %, NPA %, Hard Bucket %, SOH, LCC%, CMD %) with MoM deltas |
+| `verdict` | Pandas-computed good/bad synthesis (`analysis/portfolio_intelligence.py::compute_good_bad`) — works even with AI narrative skipped |
+| `risk_flags` | Top 3 active smart alerts by severity |
+| `risk_indicators` | Early-warning signal table (SMA-1/SMA-2 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk) |
+| `bucket_migration` | Roll-rate matrix + embedded bucket-distribution waterfall chart |
+| `npa_sma2_movement` | This-month-vs-last-month NPA/SMA-2 counts, deltas, %change — portfolio total, then by region, then top-mover tables by branch and by executive |
+| `branch_quadrant` | Embedded Collection% vs NPA% scatter (bubble = SOH) + top-5 highest-concern branches as a text fallback |
+| `concentration` | Embedded region→branch treemap (size = SOH, color = NPA%) |
+| `region_scorecard` | Per-region NPA%/Collection%/Hard Bucket%/SOH with MoM status |
+| `product_analysis` | Segment-wise NPA breakdown (fuel type/source/vintage cohort intentionally excluded from the report) |
+| `top_accounts` | Largest single exposures among delinquent (non-STD) accounts by SOH |
+| `fleet_exposure` | Customers with 3+ loans (report-layer-only Region/Branch lookup, since the underlying analysis function groups by mobile number alone) |
+| `repossession` | SMA-2/NPA accounts on loans still within the repossession collateral-value window |
+| `good_customers` | Refinance/retention targets (tenure ≥70% completed, LCC% ≥100%) — always renders, with an explicit "no accounts meet criteria" message when empty rather than silently vanishing |
+| `branch_performance` | Branch league table, top 5 / bottom 5 by Collection % |
+| `executive_recovery` | Rescued-vs-slipped leaderboard (`analysis/portfolio_intelligence.py::compute_executive_recovery`) — a behavior signal distinct from plain Collection % |
+| `executive_rankings` | Field executive league table, ranked by Collection % |
+| `executive_strike_rankings` | Same executive pool, re-ranked by Strike % via `rank_by_metric` — independent section, doesn't replace the Collection%-ranked one |
+
+**HTML escaping**: every renderer in `report_agent/nodes/report_builder.py` passes raw data (customer/executive/branch/region names, vehicle descriptions, the Gemini narrative/action-plan text) through `_esc()` (`html.escape`) before interpolating into an f-string. Manually-entered LCC fields can contain `&`/`<`/`>`; unescaped, those break the surrounding table markup, and the report is also offered as a raw `.html` download/email attachment, not just rendered inside an email client's sandboxed viewer.
 
 ---
 
@@ -121,7 +157,7 @@ flowchart TD
 
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
-        PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot, risk flags, bucket migration,\nbranch performance, executive rankings"]
+        PA["Portfolio Analyzer\nPandas\n\nComputes up to 18 toggleable report sections\nHealth, verdict, risk signals, bucket/NPA movement,\ncharts, region/segment breakdowns, account lists,\nbranch and executive leaderboards"]
         RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites a six to eight bullet-point executive narrative\nGenerates five prioritized action items with owner and timeline"]
         RB["Report Builder\nPython\n\nAssembles a fully self-contained HTML report\nTable-based layout, email-safe, no external CSS"]
         ED["Email Dispatcher\nSMTP\n\nSends the report as body and attachment\nFires only if SMTP is configured in .env"]
