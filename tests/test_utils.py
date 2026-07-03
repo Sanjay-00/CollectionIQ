@@ -1,9 +1,96 @@
-﻿import numpy as np
+﻿import io
+
+import numpy as np
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate
 from helpers import make_df
+
+
+def _build_upload(overrides: dict, n: int = 3) -> io.BytesIO:
+    """Minimal valid LCC-shaped upload (every REQUIRED_COLS column present) as an
+    in-memory .xlsx, for testing load_and_validate's file-parsing path directly."""
+    data = {c: ["x"] * n for c in REQUIRED_COLS}
+    data.update({
+        "Loan No": [f"L{i}" for i in range(n)],
+        "Arrears / EMI": [0.0] * n,
+        "Month Receipt Amount": [100.0] * n,
+        "Month Collection (Excluding Reserve Collection)": [100.0] * n,
+        "Net Collection Demand Inst+Exp+BC": [100.0] * n,
+        "POS": [1000.0] * n,
+        "LCC%": [100.0] * n,
+        "Closing Arrears": [0.0] * n,
+        "Month Due-Inst": [100.0] * n,
+        "Month Due-Exp": [0.0] * n,
+        "Total Cum Collection": [1000.0] * n,
+        "Strike": ["Y"] * n,
+        "Due Dt": [5] * n,
+    })
+    data.update(overrides)
+    df = pd.DataFrame(data)
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    buf.seek(0)
+    buf.name = "test.xlsx"
+    return buf
+
+
+class TestLoadAndValidateSerialDates:
+    """Regression: a single out-of-range Excel serial date value used to crash the
+    ENTIRE upload (pandas.errors.OutOfBoundsDatetime) instead of just nulling that
+    one row - a bad cell in one loan's Ag_Date took down every user's session on a
+    shared Streamlit deployment. load_and_validate.__wrapped__ bypasses the
+    @st.cache_data decorator so this can be called directly without a live session."""
+
+    def test_garbage_serial_value_becomes_nat_not_a_crash(self):
+        buf = _build_upload({"Ag_Date": [45000, 999999999999, 45500]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df["Ag_Date"].iloc[1] is pd.NaT or pd.isna(result_df["Ag_Date"].iloc[1])
+        assert pd.notna(result_df["Ag_Date"].iloc[0])
+        assert pd.notna(result_df["Ag_Date"].iloc[2])
+
+    def test_negative_serial_value_becomes_nat(self):
+        buf = _build_upload({"Ag_Date": [45000, -5, 45500]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert pd.isna(result_df["Ag_Date"].iloc[1])
+
+    def test_valid_serial_dates_convert_correctly(self):
+        # 45000 (serial) -> 2023-03-15, matching Excel's own epoch (1899-12-30)
+        buf = _build_upload({"Ag_Date": [45000, 45000, 45000]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df["Ag_Date"].iloc[0] == pd.Timestamp("2023-03-15")
+
+    def test_object_dtype_column_of_mostly_numeric_serials_is_still_parsed_as_dates(self):
+        # Regression: pyxlsb can hand back an "object" dtype column (one stray
+        # blank/string cell upgrades the whole column from int/float to object)
+        # that's still 99%+ real Excel serial dates. is_numeric_dtype(col) alone
+        # was False for that column, so it fell into pd.to_datetime(), which
+        # doesn't know these are day-counts and silently reinterprets a bare
+        # number as NANOSECONDS SINCE 1970 -- every date in the column came out
+        # wrong (~1970-01-01), not just the one bad cell.
+        buf = _build_upload({"ParentLDueDate": pd.array([45000, 45500, None], dtype=object)})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df["ParentLDueDate"].iloc[0] == pd.Timestamp("2023-03-15")
+        assert result_df["ParentLDueDate"].dt.year.iloc[0] != 1970
+
+    def test_implausible_date_becomes_nat_even_within_timestamp_bounds(self):
+        # Regression: a rupee amount (e.g. 150000) that ends up in a date column
+        # in the source LCC extract is numerically small enough to not overflow
+        # pandas' Timestamp range, so it silently parses into a "valid" but
+        # nonsense date (e.g. year 2170) instead of erroring. That's dangerous
+        # because Last Receipt Date feeds live business logic ("paid this month"
+        # AI Query filters compare it directly against a cutoff) - a garbage
+        # far-future date makes an account look paid when it isn't.
+        buf = _build_upload({"Last Receipt Date": [45000, 150000, 45500]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert pd.isna(result_df["Last Receipt Date"].iloc[1])
+        assert pd.notna(result_df["Last Receipt Date"].iloc[0])
 
 
 class TestAssignBuckets:

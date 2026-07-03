@@ -4,7 +4,7 @@ Guidance for AI assistants working in this repo.
 
 ## Quick Facts
 
-- **Stack**: Streamlit (port 8502, see `.streamlit/config.toml`) + Pandas + Plotly + Google Gemini via `google-genai` + LangGraph
+- **Stack**: Streamlit (default port, no override in `.streamlit/config.toml` — a hardcoded `port` there has broken the Streamlit Cloud health check twice before by not matching the port Cloud's prober expects; if you need a custom port for local dev, set it via `streamlit run app.py --server.port XXXX` on the command line instead of committing it to config.toml) + Pandas + Plotly + Google Gemini via `google-genai` + LangGraph
 - **Run**: `streamlit run app.py`
 - **Tests**: `pytest` (358 tests, all pandas/business-logic, no live Gemini calls)
 - **Model config**: `GEMINI_MODEL` is defined once in `config.py` (currently `gemini-2.5-flash-lite`) and imported everywhere; never hardcode the model string in agent files
