@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from utils import fmt_value
+from ui.components import _static_kpi_card_html, _chart_card, _empty_state
 
 
 def render_migration_tab(
@@ -11,16 +12,11 @@ def render_migration_tab(
     rr_meta: dict | None,
 ) -> None:
     if len(df_prev_raw) == 0 or rr_meta is None:
-        st.markdown("""
-        <div class="empty-state">
-          <div class="empty-state-icon">📈</div>
-          <div class="empty-state-title">Previous month data not loaded</div>
-          <div class="empty-state-sub">
-            Upload a previous month LCC file alongside the current month file,<br>
-            then click <strong>Generate Dashboard</strong> to see bucket migration and roll-rate analysis.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        _empty_state(
+            "📈", "Previous month data not loaded",
+            "Upload a previous month LCC file alongside the current month file,<br>"
+            "then click <strong>Generate Dashboard</strong> to see bucket migration and roll-rate analysis.",
+        )
         return
 
     from analysis.roll_rate import build_roll_rate_heatmap
@@ -35,19 +31,15 @@ def render_migration_tab(
     ]
     for col, (label, val, unit, color, tip) in zip(st.columns(4), rr_kpis):
         with col:
-            st.markdown(f"""
-            <div class="kpi-card" style="border-top-color:{color};">
-              <div class="kpi-label">{label}</div>
-              <div class="kpi-value" style="color:{color};font-size:24px;">{val:,.1f}{unit}</div>
-              <div class="kpi-mom" style="color:#9ca3af;">{tip}</div>
-            </div>""", unsafe_allow_html=True)
+            st.markdown(
+                _static_kpi_card_html(label, f"{val:,.1f}{unit}", tip, color=color, value_style="font-size:24px;"),
+                unsafe_allow_html=True,
+            )
 
     # ── Heatmap ──────────────────────────────────────────────────────────────
     st.markdown('<div class="section-label" style="margin-top:20px;">Bucket Migration Matrix</div>', unsafe_allow_html=True)
     fig_rr = build_roll_rate_heatmap(rr_matrix)
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    st.plotly_chart(fig_rr, width='stretch')
-    st.markdown('</div>', unsafe_allow_html=True)
+    _chart_card(fig_rr)
     st.caption(
         f"{rr_meta['matched_count']:,} matched accounts | "
         f"{rr_meta['new_entries']:,} new this month | "

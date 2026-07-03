@@ -64,14 +64,16 @@ class TestExecutePlan:
         assert err == ""
         assert dict(zip(out["Unit"], out["exposure"])) == {"A": 30, "B": 5}
 
-    def test_empty_after_filter_returns_message(self):
+    def test_empty_after_filter_returns_empty_df_no_error(self):
+        # A valid plan that matches zero rows returns an empty DataFrame, not an error.
+        # Empty results are semantically correct (no matches), not a pipeline failure.
         plan = [
             {"op": "group_aggregate", "group_by": ["Unit", "Cust Mob No"],
              "aggregations": [{"alias": "loan_count", "func": "nunique", "column": "Loan No"}]},
             {"op": "filter", "conditions": [{"column": "loan_count", "op": ">", "value": 999}]},
         ]
         out, err = execute_plan(_fleet_df(), plan)
-        assert out.empty and err
+        assert out.empty and err == ""
 
     def test_unknown_op(self):
         out, err = execute_plan(_fleet_df(), [{"op": "frobnicate"}])

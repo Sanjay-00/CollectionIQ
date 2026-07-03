@@ -1,4 +1,4 @@
-"""
+﻿"""
 Field Executive Performance Scorecard
 Groups by MNT NAME and computes per-executive collection metrics.
 Performance tiers are quartile-based (relative to the dataset) - not hardcoded thresholds.
@@ -6,6 +6,7 @@ Performance tiers are quartile-based (relative to the dataset) - not hardcoded t
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
+from utils import BUCKET_SCORE, to_num, account_count, compute_strike_pct
 
 
 def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_MIN_ACCOUNTS) -> pd.DataFrame:
@@ -21,7 +22,6 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
     if "MNT NAME" not in df.columns:
         return pd.DataFrame()
 
-    _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
     has_roll = "prev_bucket" in df.columns and "curr_bucket" in df.columns
 
     group_cols = ["MNT NAME", "Unit"] if "Unit" in df.columns else ["MNT NAME"]
@@ -33,20 +33,22 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         else:
             exec_name, branch = str(keys), ""
 
-        n = grp["Loan No"].nunique() if "Loan No" in grp.columns else len(grp)
+        n = account_count(grp)
         if n < min_accounts:
             continue
 
-        # Strike rate = % of accounts where full EMI payment was received this month
-        strike_valid = grp[grp["Strike"].isin(["Y", "N"])] if "Strike" in grp.columns else pd.DataFrame()
-        strike_rate = round(
-            (strike_valid["Strike"] == "Y").sum() / len(strike_valid) * 100, 1
-        ) if len(strike_valid) > 0 else 0.0
+        # Strike rate = % of accounts where full EMI payment was received this month.
+        # Uses the shared utils.compute_strike_pct so this doesn't drift from the
+        # dashboard/Portfolio Intelligence definition again (this was a 5th
+        # independent implementation, missed by the earlier strike_pct/hard_bucket_pct
+        # consolidation - it lacked the case/whitespace normalization compute_strike_pct
+        # applies, silently undercounting the denominator for lowercase/padded "y"/"n").
+        strike_rate = round(compute_strike_pct(grp), 1)
 
-        demand    = pd.to_numeric(grp.get("Net Collection Demand Inst+Exp+BC", pd.Series(dtype=float)), errors="coerce").sum()
-        collected = pd.to_numeric(grp.get("Month Collection (Excluding Reserve Collection)", pd.Series(dtype=float)), errors="coerce").sum()
-        total_soh = pd.to_numeric(grp.get("SOH", pd.Series(dtype=float)), errors="coerce").sum()
-        total_pos = pd.to_numeric(grp.get("POS", pd.Series(dtype=float)), errors="coerce").sum()
+        demand    = to_num(grp, "Net Collection Demand Inst+Exp+BC").sum()
+        collected = to_num(grp, "Month Collection (Excluding Reserve Collection)").sum()
+        total_soh = to_num(grp, "SOH").sum()
+        total_pos = to_num(grp, "POS").sum()
         coll_pct  = round(collected / demand * 100, 1) if demand > 0 else 0.0
 
         # NPA and SMA-2 counts
@@ -58,8 +60,8 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
         roll_fwd_pct = roll_bwd_pct = None
         if has_roll:
-            curr_score = grp["curr_bucket"].map(_BUCKET_SCORE)
-            prev_score = grp["prev_bucket"].map(_BUCKET_SCORE)
+            curr_score = grp["curr_bucket"].map(BUCKET_SCORE)
+            prev_score = grp["prev_bucket"].map(BUCKET_SCORE)
             valid = curr_score.notna() & prev_score.notna()
             total_valid = int(valid.sum())
             if total_valid > 0:
@@ -79,8 +81,10 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         if has_roll:
             row["Roll Fwd %"] = roll_fwd_pct
             row["Roll Bwd %"] = roll_bwd_pct
-        npa_pct = round(npa_count / n * 100, 1) if n > 0 else 0.0
+        npa_pct  = round(npa_count  / n * 100, 1) if n > 0 else 0.0
+        sma2_pct = round(sma2_count / n * 100, 1) if n > 0 else 0.0
         row.update({
+            "SMA-2 %":        sma2_pct,
             "NPA %":          npa_pct,
             "NPA":            npa_count,
             "SMA-2":          sma2_count,
@@ -96,10 +100,16 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         return pd.DataFrame()
 
     sc = pd.DataFrame(rows).sort_values("_coll_pct_raw", ascending=False)
+    sc["Tier"] = _quartile_tier(sc["_coll_pct_raw"])
+    sc = sc.drop(columns=["_coll_pct_raw"])
+    return sc.reset_index(drop=True)
 
-    # Quartile-based tiers — relative to this dataset
-    q75 = sc["_coll_pct_raw"].quantile(0.75)
-    q25 = sc["_coll_pct_raw"].quantile(0.25)
+
+def _quartile_tier(series: pd.Series) -> pd.Series:
+    """top = >= 75th percentile, bottom = <= 25th percentile, mid = everyone else -
+    relative to this dataset, not a hardcoded threshold."""
+    q75 = series.quantile(0.75)
+    q25 = series.quantile(0.25)
 
     def _tier(val):
         if val >= q75:
@@ -108,9 +118,24 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
             return "bottom"
         return "mid"
 
-    sc["Tier"] = sc["_coll_pct_raw"].apply(_tier)
-    sc = sc.drop(columns=["_coll_pct_raw"])
-    return sc.reset_index(drop=True)
+    return series.apply(_tier)
+
+
+def rank_by_metric(scorecard_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
+    """Re-rank an already-computed scorecard by a different metric column (e.g.
+    "Strike Rate %" instead of the default "Collection %"), recomputing quartile
+    tiers relative to that metric.
+
+    Returns an independent re-sorted copy - does NOT change compute_executive_scorecard's
+    own Collection%-based ranking/Tier, so existing Collection%-ranked consumers
+    (the default Scorecard tab view, report_agent's executive_rankings section,
+    AI Query's executive_rankings view) are unaffected unless they explicitly opt in.
+    """
+    if scorecard_df is None or scorecard_df.empty or metric_col not in scorecard_df.columns:
+        return scorecard_df
+    ranked = scorecard_df.sort_values(metric_col, ascending=False).copy()
+    ranked["Tier"] = _quartile_tier(ranked[metric_col])
+    return ranked.reset_index(drop=True)
 
 
 def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
