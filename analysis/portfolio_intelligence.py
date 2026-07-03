@@ -6,12 +6,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-from utils import BUCKET_ORDER, BUCKET_SCORE, BUCKET_COLORS, to_num, account_count, is_yes
+from utils import (
+    BUCKET_ORDER, BUCKET_SCORE, BUCKET_COLORS, to_num, account_count, is_yes,
+    compute_strike_pct, compute_hard_bucket_pct,
+)
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN,
     MIN_ACCOUNTS_PRODUCT_SEGMENT,
     MIN_ACCOUNTS_SOURCE_VINTAGE,
-    HARD_BUCKET_ARREARS_EMI_MIN,
     REPOSSESSION_WINDOW_MONTHS,
     GOOD_CUSTOMER_MIN_TENURE_PCT,
     GOOD_CUSTOMER_MIN_LCC_PCT,
@@ -128,6 +130,11 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
     ) * 1.45 or 100
 
     if has_prev:
+        # yshift is a fixed PIXEL offset (not a data-coordinate multiple), so the
+        # delta annotation always sits a couple of text-lines above its own bar's
+        # "outside" value label regardless of that bar's height - unlike scaling
+        # off the y-value, which puts far-off annotations for short bars and
+        # collides with the label for tall ones.
         for b in buckets:
             delta   = curr_counts[b] - prev_counts[b]
             if delta == 0:
@@ -137,12 +144,13 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
             color   = "#dc2626" if is_bad else "#16a34a"
             fig.add_annotation(
                 x=b,
-                y=max(curr_counts[b], prev_counts[b]) * 1.30,
+                y=max(curr_counts[b], prev_counts[b]),
+                yshift=28,
                 text=f"<b>{arrow} {abs(delta):,}</b>",
                 showarrow=False,
                 font=dict(size=11, color=color),
                 xanchor="center",
-                bgcolor="rgba(255,255,255,0.85)",
+                bgcolor="rgba(255,255,255,0.9)",
                 borderpad=2,
             )
 
@@ -175,10 +183,9 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         npa_count = int((df["curr_bucket"] == "NPA").sum()) if "curr_bucket" in df.columns else 0
         sma2_count = int((df["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in df.columns else 0
         sma2_pct = _safe_div(sma2_count, total)
-        hard_pct = _safe_div((to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), total)
+        hard_pct = compute_hard_bucket_pct(df)
         coll = _coll_pct(df)
-        strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])] if "Strike" in df.columns else pd.DataFrame()
-        strike_pct = _safe_div(is_yes(strike_valid, "Strike").sum(), len(strike_valid)) if not strike_valid.empty else 0.0
+        strike_pct = compute_strike_pct(df)
         return {
             "accounts": total, "soh": soh,
             "npa_count": npa_count, "npa_pct": npa_pct,
@@ -236,7 +243,7 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
         curr_npa = _npa_pct(grp)
         curr_coll = _coll_pct(grp)
         soh = _soh_cr(grp)
-        hard_pct = _safe_div((to_num(grp, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), n)
+        hard_pct = compute_hard_bucket_pct(grp)
         roll_fwd, roll_bwd = _roll_rates(grp)
 
         sma2_count = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
@@ -370,7 +377,7 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
             "Collection%": _coll_pct(grp),
             "SMA-2%": _safe_div(sma2_n, n),
             "NPA%": _npa_pct(grp),
-            "Hard Bucket%": _safe_div((to_num(grp, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), n),
+            "Hard Bucket%": compute_hard_bucket_pct(grp),
             "SOH (Cr)": _soh_cr(grp),
             "Roll Fwd%": roll_fwd if roll_fwd is not None else 0.0,
             "Chronic (3M+)": chronic,

@@ -591,3 +591,72 @@ class TestDeepAuditFixes:
         assert row_a["curr_soh"] == 600
         assert row_a["prev_curr_soh"] == 540
         assert row_a["curr_soh_change"] == 60
+
+
+# ── Person-name filters use "contains", not "==" ────────────────────────────
+# Bug: "what's the month demand for executive named yash bhagoji deve" returned
+# 0 matching accounts for a real executive because the planner filtered MNT NAME
+# with an exact "==" match. MNT NAME/Cust Name/Guar Name are free text typed once
+# at loan origination (not a controlled vocabulary like RegionName), so any
+# spelling/spacing variance in how the user types the name silently returns zero
+# rows for someone who is actually in the data. Fixed by instructing the planner
+# to use "contains" (case-insensitive substring) for these fields instead - this
+# pins the downstream contract (the fix itself is a prompt change, untestable
+# without a live model).
+
+class TestPersonNameContainsFilter:
+    def _df(self):
+        return pd.DataFrame({
+            "Loan No":  ["L1", "L2", "L3"],
+            "MNT NAME": ["Yash Bhagoji Deve", "Sunil Kumar Patil", "Rajesh Sharma"],
+            "SOH":      [1000.0, 2000.0, 1500.0],
+        })
+
+    def test_contains_matches_exact_name_case_insensitively(self):
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"column": "MNT NAME", "op": "contains", "value": "yash bhagoji deve"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, list(self._df().columns))
+        assert errs == []
+        result, err = execute_plan(self._df(), plan)
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["Loan No"] == "L1"
+
+    def test_contains_matches_partial_name(self):
+        # A user typing just part of the name (or a slight variant) still finds
+        # the account - the failure mode "==" had.
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"column": "MNT NAME", "op": "contains", "value": "bhagoji"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        plan, errs = compile_logical(ir1, list(self._df().columns))
+        assert errs == []
+        result, err = execute_plan(self._df(), plan)
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["Loan No"] == "L1"
+
+    def test_contains_misapplied_to_numeric_column_errors_not_unfiltered(self):
+        # Guard against the model ever emitting "contains" against a numeric/date
+        # column (nothing scopes the op to a column TYPE, only the prompt's naming
+        # guidance) -- must surface as a query error, never silently return the
+        # full unfiltered table (a "confidently wrong answer").
+        ir1 = {
+            "intent": "loan_table", "view": None,
+            "filters": [{"column": "SOH", "op": "contains", "value": "100"}],
+            "dimensions": [], "measures": [], "metrics": [], "having": [],
+            "order_by": [], "limit": None, "display_columns": [], "time": None,
+        }
+        cols = ["Loan No", "MNT NAME", "SOH"]
+        plan, errs = compile_logical(ir1, cols)
+        assert errs == []
+        df = pd.DataFrame({"Loan No": ["L1", "L2"], "MNT NAME": ["A", "B"], "SOH": [100.0, 200.0]})
+        result, err = execute_plan(df, plan)
+        assert err != ""
+        assert result.empty

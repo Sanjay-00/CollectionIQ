@@ -23,30 +23,52 @@ def render_report_tab(
     <div class="ai-panel">
       <div class="ai-title">Monthly Portfolio Intelligence Report</div>
       <div class="ai-subtitle">
-        Generates a board-ready HTML report with AI executive narrative, branch rankings,
-        field executive scorecard, bucket migration analysis, and 5 prioritized action items.
-        Download as HTML or send via email.
+        Generates a board-ready HTML report covering nearly the full analysis toolkit:
+        verdict-first AI narrative, risk signals, month-over-month NPA/SMA-2 movement,
+        embedded charts, region/segment/branch breakdowns, at-risk and fleet exposure lists,
+        repossession candidates, good-customer retention targets, and executive/branch
+        leaderboards. Download as HTML or send via email.
       </div>
     </div>
     """, unsafe_allow_html=True)
 
     # ── Section toggles ──────────────────────────────────────────────────────
     st.markdown('<div class="section-label" style="margin-top:20px;">Report Sections</div>', unsafe_allow_html=True)
-    has_prev   = len(df_prev) > 0
-    rpt_c1, rpt_c2, rpt_c3 = st.columns(3)
+    has_prev = len(df_prev) > 0
+    rpt_c1, rpt_c2, rpt_c3, rpt_c4, rpt_c5 = st.columns(5)
     with rpt_c1:
-        inc_health = st.checkbox("Portfolio Health",    value=True, key="rpt_health")
-        inc_flags  = st.checkbox("Risk Flags",          value=True, key="rpt_flags")
+        inc_health     = st.checkbox("Portfolio Health",     value=True, key="rpt_health")
+        inc_verdict    = st.checkbox("Good vs Bad Verdict",  value=True, key="rpt_verdict")
+        inc_flags      = st.checkbox("Risk Flags",           value=True, key="rpt_flags")
+        inc_indicators = st.checkbox("Risk Indicators",      value=True, key="rpt_indicators",
+                                      help="Early-warning signals: SMA-1 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk")
     with rpt_c2:
         inc_migrate = st.checkbox(
             "Bucket Migration", value=has_prev, key="rpt_migrate",
             disabled=not has_prev, help="Upload previous month file to enable",
         )
-        inc_branch = st.checkbox("Branch Performance",  value=True, key="rpt_branch")
+        inc_movement = st.checkbox("NPA & SMA-2 Movement", value=True, key="rpt_movement",
+                                    help="This-month vs last-month NPA/SMA-2 counts, deltas, and %change - portfolio, region, branch, and executive")
+        inc_quadrant = st.checkbox("Branch Quadrant Chart", value=True, key="rpt_quadrant",
+                                    help="Collection% vs NPA% scatter, bubble = SOH")
+        inc_concentration = st.checkbox("Concentration Map", value=True, key="rpt_concentration")
     with rpt_c3:
-        inc_exec   = st.checkbox("Executive Rankings",  value=True, key="rpt_exec")
-        inc_ai     = st.checkbox("AI Summary",          value=True, key="rpt_ai",
-                                 help="Uncheck to skip Gemini and generate a faster, pandas-only report")
+        inc_region  = st.checkbox("Region Scorecard",     value=True, key="rpt_region")
+        inc_product = st.checkbox("Segment NPA Breakdown", value=True, key="rpt_product")
+        inc_top_acc = st.checkbox("Top At-Risk Accounts", value=True, key="rpt_top_accounts")
+        inc_fleet   = st.checkbox("Fleet Exposure",       value=True, key="rpt_fleet")
+    with rpt_c4:
+        inc_repo    = st.checkbox("Repossession Candidates", value=True, key="rpt_repo")
+        inc_good    = st.checkbox("Good Customers",          value=True, key="rpt_good")
+        inc_branch  = st.checkbox("Branch Performance",      value=True, key="rpt_branch")
+    with rpt_c5:
+        inc_recovery = st.checkbox("Executive Recovery",   value=True, key="rpt_recovery",
+                                    help="Rescued vs slipped accounts per executive - behavior signal, distinct from collection%")
+        inc_exec        = st.checkbox("Executive Rankings",        value=True, key="rpt_exec")
+        inc_exec_strike = st.checkbox("Executive Rankings (Strike %)", value=True, key="rpt_exec_strike",
+                                       help="Same executives, ranked by Strike % instead of Collection % - who's actually current on installment obligation this month")
+        inc_ai       = st.checkbox("AI Summary",           value=True, key="rpt_ai",
+                                    help="Uncheck to skip Gemini and generate a faster, pandas-only report")
 
     # ── Email (optional) ─────────────────────────────────────────────────────
     smtp_ok = bool(os.environ.get("SMTP_HOST", ""))
@@ -87,11 +109,24 @@ def render_report_tab(
     # ── Generate ─────────────────────────────────────────────────────────────
     if rpt_btn:
         enabled_sections = []
-        if st.session_state.get("rpt_health"):  enabled_sections.append("portfolio_health")
-        if st.session_state.get("rpt_flags"):   enabled_sections.append("risk_flags")
-        if st.session_state.get("rpt_migrate"): enabled_sections.append("bucket_migration")
-        if st.session_state.get("rpt_branch"):  enabled_sections.append("branch_performance")
-        if st.session_state.get("rpt_exec"):    enabled_sections.append("executive_rankings")
+        if st.session_state.get("rpt_health"):        enabled_sections.append("portfolio_health")
+        if st.session_state.get("rpt_verdict"):       enabled_sections.append("verdict")
+        if st.session_state.get("rpt_flags"):         enabled_sections.append("risk_flags")
+        if st.session_state.get("rpt_indicators"):    enabled_sections.append("risk_indicators")
+        if st.session_state.get("rpt_migrate"):       enabled_sections.append("bucket_migration")
+        if st.session_state.get("rpt_movement"):      enabled_sections.append("npa_sma2_movement")
+        if st.session_state.get("rpt_quadrant"):      enabled_sections.append("branch_quadrant")
+        if st.session_state.get("rpt_concentration"): enabled_sections.append("concentration")
+        if st.session_state.get("rpt_region"):        enabled_sections.append("region_scorecard")
+        if st.session_state.get("rpt_product"):       enabled_sections.append("product_analysis")
+        if st.session_state.get("rpt_top_accounts"):  enabled_sections.append("top_accounts")
+        if st.session_state.get("rpt_fleet"):         enabled_sections.append("fleet_exposure")
+        if st.session_state.get("rpt_repo"):          enabled_sections.append("repossession")
+        if st.session_state.get("rpt_good"):          enabled_sections.append("good_customers")
+        if st.session_state.get("rpt_branch"):        enabled_sections.append("branch_performance")
+        if st.session_state.get("rpt_recovery"):      enabled_sections.append("executive_recovery")
+        if st.session_state.get("rpt_exec"):          enabled_sections.append("executive_rankings")
+        if st.session_state.get("rpt_exec_strike"):   enabled_sections.append("executive_strike_rankings")
 
         _skip_ai = not st.session_state.get("rpt_ai", True)
         _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30 - 60 seconds)..."

@@ -6,7 +6,7 @@ Performance tiers are quartile-based (relative to the dataset) - not hardcoded t
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
-from utils import BUCKET_SCORE, to_num, account_count, is_yes
+from utils import BUCKET_SCORE, to_num, account_count, compute_strike_pct
 
 
 def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_MIN_ACCOUNTS) -> pd.DataFrame:
@@ -37,11 +37,13 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         if n < min_accounts:
             continue
 
-        # Strike rate = % of accounts where full EMI payment was received this month
-        strike_valid = grp[grp["Strike"].isin(["Y", "N"])] if "Strike" in grp.columns else pd.DataFrame()
-        strike_rate = round(
-            is_yes(strike_valid, "Strike").sum() / len(strike_valid) * 100, 1
-        ) if len(strike_valid) > 0 else 0.0
+        # Strike rate = % of accounts where full EMI payment was received this month.
+        # Uses the shared utils.compute_strike_pct so this doesn't drift from the
+        # dashboard/Portfolio Intelligence definition again (this was a 5th
+        # independent implementation, missed by the earlier strike_pct/hard_bucket_pct
+        # consolidation - it lacked the case/whitespace normalization compute_strike_pct
+        # applies, silently undercounting the denominator for lowercase/padded "y"/"n").
+        strike_rate = round(compute_strike_pct(grp), 1)
 
         demand    = to_num(grp, "Net Collection Demand Inst+Exp+BC").sum()
         collected = to_num(grp, "Month Collection (Excluding Reserve Collection)").sum()
@@ -98,10 +100,16 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         return pd.DataFrame()
 
     sc = pd.DataFrame(rows).sort_values("_coll_pct_raw", ascending=False)
+    sc["Tier"] = _quartile_tier(sc["_coll_pct_raw"])
+    sc = sc.drop(columns=["_coll_pct_raw"])
+    return sc.reset_index(drop=True)
 
-    # Quartile-based tiers  -  relative to this dataset
-    q75 = sc["_coll_pct_raw"].quantile(0.75)
-    q25 = sc["_coll_pct_raw"].quantile(0.25)
+
+def _quartile_tier(series: pd.Series) -> pd.Series:
+    """top = >= 75th percentile, bottom = <= 25th percentile, mid = everyone else -
+    relative to this dataset, not a hardcoded threshold."""
+    q75 = series.quantile(0.75)
+    q25 = series.quantile(0.25)
 
     def _tier(val):
         if val >= q75:
@@ -110,9 +118,24 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
             return "bottom"
         return "mid"
 
-    sc["Tier"] = sc["_coll_pct_raw"].apply(_tier)
-    sc = sc.drop(columns=["_coll_pct_raw"])
-    return sc.reset_index(drop=True)
+    return series.apply(_tier)
+
+
+def rank_by_metric(scorecard_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
+    """Re-rank an already-computed scorecard by a different metric column (e.g.
+    "Strike Rate %" instead of the default "Collection %"), recomputing quartile
+    tiers relative to that metric.
+
+    Returns an independent re-sorted copy - does NOT change compute_executive_scorecard's
+    own Collection%-based ranking/Tier, so existing Collection%-ranked consumers
+    (the default Scorecard tab view, report_agent's executive_rankings section,
+    AI Query's executive_rankings view) are unaffected unless they explicitly opt in.
+    """
+    if scorecard_df is None or scorecard_df.empty or metric_col not in scorecard_df.columns:
+        return scorecard_df
+    ranked = scorecard_df.sort_values(metric_col, ascending=False).copy()
+    ranked["Tier"] = _quartile_tier(ranked[metric_col])
+    return ranked.reset_index(drop=True)
 
 
 def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:

@@ -324,6 +324,39 @@ def is_yes(df: pd.DataFrame, col: str) -> pd.Series:
     return df[col].astype(str).str.strip().str.upper() == "Y"
 
 
+def compute_strike_pct(df: pd.DataFrame) -> float:
+    """% of accounts current on their installment obligation (Strike=Y), among accounts
+    with a valid Y/N Strike value.
+
+    Single source of truth for the dashboard (compute_metrics) and Portfolio Intelligence
+    (analysis/portfolio_intelligence.py::compute_pulse_kpis), which both call this instead
+    of reimplementing it. The AI Query path (registry/ontology.py's strike_pct METRIC) is a
+    separate, declarative definition consumed by the general compiler
+    (compiler/measures.py's count_ratio handler) rather than a direct function call, so it
+    can't share this implementation directly - but it must match this definition, and
+    tests/test_metric_consistency.py checks the two stay in sync.
+    """
+    if df.empty or "Strike" not in df.columns:
+        return 0.0
+    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])]
+    if strike_valid.empty:
+        return 0.0
+    return _safe_pct(is_yes(strike_valid, "Strike").sum(), len(strike_valid))
+
+
+def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
+    """% of accounts >= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue.
+
+    Single source of truth for the dashboard (compute_metrics) and every Portfolio
+    Intelligence table that reports Hard Bucket% (compute_pulse_kpis, compute_region_scorecard,
+    compute_branch_quadrant). See compute_strike_pct's docstring re: the AI Query path.
+    """
+    total = account_count(df)
+    if total == 0:
+        return 0.0
+    return _safe_pct((to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), total)
+
+
 def _mom_pct(curr, prev):
     if prev == 0:
         return 0.0
@@ -352,11 +385,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         # a file missing it must not crash the whole Dashboard tab.
         cum_coll_inst_exp = to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum()
 
-        strike_valid = df[df["Strike"].isin(["Y", "N"])]
-        strike_pct = _safe_pct(
-            (strike_valid["Strike"] == "Y").sum(),
-            len(strike_valid),
-        )
+        strike_pct = compute_strike_pct(df)
 
         npa_pct = _safe_pct(
             df[df["curr_bucket"] == "NPA"]["Loan No"].nunique(),
@@ -366,10 +395,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             df[df["curr_bucket"] == "SMA-2"]["Loan No"].nunique() if "curr_bucket" in df.columns else 0,
             n_accounts,
         )
-        hard_pct = _safe_pct(
-            df[df["Arrears / EMI"] >= HARD_BUCKET_ARREARS_EMI_MIN]["Loan No"].nunique(),
-            n_accounts,
-        )
+        hard_pct = compute_hard_bucket_pct(df)
         _cum_due = sum(
             pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
             for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns

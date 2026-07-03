@@ -86,6 +86,66 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
         for e in er.get("bottom5", []):
             parts.append(f"    {e['name']}: {e['coll_pct']}% collection, {e['strike_rate']}% strike rate")
 
+    nm = section_data.get("npa_sma2_movement")
+    if nm and nm.get("portfolio"):
+        p = nm["portfolio"]
+        parts.append("\nNPA & SMA-2 MOVEMENT (this month vs last month):")
+        parts.append(f"  NPA: {p['npa_current']} (was {p['npa_prev']}), change {p['npa_delta']} ({p['npa_pct_change']}%)")
+        parts.append(f"  SMA-2: {p['sma2_current']} (was {p['sma2_prev']}), change {p['sma2_delta']} ({p['sma2_pct_change']}%)")
+
+    vd = section_data.get("verdict")
+    if vd:
+        parts.append("\nGOOD / BAD SIGNALS (pandas-computed):")
+        for g in vd.get("good", []):
+            parts.append(f"  [GOOD] {g}")
+        for b in vd.get("bad", []):
+            parts.append(f"  [BAD] {b}")
+
+    ta = section_data.get("top_accounts")
+    if ta:
+        s = ta.get("summary", {})
+        parts.append(f"\nTOP AT-RISK ACCOUNTS: top {ta.get('n', 0)} delinquent accounts by SOH total {_fmt_money(s.get('total_soh_cr', 0) * 1e7)} "
+                     f"({s.get('pct_of_portfolio', 0)}% of portfolio SOH), {s.get('npa_count', 0)} already NPA.")
+
+    fe = section_data.get("fleet_exposure")
+    if fe:
+        parts.append(f"\nFLEET EXPOSURE: {fe.get('count', 0)} fleet operators (3+ loans), "
+                     f"{_fmt_money(fe.get('total_soh_cr', 0) * 1e7)} exposure, {fe.get('npa_operators', 0)} operators with an NPA loan.")
+
+    ri = section_data.get("risk_indicators")
+    if ri:
+        parts.append("\nRISK INDICATORS (early warning):")
+        for ind in ri.get("indicators", []):
+            parts.append(f"  {ind['Signal']}: {ind['This Month']} ({ind['Direction']}) - {ind['Note']}")
+
+    bq = section_data.get("branch_quadrant")
+    if bq:
+        parts.append("\nBRANCH QUADRANT (highest concern):")
+        for c in bq.get("top_concern", []):
+            parts.append(f"  {c['Branch']}: concern score {c['Concern Score']}, Coll {c['Collection%']}%, NPA {c['NPA%']}%")
+
+    pa = section_data.get("product_analysis")
+    if pa:
+        parts.append("\nSEGMENT-WISE NPA:")
+        for r in pa.get("rows", [])[:5]:
+            parts.append(f"  {r.get('Segment', '')}: NPA {r.get('NPA%', 0)}%, Collection {r.get('Collection%', 0)}%")
+
+    rp = section_data.get("repossession")
+    if rp:
+        parts.append(f"\nREPOSSESSION CANDIDATES: {rp.get('total', 0)} accounts eligible (SMA-2/NPA, recent loans).")
+
+    gc = section_data.get("good_customers")
+    if gc:
+        parts.append(f"\nGOOD CUSTOMERS: {gc.get('total', 0)} loyal customers eligible for refinance/retention outreach.")
+
+    er_recovery = section_data.get("executive_recovery")
+    if er_recovery:
+        parts.append("\nEXECUTIVE RECOVERY LEADERBOARD:")
+        for r in er_recovery.get("top", [])[:3]:
+            parts.append(f"  {r['Executive']}: net {r['Net Recovery']} accounts recovered (Rescued {r['Rescued']}, Slipped {r['Slipped']})")
+        for r in er_recovery.get("bottom", [])[:3]:
+            parts.append(f"  {r['Executive']}: net {r['Net Recovery']} accounts deteriorated (Rescued {r['Rescued']}, Slipped {r['Slipped']})")
+
     return "\n".join(parts)
 
 
@@ -98,6 +158,7 @@ Cover these areas across the bullets (not as headers, just as content):
 - Major risk concerns with specific branch/bucket/executive names
 - NPA and delinquency observations
 - Bucket migration highlights (if data available)
+- Concentration risk (top at-risk accounts, fleet operator exposure) if data available
 - What needs priority attention and why
 
 Rules:

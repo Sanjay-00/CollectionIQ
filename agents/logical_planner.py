@@ -145,6 +145,17 @@ KEY COLUMNS FOR FILTERS (exact names; prefer catalog concepts when they fit):
   Dates (YYYY-MM-DD for filter values): Ag_Date | Last Receipt Date
   Identity: Loan No | Cust Name | Cust Mob No | RegionName | Unit | MNT NAME | MNT CODE | SRC Name
 
+PERSON-NAME FILTERS (MNT NAME, Cust Name, Guar Name): use op "contains", NEVER "==".
+  These are free text typed once at loan origination, not a controlled vocabulary like
+  RegionName/Unit/Loan Status -- a real name in the data can differ from how the user
+  spells/types it (missing middle name, transliteration variance in Indian names, extra
+  space, etc.), so an exact "==" match silently returns zero rows for a person who is
+  actually in the data. "contains" is a case-insensitive substring match and tolerates this.
+  Example - "executive named yash bhagoji deve":
+    {{"column": "MNT NAME", "op": "contains", "value": "yash bhagoji deve"}}
+  If that still returns zero rows, the answer should suggest checking the spelling rather
+  than concluding the executive has no accounts.
+
 BUCKET MOVEMENT (requires snapshot file):
   "worsened / rolled forward / degraded"  → {{"column":"curr_bucket","op":"bucket_worse_than","value":"prev_bucket"}}
   "improved / cured / rolled back"        → {{"column":"curr_bucket","op":"bucket_better_than","value":"prev_bucket"}}
