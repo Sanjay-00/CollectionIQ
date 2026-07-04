@@ -77,6 +77,7 @@ class QueryState(TypedDict):
     plan_mode: bool
     plan: list
     result_type: str
+    result_grain: str  # row grain of result_df: "loan" (default), "region", "branch", "executive", "customer", "segment", "signal"
     view_render: str  # UI hint from a fast-path view (e.g. "kpi_cards"); "" for the normal compiler path
 
     # Clarification
@@ -181,6 +182,7 @@ def logical_planner_node(state: QueryState) -> QueryState:
             "plan_mode":         False,          # never set; all results display via agg/filter UI
             "plan":              [],
             "result_type":       result_type,
+            "result_grain":      "loan",
             "needs_clarification":    bool(ir1.get("needs_clarification", False)),
             "clarification_question": ir1.get("clarification_question") or "",
             "clarification_options":  ir1.get("clarification_options") or [],
@@ -297,6 +299,7 @@ def view_node(state: QueryState) -> QueryState:
         "plan_mode":         False,
         "plan":              [],
         "result_type":       "loan_table",
+        "result_grain":      spec.get("grain", "loan"),
         "view_render":       spec.get("render") or "",
         "parsed_filters":    {"plain_english": ir1.get("description") or state["query"]},
         "result_df":         result_df,
@@ -568,6 +571,7 @@ def run_query(
         "plan_mode":        False,
         "plan":             [],
         "result_type":      "loan_table",
+        "result_grain":     "loan",
         "view_render":      "",
         "allow_clarification":    allow_clarification,
         "needs_clarification":    False,

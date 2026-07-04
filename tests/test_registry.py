@@ -204,11 +204,14 @@ class TestViewsIntegrity:
         _VALID_OUTPUTS = {"df", "df_dict_tuple", "dict_with_top_df", "matrix_tuple",
                            "tuple_df_fig", "list_of_dicts", "dict_subkey_df", "good_bad_dict"}
         _VALID_INPUTS = {"df_curr", "df_prev", "rr_meta"}
+        _VALID_GRAINS = {"loan", "customer", "region", "branch", "executive",
+                          "segment", "signal", "matrix", "portfolio"}
         for name, spec in VIEWS.items():
             assert spec.get("label"), f"view {name} missing label"
             assert spec.get("description"), f"view {name} missing description"
             assert spec.get("fn"), f"view {name} missing fn"
             assert spec.get("output") in _VALID_OUTPUTS, f"view {name}: unknown output kind '{spec.get('output')}'"
+            assert spec.get("grain") in _VALID_GRAINS, f"view {name}: missing or unknown 'grain' '{spec.get('grain')}'"
             for inp in spec.get("inputs") or []:
                 assert inp in _VALID_INPUTS, f"view {name}: unknown input '{inp}'"
             if spec.get("output") == "dict_subkey_df":

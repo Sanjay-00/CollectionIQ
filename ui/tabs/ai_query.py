@@ -6,6 +6,26 @@ import streamlit as st
 from utils import fmt_value
 from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html
 
+# result_grain -> (singular, plural) display noun, used wherever the UI used to
+# hardcode "accounts"/"Customer Records" regardless of the result's actual row
+# grain (a region_scorecard result is 6 regions, not 6 accounts).
+_GRAIN_LABELS = {
+    "loan":      ("account", "accounts"),
+    "customer":  ("customer", "customers"),
+    "region":    ("region", "regions"),
+    "branch":    ("branch", "branches"),
+    "executive": ("executive", "executives"),
+    "segment":   ("segment", "segments"),
+    "signal":    ("signal", "signals"),
+    "matrix":    ("row", "rows"),
+    "portfolio": ("KPI", "KPIs"),
+}
+
+
+def _grain_noun(grain: str, plural: bool = True) -> str:
+    singular, plural_noun = _GRAIN_LABELS.get(grain, _GRAIN_LABELS["loan"])
+    return plural_noun if plural else singular
+
 
 def render_ai_query_tab(
     df_curr: pd.DataFrame,
@@ -155,6 +175,7 @@ function fill(text) {
     is_priority    = result.get("priority_mode", False)
     is_aggregation = result.get("aggregation_mode", False)
     result_type    = result.get("result_type") or "loan_table"
+    result_grain   = result.get("result_grain") or "loan"
     view_render    = result.get("view_render") or ""
     category       = (result.get("query_category") or "general").replace("_", " ").title()
     query_title    = result.get("query_title") or ""
@@ -513,7 +534,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
         st.markdown(f"""
         <div style="background:#1a2e1a;border-left:4px solid #16a34a;border-radius:8px;
                     padding:12px 16px;margin:0 0 16px 0;color:#86efac;font-weight:600;font-size:14px;">
-            ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} accounts</strong>
+            ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} {_grain_noun(result_grain)}</strong>
             &nbsp; {plain}
         </div>
         """, unsafe_allow_html=True)
@@ -601,8 +622,8 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             st.markdown(right_html, unsafe_allow_html=True)
 
         st.markdown(
-            "<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
-            "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching Customer Records</div>",
+            f"<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
+            f"text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching {_grain_noun(result_grain).title()} Records</div>",
             unsafe_allow_html=True,
         )
         display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]

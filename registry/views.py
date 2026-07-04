@@ -52,6 +52,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df_dict_tuple",
         "cache_key": "pi_top_accounts",
+        "grain": "customer",
     },
     "fleet_operators": {
         "label": "Fleet Operator Exposure",
@@ -67,6 +68,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "dict_with_top_df",
         "cache_key": "pi_fleet",
+        "grain": "customer",
     },
     "executive_scorecard": {
         "label": "Executive Performance Scorecard",
@@ -83,6 +85,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "scorecard_df",
+        "grain": "executive",
     },
     "roll_rate_matrix": {
         "label": "Bucket Roll-Rate Migration",
@@ -99,6 +102,7 @@ VIEWS: dict[str, dict] = {
         "filterable": False,   # a migration crosstab isn't row-filterable the same way
         "output": "matrix_tuple",
         "cache_key": "rr_matrix",
+        "grain": "matrix",
     },
     "region_scorecard": {
         "label": "Region Delinquency Scorecard",
@@ -115,6 +119,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_region",
+        "grain": "region",
     },
     "branch_quadrant": {
         "label": "Branch Performance Quadrant",
@@ -131,6 +136,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "tuple_df_fig",
         "cache_key": "pi_branch",
+        "grain": "branch",
     },
     "executive_recovery": {
         "label": "Executive Recovery Ranking",
@@ -147,6 +153,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_exec",
+        "grain": "executive",
     },
     "risk_indicators": {
         "label": "Early Warning Risk Indicators",
@@ -164,6 +171,7 @@ VIEWS: dict[str, dict] = {
         "output": "list_of_dicts",
         "render": "risk_indicator_table",   # UI hint: dedicated signal-table renderer, not a raw grid
         "cache_key": "pi_risk",
+        "grain": "signal",
     },
     "repossession_list": {
         "label": "Repossession-Eligible Accounts",
@@ -179,6 +187,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_repo_df",
+        "grain": "customer",
     },
     "good_customers": {
         "label": "Good Customers (Refinance Candidates)",
@@ -194,6 +203,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_good_customers",
+        "grain": "customer",
     },
     "npa_sma2_by_region": {
         "label": "NPA/SMA-2 Comparison by Region",
@@ -210,6 +220,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "region",
         "cache_key": "pi_npa_sma2_cmp",
+        "grain": "region",
     },
     "npa_sma2_by_branch": {
         "label": "NPA/SMA-2 Comparison by Branch",
@@ -226,6 +237,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "branch",
         "cache_key": "pi_npa_sma2_cmp",
+        "grain": "branch",
     },
     "npa_sma2_by_executive": {
         "label": "NPA/SMA-2 Comparison by Executive",
@@ -242,6 +254,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "executive",
         "cache_key": "pi_npa_sma2_cmp",
+        "grain": "executive",
     },
     "segment_analysis": {
         "label": "Delinquency by Vehicle Segment",
@@ -258,6 +271,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "segment",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "fuel_analysis": {
         "label": "Delinquency by Fuel Type",
@@ -273,6 +287,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "fuel",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "vintage_analysis": {
         "label": "Delinquency by Disbursement Vintage",
@@ -290,6 +305,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "vintage",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "source_analysis": {
         "label": "Delinquency by Sourcing Channel",
@@ -306,6 +322,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "source",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "pulse_kpis": {
         "label": "Portfolio Pulse KPI Summary",
@@ -322,6 +339,7 @@ VIEWS: dict[str, dict] = {
         "output": "list_of_dicts",
         "render": "kpi_cards",   # UI hint: render as KPI cards, not a raw grid
         "cache_key": "pi_pulse_kpis",
+        "grain": "portfolio",
     },
     "good_bad_summary": {
         "label": "Good/Bad Portfolio Narrative",
@@ -342,6 +360,7 @@ VIEWS: dict[str, dict] = {
         "filterable": False,
         "output": "good_bad_dict",
         "cache_key": "pi_good_bad",
+        "grain": "signal",
     },
 }
 
