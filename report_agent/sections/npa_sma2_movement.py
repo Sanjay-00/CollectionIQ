@@ -47,27 +47,6 @@ def _top_movers(df: pd.DataFrame, n: int = 5) -> tuple[list, list]:
     return worst, best
 
 
-def _exec_branch_map(df_curr: pd.DataFrame) -> dict:
-    """MNT NAME -> most common Unit, for display only.
-
-    compute_npa_sma2_comparison groups executives by name alone (no branch), so
-    this is a report-layer-only lookup - it doesn't touch analysis/.
-    """
-    if "MNT NAME" not in df_curr.columns or "Unit" not in df_curr.columns:
-        return {}
-    return (
-        df_curr.groupby("MNT NAME")["Unit"]
-        .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.iloc[0])
-        .to_dict()
-    )
-
-
-def _attach_branch(rows: list, branch_map: dict) -> list:
-    for r in rows:
-        r["Unit"] = branch_map.get(r.get("MNT NAME", ""), "")
-    return rows
-
-
 def compute_npa_sma2_movement(df_curr: pd.DataFrame, df_prev: pd.DataFrame = None) -> dict | None:
     """Dedicated month-over-month NPA & SMA-2 movement section.
 
@@ -89,10 +68,6 @@ def compute_npa_sma2_movement(df_curr: pd.DataFrame, df_prev: pd.DataFrame = Non
         region_rows = comparison.get("region", pd.DataFrame()).to_dict("records")
         branch_worst, branch_best = _top_movers(comparison.get("branch", pd.DataFrame()))
         exec_worst, exec_best     = _top_movers(comparison.get("executive", pd.DataFrame()))
-
-        branch_map = _exec_branch_map(df_curr)
-        exec_worst = _attach_branch(exec_worst, branch_map)
-        exec_best  = _attach_branch(exec_best, branch_map)
 
         if (
             portfolio is None and not region_rows

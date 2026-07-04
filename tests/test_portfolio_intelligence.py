@@ -92,9 +92,9 @@ class TestComputeRegionScorecard:
         curr, prev = self._dfs()
         out = compute_region_scorecard(curr, prev)
         rows = out.set_index("Region")
-        assert rows.loc["WEST", "NPA% (Curr)"] == 0.0
-        assert rows.loc["EAST", "NPA% (Curr)"] == pytest.approx(66.67, abs=0.01)
-        assert rows.loc["NORTH", "NPA% (Curr)"] == 100.0
+        assert rows.loc["WEST", "NPA%"] == 0.0
+        assert rows.loc["EAST", "NPA%"] == pytest.approx(66.67, abs=0.01)
+        assert rows.loc["NORTH", "NPA%"] == 100.0
 
     def test_sorted_descending_by_curr_npa(self):
         curr, prev = self._dfs()
@@ -108,11 +108,11 @@ class TestComputeRegionScorecard:
         assert out.loc["EAST", "Status"] == "Worsening"    # NPA% rose 33.3 -> +1.0
         assert out.loc["NORTH", "Status"] == "-"           # no matching prev region
 
-    def test_region_absent_from_prev_has_null_prev_and_delta(self):
+    def test_region_absent_from_prev_has_null_delta(self):
         curr, prev = self._dfs()
         out = compute_region_scorecard(curr, prev).set_index("Region")
-        assert pd.isna(out.loc["NORTH", "NPA% (Prev)"])
         assert pd.isna(out.loc["NORTH", "Δ NPA%"])
+        assert pd.isna(out.loc["NORTH", "Δ SMA-2%"])
 
 
 # ── compute_npa_sma2_comparison ──────────────────────────────────────────────
@@ -150,10 +150,50 @@ class TestComputeNpaSma2Comparison:
         assert row["SMA-2 (Prev)"] == 0
         assert row["SMA-2 Δ%"] == 100.0
 
+    def test_branch_rows_include_region_and_roll_rates(self):
+        curr, prev = self._dfs()
+        out = compute_npa_sma2_comparison(curr, prev)
+        row = out["branch"].set_index("Unit").loc["MAHAD"]
+        assert row["Region"] == "WEST"
+        assert "Roll Fwd%" in out["branch"].columns
+        assert "Roll Bwd%" in out["branch"].columns
+
+    def test_region_rows_have_roll_rates_but_no_unit_or_region_column(self):
+        curr, prev = self._dfs()
+        out = compute_npa_sma2_comparison(curr, prev)
+        assert "Roll Fwd%" in out["region"].columns
+        assert "Roll Bwd%" in out["region"].columns
+        assert "Unit" not in out["region"].columns
+        assert "Region" not in out["region"].columns
+
     def test_no_executive_key_when_mnt_name_missing(self):
         curr, prev = self._dfs()
         out = compute_npa_sma2_comparison(curr, prev)
         assert "executive" not in out
+
+    def test_executive_rows_include_unit_and_region_context(self):
+        curr = make_df([
+            {"MNT NAME": "RAHUL", "Unit": "PUNE1", "RegionName": "WEST", "curr_bucket": b}
+            for b in ["NPA", "NPA", "STD"]
+        ])
+        out = compute_npa_sma2_comparison(curr, make_df([]))
+        row = out["executive"].iloc[0]
+        assert row["Unit"] == "PUNE1"
+        assert row["Region"] == "WEST"
+
+    def test_executive_prev_match_is_case_and_whitespace_insensitive(self):
+        # MNT NAME is manually retyped each month (not a controlled vocabulary), so
+        # "Sunil Waghmare" this month vs "SUNIL WAGHMARE " last month must still join.
+        curr = make_df([
+            {"MNT NAME": "Sunil Waghmare", "curr_bucket": b} for b in ["NPA", "NPA", "STD"]
+        ])
+        prev = make_df([
+            {"MNT NAME": "SUNIL WAGHMARE ", "curr_bucket": b} for b in ["NPA", "STD", "STD"]
+        ])
+        out = compute_npa_sma2_comparison(curr, prev)
+        row = out["executive"].iloc[0]
+        assert row["NPA (Prev)"] == 1
+        assert row["NPA Δ"] == 1
 
     def test_executive_key_present_when_mnt_name_available(self):
         curr = make_df([
@@ -162,6 +202,64 @@ class TestComputeNpaSma2Comparison:
         out = compute_npa_sma2_comparison(curr, make_df([]))
         assert "executive" in out
         assert out["executive"]["NPA (Curr)"].iloc[0] == 2
+
+    def test_same_name_different_branch_kept_as_separate_rows(self):
+        # Two different people can share a name across branches (e.g. two "Rahul Sharma"s) --
+        # they must never be merged into one row just because MNT NAME matches.
+        curr = make_df(
+            [{"MNT NAME": "Rahul Sharma", "Unit": "X", "curr_bucket": "NPA"} for _ in range(3)]
+            + [{"MNT NAME": "Rahul Sharma", "Unit": "Y", "curr_bucket": "STD"} for _ in range(3)]
+        )
+        out = compute_npa_sma2_comparison(curr, make_df([]))
+        exec_df = out["executive"]
+        assert len(exec_df) == 2
+        names = set(exec_df["MNT NAME"])
+        assert names == {"Rahul Sharma (X)", "Rahul Sharma (Y)"}
+        row_x = exec_df.set_index("MNT NAME").loc["Rahul Sharma (X)"]
+        row_y = exec_df.set_index("MNT NAME").loc["Rahul Sharma (Y)"]
+        assert row_x["Unit"] == "X" and row_x["NPA (Curr)"] == 3
+        assert row_y["Unit"] == "Y" and row_y["NPA (Curr)"] == 0
+
+    def test_prev_match_scoped_to_same_unit_not_cross_branch(self):
+        # A same-named executive in a different branch last month must not be treated
+        # as this month's match -- prev lookup (including the prefix fallback) is
+        # scoped to the same Unit.
+        curr = make_df([{"MNT NAME": "Rahul Sharma", "Unit": "X", "curr_bucket": "NPA"} for _ in range(3)])
+        prev = make_df([{"MNT NAME": "Rahul Sharma", "Unit": "Y", "curr_bucket": "NPA"} for _ in range(3)])
+        out = compute_npa_sma2_comparison(curr, prev)
+        row = out["executive"].iloc[0]
+        assert row["NPA (Prev)"] is None
+
+    def test_executive_prev_match_falls_back_to_unambiguous_prefix(self):
+        # Source export truncates MNT NAME to a different length between months
+        # (e.g. "...DNYANESHWAR F" vs "...DNYANESHWAR FA") -- an exact/normalized
+        # match misses this, but there's exactly one prefix candidate so it's safe
+        # to treat as the same executive.
+        curr = make_df([
+            {"MNT NAME": "SHUBHAM DNYANESHWAR F", "curr_bucket": b} for b in ["NPA", "NPA", "STD"]
+        ])
+        prev = make_df([
+            {"MNT NAME": "SHUBHAM DNYANESHWAR FA", "curr_bucket": b} for b in ["NPA", "STD", "STD"]
+        ])
+        out = compute_npa_sma2_comparison(curr, prev)
+        row = out["executive"].iloc[0]
+        assert row["NPA (Prev)"] == 1
+        assert row["NPA Δ"] == 1
+
+    def test_executive_prev_match_skips_ambiguous_prefix_candidates(self):
+        # Two different previous-period names both prefix-match the current name --
+        # must not guess, stays unmatched (None) rather than merging two people.
+        curr = make_df([
+            {"MNT NAME": "SANTOSH", "curr_bucket": b} for b in ["NPA", "NPA", "STD"]
+        ])
+        prev = make_df(
+            [{"MNT NAME": "SANTOSH KAPSE", "curr_bucket": "NPA"} for _ in range(3)]
+            + [{"MNT NAME": "SANTOSH PATIL", "curr_bucket": "NPA"} for _ in range(3)]
+        )
+        out = compute_npa_sma2_comparison(curr, prev)
+        row = out["executive"].iloc[0]
+        assert row["NPA (Prev)"] is None
+        assert row["NPA Δ"] is None
 
 
 # ── compute_branch_quadrant ──────────────────────────────────────────────────
@@ -246,15 +344,15 @@ class TestComputeGoodBad:
     def _region_df(self):
         return pd.DataFrame([
             {  # should surface as "good" - and must quote the NPA delta, not SMA-2%
-                "Region": "IMPROVED", "Accounts": 10, "SMA-2": 1, "SMA-2%": 99.9,
-                "NPA% (Curr)": 2.0, "NPA% (Prev)": 7.0, "Δ NPA%": -5.0,
-                "Collection%": 95.0, "Hard Bucket%": 1.0, "SOH (Cr)": 1.0,
+                "Region": "IMPROVED", "SMA-2": 1, "SMA-2%": 99.9, "NPA": 2,
+                "NPA%": 2.0, "Δ SMA-2%": -1.0, "Δ NPA%": -5.0,
+                "Collection%": 95.0, "Strike%": 1.0, "SOH (Cr)": 1.0,
                 "Roll Fwd%": 5.0, "Roll Bwd%": 10.0, "Status": "Improving",
             },
             {  # should surface as "bad"
-                "Region": "WORSENED", "Accounts": 10, "SMA-2": 2, "SMA-2%": 1.1,
-                "NPA% (Curr)": 12.0, "NPA% (Prev)": 4.8, "Δ NPA%": 7.2,
-                "Collection%": 60.0, "Hard Bucket%": 9.0, "SOH (Cr)": 2.0,
+                "Region": "WORSENED", "SMA-2": 2, "SMA-2%": 1.1, "NPA": 12,
+                "NPA%": 12.0, "Δ SMA-2%": 0.5, "Δ NPA%": 7.2,
+                "Collection%": 60.0, "Strike%": 9.0, "SOH (Cr)": 2.0,
                 "Roll Fwd%": 20.0, "Roll Bwd%": 2.0, "Status": "Worsening",
             },
         ])

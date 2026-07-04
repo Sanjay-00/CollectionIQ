@@ -292,26 +292,32 @@ def _render_region_scorecard(data: dict) -> str:
 
     header = "".join(
         f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
-        for h in ["Region", "Accounts", "NPA% (This Mo.)", "NPA% (Last Mo.)", "NPA% Change (pp)", "Collection%", "Hard Bucket%", "SOH", "Status"]
+        for h in ["Region", "SMA-2", "SMA-2%", "NPA", "NPA%", "&#916; SMA-2%", "&#916; NPA%", "Collection%", "Strike%", "SOH", "Roll Fwd%", "Roll Bwd%", "Status"]
     )
     rows = ""
     for r in rows_data:
-        status   = r.get("Status", "-")
-        color    = STATUS_COLOR.get(status, "#6b7280")
-        prev_npa = r.get("NPA% (Prev)")
-        prev_s   = f"{prev_npa:.1f}%" if prev_npa is not None else "&#8212;"
-        delta    = r.get("Δ NPA%")
-        delta_s  = f"{delta:+.1f}" if delta is not None else "&#8212;"
+        status      = r.get("Status", "-")
+        color       = STATUS_COLOR.get(status, "#6b7280")
+        npa_delta   = r.get("Δ NPA%")
+        npa_delta_s = f"{npa_delta:+.1f}" if npa_delta is not None else "&#8212;"
+        sma2_delta   = r.get("Δ SMA-2%")
+        sma2_delta_s = f"{sma2_delta:+.1f}" if sma2_delta is not None else "&#8212;"
+        roll_fwd = r.get("Roll Fwd%")
+        roll_bwd = r.get("Roll Bwd%")
         rows += (
             f'<tr>'
             f'<td style="padding:9px 12px;font-weight:600;font-size:12px;">{_esc(r.get("Region", ""))}</td>'
-            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Accounts", 0):,}</td>'
-            f'<td style="padding:9px 12px;font-size:12px;">{r.get("NPA% (Curr)", 0):.1f}%</td>'
-            f'<td style="padding:9px 12px;font-size:12px;color:#6b7280;">{prev_s}</td>'
-            f'<td style="padding:9px 12px;font-size:12px;color:{color};font-weight:700;">{delta_s}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("SMA-2", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("SMA-2%", 0):.1f}%</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("NPA", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("NPA%", 0):.1f}%</td>'
+            f'<td style="padding:9px 12px;font-size:12px;color:{color};font-weight:700;">{sma2_delta_s}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;color:{color};font-weight:700;">{npa_delta_s}</td>'
             f'<td style="padding:9px 12px;font-size:12px;">{r.get("Collection%", 0):.1f}%</td>'
-            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Hard Bucket%", 0):.1f}%</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Strike%", 0):.1f}%</td>'
             f'<td style="padding:9px 12px;font-size:12px;">&#8377;{r.get("SOH (Cr)", 0):.2f}Cr</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{f"{roll_fwd:.1f}%" if roll_fwd is not None else "&#8212;"}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{f"{roll_bwd:.1f}%" if roll_bwd is not None else "&#8212;"}</td>'
             f'<td style="padding:9px 12px;font-size:11px;font-weight:700;color:{color};">{status}</td>'
             f'</tr>'
         )

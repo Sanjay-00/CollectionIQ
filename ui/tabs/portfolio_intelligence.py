@@ -96,11 +96,11 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
 def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
     display_cols = [
-        "Region", "Accounts",
+        "Region",
         "SMA-2", "SMA-2%",
-        "NPA% (Curr)",
-        *( ["NPA% (Prev)", "Δ NPA%"] if has_prev else []),
-        "Collection%", "Hard Bucket%", "SOH (Cr)",
+        "NPA", "NPA%",
+        *( ["Δ SMA-2%", "Δ NPA%"] if has_prev else []),
+        "Collection%", "Strike%", "SOH (Cr)",
         *( ["Roll Fwd%", "Roll Bwd%"] if "Roll Fwd%" in df.columns and df["Roll Fwd%"].notna().any() else []),
         "Status",
     ]
@@ -126,17 +126,17 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
                 cells += f'<td style="{style}font-weight:700;">{val}</td>'
             elif col == "Status":
                 cells += f'<td style="{style}">{_badge(str(val))}</td>'
-            elif col == "Δ NPA%":
+            elif col in ("Δ NPA%", "Δ SMA-2%"):
                 cells += f'<td style="{style}">{_delta_html(val)}</td>'
             elif col == "SMA-2%":
                 c = _sma2_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
-            elif col == "SMA-2":
+            elif col in ("SMA-2", "NPA"):
                 c = "#ef4444" if (val or 0) > 50 else "#374151"
                 display = f"{int(val):,}" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};">{display}</td>'
-            elif col in ("NPA% (Curr)", "NPA% (Prev)"):
+            elif col == "NPA%":
                 c = _npa_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
@@ -146,7 +146,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
             elif col == "Roll Bwd%":
                 c = "#16a34a" if (val or 0) > 10 else "#d97706"
                 cells += f'<td style="{style}color:{c};font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
-            elif col in ("Collection%", "Hard Bucket%"):
+            elif col in ("Collection%", "Strike%"):
                 cells += f'<td style="{style}">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
             elif col == "SOH (Cr)":
                 cells += f'<td style="{style}">₹{val:.2f}Cr</td>'
@@ -293,13 +293,18 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
             # ── delta table ──────────────────────────────────────────────────
             st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin:12px 0 6px;">Detailed Comparison Table</div>', unsafe_allow_html=True)
 
-            show_cols = [col, "Accounts", "NPA (Curr)", "SMA-2 (Curr)"]
+            identity_cols = {"region": [], "branch": ["Region"], "executive": ["Unit", "Region"]}.get(key, [])
+            show_cols = [col, *identity_cols, "Accounts", "SMA-2 (Curr)"]
             if has_prev:
-                show_cols += ["NPA (Prev)", "NPA Δ", "NPA Δ%", "SMA-2 (Prev)", "SMA-2 Δ", "SMA-2 Δ%"]
+                show_cols += ["SMA-2 (Prev)"]
+            show_cols += ["NPA (Curr)"]
+            if has_prev:
+                show_cols += ["NPA (Prev)", "SMA-2 Δ", "SMA-2 Δ%", "NPA Δ", "NPA Δ%"]
+            show_cols += ["Roll Fwd%", "Roll Bwd%"]
 
             th = "".join(
                 f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
-                f'text-align:{"left" if c == col else "center"};white-space:nowrap;">{c}</th>'
+                f'text-align:{"left" if c in (col, *identity_cols) else "center"};white-space:nowrap;">{c}</th>'
                 for c in show_cols if c in df.columns
             )
             rows_html = ""
@@ -307,11 +312,13 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                 cells = ""
                 for c in [c for c in show_cols if c in df.columns]:
                     val = row[c]
-                    align = "left" if c == col else "center"
+                    align = "left" if c in (col, *identity_cols) else "center"
                     style = f"padding:6px 10px;font-size:12px;text-align:{align};"
 
                     if c == col:
                         cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                    elif c in ("Region", "Unit"):
+                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
                     elif c in ("NPA Δ", "SMA-2 Δ"):
                         if val is None or (isinstance(val, float) and pd.isna(val)):
                             cells += f'<td style="{style}color:#9ca3af;"> - </td>'
@@ -332,6 +339,12 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                     elif c in ("SMA-2 (Curr)",):
                         color = "#f97316" if (val or 0) > 20 else "#374151"
                         cells += f'<td style="{style}color:{color};font-weight:700;">{int(val):,}</td>'
+                    elif c == "Roll Fwd%":
+                        clr = "#dc2626" if (val or 0) > 20 else ("#d97706" if (val or 0) > 10 else "#16a34a")
+                        cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
+                    elif c == "Roll Bwd%":
+                        clr = "#16a34a" if (val or 0) > 10 else "#d97706"
+                        cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
                     elif isinstance(val, (int, float)) and not pd.isna(val):
                         cells += f'<td style="{style}">{int(val):,}</td>'
                     else:
@@ -608,6 +621,8 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
                 cells += f'<td style="{style}color:#16a34a;font-weight:700;">{val}</td>'
             elif col == "Slipped":
                 cells += f'<td style="{style}color:#dc2626;font-weight:700;">{val}</td>'
+            elif col in ("Collection%", "Strike%"):
+                cells += f'<td style="{style}">{val:.1f}%</td>'
             elif isinstance(val, int):
                 cells += f'<td style="{style}">{val:,}</td>'
             else:

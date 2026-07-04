@@ -274,11 +274,12 @@ class TestViewNodeFallback:
         assert out["ir1"]["view"] is not None
         assert out["error"] == ""
         # Only PUNE rows (L1, L2) should have fed the "previous" computation.
-        # df_prev PUNE rows are both "NPA" -> NPA%(Prev) for Pune must be 100,
-        # not blended with MUM/DEL's mostly-STD prev rows.
+        # df_prev PUNE rows are both "NPA" -> NPA%(Prev) for Pune is 100, vs
+        # curr NPA% of 50 (L1 NPA, L2 STD) -> Δ NPA% must be -50, not blended
+        # with MUM/DEL's mostly-STD prev rows.
         rdf = out["result_df"]
         assert len(rdf) == 1
-        assert rdf.iloc[0]["NPA% (Prev)"] == 100.0
+        assert rdf.iloc[0]["Δ NPA%"] == -50.0
 
 
 # ── Out-of-scope / guardrail contract ───────────────────────────────────────

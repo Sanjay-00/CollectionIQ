@@ -233,7 +233,7 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
 # ── Section 2: Region Delinquency Scorecard ────────────────────────────────────
 
 def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd.DataFrame:
-    """One row per region: curr vs prev NPA%, delta, Collection%, Hard Bucket%, SOH, roll rates, trend status."""
+    """One row per region: SMA-2/NPA counts and rates, MoM deltas, Collection%, Strike%, SOH, roll rates, trend status."""
     if "RegionName" not in df_curr.columns or df_curr.empty:
         return pd.DataFrame()
 
@@ -243,35 +243,41 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
         curr_npa = _npa_pct(grp)
         curr_coll = _coll_pct(grp)
         soh = _soh_cr(grp)
-        hard_pct = compute_hard_bucket_pct(grp)
+        strike_pct = compute_strike_pct(grp)
         roll_fwd, roll_bwd = _roll_rates(grp)
 
         sma2_count = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
         sma2_pct   = _safe_div(sma2_count, n)
+        npa_count  = int((grp["curr_bucket"] == "NPA").sum()) if "curr_bucket" in grp.columns else 0
 
         prev_npa = 0.0
+        prev_sma2_pct = 0.0
         has_prev_region = False
         if len(df_prev) > 0 and "RegionName" in df_prev.columns:
             prev_grp = df_prev[df_prev["RegionName"] == region]
             if len(prev_grp) > 0:
                 prev_npa = _npa_pct(prev_grp)
+                prev_n = account_count(prev_grp)
+                prev_sma2_count = int((prev_grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in prev_grp.columns else 0
+                prev_sma2_pct = _safe_div(prev_sma2_count, prev_n)
                 has_prev_region = True
 
         delta = round(curr_npa - prev_npa, 2) if has_prev_region else None
+        sma2_delta = round(sma2_pct - prev_sma2_pct, 2) if has_prev_region else None
         status = "-"
         if delta is not None:
             status = "Worsening" if delta > REGION_STATUS_DELTA_PP else ("Improving" if delta < -REGION_STATUS_DELTA_PP else "Stable")
 
         rows.append({
             "Region": region,
-            "Accounts": n,
             "SMA-2": sma2_count,
             "SMA-2%": sma2_pct,
-            "NPA% (Curr)": curr_npa,
-            "NPA% (Prev)": prev_npa if has_prev_region else None,
+            "NPA": npa_count,
+            "NPA%": curr_npa,
+            "Δ SMA-2%": sma2_delta,
             "Δ NPA%": delta,
             "Collection%": curr_coll,
-            "Hard Bucket%": hard_pct,
+            "Strike%": strike_pct,
             "SOH (Cr)": soh,
             "Roll Fwd%": roll_fwd,
             "Roll Bwd%": roll_bwd,
@@ -280,7 +286,7 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
 
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("NPA% (Curr)", ascending=False).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
 
 # ── Section 2: NPA & SMA-2 Comparison (Region / Branch / Executive) ──────────
@@ -292,17 +298,42 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
     """
     has_prev = len(df_prev) > 0
 
-    def _dim_rows(df_c, df_p, col):
+    def _dim_rows(df_c, df_p, col, extra_cols: list[tuple[str, str]] | None = None, prefix_fallback: bool = False):
+        """extra_cols: [(source_column, output_label), ...] context columns pulled from the group's first row.
+
+        prefix_fallback: for free-text columns like MNT NAME (manually retyped each month, not a
+        controlled vocabulary like RegionName/Unit), the source export sometimes truncates the
+        same person's name to a different length between months (e.g. "...DNYANESHWAR F" this
+        month vs "...DNYANESHWAR FA" last month). When the exact normalized name has no match,
+        fall back to a prefix relationship -- but only when exactly one previous-period name is a
+        prefix-match candidate, so two different people with similar names never get merged.
+        """
         if col not in df_c.columns:
             return []
+        extra_cols = extra_cols or []
         rows = []
+        # An exact-string join silently drops any row with case/whitespace drift between this
+        # month's and last month's spelling. Normalize the join key (not the displayed name) so
+        # "Sunil Waghmare" and "SUNIL WAGHMARE " match.
+        def _key(v) -> str:
+            return str(v).strip().upper()
+
         prev_map: dict = {}
         if has_prev and col in df_p.columns and "curr_bucket" in df_p.columns:
             for grp_key, grp in df_p.groupby(col):
-                prev_map[str(grp_key)] = {
+                prev_map[_key(grp_key)] = {
                     "npa": int((grp["curr_bucket"] == "NPA").sum()),
                     "sma2": int((grp["curr_bucket"] == "SMA-2").sum()),
                 }
+        prev_keys = list(prev_map.keys())
+
+        def _lookup(key: str) -> dict:
+            if key in prev_map:
+                return prev_map[key]
+            if not prefix_fallback:
+                return {}
+            candidates = [k for k in prev_keys if k.startswith(key) or key.startswith(k)]
+            return prev_map[candidates[0]] if len(candidates) == 1 else {}
 
         for grp_key, grp in df_c.groupby(col):
             name = str(grp_key)
@@ -311,7 +342,7 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
                 continue
             npa_c  = int((grp["curr_bucket"] == "NPA").sum())  if "curr_bucket" in grp.columns else 0
             sma2_c = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
-            prev   = prev_map.get(name, {})
+            prev   = _lookup(_key(grp_key))
             npa_p  = prev.get("npa")
             sma2_p = prev.get("sma2")
 
@@ -324,18 +355,112 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
 
             npa_d,  npa_dpct  = _delta(npa_c,  npa_p)
             sma2_d, sma2_dpct = _delta(sma2_c, sma2_p)
-            rows.append({
-                col:                name,
+            row = {col: name}
+            for src, label in extra_cols:
+                row[label] = grp[src].iloc[0] if src in grp.columns and len(grp) else None
+            row.update({
                 "Accounts":         n,
-                "NPA (Curr)":       npa_c,
-                "NPA (Prev)":       npa_p,
-                "NPA Δ":            npa_d,
-                "NPA Δ%":          npa_dpct,
                 "SMA-2 (Curr)":     sma2_c,
                 "SMA-2 (Prev)":     sma2_p,
+                "NPA (Curr)":       npa_c,
+                "NPA (Prev)":       npa_p,
                 "SMA-2 Δ":         sma2_d,
                 "SMA-2 Δ%":        sma2_dpct,
+                "NPA Δ":            npa_d,
+                "NPA Δ%":          npa_dpct,
             })
+            roll_fwd, roll_bwd = _roll_rates(grp)
+            row["Roll Fwd%"] = roll_fwd
+            row["Roll Bwd%"] = roll_bwd
+            rows.append(row)
+        return rows
+
+    def _executive_rows(df_c: pd.DataFrame, df_p: pd.DataFrame) -> list[dict]:
+        """Executives grouped by (MNT NAME, Unit), not name alone -- two different people who
+        happen to share a name in different branches (e.g. two "Rahul Sharma"s, one in branch X
+        and one in Y) must never be merged into a single row. Display name is disambiguated as
+        "Rahul Sharma (X)" / "Rahul Sharma (Y)", matching compute_executive_recovery's convention.
+
+        Unit is a controlled vocabulary (exact match only); MNT NAME still gets the prefix-
+        truncation fallback, but candidates are restricted to the same Unit so it can't match a
+        same-named person in a different branch.
+        """
+        if "MNT NAME" not in df_c.columns:
+            return []
+
+        def _key(v) -> str:
+            return str(v).strip().upper()
+
+        # Unit has the same case-inconsistency as MNT NAME in real extracts (e.g. "AKOLA" vs
+        # "akola" for the same branch) -- group on the normalized value, not the raw column, or
+        # the same branch silently fragments into duplicate rows/groups.
+        has_unit = "Unit" in df_c.columns
+        if has_unit:
+            df_c = df_c.assign(_unit_key=df_c["Unit"].map(_key))
+        group_cols = ["MNT NAME", "_unit_key"] if has_unit else ["MNT NAME"]
+
+        prev_map: dict = {}
+        prev_names_by_unit: dict = {}
+        if has_prev and "MNT NAME" in df_p.columns and "curr_bucket" in df_p.columns:
+            p_has_unit = "_unit_key" in group_cols and "Unit" in df_p.columns
+            if p_has_unit:
+                df_p = df_p.assign(_unit_key=df_p["Unit"].map(_key))
+            p_group_cols = [c for c in group_cols if c == "MNT NAME" or (c == "_unit_key" and p_has_unit)]
+            grouped = df_p.groupby(p_group_cols[0]) if len(p_group_cols) == 1 else df_p.groupby(p_group_cols)
+            for grp_key, grp in grouped:
+                name_k, unit_k = (_key(grp_key[0]), _key(grp_key[1])) if isinstance(grp_key, tuple) else (_key(grp_key), "")
+                prev_map[(name_k, unit_k)] = {
+                    "npa": int((grp["curr_bucket"] == "NPA").sum()),
+                    "sma2": int((grp["curr_bucket"] == "SMA-2").sum()),
+                }
+                prev_names_by_unit.setdefault(unit_k, []).append(name_k)
+
+        def _lookup(name_k: str, unit_k: str) -> dict:
+            if (name_k, unit_k) in prev_map:
+                return prev_map[(name_k, unit_k)]
+            candidates = [n for n in prev_names_by_unit.get(unit_k, []) if n.startswith(name_k) or name_k.startswith(n)]
+            return prev_map[(candidates[0], unit_k)] if len(candidates) == 1 else {}
+
+        def _delta(c, p):
+            if p is None:
+                return None, None
+            d = c - p
+            pct = round(d / p * 100, 1) if p > 0 else (100.0 if d > 0 else 0.0)
+            return d, pct
+
+        rows = []
+        grouped_c = df_c.groupby(group_cols[0]) if len(group_cols) == 1 else df_c.groupby(group_cols)
+        for grp_key, grp in grouped_c:
+            raw_name, raw_unit = grp_key if isinstance(grp_key, tuple) else (grp_key, None)
+            n = account_count(grp)
+            if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
+                continue
+            npa_c  = int((grp["curr_bucket"] == "NPA").sum())  if "curr_bucket" in grp.columns else 0
+            sma2_c = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
+            prev   = _lookup(_key(raw_name), _key(raw_unit) if raw_unit is not None else "")
+            npa_p  = prev.get("npa")
+            sma2_p = prev.get("sma2")
+            npa_d,  npa_dpct  = _delta(npa_c,  npa_p)
+            sma2_d, sma2_dpct = _delta(sma2_c, sma2_p)
+            region = str(grp["RegionName"].iloc[0]) if "RegionName" in grp.columns and len(grp) else None
+            row = {
+                "MNT NAME": f"{raw_name} ({raw_unit})" if raw_unit else str(raw_name),
+                "Unit": raw_unit,
+                "Region": region,
+                "Accounts": n,
+                "SMA-2 (Curr)": sma2_c,
+                "SMA-2 (Prev)": sma2_p,
+                "NPA (Curr)": npa_c,
+                "NPA (Prev)": npa_p,
+                "SMA-2 Δ": sma2_d,
+                "SMA-2 Δ%": sma2_dpct,
+                "NPA Δ": npa_d,
+                "NPA Δ%": npa_dpct,
+            }
+            roll_fwd, roll_bwd = _roll_rates(grp)
+            row["Roll Fwd%"] = roll_fwd
+            row["Roll Bwd%"] = roll_bwd
+            rows.append(row)
         return rows
 
     result = {}
@@ -344,12 +469,12 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
     if rows:
         result["region"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
 
-    rows = _dim_rows(df_curr, df_prev, "Unit")
+    rows = _dim_rows(df_curr, df_prev, "Unit", extra_cols=[("RegionName", "Region")])
     if rows:
         result["branch"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
 
     if "MNT NAME" in df_curr.columns and "curr_bucket" in df_curr.columns:
-        rows = _dim_rows(df_curr, df_prev, "MNT NAME")
+        rows = _executive_rows(df_curr, df_prev)
         if rows:
             result["executive"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
 
@@ -516,10 +641,14 @@ def compute_executive_recovery(df_curr: pd.DataFrame) -> pd.DataFrame:
         was_risk = grp["prev_bucket"].isin(["NPA", "SMA-2", "SMA-1"])
         rescued  = int((valid & was_risk & (curr_sc < prev_sc)).sum())
         slipped  = int((valid & (curr_sc > prev_sc)).sum())
+        region   = str(grp["RegionName"].iloc[0]) if "RegionName" in grp.columns and len(grp) else ""
         rows.append({
             "Executive": f"{exec_name} ({branch})" if branch else exec_name,
             "Branch": branch,
+            "Region": region,
             "Accounts": n,
+            "Collection%": _coll_pct(grp),
+            "Strike%": compute_strike_pct(grp),
             "Rescued": rescued,
             "Slipped": slipped,
             "Net Recovery": rescued - slipped,
