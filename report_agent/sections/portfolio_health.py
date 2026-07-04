@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from utils import compute_metrics, fmt_value
@@ -34,7 +34,7 @@ def compute_portfolio_health(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> di
                 "value":          val,
                 "prev_value":     prev_val,
                 "formatted":      fmt_value(val, kind),
-                "prev_formatted": fmt_value(prev_val, kind) if prev_val is not None else "—",
+                "prev_formatted": fmt_value(prev_val, kind) if prev_val is not None else " - ",
                 "mom":            mom,
                 "traffic":        _traffic_light(k, val),
             }

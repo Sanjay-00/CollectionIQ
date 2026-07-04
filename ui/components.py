@@ -1,6 +1,5 @@
 """Shared UI helpers used across multiple tab modules."""
 
-import os
 from io import BytesIO
 
 import pandas as pd
@@ -15,6 +14,30 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].astype(str).replace({"nan": "", "None": ""})
     return df
+
+
+def _chart_card(fig) -> None:
+    """Render a Plotly figure inside the standard bordered .chart-card wrapper."""
+    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+    st.plotly_chart(fig, width='stretch')
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _divider(margin: str = "24px 0") -> None:
+    """Standard horizontal section divider."""
+    st.markdown(f'<div style="border-top:1px solid #e5e7eb;margin:{margin};"></div>', unsafe_allow_html=True)
+
+
+def _empty_state(icon: str, title: str, sub: str) -> None:
+    """Standard 'nothing to show yet' placeholder block."""
+    st.markdown(
+        f'<div class="empty-state">'
+        f'<div class="empty-state-icon">{icon}</div>'
+        f'<div class="empty-state-title">{title}</div>'
+        f'<div class="empty-state-sub">{sub}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _excel_bytes(df: pd.DataFrame) -> bytes:
@@ -34,6 +57,84 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
         )
 
 
+def _kpi_card_html(
+    label: str, value: str, delta, *, unit: str = "%", inverse: bool = False,
+    count_delta: int | None = None, zero_delta_bad: bool = False,
+) -> str:
+    """Shared KPI card markup: label + big value + MoM delta arrow.
+
+    `inverse=True` means a falling value is the good direction (e.g. NPA %)
+    so the arrow color logic flips. `delta=None` renders "no prev data"
+    instead of an arrow (used when no previous-month file was uploaded).
+
+    When the displayed delta rounds to 0.00%, two independent tabs in this
+    app have always disagreed on the color (Dashboard: red: Portfolio
+    Intelligence: green) - `zero_delta_bad` lets each caller keep its own
+    pre-existing convention instead of silently picking one for both.
+
+    If `count_delta` (the underlying raw account-count movement) is also
+    passed and the displayed delta rounds to 0.00%, it takes priority over
+    `zero_delta_bad` and breaks the tie using the real count instead: a
+    +/-1 account move that got rounded away by the percentage still shows
+    as worsened/improved, and a true zero-count move shows neutral/grey.
+    """
+    if delta is None:
+        mom_html = '<div class="kpi-mom" style="color:#9ca3af;">no prev data</div>'
+    else:
+        is_tied = round(delta, 2) == 0.0
+        if is_tied and count_delta:
+            arrow = "▲" if count_delta > 0 else "▼"
+            good  = (count_delta < 0) if inverse else (count_delta > 0)
+            cls   = "kpi-mom-up" if good else "kpi-mom-down"
+        elif is_tied and count_delta == 0:
+            arrow, cls = "–", "kpi-mom-neutral"
+        elif is_tied and zero_delta_bad:
+            arrow = "▲" if delta >= 0 else "▼"
+            cls   = "kpi-mom-down" if inverse else "kpi-mom-up"
+        else:
+            arrow = "▲" if delta >= 0 else "▼"
+            good  = (delta <= 0) if inverse else (delta >= 0)
+            cls   = "kpi-mom-up" if good else "kpi-mom-down"
+        mom_html = f'<div class="kpi-mom">MoM <span class="{cls}">{arrow} {abs(delta):.2f}{unit}</span></div>'
+    return (
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f'{mom_html}</div>'
+    )
+
+
+def _static_kpi_card_html(
+    label: str, value, caption: str = "", *,
+    color: str = "", value_style: str = "", card_style: str = "",
+) -> str:
+    """A plain (no MoM-delta) KPI card: colored top border, label, big value,
+    optional caption line. Used for one-off summary numbers (e.g. "Fleet
+    Operators: 12") where there's no month-over-month comparison to show."""
+    border    = f"border-top-color:{color};" if color else ""
+    card_attr = f' style="{border}{card_style}"' if (border or card_style) else ""
+    val_attr  = f' style="color:{color};{value_style}"' if (color or value_style) else ""
+    caption_html = f'<div class="kpi-mom">{caption}</div>' if caption else ""
+    return (
+        f'<div class="kpi-card"{card_attr}>'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value"{val_attr}>{value}</div>'
+        f'{caption_html}</div>'
+    )
+
+
+def _npa_pct_color(val: float, hi: float = 10.0, mid: float = 5.0) -> str:
+    """Red/orange/green threshold color for an NPA%-style risk percentage."""
+    v = val or 0
+    return "#dc2626" if v > hi else ("#d97706" if v > mid else "#16a34a")
+
+
+def _sma2_pct_color(val: float, hi: float = 10.0, mid: float = 5.0) -> str:
+    """Red/orange/grey threshold color for a SMA-2%-style risk percentage."""
+    v = val or 0
+    return "#ef4444" if v > hi else ("#d97706" if v > mid else "#374151")
+
+
 def _send_feedback(run_id: str, score: float) -> None:
     """Post thumbs-up (1.0) or thumbs-down (0.0) feedback to LangSmith."""
     try:
@@ -44,34 +145,14 @@ def _send_feedback(run_id: str, score: float) -> None:
 
 
 def _send_report_email(html_report: str, email_to: str, curr_month: str) -> tuple[bool, str]:
-    """Send the HTML report via SMTP. Returns (success, error_msg)."""
-    import smtplib
-    from email import encoders as _enc
-    from email.mime.base import MIMEBase
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
+    """Send the HTML report via SMTP. Returns (success, error_msg).
 
-    smtp_host = os.environ.get("SMTP_HOST", "")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASS", "")
-    try:
-        msg = MIMEMultipart("mixed")
-        msg["Subject"] = f"Shriram Finance - Portfolio Intelligence Report {curr_month}"
-        msg["From"]    = smtp_user
-        msg["To"]      = email_to
-        msg.attach(MIMEText(html_report, "html", "utf-8"))
-        att = MIMEBase("application", "octet-stream")
-        att.set_payload(html_report.encode("utf-8"))
-        _enc.encode_base64(att)
-        att.add_header("Content-Disposition", f'attachment; filename="portfolio_report_{curr_month}.html"')
-        msg.attach(att)
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as srv:
-            srv.ehlo(); srv.starttls(); srv.login(smtp_user, smtp_pass)
-            srv.sendmail(smtp_user, [r.strip() for r in email_to.split(",") if r.strip()], msg.as_string())
-        return True, ""
-    except Exception as e:
-        return False, str(e)
+    Thin wrapper around report_agent's send_report_email - the same function
+    the auto-send-on-generate LangGraph node uses, so this tab's standalone
+    "resend" button can't silently drift out of sync with it.
+    """
+    from report_agent.nodes.email_dispatcher import send_report_email
+    return send_report_email(html_report, email_to, curr_month)
 
 
 def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:

@@ -1,7 +1,9 @@
-import pandas as pd
+﻿import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
+
+from config import HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR
 
 YELLOW = "#FFC000"
 
@@ -24,7 +26,7 @@ COL_ALIASES = {
     "Cum Coll (Inst+Exp+BC)": "Cum Coll (Inst+Exp)",
 }
 
-# All expected columns (used for reference only — missing ones show a warning, not error)
+# All expected columns (used for reference only  -  missing ones show a warning, not error)
 REQUIRED_COLS = [
     "SNo", "Loan No", "CHANNEL", "BU", "StateName", "Zone", "RegionName", "Unit",
     "Ag_Date", "SRC Code", "SRC Name", "MNT CODE", "MNT NAME", "Due Dt", "Tenure",
@@ -51,6 +53,44 @@ REQUIRED_COLS = [
 
 BUCKET_ORDER = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"]
 BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4, "NA": -1}
+BUCKET_COLORS = {
+    "STD":      "#16a34a",
+    "1-30 DPD": "#FFC000",
+    "SMA-1":    "#f97316",
+    "SMA-2":    "#ef4444",
+    "NPA":      "#991b1b",
+    "NA":       "#9ca3af",
+}
+
+# Numeric columns carried over from the previous-month file into the current-month
+# DataFrame as prev_* columns (matched per Loan No), so the AI can compute
+# month-over-month change/reduction queries (e.g. "regions by max SOH reduction",
+# "branches with biggest drop in insurance cases").
+#
+# Keys are the source column names in the prev file; values are the eval-safe
+# target names (no spaces or slashes) so the plan engine's derive expressions and
+# the column validator work on them directly. This is a curated set that covers the
+# vast majority of "change vs last month" questions  -  extend it here in ONE place
+# to support a new prev metric; nothing else needs to change.
+PREV_CARRYOVER_COLS = {
+    "SOH":                  "prev_SOH",
+    "POS":                  "prev_POS",
+    "Closing Arrears":      "prev_Closing_Arrears",
+    "ClosingPC":            "prev_ClosingPC",
+    "Arrears / EMI":        "prev_Arrears_EMI",
+    "ARREARS AGAINST INST": "prev_Arrears_Inst",
+    "ARREARS AGAINST EXP":  "prev_Arrears_Exp",
+    # Flow columns (this month's transactional collection/demand, not a stock
+    # balance) -- still meaningful to carry forward matched by Loan No for
+    # "collection % this month vs previous" comparisons. Without these, the
+    # collection_pct ratio metric (registry/ontology.py) silently has no
+    # previous-period version under time.compare.
+    "Month Collection (Excluding Reserve Collection)": "prev_Month_Collection",
+    "Net Collection Demand Inst+Exp+BC":               "prev_Net_Collection_Demand",
+    # Not numeric (Y/N flag), but carried forward the same way -- needed for the
+    # strike_pct count_ratio metric's previous-period version (registry/ontology.py).
+    "Strike":               "prev_Strike",
+}
 
 
 def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
@@ -73,10 +113,10 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalize uploaded column names to our standard names.
 
-    Pass 1 — Strip leading/trailing spaces from every column.
-    Pass 2 — Apply COL_ALIASES (exact known truncations / variations).
-    Pass 3 — Case-insensitive exact match (handles capitalisation differences).
-    Pass 4 — Prefix match for truncated long names.
+    Pass 1  -  Strip leading/trailing spaces from every column.
+    Pass 2  -  Apply COL_ALIASES (exact known truncations / variations).
+    Pass 3  -  Case-insensitive exact match (handles capitalisation differences).
+    Pass 4  -  Prefix match for truncated long names.
               Targets sorted longest-first so the more-specific column wins
               when a shorter column name is a prefix of a longer one
               (e.g. "Net Collection Demand Inst+Exp+BC" beats "NET Collection
@@ -84,10 +124,10 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     all_standard = list(dict.fromkeys(CRITICAL_COLS + REQUIRED_COLS))  # critical first, no dupes
 
-    # Pass 1 — strip spaces
+    # Pass 1  -  strip spaces
     df.columns = pd.Index([str(c).strip() for c in df.columns])
 
-    # Pass 2 — known aliases
+    # Pass 2  -  known aliases
     df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
 
     # Build case-insensitive lookup; longest targets first so more-specific
@@ -108,14 +148,14 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
         col_lower = col.lower()
 
-        # Pass 3 — case-insensitive exact match
+        # Pass 3  -  case-insensitive exact match
         if col_lower in target_ci and target_ci[col_lower] not in claimed:
             target = target_ci[col_lower]
             rename_map[col] = target
             claimed.add(target)
             continue
 
-        # Pass 4 — prefix match (file col is truncated version of target)
+        # Pass 4  -  prefix match (file col is truncated version of target)
         # Skip short columns (< 15 chars) to avoid false matches.
         if len(col) < 15:
             continue
@@ -177,19 +217,58 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         ]
 
     _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+    # pandas Timestamp is nanosecond-precision and bounded (~1677 to ~2262); a serial
+    # number outside that range raises OutOfBoundsDatetime and used to crash the
+    # ENTIRE upload for every user of that file, not just null out the one bad row.
+    # One garbage cell (a placeholder sentinel, a fat-fingered huge number) took the
+    # whole app down. Bound the serial range BEFORE the arithmetic that can overflow,
+    # not after, so an out-of-range value becomes NaT like any other bad date instead
+    # of an unrecoverable crash.
+    # NOT (pd.Timestamp.max - _EXCEL_EPOCH).days -- that subtraction itself overflows,
+    # since pd.Timedelta's range (~106751 days) is narrower than the gap between the
+    # 1899 epoch and pd.Timestamp.max (~2262), so computing the bound that way raises
+    # the exact OutOfBoundsDatetime this code exists to prevent.
+    _MAX_SERIAL = pd.Timedelta.max.days - 1
     for date_col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
         if date_col not in df.columns:
             continue
         col = df[date_col]
-        if pd.api.types.is_numeric_dtype(col):
+        numeric = pd.to_numeric(col, errors="coerce")
+        # Decide serial-vs-already-a-date by CONTENT, not just the declared dtype.
+        # pyxlsb can hand back an "object" dtype column that is still overwhelmingly
+        # numeric Excel serial dates -- a single stray blank/string cell is enough to
+        # upgrade the whole column's dtype from int/float to object, so
+        # is_numeric_dtype(col) alone was False even though 99%+ of the values were
+        # real serial numbers. That used to fall into the pd.to_datetime() branch
+        # below, which doesn't know these are day-counts and silently reinterprets a
+        # bare number as NANOSECONDS SINCE 1970 -- every date in the column came out
+        # as "1970-01-01 plus a few microseconds", wrong for the entire column, not
+        # just the one bad cell. Threshold on the fraction that parses as numeric
+        # instead: a real date-string/datetime column has ~0% successful numeric
+        # parses, a serial-date column (even with a few corrupt cells) has ~100%.
+        frac_numeric = numeric.notna().mean() if len(col) else 0.0
+        if pd.api.types.is_numeric_dtype(col) or frac_numeric >= 0.5:
             # xlsb files store dates as Excel serial numbers (days since 1899-12-30)
-            numeric = pd.to_numeric(col, errors="coerce")
-            df[date_col] = _EXCEL_EPOCH + pd.to_timedelta(numeric, unit="D")
-            df[date_col] = df[date_col].where(numeric.notna() & (numeric > 0), pd.NaT)
+            in_range = numeric.notna() & (numeric > 0) & (numeric <= _MAX_SERIAL)
+            safe_numeric = numeric.where(in_range)  # out-of-range -> NaN before the arithmetic
+            df[date_col] = _EXCEL_EPOCH + pd.to_timedelta(safe_numeric, unit="D")
+            df[date_col] = df[date_col].where(in_range, pd.NaT)
         else:
             df[date_col] = pd.to_datetime(col, errors="coerce")
 
-    # Due Dt is a numeric EMI due day (5, 10, 15, 20) — keep as number
+        # Business-plausibility bound, applied to the final parsed date regardless
+        # of which branch produced it: a stray numeric value that isn't actually a
+        # date (e.g. a rupee amount that ended up in this column in the source
+        # extract) can be numerically small enough to parse into a "valid" but
+        # nonsense Timestamp (e.g. year 2170) without ever overflowing pandas'
+        # Timestamp range, so the crash-prevention bound above doesn't catch it.
+        # Reject anything outside a real loan portfolio's plausible date range
+        # instead of letting a wrong-but-well-formed date reach business logic
+        # (e.g. Last Receipt Date feeds "paid this month" AI Query filters directly).
+        plausible = df[date_col].dt.year.between(LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR)
+        df[date_col] = df[date_col].where(plausible | df[date_col].isna(), pd.NaT)
+
+    # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
 
     # Additive cash flows - zero is the correct default when missing
@@ -209,12 +288,32 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     df["Strike"] = df["Strike"].astype(str).str.strip().str.upper()
     if "Unit" in df.columns:
         df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
+    if "MNT NAME" in df.columns:
+        # Manually retyped each month, so the same executive shows up as "Sunil Waghmare" one
+        # month and "SUNIL WAGHMARE " the next -- normalize once here rather than in every
+        # consumer that groups by this column. astype(str).notna() mask keeps real blanks as
+        # NaN instead of turning them into the literal string "NAN".
+        mask = df["MNT NAME"].notna()
+        df.loc[mask, "MNT NAME"] = df.loc[mask, "MNT NAME"].astype(str).str.strip().str.upper()
+
+    # Mobile numbers: if even one row is blank, Excel/pandas silently upgrades the
+    # whole column to float64, so every number renders as "9876543210.0" (or worse,
+    # scientific notation) everywhere it's displayed or exported. Strip that artifact.
+    for col in ["Cust Mob No", "Guar Mob No"]:
+        if col in df.columns:
+            df[col] = clean_mobile(df[col])
 
     df = assign_buckets(df)
+
+    # Drop duplicate Loan Nos  -  keep the first occurrence.
+    # Duplicates inflate every count-based metric (NPA count, roll rates, etc.).
+    if "Loan No" in df.columns:
+        df = df.drop_duplicates(subset=["Loan No"])
+
     return df, []
 
 
-def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str) -> pd.DataFrame:
+def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = ()) -> pd.DataFrame:
     if len(df.columns) == 0:
         return df
     if region != "All" and "RegionName" in df.columns:
@@ -223,6 +322,10 @@ def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str) -> pd
         df = df[df["Unit"] == branch]
     if status != "All" and "Loan Status" in df.columns:
         df = df[df["Loan Status"] == status]
+    if segment:
+        _seg_col = next((c for c in ["SegmentName", "Segment"] if c in df.columns), None)
+        if _seg_col:
+            df = df[df[_seg_col].isin(segment)]
     return df
 
 
@@ -230,6 +333,79 @@ def _safe_pct(num, den):
     if den == 0:
         return 0.0
     return round(num / den * 100, 2)
+
+
+def to_num(df: pd.DataFrame, col: str, fill: float | None = None) -> pd.Series:
+    """Coerce `df[col]` to numeric, index-aligned to `df` even when `col` is absent
+    (so it's always safe to use in boolean masks or arithmetic against other columns).
+    Missing values (and a missing column entirely) become `fill`, or stay NaN if
+    `fill` is None."""
+    if col not in df.columns:
+        return pd.Series(fill if fill is not None else float("nan"), index=df.index)
+    s = pd.to_numeric(df[col], errors="coerce")
+    return s.fillna(fill) if fill is not None else s
+
+
+def account_count(df: pd.DataFrame, col: str = "Loan No") -> int:
+    """Distinct-loan count, falling back to row count when `col` is absent."""
+    return df[col].nunique() if col in df.columns else len(df)
+
+
+def clean_mobile(series: pd.Series) -> pd.Series:
+    """Strip the trailing ".0" that pandas adds when a numeric-looking column
+    (e.g. a mobile number) has any missing values and gets upgraded to float64.
+    Leaves already-clean strings and NaN (-> "") untouched."""
+    def _fmt(v):
+        if pd.isna(v):
+            return ""
+        s = str(v).strip()
+        return s[:-2] if s.endswith(".0") else s
+    return series.apply(_fmt)
+
+
+def is_yes(df: pd.DataFrame, col: str) -> pd.Series:
+    """Boolean mask for a Y/N flag column, index-aligned to `df` (False when `col` is absent).
+
+    Some monthly LCC extracts spell the flag out as "Yes" instead of "Y" (seen in
+    Non Starter/Strike columns), so both spellings count as true.
+    """
+    if col not in df.columns:
+        return pd.Series(False, index=df.index)
+    normalized = df[col].astype(str).str.strip().str.upper()
+    return normalized.isin(["Y", "YES"])
+
+
+def compute_strike_pct(df: pd.DataFrame) -> float:
+    """% of accounts current on their installment obligation (Strike=Y), among accounts
+    with a valid Y/N Strike value.
+
+    Single source of truth for the dashboard (compute_metrics) and Portfolio Intelligence
+    (analysis/portfolio_intelligence.py::compute_pulse_kpis), which both call this instead
+    of reimplementing it. The AI Query path (registry/ontology.py's strike_pct METRIC) is a
+    separate, declarative definition consumed by the general compiler
+    (compiler/measures.py's count_ratio handler) rather than a direct function call, so it
+    can't share this implementation directly - but it must match this definition, and
+    tests/test_metric_consistency.py checks the two stay in sync.
+    """
+    if df.empty or "Strike" not in df.columns:
+        return 0.0
+    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])]
+    if strike_valid.empty:
+        return 0.0
+    return _safe_pct(is_yes(strike_valid, "Strike").sum(), len(strike_valid))
+
+
+def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
+    """% of accounts >= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue.
+
+    Single source of truth for the dashboard (compute_metrics) and every Portfolio
+    Intelligence table that reports Hard Bucket% (compute_pulse_kpis, compute_region_scorecard,
+    compute_branch_quadrant). See compute_strike_pct's docstring re: the AI Query path.
+    """
+    total = account_count(df)
+    if total == 0:
+        return 0.0
+    return _safe_pct((to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), total)
 
 
 def _mom_pct(curr, prev):
@@ -241,7 +417,7 @@ def _mom_pct(curr, prev):
 def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     _zero = {
         "Month Demand": 0.0, "Total Collection": 0.0, "Collection %": 0.0,
-        "Strike %": 0.0, "NPA %": 0.0, "Hard Bucket %": 0.0,
+        "Strike %": 0.0, "NPA %": 0.0, "Hard Bucket %": 0.0, "SMA-2 %": 0.0,
         "Count": 0, "SOH": 0.0, "LCC%": 0.0, "CMD %": 0.0,
     }
 
@@ -256,28 +432,36 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         pos = df[_soh_col].sum(min_count=1)
         pos = 0.0 if pd.isna(pos) else pos
         cum_coll_total = df["Total Cum Collection"].sum()
-        cum_coll_inst_exp = df["Cum Coll (Inst+Exp)"].sum()
+        # "Cum Coll (Inst+Exp)" is optional (REQUIRED_COLS, not CRITICAL_COLS) -
+        # a file missing it must not crash the whole Dashboard tab.
+        cum_coll_inst_exp = to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum()
 
-        strike_valid = df[df["Strike"].isin(["Y", "N"])]
-        strike_pct = _safe_pct(
-            (strike_valid["Strike"] == "Y").sum(),
-            len(strike_valid),
-        )
+        strike_pct = compute_strike_pct(df)
 
         npa_pct = _safe_pct(
             df[df["curr_bucket"] == "NPA"]["Loan No"].nunique(),
             n_accounts,
         )
-        hard_pct = _safe_pct(
-            df[df["Arrears / EMI"] >= 6]["Loan No"].nunique(),
+        sma2_pct = _safe_pct(
+            df[df["curr_bucket"] == "SMA-2"]["Loan No"].nunique() if "curr_bucket" in df.columns else 0,
             n_accounts,
         )
+        hard_pct = compute_hard_bucket_pct(df)
         _cum_due = sum(
             pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
             for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns
         )
-        lcc_avg = _safe_pct(df["Total Cum Collection"].sum(), _cum_due)
+        # LCC% = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) -- matches the
+        # documented business definition (agents/domain_expert.py) and the AI Query
+        # path's lcc_pct METRIC (registry/ontology.py). "Total Cum Collection" is a
+        # broader figure (includes BC/other components) and is the wrong numerator.
+        lcc_avg = _safe_pct(to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum(), _cum_due)
         lcc_avg = round(lcc_avg, 2) if not pd.isna(lcc_avg) else 0.0
+        # Capped at 100 -- matches the documented definition (agents/domain_expert.py:
+        # "LCC% = ... Capped at 100, max value is 100") and the AI Query path's
+        # lcc_pct METRIC (registry/ontology.py, cap=100). A customer who has paid
+        # ahead of cumulative dues can otherwise push this over 100%.
+        lcc_avg = min(lcc_avg, 100.0)
         cmd_pct = _safe_pct(cum_coll_total, cum_coll_inst_exp)
 
         return {
@@ -287,6 +471,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             "Strike %": strike_pct,
             "NPA %": npa_pct,
             "Hard Bucket %": hard_pct,
+            "SMA-2 %": sma2_pct,
             "Count": n_accounts,
             "SOH": pos,
             "LCC%": lcc_avg,
@@ -387,7 +572,7 @@ def build_branch_bar_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
-    """Arrears exposure by DPD bucket — SUM(Closing Arrears) per bucket.
+    """Arrears exposure by DPD bucket  -  SUM(Closing Arrears) per bucket.
     Shows how much money is stuck at each risk level."""
     if df.empty or "Closing Arrears" not in df.columns or "curr_bucket" not in df.columns:
         return go.Figure()
@@ -411,16 +596,7 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
 
     labels = [_fmt(v) for v in exposure.values]
 
-    # Colour-code buckets: STD=green, 1-30=yellow, SMA-1=orange, SMA-2=orangered, NPA=red, NA=grey
-    bucket_colors = {
-        "STD":      "#16a34a",
-        "1-30 DPD": YELLOW,
-        "SMA-1":    "#f97316",
-        "SMA-2":    "#ef4444",
-        "NPA":      "#991b1b",
-        "NA":       "#9ca3af",
-    }
-    colors = [bucket_colors.get(b, YELLOW) for b in exposure.index]
+    colors = [BUCKET_COLORS.get(b, YELLOW) for b in exposure.index]
 
     fig = go.Figure(go.Bar(
         x=exposure.index.tolist(),
@@ -440,21 +616,6 @@ def build_closing_pc_chart(df: pd.DataFrame) -> go.Figure:
         height=300,
     )
     return fig
-
-
-def _kpi_card_html(label: str, value: str, mom: float, unit: str = "", inverse: bool = False) -> str:
-    arrow = "&#9650;" if mom >= 0 else "&#9660;"
-    color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
-    mom_str = f"{abs(mom):.2f}%"
-    return (
-        f'<div style="border:2px solid {YELLOW};border-radius:8px;padding:16px 12px;'
-        f'background:#fff;text-align:center;min-width:130px;flex:1;">'
-        f'<div style="font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">{label}</div>'
-        f'<div style="font-size:28px;font-weight:700;color:#000;line-height:1.1;">{value}{unit}</div>'
-        f'<div style="font-size:12px;margin-top:6px;">'
-        f'MoM %: <span style="color:{color};font-weight:600;">{arrow} {mom_str}</span>'
-        f'</div></div>'
-    )
 
 
 def build_html_export(
@@ -526,8 +687,8 @@ def build_html_export(
         for alert in alerts:
             is_clear = alert["count"] == 0
             color = "#16a34a" if is_clear else SEVERITY_COLOR.get(alert["severity"], "#d97706")
-            pos_fmt = fmt_value(alert["pos"], "money") if not is_clear else "—"
-            arr_fmt = fmt_value(alert["closing_arrears"], "money") if not is_clear else "—"
+            pos_fmt = fmt_value(alert["pos"], "money") if not is_clear else " - "
+            arr_fmt = fmt_value(alert["closing_arrears"], "money") if not is_clear else " - "
             cards_html += (
                 f'<div style="background:#fff;border:1px solid #e5e7eb;border-left:4px solid {color};'
                 f'border-radius:10px;padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
@@ -573,6 +734,7 @@ def build_html_export(
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Accounts"]}</td>'
                     f'<td style="padding:7px 10px;font-size:13px;font-weight:800;color:{coll_color};text-align:center;">{coll}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Strike Rate %"]}%</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{sma2_color};text-align:center;">{row.get("SMA-2 %", 0)}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row.get("NPA %", 0)}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{npa_color};text-align:center;">{npa_count}</td>'
                     f'<td style="padding:7px 10px;font-size:12px;font-weight:700;color:{sma2_color};text-align:center;">{sma2}</td>'
@@ -583,7 +745,7 @@ def build_html_export(
             return rows
 
         def _exec_table(title, sub, color):
-            headers = ["Executive", "Accounts", "Coll %", "Strike %", "NPA %", "NPA", "SMA-2", "POS (L)", "SOH (L)"]
+            headers = ["Executive", "Accounts", "Coll %", "Strike %", "SMA-2 %", "NPA %", "NPA", "SMA-2", "POS (L)", "SOH (L)"]
             th = "".join(
                 f'<th style="padding:7px 10px;text-align:{"left" if i==0 else "center"};font-size:10px;'
                 f'color:#6b7280;font-weight:700;text-transform:uppercase;">{h}</th>'
@@ -638,7 +800,7 @@ def build_html_export(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Shriram Finance – Regional Collection Dashboard {month_label}</title>
+<title>Shriram Finance  -  Regional Collection Dashboard {month_label}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>

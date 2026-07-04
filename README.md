@@ -142,7 +142,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 **Automated Priority Action List** : Seven-tier business priority framework ranks accounts by impact. Non-starters, easy settlements, insurance arrears, co-lending risk, and NPA accounts each get their own actionable tier.
 
-**Field Executive Performance Scorecard** : Every executive ranked by collection %, strike rate, NPA count, SMA-2 count, and bucket roll rates using quartile-based tiers relative to the current portfolio.
+**Field Executive Performance Scorecard** : Every executive ranked by collection %, strike rate, NPA count, SMA-2 count, and bucket roll rates using quartile-based tiers relative to the current portfolio. Toggle the ranking metric between Collection % and Strike % to see who's actually current on installment obligation this month, not just who collected the most.
 
 **Bucket Migration Analysis** : Two months of data reveal exactly how accounts moved between DPD buckets, the NPA formation rate, and which executives are improving or deteriorating.
 
@@ -159,7 +159,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 **SOH as the True Exposure Metric** : Uses Sum of Hire (POS + Closing Arrears) instead of POS alone. For MAT and S&S accounts where POS = 0, SOH correctly reflects what is actually owed.
 
-**Monthly Portfolio Intelligence Report** : Board-ready HTML report with AI narrative, branch league tables, executive rankings, and a five-point action plan. Email-safe layout. Generate once, send to any number of recipients without regenerating.
+**Monthly Portfolio Intelligence Report** : Board-ready, fully self-contained HTML report built from up to **18 independently toggleable sections**, verdict-first so a lead reads the AI narrative and five-point action plan before scrolling into supporting detail. Beyond branch and executive league tables, it includes embedded charts (bucket-distribution waterfall, region→branch concentration treemap, Collection% vs NPA% branch quadrant), month-over-month NPA/SMA-2 movement broken out by region/branch/executive, early-warning risk indicators, segment-wise NPA breakdown, top at-risk accounts, fleet exposure, repossession candidates, a good-customer retention list, and a rescued-vs-slipped executive recovery leaderboard, every number pulled from the same `analysis/` functions the dashboard tabs use, so a report figure and a dashboard figure never disagree. Email-safe layout. Generate once, send to any number of recipients without regenerating.
 &nbsp;
 
 
@@ -180,40 +180,42 @@ With CollectionIQ, the same question is answered in under 30 seconds by the lead
 
 ## Architecture
 
-CollectionIQ runs two independent AI pipelines orchestrated with LangGraph - one for answering queries in real time, one for generating the monthly portfolio report.
+CollectionIQ runs two independent AI pipelines orchestrated with LangGraph, one for answering queries in real time, one for generating the monthly portfolio report.
 &nbsp;
 
-### Query Pipeline
+### AI Query Pipeline
 
-Every question typed in plain English flows through a LangGraph state machine. The Domain Expert routes it: a clear query goes through planning, validation and execution; an ambiguous query gets a clarifying question first; a multi-step (nested) query gets an extra Plan Critic pass that reviews the plan before it runs.
+Every question typed in plain English flows through a LangGraph state machine built on a "plan, then compile" design. A Logical Planner agent never writes execution logic itself, it emits a declarative intent (which filters, which metrics, which dimensions) chosen from a fixed registry vocabulary, and a deterministic pandas compiler turns that into an executable step-plan. A clear query goes through the fast-path view lookup or the compiler; an ambiguous query gets a clarifying question first.
 
 ```mermaid
 flowchart TD
     User(["Plain English Query\ne.g. customers per branch with more than 3 loans"])
 
-    User --> DE
+    User --> LP
 
-    subgraph QP ["  Query Pipeline  (LangGraph)  "]
+    subgraph QP ["  AI Query Pipeline  (LangGraph)  "]
         direction TB
-        DE["Domain Expert Agent\nGemini 2.5 Flash-Lite\n\nNBFC terminology · Maps intent to columns\nRoutes: priority / aggregation / plan mode\nAsks to clarify when materially ambiguous\nInjects today's date and snapshot dates"]
-        CL["Clarify\n\nAmbiguous query becomes a question plus\n3 to 5 options · user picks · query re-runs"]
-        CR["Plan Critic Agent\nGemini 2.5 Flash-Lite (plan mode only)\n\nRe-reads the plan against the question\nCatches dropped conditions and incoherent steps"]
-        PP["Query Parser Agent\nGemini 2.5 Flash-Lite\n\nTranslates enriched query into a filter spec\nconditions · display columns · sort"]
-        VAL2["Validator\nPandas plus one LLM repair\n\nChecks spec or plan against ACTUAL columns\nRepairs hallucinated columns, else clear error"]
-        EX["Data Executor\nPandas\n\nStep-plan engine · Aggregation · Priority · Filters\nComputes KPIs and rankings"]
+        LP["Logical Planner Agent\nGemini 2.5 Flash-Lite\n\nReads the registry vocabulary: concepts, metrics,\nentities, dimensions, pre-built views\nEmits a declarative intent, never raw execution code\nAsks to clarify when materially ambiguous"]
+        CL["Clarify\n\nAmbiguous query becomes a question plus\n3 to 5 options, user picks, query re-runs"]
+        VW["Fast-Path View\nPandas, no LLM\n\nServes a pre-computed analysis/ result when the\nplanner matched one, reusing the dashboard's own cache\nFalls through to the compiler on any failure"]
+        CV["Compiler and Validator\nDeterministic, one LLM repair on failure\n\nLowers the intent into an ordered pandas step-plan\nChecks every column and name against the real schema"]
+        EX["Data Executor\nPandas\n\nStep-plan engine, aggregation, priority framework\nComputes KPIs and rankings"]
         IG["Insight Generator Agent\nGemini 2.5 Flash-Lite\n\nReads computed KPIs, rankings and rows\nGenerates domain-aware observations"]
-        DE -->|ambiguous| CL
-        DE -->|else| CR
-        CR --> PP --> VAL2 --> EX --> IG
+        LP -->|ambiguous| CL
+        LP -->|view matched| VW --> IG
+        LP -->|else| CV --> EX --> IG
+        VW -.falls through on failure.-> CV
     end
 
     CL --> RQ["Clarifying question\nuser answers, query re-runs"]
     IG --> R1["Loan Table\nFiltered customer records"]
-    IG --> R2["Ranked / Aggregated Table\nOne row per group, incl. nested plans"]
+    IG --> R2["Ranked / Aggregated Table\nOne row per group, including nested plans"]
     IG --> R3["Single Stat\nDirect answer with supporting context"]
 ```
 
-The step-plan engine (`agents/plan_executor.py`) exists because a single GROUP BY counts rows per group and cannot express nested analytics. A plan is an ordered list of steps (group_aggregate with optional conditional `where`, filter, derive, sort, limit); each step transforms the previous step's table, so arbitrary depth composes without special-casing. Only whitelisted operations run, never arbitrary code.
+The step-plan engine (`agents/plan_executor.py`) exists because a single GROUP BY counts rows per group and cannot express nested analytics. A plan is an ordered list of steps (group_aggregate with an optional conditional `where`, filter, derive, sort, limit); each step transforms the previous step's table, so arbitrary depth composes without special-casing. Only whitelisted operations run, never arbitrary code, and every `derive` expression is checked against a disallowed-pattern list before it reaches pandas.
+
+The vocabulary the Logical Planner picks from lives in `registry/`: `ontology.py` defines named filter concepts (for example easy settlement, co-lending at risk) and named metrics (including registered percentage metrics like strike rate and hard bucket percentage), `semantic_model.py` defines the grain entities (loan, customer, executive, branch, region) and group-by dimensions, and `views.py` defines the pre-built fast-path views (executive scorecard, roll-rate matrix, top delinquent accounts, and more) that let a common question skip the general compiler entirely and return an answer that is numerically identical to what the dashboard tabs already show.
 
 &nbsp;
 ### Report Pipeline
@@ -228,7 +230,7 @@ flowchart TD
 
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
-        PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
+        PA["Portfolio Analyzer\nPandas\n\nComputes up to 18 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns\nAccount lists · Branch & executive leaderboards"]
         RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
         RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
         ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
@@ -260,34 +262,52 @@ flowchart LR
 
 ```
 CollectionIQ/
-├── app.py                          # Main Streamlit app - all UI layout and state
+├── app.py                          # Main Streamlit app, all UI layout and state
 ├── graph.py                        # AI query pipeline (LangGraph state machine)
 ├── utils.py                        # Data loading, column normalisation, metrics, charts
 ├── smart_alerts.py                 # 6 rule-based risk alerts (pure pandas, no LLM)
+├── config.py                       # Model name, thresholds, and other tuned constants
 │
 ├── agents/
-│   ├── domain_expert.py            # Query enrichment, routing flags, clarification
-│   ├── plan_critic.py              # Reviews a multi-step plan vs the question (plan mode)
-│   ├── query_parser.py             # Natural language to structured filter spec
-│   ├── data_executor.py            # Pandas filter / aggregation / priority + spec validators
+│   ├── logical_planner.py          # Query to declarative intent (IR-1), the live planner
+│   ├── data_executor.py            # Priority framework, KPI/ranking computation
 │   ├── plan_executor.py            # Composable step-plan engine + plan validator
-│   └── insight_generator.py        # AI observations on query results
+│   ├── insight_generator.py        # AI observations on query results
+│   └── domain_expert.py            # Priority framework text and snapshot-date context
+│
+├── compiler/
+│   ├── core.py                     # Lowers a declarative intent into a pandas step-plan
+│   └── measures.py                 # Measure kinds: additive, ratio, count_ratio, and more
+│
+├── registry/
+│   ├── ontology.py                 # Named filter concepts, named metrics, priority rules
+│   ├── semantic_model.py           # Grain entities and group-by dimension aliases
+│   └── views.py                    # Fast-path pre-built view catalog
 │
 ├── analysis/
+│   ├── portfolio_intelligence.py   # Pulse KPIs, top accounts, fleet, risk indicators, and more
 │   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
 │   └── roll_rate.py                # Bucket migration matrix and roll-rate KPIs
 │
+├── ui/
+│   ├── tabs/                       # One module per dashboard tab, including ai_query.py
+│   ├── components.py               # Shared KPI cards, download buttons, safe table rendering
+│   └── landing.py                  # Upload page and sample-data loader
+│
 ├── report_agent/
 │   ├── graph.py                    # Report pipeline (LangGraph)
+│   ├── charts.py                   # Plotly figure -> embedded base64 PNG (kaleido)
+│   ├── sections/                   # 18 independently toggleable report sections,
+│   │                               #   each a thin wrapper around an analysis/ function
 │   └── nodes/
-│       ├── portfolio_analyzer.py   # Computes all report sections
-│       ├── risk_narrator.py        # AI executive narrative + action plan
-│       ├── report_builder.py       # Assembles email-safe self-contained HTML report
+│       ├── portfolio_analyzer.py   # Dispatches enabled_sections to sections/
+│       ├── risk_narrator.py        # AI executive narrative and action plan
+│       ├── report_builder.py       # Assembles the verdict-first, email-safe HTML report
 │       └── email_dispatcher.py     # SMTP delivery
 │
 ├── sample_data/
-│   ├── Current_Month_Demo.xlsx     # Sample LCC extract - current month
-│   └── Previous_Month_Demo.xlsx    # Sample LCC extract - previous month
+│   ├── Current_Month_Demo.xlsx     # Sample LCC extract, current month
+│   └── Previous_Month_Demo.xlsx    # Sample LCC extract, previous month
 │
 └── requirements.txt
 ```
@@ -299,9 +319,9 @@ CollectionIQ/
 |---|---|---|
 | UI and Dashboard | Streamlit | Interactive web interface, session state, multi-file upload |
 | AI Models | Google Gemini 2.5 Flash-Lite | All LLM agents across both pipelines (query and report) |
-| Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, clarification and plan critique |
+| Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, fast-path views, and clarification |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
-| Charts | Plotly | DPD distribution, bucket migration heatmap, branch charts |
+| Charts | Plotly + Kaleido | Interactive dashboard charts; Kaleido renders three of them to embedded PNG for the HTML report |
 | AI SDK | google-genai | Gemini API with retry and exponential backoff |
 | Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
 | Observability | LangSmith | Query tracing and result quality feedback |
@@ -310,7 +330,7 @@ CollectionIQ/
 
 The domain knowledge layer: NBFC terminology, loan status values, strike rate definition, SOH calculation, priority framework, insurance delinquency logic - is embedded in the agent system prompts and verified against real portfolio data. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
 
-Correctness is enforced outside the model, not by model depth. The LLM only translates a question into a structured spec or a step-plan; pure pandas computes every number. A deterministic validator checks each spec or plan against the actual columns and asks the relevant agent to repair a bad one before anything runs. For multi-step plans, a Plan Critic re-reads the plan against the question to catch a dropped condition or a step that uses a column an earlier step removed. When a question is materially ambiguous, the agent asks a clarifying question instead of assuming. The aim is general, composable reasoning rather than a hardcoded answer per question.
+Correctness is enforced outside the model, not by model depth. The LLM only translates a question into a declarative intent picked from a fixed registry vocabulary; a deterministic compiler turns that into a pandas step-plan, and pure pandas computes every number. A validator checks the plan against the actual columns and gives the planner one repair attempt with the exact error text before giving up with a clear message. When a question is materially ambiguous, the agent asks a clarifying question instead of assuming. The aim is general, composable reasoning rather than a hardcoded answer per question.
 
 Both pipelines are stateless between runs. Each query or report generation starts fresh, no stale context, no memory leak, no shared state between users.
 

@@ -38,8 +38,11 @@ _graph.add_edge("dispatcher", END)
 _compiled = _graph.compile()
 
 ALL_SECTIONS = [
-    "portfolio_health", "risk_flags", "bucket_migration",
-    "branch_performance", "executive_rankings",
+    "portfolio_health", "verdict", "risk_flags", "risk_indicators",
+    "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
+    "region_scorecard", "product_analysis", "top_accounts", "fleet_exposure",
+    "repossession", "good_customers", "branch_performance",
+    "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]
 
 

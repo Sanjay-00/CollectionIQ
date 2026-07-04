@@ -1,4 +1,4 @@
-"""
+﻿"""
 Bucket Migration / Roll-Rate Analysis
 Pure pandas - no LLM dependency.
 Requires both current and previous month DataFrames matched on Loan No.
@@ -8,16 +8,8 @@ import plotly.graph_objects as go
 
 from utils import BUCKET_ORDER, BUCKET_SCORE
 
-# Exclude NA bucket from migration analysis — not a meaningful delinquency state
+# Exclude NA bucket from migration analysis  -  not a meaningful delinquency state
 VALID_BUCKETS = [b for b in BUCKET_ORDER if b != "NA"]
-
-BUCKET_COLORS = {
-    "STD":      "#16a34a",
-    "1-30 DPD": "#FFC000",
-    "SMA-1":    "#f97316",
-    "SMA-2":    "#ef4444",
-    "NPA":      "#991b1b",
-}
 
 
 def compute_roll_rate_matrix(

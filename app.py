@@ -1,4 +1,4 @@
-import datetime
+﻿import datetime
 import os
 
 from dotenv import load_dotenv
@@ -7,7 +7,7 @@ load_dotenv()
 import streamlit as st
 import pandas as pd
 
-from utils import apply_filters, compute_metrics
+from utils import apply_filters, compute_metrics, PREV_CARRYOVER_COLS
 from smart_alerts import run_all_alerts
 
 from ui.styles import inject_styles
@@ -21,6 +21,17 @@ from ui.tabs.dashboard import render_dashboard_tab
 from ui.tabs.scorecard import render_scorecard_tab
 from ui.tabs.alerts import render_alerts_tab
 from ui.tabs.migration import render_migration_tab
+from ui.tabs.portfolio_intelligence import render_portfolio_intelligence_tab
+from analysis.portfolio_intelligence import (
+    compute_pulse_kpis, compute_bucket_waterfall,
+    compute_region_scorecard, compute_branch_quadrant,
+    compute_executive_recovery, compute_product_analysis,
+    compute_risk_indicators, compute_good_bad,
+    compute_concentration_treemap, compute_fleet_exposure,
+    compute_top_accounts, compute_repossession_list,
+    compute_risk_flag_comparison, compute_npa_sma2_comparison,
+    compute_good_customers,
+)
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.report import render_report_tab
 
@@ -139,22 +150,26 @@ if "df_curr_raw" not in st.session_state:
 df_curr_raw: pd.DataFrame = st.session_state["df_curr_raw"]
 df_prev_raw: pd.DataFrame = st.session_state["df_prev_raw"]
 
-# Auto-load prev if uploaded after initial generate (cache hit — no cost)
+# Auto-load prev if uploaded after initial generate (cache hit  -  no cost)
 if prev_file and len(df_prev_raw) == 0:
     _prev_tmp, _prev_err = _load_and_concat(prev_file)
     if _prev_tmp is not None:
         df_prev_raw = _prev_tmp
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
-sel_region, sel_branch, sel_status = render_sidebar(df_curr_raw, curr_month)
+sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, curr_month)
 
-# ── Cached computation wrappers (module-level — registered once, not per rerun) ──
+# ── Cached computation wrappers (module-level  -  registered once, not per rerun) ──
 @st.cache_data(show_spinner=False)
-def _cached_filter(df_c: pd.DataFrame, df_p_raw: pd.DataFrame, region: str, branch: str, status: str):
-    df = apply_filters(df_c.copy(), region, branch, status)
-    df_p = apply_filters(df_p_raw.copy(), region, branch, status)
+def _cached_filter(df_c: pd.DataFrame, df_p_raw: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = ()):
+    df = apply_filters(df_c.copy(), region, branch, status, segment)
+    df_p = apply_filters(df_p_raw.copy(), region, branch, status, segment)
     if len(df_p_raw) > 0 and "Loan No" in df.columns and "curr_bucket" in df_p_raw.columns:
-        slim = df_p_raw[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"})
+        # Carry over the prev-month bucket plus a curated set of numeric columns
+        # (renamed prev_*) so the AI can compute month-over-month reductions.
+        carry = {"curr_bucket": "prev_bucket"}
+        carry.update({src: dst for src, dst in PREV_CARRYOVER_COLS.items() if src in df_p_raw.columns})
+        slim = df_p_raw[["Loan No", *carry.keys()]].rename(columns=carry)
         df = df.merge(slim, on="Loan No", how="left")
     return df, df_p
 
@@ -174,11 +189,44 @@ def _cached_scorecard(df_c: pd.DataFrame):
 def _cached_roll_rate(df_c: pd.DataFrame, df_p: pd.DataFrame):
     return compute_roll_rate_matrix(df_c, df_p)
 
-# ── Apply filters (cached — no pandas work on same filter rerun) ──────────────
-df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, sel_region, sel_branch, sel_status)
+@st.cache_data(show_spinner=False)
+def _cached_portfolio_intel(
+    df_c: pd.DataFrame, df_p: pd.DataFrame,
+    rr_matched: int, rr_fwd: float, rr_bwd: float, rr_formation: float,
+    alerts_curr_counts: tuple, alerts_prev_counts: tuple,
+):
+    rr_meta_local = {
+        "matched_count": rr_matched, "roll_forward_rate": rr_fwd,
+        "roll_backward_rate": rr_bwd, "npa_formation_rate": rr_formation,
+    }
+    has_prev = len(df_p) > 0
+    pulse_kpis              = compute_pulse_kpis(df_c, df_p)
+    fig_waterfall           = compute_bucket_waterfall(df_c, df_p)
+    region_df               = compute_region_scorecard(df_c, df_p)
+    branch_df, fig_quadrant = compute_branch_quadrant(df_c)
+    exec_recovery_df        = compute_executive_recovery(df_c)
+    product_data            = compute_product_analysis(df_c)
+    risk_indicators         = compute_risk_indicators(df_c, df_p, rr_meta_local if rr_matched > 0 else None)
+    exec_df_for_gb          = exec_recovery_df
+    good_bad                = compute_good_bad(region_df, branch_df, risk_indicators, exec_df_for_gb, has_prev)
+    fig_treemap             = compute_concentration_treemap(df_c)
+    fleet                   = compute_fleet_exposure(df_c)
+    top_accounts, top_accounts_summary = compute_top_accounts(df_c)
+    repo_df                 = compute_repossession_list(df_c)
+    npa_sma2_cmp            = compute_npa_sma2_comparison(df_c, df_p)
+    good_customers          = compute_good_customers(df_c)
+    return (
+        pulse_kpis, fig_waterfall,
+        region_df, branch_df, fig_quadrant,
+        exec_recovery_df, product_data, risk_indicators, good_bad,
+        fig_treemap, fleet, top_accounts, top_accounts_summary, repo_df, npa_sma2_cmp, good_customers,
+    )
+
+# ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
+df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, sel_region, sel_branch, sel_status, tuple(sel_segment))
 
 # Clear AI/report results when filters change
-_filter_key = f"{sel_region}|{sel_branch}|{sel_status}"
+_filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}"
 if st.session_state.get("_last_filter_key") != _filter_key:
     st.session_state.pop("ai_result", None)
     st.session_state.pop("report_result", None)
@@ -200,8 +248,52 @@ rr_matrix, rr_meta = None, None
 if len(df_prev_raw) > 0:
     rr_matrix, rr_meta = _cached_roll_rate(df_curr, df_prev)
 
+alerts_prev = _cached_alerts(df_prev) if len(df_prev) > 0 else []
+
+_rr = rr_meta or {}
+(
+    pi_pulse_kpis, pi_fig_wf,
+    pi_region, pi_branch, pi_fig_quad,
+    pi_exec, pi_product, pi_risk, pi_good_bad,
+    pi_fig_treemap, pi_fleet, pi_top_accounts, pi_top_accounts_summary, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
+) = _cached_portfolio_intel(
+    df_curr, df_prev,
+    int(_rr.get("matched_count", 0)),
+    float(_rr.get("roll_forward_rate", 0.0)),
+    float(_rr.get("roll_backward_rate", 0.0)),
+    float(_rr.get("npa_formation_rate", 0.0)),
+    tuple((a["count"], a["title"]) for a in alerts),
+    tuple((a["count"], a["title"]) for a in alerts_prev),
+)
+
+# Precomputed analysis/ results, keyed for the AI Query tab's fast-path view
+# layer (registry/views.py) to reuse directly -- guarantees AI Query answers are
+# numerically identical to what these same tabs already show, no recomputation.
+precomputed_views = {
+    "pi_top_accounts":    (pi_top_accounts, pi_top_accounts_summary),
+    "pi_fleet":           pi_fleet,
+    "scorecard_df":       scorecard_df,
+    # Wrapped as tuples to match what a FRESH call to compute_roll_rate_matrix /
+    # compute_branch_quadrant returns -- registry/views.py normalizers handle
+    # the cached and freshly-computed cases identically this way.
+    "rr_matrix":          (rr_matrix, rr_meta),
+    "pi_region":          pi_region,
+    "pi_branch":          (pi_branch, pi_fig_quad),
+    "pi_exec":            pi_exec,
+    "pi_risk":            pi_risk,
+    "pi_repo_df":         pi_repo_df,
+    "pi_good_customers":  pi_good_customers,
+    "pi_npa_sma2_cmp":    pi_npa_sma2_cmp,
+    "pi_product":         pi_product,
+    "pi_pulse_kpis":      pi_pulse_kpis,
+    "pi_good_bad":        pi_good_bad,
+}
+
 # ── Active filter bar ─────────────────────────────────────────────────────────
-active_filters = {k: v for k, v in {"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status}.items() if v != "All"}
+active_filters = {k: v for k, v in {
+    "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
+    "Segment": ", ".join(sel_segment) if sel_segment else "All",
+}.items() if v != "All"}
 if active_filters:
     chips = " ".join(
         f'<span class="filter-chip">{k}: {v}</span>'
@@ -217,7 +309,7 @@ if active_filters:
 n_alerts    = sum(1 for a in alerts if a["count"] > 0)
 alert_label = f"🚨 Alerts ({n_alerts})" if n_alerts else "✅ Alerts"
 
-tabs = st.tabs(["🗂️ Dashboard", "👤 Scorecard", alert_label, "📈 Migration", "🤖 AI Query", "📋 Report"])
+tabs = st.tabs(["🗂️ Dashboard", "👤 Scorecard", alert_label, "📈 Migration", "📊 Portfolio Intelligence", "🤖 AI Query", "📋 Report"])
 
 
 def _tab_error(name: str, exc: Exception) -> None:
@@ -255,16 +347,46 @@ with tabs[3]:
 
 with tabs[4]:
     try:
+        _pi_flag_df = compute_risk_flag_comparison(alerts, alerts_prev)
+        render_portfolio_intelligence_tab(
+            pulse_kpis=pi_pulse_kpis,
+            fig_waterfall=pi_fig_wf,
+            region_df=pi_region,
+            branch_df=pi_branch,
+            fig_quadrant=pi_fig_quad,
+            exec_recovery_df=pi_exec,
+            product_data=pi_product,
+            risk_indicators=pi_risk,
+            good_bad=pi_good_bad,
+            flag_df=_pi_flag_df,
+            fig_treemap=pi_fig_treemap,
+            fleet=pi_fleet,
+            top_accounts=pi_top_accounts,
+            top_accounts_summary=pi_top_accounts_summary,
+            has_prev=len(df_prev) > 0,
+            rr_meta=rr_meta,
+            repo_df=pi_repo_df,
+            npa_sma2_cmp=pi_npa_sma2_cmp,
+            good_customers=pi_good_customers,
+        )
+    except Exception as _e:
+        _tab_error("Portfolio Intelligence", _e)
+
+with tabs[5]:
+    try:
         # Map uploaded files to their dated bucket columns so the AI can resolve
         # date references ("on 20th June") to curr_bucket / prev_bucket.
         _snapshot_dates = {"curr": curr_month_input.strftime("%Y-%m-%d")}
         if prev_month and len(df_prev_raw) > 0:
             _snapshot_dates["prev"] = prev_month_input.strftime("%Y-%m-%d")
-        render_ai_query_tab(df_curr, _snapshot_dates)
+        render_ai_query_tab(
+            df_curr, _snapshot_dates, df_prev=df_prev, precomputed_views=precomputed_views,
+            alerts_curr=alerts, alerts_prev=alerts_prev, rr_meta=rr_meta,
+        )
     except Exception as _e:
         _tab_error("AI Query", _e)
 
-with tabs[5]:
+with tabs[6]:
     try:
         render_report_tab(
             df_curr, df_prev, curr_month, prev_month,

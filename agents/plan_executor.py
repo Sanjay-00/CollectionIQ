@@ -1,4 +1,4 @@
-"""Step-plan dataflow engine.
+﻿"""Step-plan dataflow engine.
 
 The Domain Expert can emit a ``plan``: an ordered list of typed steps. Each step
 takes the previous step's DataFrame and returns a new one, so arbitrary-depth
@@ -7,7 +7,7 @@ WITHOUT special-casing each shape.
 
 Design constraints:
 - Pure pandas, no LLM.
-- No arbitrary code execution — only the whitelisted operations below run.
+- No arbitrary code execution  -  only the whitelisted operations below run.
 - Each step is validatable against the column set produced by the prior step,
   so a bad plan becomes a repair request (see validate_plan) instead of a crash
   or a silently-wrong answer.
@@ -16,9 +16,43 @@ Design constraints:
 import re
 import pandas as pd
 
-from agents.data_executor import _apply_condition
+from agents.data_executor import _apply_condition, _build_mask, _COL_COMPARE_OPS
 
 _AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max"}
+
+# Ops whose "value" is a COLUMN NAME to compare against, not a literal -- both
+# the left ("column") and right ("value") sides must exist for these.
+_COLUMN_VALUE_OPS = set(_COL_COMPARE_OPS) | {"bucket_worse_than", "bucket_better_than"}
+
+
+def _check_condition_columns(cond: dict, cols: set, where: str) -> list[str]:
+    """Validate a single {column, op, value} condition against the known column
+    set. For column-vs-column ops (col_lt/col_lte/.../bucket_worse_than/...),
+    "value" is itself a column reference and must also exist -- a hallucinated
+    reference column would otherwise silently no-op (see _apply_condition's
+    graceful `if ref_col not in df.columns: return df`) instead of failing loud."""
+    errs = []
+    c = cond.get("column")
+    if not c or c not in cols:
+        errs.append(f"{where}: column '{c}' does not exist")
+    op = (cond.get("op") or "").lower()
+    if op in _COLUMN_VALUE_OPS:
+        ref = cond.get("value")
+        if not ref or str(ref) not in cols:
+            errs.append(f"{where}: op '{op}' compares against column '{ref}', which does not exist")
+    return errs
+
+
+# Belt-and-suspenders guard on 'derive' expressions (which reach pandas' df.eval).
+# The REAL gate is validate_plan()'s identifier whitelist -- every bare name in an
+# expr must already be a known column/alias, which already blocks sandbox-escape
+# patterns like "(1).__class__.__bases__[0].__subclasses__()" before a plan is even
+# allowed to execute (verified: pandas' own eval parser also already rejects
+# arbitrary function calls like __import__/open/getattr as "not a supported
+# function"). This regex is a second, independent layer here at the point of
+# execution itself, so a future code path that ever skips validate_plan still
+# can't reach dunder/attribute-escape tricks through this executor.
+_DANGEROUS_EXPR_RE = re.compile(r"__\w+__|\bimport\b|\bexec\b|\beval\b|\bopen\b|\bgetattr\b|\bsubprocess\b|\bos\.")
 
 
 def _as_list(x):
@@ -28,15 +62,6 @@ def _as_list(x):
 
 
 # ── Step handlers ─────────────────────────────────────────────────────────────
-
-def _build_mask(df: pd.DataFrame, conditions) -> pd.Series:
-    """Boolean mask of rows matching ALL conditions (reusing the executor's
-    type-aware condition logic). Used for conditional aggregations ('where')."""
-    matched = df
-    for cond in conditions or []:
-        matched = _apply_condition(matched, cond)
-    return df.index.isin(matched.index)
-
 
 def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     group_by = [str(c) for c in _as_list(step.get("group_by"))]
@@ -50,7 +75,7 @@ def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     if not aggs:
         raise ValueError("group_aggregate requires at least one aggregation")
 
-    # Full set of group keys (first-appearance order) — every aggregation is
+    # Full set of group keys (first-appearance order)  -  every aggregation is
     # reindexed onto this so a conditional ('where') aggregation that matches no
     # rows in a group yields 0 there rather than dropping the group.
     full_index = df.groupby(group_by, sort=False).size().index
@@ -104,6 +129,8 @@ def _op_derive(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     expr = step.get("expr") or ""
     if not col:
         raise ValueError("derive requires 'column'")
+    if _DANGEROUS_EXPR_RE.search(expr):
+        raise ValueError(f"derive expression rejected (disallowed pattern): {expr!r}")
     df = df.copy()
     try:
         computed = df.eval(expr)
@@ -111,6 +138,11 @@ def _op_derive(df: pd.DataFrame, step: dict) -> pd.DataFrame:
         raise ValueError(f"derive expression failed: {e}")
     if hasattr(computed, "replace"):
         computed = computed.replace([float("inf"), float("-inf")], float("nan")).fillna(0)
+        # Optional clipping (e.g. cap a ratio like LCC% at 100). Applied before
+        # rounding; absent keys leave the value untouched (backward compatible).
+        clip_min, clip_max = step.get("clip_min"), step.get("clip_max")
+        if (clip_min is not None or clip_max is not None) and hasattr(computed, "clip"):
+            computed = computed.clip(lower=clip_min, upper=clip_max)
         try:
             computed = computed.round(2)
         except Exception:
@@ -124,8 +156,14 @@ def _op_sort(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     asc = step.get("ascending")
     if asc is None:
         asc = False
-    if by and by in df.columns:
-        return df.sort_values(by, ascending=asc)
+    if not by:
+        return df
+    # Exact match first; case-insensitive fallback so alias mismatches don't silently no-op.
+    col = by if by in df.columns else next(
+        (c for c in df.columns if c.lower() == by.lower()), None
+    )
+    if col:
+        return df.sort_values(col, ascending=asc)
     return df
 
 
@@ -138,13 +176,29 @@ def _op_limit(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     return df.head(n) if n > 0 else df
 
 
+def _op_select(df: pd.DataFrame, step: dict) -> pd.DataFrame:
+    """Keep only the listed columns. Unknown columns are silently skipped so
+    missing optional display columns don't hard-fail on a schema variation."""
+    cols = [c for c in (step.get("columns") or []) if c in df.columns]
+    return df[cols] if cols else df
+
+
 _OPS = {
     "group_aggregate": _op_group_aggregate,
     "filter":          _op_filter,
     "derive":          _op_derive,
     "sort":            _op_sort,
     "limit":           _op_limit,
+    "select":          _op_select,
 }
+
+# Internal scratch columns the "ratio"/"count_ratio" measure handlers generate
+# (compiler/measures.py: f"{alias}__n{i}" / f"{alias}__d{i}", e.g.
+# "collection_pct__n0") to hold the raw sum/count before dividing. The AI never
+# sees or authors these names -- they exist purely so the derive step has
+# something to divide -- so they should never reach the displayed table.
+# Matched by suffix only, since the alias prefix is arbitrary/AI-chosen.
+_HELPER_COL_RE = re.compile(r"__[nd]\d+$")
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -163,10 +217,13 @@ def execute_plan(df: pd.DataFrame, plan: list) -> tuple[pd.DataFrame, str]:
             result = handler(result, step)
         except Exception as e:
             return pd.DataFrame(), f"Step {i} ({op}) failed: {e}"
-        if result is None or len(result) == 0:
-            return pd.DataFrame(), f"Step {i} ({op}) produced no rows."
+        if result is None:
+            return pd.DataFrame(), f"Step {i} ({op}) returned None."
 
     result = result.reset_index(drop=True)
+    helper_cols = [c for c in result.columns if _HELPER_COL_RE.search(str(c))]
+    if helper_cols:
+        result = result.drop(columns=helper_cols)
     if "Rank" not in result.columns:
         result.insert(0, "Rank", range(1, len(result) + 1))
     return result, ""
@@ -212,22 +269,20 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
                 elif func != "count" and (not col or col not in cols):
                     errs.append(f"step {i}: agg column '{col}' does not exist")
                 for cond in (a.get("where") or []):
-                    wc = cond.get("column")
-                    if not wc or wc not in cols:
-                        errs.append(f"step {i}: where column '{wc}' does not exist")
+                    errs.extend(_check_condition_columns(cond, cols, f"step {i}: where"))
                 new_cols.add(alias)
             # A group_aggregate drops every column except the keys and new aliases.
             cols = new_cols
 
         elif op == "filter":
             for cond in step.get("conditions") or []:
-                c = cond.get("column")
-                if not c or c not in cols:
-                    errs.append(f"step {i}: filter column '{c}' does not exist")
+                errs.extend(_check_condition_columns(cond, cols, f"step {i}: filter"))
 
         elif op == "derive":
             col = step.get("column")
             expr = step.get("expr") or ""
+            if _DANGEROUS_EXPR_RE.search(expr):
+                errs.append(f"step {i}: derive expr rejected (disallowed pattern): {expr!r}")
             idents = set(re.findall(r"[A-Za-z_]\w*", expr))
             unknown = sorted(idn for idn in idents if idn not in cols)
             if unknown:
@@ -239,6 +294,10 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
             by = step.get("by")
             if by and by not in cols:
                 errs.append(f"step {i}: sort column '{by}' does not exist")
+
+        elif op == "select":
+            # Unknown columns are skipped gracefully at execute time; no validation error.
+            pass
 
         # limit: nothing to validate against columns
 

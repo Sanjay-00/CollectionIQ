@@ -4,11 +4,11 @@ Guidance for AI assistants working in this repo.
 
 ## Quick Facts
 
-- **Stack**: Streamlit (port from `.streamlit/config.toml`, currently 8503) + Pandas + Plotly + Google Gemini via `google-genai` + LangGraph
-- **Run**: `streamlit run app.py` (config is `headless = true`, so no browser auto-opens - open the URL yourself)
-- **Tests**: `pytest` (110 tests, all pandas/business-logic, no live Gemini calls). Engine tests live in `tests/test_plan_executor.py` (step-plan) and `tests/test_data_executor.py` (aggregation + filters + validators).
-- **Model config**: `GEMINI_MODEL` is defined once in `config.py` and imported everywhere; never hardcode the model string in agent files
-- **Data**: single in-memory pandas DataFrame per session, loaded from an uploaded LCC Excel extract (~85 known columns, see `utils.py::REQUIRED_COLS`). When a previous-period file is uploaded, `prev_bucket` is merged onto each row, enabling snapshot (then-vs-now) comparisons.
+- **Stack**: Streamlit (default port, no override in `.streamlit/config.toml` — a hardcoded `port` there has broken the Streamlit Cloud health check twice before by not matching the port Cloud's prober expects; if you need a custom port for local dev, set it via `streamlit run app.py --server.port XXXX` on the command line instead of committing it to config.toml) + Pandas + Plotly + Google Gemini via `google-genai` + LangGraph
+- **Run**: `streamlit run app.py`
+- **Tests**: `pytest` (358 tests, all pandas/business-logic, no live Gemini calls)
+- **Model config**: `GEMINI_MODEL` is defined once in `config.py` (currently `gemini-2.5-flash-lite`) and imported everywhere; never hardcode the model string in agent files
+- **Data**: single in-memory pandas DataFrame per session, loaded from an uploaded LCC Excel extract (~85 known columns, see `utils.py::REQUIRED_COLS`)
 
 ---
 
@@ -18,95 +18,130 @@ CollectionIQ is a self-serve portfolio intelligence dashboard for NBFC (Non-Bank
 
 ---
 
-## Agent Architecture
+## Analysis Layer (`analysis/`)
 
-The query pipeline is a LangGraph `StateGraph` in `graph.py`, sharing a single `QueryState` TypedDict that accumulates fields as it flows through. There are three LLM agents (Domain Expert, Query Parser, Insight Generator) plus an LLM Plan Critic, a deterministic pandas executor, and two control nodes (clarify, validate). The design goal is general, composable reasoning - **avoid per-question hardcoding/few-shot patches; add capabilities (primitives, controls), not one-off cases.**
+Pre-computed, pure pandas, no LLM. These functions run once per upload (cached via `st.cache_data` in `app.py`) and feed both the dashboard tabs and, through `registry/views.py`, the AI Query fast path, so a dashboard number and an AI Query answer about the same thing are numerically identical.
 
-### The nodes (in pipeline order)
+- **`analysis/portfolio_intelligence.py`**: the largest module, computing most of the Portfolio Intelligence and Alerts content: `compute_pulse_kpis` (headline KPI cards with month-over-month deltas), `compute_region_scorecard` / `compute_branch_quadrant` / `compute_executive_recovery` (per-entity performance tables), `compute_top_accounts` (top N by SOH restricted to delinquent accounts only, any non-STD bucket, since a large healthy STD loan is not a collections priority), `compute_fleet_exposure` (customers at or above `FLEET_MIN_LOANS` loans), `compute_risk_indicators` (signal-direction table gated by `RISK_INDICATOR_STABLE_PP`/materiality thresholds), `compute_good_bad` (synthesizes a good/bad narrative from a branch's composite Concern Score plus region NPA delta plus executive net recovery plus risk indicators), `compute_repossession_list`, `compute_good_customers`, `compute_product_analysis`, `compute_npa_sma2_comparison`, plus several Plotly chart builders (bucket waterfall, roll-rate heatmap, concentration treemap, vintage chart).
+- **`analysis/executive_scorecard.py`**: `compute_executive_scorecard`, ranks every field executive by collection percentage with quartile-based performance tiers computed relative to the current dataset, not hardcoded thresholds. `rank_by_metric(scorecard_df, metric_col)` re-sorts an already-computed scorecard by any other column (currently `"Strike Rate %"`, exposed as a toggle on the Scorecard tab and as a second report section) and recomputes quartile tiers relative to that column, without mutating or re-deriving the original Collection%-ranked scorecard.
+- **`analysis/roll_rate.py`**: the bucket-migration matrix and roll-forward/roll-backward rate KPIs between two uploaded periods.
 
-1. **Domain Expert** (`agents/domain_expert.py::enrich_query`, Gemini)
-   Enriches the raw query with NBFC context and decides how to answer. Outputs: `enriched_query`, `query_category`, `query_title`, `focus_kpis`, `insight_focus`, `risk_flag`, `result_type`, and the routing flags:
-   - `priority_mode` (bool) - the 7-tier business priority framework
-   - `aggregation_mode` (bool + `aggregation_spec`) - single-pass GROUP BY
-   - `plan_mode` (bool + `plan`) - a multi-step plan for anything a single GROUP BY can't express
-   - `needs_clarification` (bool + `clarification_question` + `clarification_options`) - set when the query is materially ambiguous
-   It also injects today's date and, when a previous file is loaded, a SNAPSHOTS block mapping `prev_bucket`/`curr_bucket` to their actual dates so date references resolve deterministically. `allow_clarification=False` is passed on a re-run after the user has answered, so it never loops.
+**Business rules worth knowing**: SOH (Sum of Hire = POS + Closing Arrears) is the exposure metric used everywhere instead of raw POS, so MAT and S&S accounts (where POS is legitimately 0) still show their true outstanding exposure. Hard Bucket percentage means `Arrears / EMI >= HARD_BUCKET_ARREARS_EMI_MIN` (currently 6), a single config constant in `config.py` shared by both the dashboard and the AI Query registry's `hard_bucket_pct` metric, since these two previously drifted (one used 3, the other 6) before being unified. Nearly every threshold that used to be a bare magic number (`FLEET_MIN_LOANS`, `REPOSSESSION_WINDOW_MONTHS`, `GOOD_CUSTOMER_MIN_TENURE_PCT`, `CONCERN_SCORE_*`, `RISK_INDICATOR_*`, and more) now lives in `config.py`, and the matching UI label text reads from the same constants so a retuned threshold cannot silently go stale in a label.
 
-2. **Clarify** (`clarify_node`, terminal) - if `needs_clarification`, the graph routes here and returns the question + options to the UI without parsing or executing. The user picks an option; the UI re-runs the query with the choice appended and `allow_clarification=False`.
+**`strike_pct` / `hard_bucket_pct`**: computed by `utils.compute_strike_pct()` / `utils.compute_hard_bucket_pct()`, the single shared source of truth called by `utils.py::compute_metrics` (dashboard) and every Portfolio Intelligence table that reports either metric (`compute_pulse_kpis`, `compute_region_scorecard`, `compute_branch_quadrant`, `analysis/executive_scorecard.py::compute_executive_scorecard`). The AI Query pipeline can't call these directly, its `registry/ontology.py` `strike_pct`/`hard_bucket_pct` METRICs are declarative definitions consumed by `compiler/measures.py`'s `count_ratio` handler, a different execution path entirely, so it's a second, independent implementation of the same business rule by necessity of the architecture. `tests/test_metric_consistency.py` runs both paths against the same data and asserts they agree, so a retuned threshold that only reaches one side fails a test instead of silently drifting.
 
-3. **Plan Critic** (`agents/plan_critic.py::critique_plan`, Gemini, **plan_mode only**) - re-reads the generated `plan` against the original question for completeness (did it drop a condition?) and coherence (does a step reference a column an earlier `group_aggregate` dropped?), returning a corrected plan. Non-fatal: any failure keeps the original plan; the deterministic validator is the safety net. Skipped for non-plan queries (cost discipline).
+---
 
-4. **Query Parser** (`agents/query_parser.py::parse_query`, Gemini) - converts `enriched_query` into a filter spec: `conditions`, `display_columns`, `sort_by`/`sort_asc`, `plain_english`. (Used by the filter path; runs for all queries but its output is only consumed when not in priority/aggregation/plan mode.)
+## AI Query Architecture (`graph.py`)
 
-5. **Validator** (`validate_node` in `graph.py`, deterministic + one LLM repair) - checks the active spec against the **actual** DataFrame columns: `validate_plan` (plan mode, column-tracking across steps), `validate_aggregation_spec` (aggregation), or `validate_filter_spec` (filter). On a mismatch it sends the error + the real column list back to the relevant agent for one repair attempt, then fails with a clear message rather than executing a wrong spec. Catches hallucinated columns / undefined aliases - *not* dropped conditions (that's the Critic's job).
+The AI Query pipeline is a LangGraph `StateGraph` sharing one `QueryState` TypedDict that accumulates fields as it flows through the graph. It is a "logical plan, then compile" design: an LLM never authors execution logic directly, it emits a declarative intermediate representation (IR-1), and a deterministic compiler lowers that into a pandas step-plan.
 
-6. **Data Executor** (`agents/data_executor.py` + `agents/plan_executor.py`, pure pandas, no LLM) - branches on the flags:
-   - `plan_mode` → `plan_executor.execute_plan()`: runs the step plan (see below)
-   - `priority_mode` → `execute_priority_mode()`: 7-tier framework
-   - `aggregation_mode` → `execute_aggregation()`: counts / sums / derived metrics / HAVING / top-N `limit`
-   - otherwise → `execute_filters()` via `_apply_condition`
-   Then computes `result_kpis` and `result_rankings`.
+### The nodes
 
-7. **Insight Generator** (`agents/insight_generator.py::generate_insights`, Gemini) - reads the KPIs/rankings (or aggregated rows) and writes 4-5 domain-aware bullets.
+1. **Logical Planner** (`agents/logical_planner.py::plan_logical`, Gemini)
+   Reads the raw query plus a vocabulary catalog (`registry/ontology.py`'s `CONCEPTS`/`METRICS`, `registry/semantic_model.py`'s `ENTITIES`/`DIMENSIONS`, `registry/views.py`'s `VIEWS`) and emits IR-1: a flat JSON with `intent`, `filters`, `entity_filters`, `dimensions`, `measures`, `time`, `view`, and clarification fields. It never writes execution code, only picks names from the vocabulary.
 
-### The step-plan engine (`agents/plan_executor.py`)
+2. **Fast-Path View** (`graph.py::view_node`, pandas, no LLM)
+   If the Logical Planner matched a `VIEWS` entry, this node fetches or recomputes that pre-built business view (executive scorecard, roll-rate matrix, top delinquent accounts, and so on) instead of going through the general compiler. It reuses `app.py`'s already-cached `analysis/` results where possible, so the AI Query answer stays numerically identical to what the dashboard tabs already show. Any failure to serve the view (unknown name, missing previous-period file, an unsupported filter) clears `ir1["view"]` and falls through to the compiler path with the same IR-1, rather than erroring out.
 
-`plan_mode` exists because a single GROUP BY counts rows per group and cannot express nested analytics (e.g. "customers per branch with >3 loans"). A `plan` is an ordered list of typed steps; each transforms the previous step's DataFrame, so arbitrary depth composes without special-casing. Operations:
-- `group_aggregate` - group by keys; aggregations `count|sum|nunique|mean|min|max`. Each aggregation may carry an optional `where` (conditional aggregation: count/sum only matching rows). A `group_aggregate` replaces the table with its group keys + new aliases.
-- `filter` - row/group filter (per-entity thresholds live here)
-- `derive` - add a computed column via `df.eval` over existing aliases
-- `sort`, `limit`
-`validate_plan` tracks the evolving column set step-by-step, so it catches a step that references a column an earlier step dropped. Whitelisted ops only - no arbitrary code execution.
+3. **Compiler and Validator** (`compiler/core.py::compile_logical`, deterministic, no LLM)
+   Lowers IR-1 into an ordered pandas step-plan (`group_aggregate`, `filter`, `derive`, `sort`, `limit`, `select`), resolving concept/metric/entity/dimension names against the registry and validating every column reference. On a compile or validation error, one repair attempt re-runs the Logical Planner with the exact error text as feedback before giving up.
+
+4. **Data Executor** (`agents/plan_executor.py::execute_plan`, pure pandas, no LLM)
+   Runs the step-plan against the full DataFrame. Priority-action queries bypass the compiler and go straight to `agents/data_executor.py::execute_priority_mode` (the seven-tier business priority framework). Both paths finish by computing `result_kpis` and `result_rankings`.
+
+5. **Insight Generator** (`agents/insight_generator.py::generate_insights`, Gemini)
+   Reads `result_kpis` plus `result_rankings` plus `insight_focus`, writes four to five bullet-point domain-aware observations.
+
+Only two Gemini calls happen per query: the Logical Planner and the Insight Generator (plus, rarely, one repair call to the Logical Planner if compilation fails the first time).
 
 ### How they coordinate
 
-- **State passing**: every node receives the full `QueryState` and returns `{**state, ...new_fields}`; state accumulates rather than being threaded as args. By the end, `QueryState` holds the full record of the query.
-- **Graph shape**: linear with branch-outs and error short-circuits:
+- **State passing**: every node receives the full `QueryState` and returns `{**state, ...new_fields}`. State accumulates rather than being threaded as separate function arguments.
+- **Graph shape**:
   ```
-  START → expert ─┬─► clarify → END                              (ambiguous: ask, don't guess)
-                  ├─► error → END
-                  └─► critic → parse → validate → execute → analyze → END
-                                  ↘        ↘          ↘
-                                   error → error →  error → END
+  START -> planner -> view -> compile -> execute -> analyze -> END
+                  \      \        \         \
+                clarify  compile  error     error
+                   |        |
+                  END      error -> END
   ```
-  `_route_expert` sends ambiguous queries to `clarify`, errors to `error`, else to `critic` (which is a pass-through unless `plan_mode`). `_route_parse`/`_route_validate`/`_route_execute` short-circuit to `error` on `state["error"]`.
-- **LLM call count**: a simple query = 3 Gemini calls (expert, parse, analyze). A `plan_mode` query = 4 (adds the critic), +1 if the validator triggers a repair. An ambiguous query = 1 (expert only) until the user answers, then a fresh run. There is no function-calling/agentic tool loop; "routing" is the error/clarify branching plus `if/elif` inside `execute_node`.
-- **Progress UI**: a `threading.local()`-based callback (`_announce`, driven by `_STEP_LABELS`) fires at each node so `app.py` can show live step labels via `st.status()`; thread-safe per Streamlit session.
-- **Tracing**: every Gemini call is wrapped in `@traceable` (LangSmith); a `run_id` per query is returned to the UI for thumbs up/down feedback.
+  `_route_planner` sends priority-action queries straight to execute (bypassing compile), sends a matched view to `view`, sends an ambiguous query to `clarify`, and sends everything else to `compile`. `_route_view` sends a successfully served view to `analyze`, and any view failure back to `compile` (the fallthrough). `_route_compile` and `_route_execute` short-circuit to an `error` node on any set `state["error"]`.
+- **Vocabulary, not logic, in the LLM**: `registry/ontology.py` defines `CONCEPTS` (named filter predicates, for example `no_collection`, `easy_settlement`), `METRICS` (named aggregations, including the `count_ratio` kind used for `strike_pct` and `hard_bucket_pct`), `ENTITY_CONCEPTS` (per-entity rollup predicates, for example `fleet_operator`), and `PRIORITY_RULES` (the seven-tier framework). `registry/semantic_model.py` defines `ENTITIES` (grain: loan, customer, executive, branch, region) and `DIMENSIONS` (group-by aliases). `registry/views.py` defines `VIEWS`, the fast-path catalog described above. The Logical Planner picks names from these four vocabularies; it never invents pandas code.
+- **Progress UI**: a `threading.local()`-based callback (`_announce`, driven by `_STEP_LABELS`) fires at the start of each node so `app.py` can show live step labels via `st.status()`, thread-safe per Streamlit session.
+- **Tracing**: every Gemini call is wrapped in `@traceable` (LangSmith), a `run_id` is generated per query and returned to the UI for thumbs up and thumbs down feedback.
+- **Guardrails**: `agents/logical_planner.py` enforces a query-length cap (`MAX_QUERY_CHARS`), returns a structured out-of-scope response for gibberish or off-topic input instead of calling Gemini, and resists prompt injection via an explicit prompt instruction. `agents/plan_executor.py` blocks dunder/sandbox-escape patterns in `derive` expressions at both compile time (`validate_plan`) and execute time (`_op_derive`), as two independent layers.
+- **Person-name filters** (`MNT NAME`, `Cust Name`, `Guar Name`): the planner is instructed to use `contains` (case-insensitive substring), never `==`. These are free text typed once at loan origination, not a controlled vocabulary like `RegionName`/`Unit`, so an exact match silently returns zero rows for a real person whose name in the data has any spelling/spacing variance from how the user types it. `agents/data_executor.py::_apply_condition` raises (rather than silently returning the full unfiltered table) if `contains` or any other op is ever misapplied to a numeric/date column, since nothing scopes the op to a column type beyond the prompt's own naming guidance.
 
-A second, independent LangGraph pipeline (`report_agent/graph.py`) follows the same state-passing pattern for the monthly HTML report: Portfolio Analyzer → Risk Narrator → Report Builder → Email Dispatcher.
+A second, independent LangGraph pipeline (`report_agent/graph.py`) follows the same node-and-state-passing pattern for the monthly HTML report: Portfolio Analyzer -> Risk Narrator -> Report Builder -> Email Dispatcher.
+
+### Files that look related but are not on the live path
+
+`agents/domain_expert.py`'s `enrich_query`/`SYSTEM_PROMPT` (the old single-call architecture) is dead code, superseded by `agents/logical_planner.py`. The module's `PRIORITY_RULES` re-export, `build_snapshot_context`, and `_build_priority_text` are still live and imported by `agents/logical_planner.py` and `agents/data_executor.py`.
+
+`agents/query_parser.py`, `agents/plan_critic.py`, and roughly half of `agents/data_executor.py` (`execute_filters`, `execute_aggregation`, `validate_aggregation_spec`, `validate_filter_spec`) were from an earlier architecture iteration, fully unreferenced by `graph.py` or any other live module, and kept alive only by older test files. All were deleted along with their dedicated tests; the scenarios they covered (`colending_at_risk` concept expansion, `HAVING` clause handling, an amount-reduction ranking) are independently covered live in `tests/test_compiler.py`, `tests/test_nested.py`, and `tests/test_temporal.py`.
+
+---
+
+## Report Layer (`report_agent/`)
+
+Same 4-node LangGraph shape as CLAUDE.md's AI Query section above (Portfolio Analyzer -> Risk Narrator -> Report Builder -> Email Dispatcher), but the Portfolio Analyzer node now fans out into **18 independently toggleable sections**, each a thin `report_agent/sections/<name>.py` wrapper around an `analysis/` function (so a report number and a dashboard number are computed by the literal same code, not just "kept in sync"). `report_agent/nodes/portfolio_analyzer.py`'s `_SECTION_FN` dict, `report_agent/graph.py`'s `ALL_SECTIONS` list, `report_agent/nodes/report_builder.py`'s `SECTION_ORDER`/`_RENDERERS` dicts, and `ui/tabs/report.py`'s checkboxes must all agree on the same section-name set, four separate registration points for one addition, it's easy to add a section and forget one of the four.
+
+**Layout is verdict-first**: the Gemini executive narrative and prioritized action plan render immediately after the header, before any KPI or table, so a lead gets the TL;DR before scrolling into supporting detail. `report_agent/charts.py::fig_to_base64` renders three of the sections' Plotly figures to embedded base64 PNG (bucket waterfall, concentration treemap, branch quadrant scatter) via `kaleido`, so the report stays a single self-contained HTML file with no external image hosting.
+
+The 18 sections, in render order:
+
+| Section | What it shows |
+|---|---|
+| `portfolio_health` | Headline KPI cards (Month Demand, Collection %, Strike %, NPA %, Hard Bucket %, SOH, LCC%, CMD %) with MoM deltas |
+| `verdict` | Pandas-computed good/bad synthesis (`analysis/portfolio_intelligence.py::compute_good_bad`) — works even with AI narrative skipped |
+| `risk_flags` | Top 3 active smart alerts by severity |
+| `risk_indicators` | Early-warning signal table (SMA-1/SMA-2 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk) |
+| `bucket_migration` | Roll-rate matrix + embedded bucket-distribution waterfall chart |
+| `npa_sma2_movement` | This-month-vs-last-month NPA/SMA-2 counts, deltas, %change — portfolio total, then by region, then top-mover tables by branch and by executive |
+| `branch_quadrant` | Embedded Collection% vs NPA% scatter (bubble = SOH) + top-5 highest-concern branches as a text fallback |
+| `concentration` | Embedded region→branch treemap (size = SOH, color = NPA%) |
+| `region_scorecard` | Per-region NPA%/Collection%/Hard Bucket%/SOH with MoM status |
+| `product_analysis` | Segment-wise NPA breakdown (fuel type/source/vintage cohort intentionally excluded from the report) |
+| `top_accounts` | Largest single exposures among delinquent (non-STD) accounts by SOH |
+| `fleet_exposure` | Customers with 3+ loans (report-layer-only Region/Branch lookup, since the underlying analysis function groups by mobile number alone) |
+| `repossession` | SMA-2/NPA accounts on loans still within the repossession collateral-value window |
+| `good_customers` | Refinance/retention targets (tenure ≥70% completed, LCC% ≥100%) — always renders, with an explicit "no accounts meet criteria" message when empty rather than silently vanishing |
+| `branch_performance` | Branch league table, top 5 / bottom 5 by Collection % |
+| `executive_recovery` | Rescued-vs-slipped leaderboard (`analysis/portfolio_intelligence.py::compute_executive_recovery`) — a behavior signal distinct from plain Collection % |
+| `executive_rankings` | Field executive league table, ranked by Collection % |
+| `executive_strike_rankings` | Same executive pool, re-ranked by Strike % via `rank_by_metric` — independent section, doesn't replace the Collection%-ranked one |
+
+**HTML escaping**: every renderer in `report_agent/nodes/report_builder.py` passes raw data (customer/executive/branch/region names, vehicle descriptions, the Gemini narrative/action-plan text) through `_esc()` (`html.escape`) before interpolating into an f-string. Manually-entered LCC fields can contain `&`/`<`/`>`; unescaped, those break the surrounding table markup, and the report is also offered as a raw `.html` download/email attachment, not just rendered inside an email client's sandboxed viewer.
 
 ---
 
 ## Architecture Diagrams
 
-These mirror the diagrams in `README.md`; kept here too so an AI assistant has the visual system layout alongside the prose description above.
+These mirror the diagrams in `README.md`, kept here too so an AI assistant has the visual system layout alongside the prose description above.
 
 ### Query Pipeline
 
 ```mermaid
 flowchart TD
-    User(["Plain English Query\ne.g. customers per branch with >3 loans"])
+    User(["Plain English Query\ne.g. rank executives by MAT/RUN ratio"])
 
-    User --> DE
+    User --> LP
 
-    subgraph QP ["  Query Pipeline  (LangGraph)  "]
+    subgraph QP ["  AI Query Pipeline  (LangGraph)  "]
         direction TB
-        DE["Domain Expert Agent\nGemini 2.5 Flash-Lite\n\nNBFC terminology · Maps intent to columns\nRoutes: priority / aggregation / plan mode\nAsks to clarify when materially ambiguous\nInjects today's date + snapshot dates"]
-        CL["Clarify\n\nAmbiguous query → return a question +\n3-5 options to the UI; user picks, re-runs"]
-        CR["Plan Critic Agent\nGemini 2.5 Flash-Lite (plan mode only)\n\nRe-reads the plan vs the question\nCatches dropped conditions / incoherent steps"]
-        PP["Query Parser Agent\nGemini 2.5 Flash-Lite\n\nTranslates enriched query into a filter spec\nconditions · display columns · sort"]
-        VAL2["Validator\nPandas + 1 LLM repair\n\nChecks spec/plan against ACTUAL columns\nRepairs hallucinated columns, else clear error"]
-        EX["Data Executor\nPandas\n\nStep-plan engine · Aggregation · Priority · Filters\nComputes KPIs and rankings"]
-        IG["Insight Generator Agent\nGemini 2.5 Flash-Lite\n\nReads computed KPIs / rankings / rows\nGenerates domain-aware observations"]
-        DE -->|ambiguous| CL
-        DE -->|else| CR
-        CR --> PP --> VAL2 --> EX --> IG
+        LP["Logical Planner Agent\nGemini 2.5 Flash-Lite\n\nReads the registry vocabulary (concepts, metrics,\nentities, dimensions, views)\nEmits IR-1: a declarative intent plus filters plus\nmeasures plus dimensions, never raw execution code\nRoutes: priority mode, view match, or clarification"]
+        VW["Fast-Path View\nPandas, no LLM\n\nServes a pre-computed analysis/ view when matched\nFalls through to the compiler on any failure"]
+        CV["Compiler and Validator\nDeterministic, no LLM\n\nLowers IR-1 into an ordered pandas step-plan\nOne repair attempt on a compile or validation error"]
+        EX["Data Executor\nPandas\n\nRuns the step-plan or the priority framework\nComputes KPIs and rankings"]
+        IG["Insight Generator Agent\nGemini 2.5 Flash-Lite\n\nReads computed KPIs and rankings\nGenerates domain-aware observations"]
+        LP -->|view matched| VW --> IG
+        LP -->|else| CV --> EX --> IG
+        VW -.fallthrough on failure.-> CV
     end
 
-    CL --> RQ["Clarifying question\n(user answers, query re-runs)"]
     IG --> R1["Loan Table\nFiltered customer records"]
-    IG --> R2["Ranked / Aggregated Table\nOne row per group, incl. nested plans"]
+    IG --> R2["Ranked or Aggregated Table\nOne row per executive, branch, or region"]
     IG --> R3["Single Stat\nDirect answer with supporting context"]
 ```
 
@@ -122,10 +157,10 @@ flowchart TD
 
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
-        PA["Portfolio Analyzer\nPandas\n\nComputes all five report sections in parallel\nHealth snapshot · Risk flags · Bucket migration\nBranch performance · Executive rankings"]
-        RN["Risk Narrator\nGemini 2.5 Flash\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
-        RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
-        ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
+        PA["Portfolio Analyzer\nPandas\n\nComputes up to 18 toggleable report sections\nHealth, verdict, risk signals, bucket/NPA movement,\ncharts, region/segment breakdowns, account lists,\nbranch and executive leaderboards"]
+        RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites a six to eight bullet-point executive narrative\nGenerates five prioritized action items with owner and timeline"]
+        RB["Report Builder\nPython\n\nAssembles a fully self-contained HTML report\nTable-based layout, email-safe, no external CSS"]
+        ED["Email Dispatcher\nSMTP\n\nSends the report as body and attachment\nFires only if SMTP is configured in .env"]
         PA --> RN --> RB --> ED
     end
 
@@ -139,13 +174,13 @@ Both pipelines operate on the same in-memory DataFrame loaded from the Excel upl
 
 ```mermaid
 flowchart LR
-    XL["LCC Excel File\n.xlsx / .xls / .xlsb\nSingle or multiple regional files"] --> VAL["Validation\nSchema check · Column normalisation\nMulti-sheet detection · Date parsing"]
-    VAL --> BK["Bucketing\nDPD bucket assignment\nSTD · 1-30 · SMA-1 · SMA-2 · NPA\nSOH = POS + Closing Arrears"]
-    BK --> KPI["KPI Computation\nCollection % · SOH · Arrears · MoM delta"]
+    XL["LCC Excel File\n.xlsx, .xls, .xlsb\nSingle or multiple regional files"] --> VAL["Validation\nSchema check, column normalisation,\nmulti-sheet detection, date parsing"]
+    VAL --> BK["Bucketing\nDPD bucket assignment\nSTD, 1-30, SMA-1, SMA-2, NPA\nSOH = POS + Closing Arrears"]
+    BK --> KPI["KPI Computation\nCollection %, SOH, Arrears, MoM delta"]
     KPI --> DF[("In-Memory\nDataFrame")]
-    DF --> QP2["Query Pipeline"]
+    DF --> QP2["AI Query Pipeline"]
     DF --> RP2["Report Pipeline"]
-    DF --> DB["Dashboard\nKPIs · Charts · Alerts · Scorecard"]
+    DF --> DB["Dashboard\nKPIs, Charts, Alerts, Scorecard"]
 ```
 
 ---
@@ -155,72 +190,43 @@ flowchart LR
 `GEMINI_MODEL = "gemini-2.5-flash-lite"`, defined once in `config.py`.
 
 **Why Flash-Lite, not Pro:**
-- **Cost multiplies per query**: a simple query triggers 3 sequential Gemini calls (Domain Expert, Query Parser, Insight Generator); a `plan_mode` query adds the Plan Critic (4), plus one more if the Validator repairs. At Pro pricing that multiplies several-fold on every question. The Critic is therefore gated to `plan_mode` only - simple queries never pay for it.
-- **Latency compounds**: the calls run sequentially, so total latency is additive. Flash-Lite keeps a full query in the few-second range; Pro's higher per-call latency would push a single query toward 10s+ before pandas even runs.
-- **Task complexity matches Flash-Lite's strengths**: the LLM steps are domain-context injection (expert), structured JSON extraction against a fixed schema (parser/plan), self-review against an explicit checklist (critic), and templated bullet-writing from pre-computed numbers (insight). None need deep open-ended reasoning; correctness is enforced by the deterministic validator + executor, not by model depth.
-- **Multi-user dashboard**: as a shared Streamlit deployment, every concurrent user's query is several calls. Flash-Lite's lower cost and higher throughput matter more here than at single-user scale.
+- **Cost multiplies per query**: a single AI Query call triggers up to 2 sequential Gemini calls (Logical Planner, Insight Generator), plus an occasional third repair call. At Pro pricing that is several times the cost of Flash-Lite, every time a user types a question.
+- **Latency compounds**: calls run sequentially, so total latency is additive. Flash-Lite keeps a full query in the few-second range; Pro's higher per-call latency would push a single query well past that before pandas even runs.
+- **Task complexity matches Flash-Lite's strengths**: neither Gemini step needs deep multi-step reasoning. The Logical Planner does structured extraction against a fixed, registry-driven schema; the Insight Generator does templated bullet-point writing from pre-computed KPIs. Pro's extra reasoning depth would not materially improve either output.
+- **Multi-user dashboard**: as a shared Streamlit deployment, every concurrent user's query is 2 or 3 calls. Flash-Lite's lower cost and higher throughput matter more here than at single-user scale.
 
 ---
 
-## Example: Input → Agent Flow → Output
+## Example: Input to Agent Flow to Output
 
 **Input** (AI Query tab): `"Show me co-lending accounts at risk in Pune"`
 
-**1. Domain Expert** recognizes "co-lending at risk" as a known NBFC pattern and "Pune" as a region:
+**1. Logical Planner** recognizes "co-lending at risk" as a registered `CONCEPTS` entry and "Pune" as a region filter, and finds no matching `VIEWS` entry (this is a novel ad-hoc filter, not a pre-built view):
 ```json
 {
-  "enriched_query": "Find accounts with CoLending_Loans = Y and Arrears/EMI > 0, filtered to RegionName = PUNE; partner-bank co-lending accounts showing delinquency, highest SLA-breach priority.",
+  "intent": "loan_table",
+  "description": "Co-lending accounts in Pune showing delinquency, sorted by exposure",
+  "filters": [
+    {"concept": "colending_at_risk"},
+    {"column": "RegionName", "op": "==", "value": "PUNE"}
+  ],
+  "dimensions": [],
+  "measures": [],
+  "view": null,
   "query_category": "risk",
-  "priority_mode": false,
-  "aggregation_mode": false,
-  "insight_focus": "co-lending delinquency risk",
+  "query_title": "Co-lending Risk in Pune",
   "risk_flag": "critical"
 }
 ```
 
-**2. Query Parser** converts that into a filter spec:
-```json
-{
-  "conditions": [
-    {"column": "CoLending_Loans", "op": "==", "value": "Y"},
-    {"column": "Arrears / EMI", "op": ">", "value": 0},
-    {"column": "RegionName", "op": "==", "value": "PUNE"}
-  ],
-  "display_columns": ["Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit", "ARREARS AGAINST INST", "ARREARS AGAINST EXP", "Arrears / EMI", "SOH"],
-  "sort_by": "SOH",
-  "sort_asc": false,
-  "plain_english": "Co-lending accounts in Pune showing delinquency, sorted by exposure"
-}
-```
+**2. Compiler and Validator** lowers this into a step-plan (a `filter` step expanding the `colending_at_risk` concept into its underlying column conditions, plus the region filter), validated against the DataFrame's actual columns.
 
-**3. Data Executor**: both routing flags are `false`, so `execute_filters()` applies the 3 conditions to `df_curr` (e.g. 42 matching loans), then computes KPIs (total SOH at risk, count by branch/executive).
+**3. Data Executor** runs the step-plan against `df_curr` (for example 42 matching loans), then computes KPIs (total SOH at risk, count by branch and executive) and contextual rankings.
 
 **4. Insight Generator** writes bullets such as:
-- "42 co-lending accounts in Pune are currently delinquent, representing ₹X Cr in SOH exposure."
-- "Branch X accounts for the largest share; prioritize field visits here this week."
+- "42 co-lending accounts in Pune are currently delinquent, representing roughly X Cr in SOH exposure."
+- "Branch X accounts for the largest share, prioritize field visits here this week."
 
-**Output** (`ui/tabs/ai_query.py`): KPI summary row + the 42-row filtered table (sorted by SOH) + the AI bullet observations + an Excel download button.
-
----
-
-## Example 2: Nested plan (`plan_mode`)
-
-**Input**: `"number of customers each branch has with more than 3 loans"`
-
-A single GROUP BY can't answer this - it needs a per-customer rollup, then a count of those customers per branch. The Domain Expert sets `plan_mode=true` and emits a `plan`:
-
-```json
-[
-  {"op": "group_aggregate", "group_by": ["Unit", "Cust Mob No"],
-   "aggregations": [{"alias": "loan_count", "func": "nunique", "column": "Loan No"}]},
-  {"op": "filter", "conditions": [{"column": "loan_count", "op": ">", "value": 3}]},
-  {"op": "group_aggregate", "group_by": ["Unit"],
-   "aggregations": [{"alias": "customer_count", "func": "nunique", "column": "Cust Mob No"}]},
-  {"op": "sort", "by": "customer_count", "ascending": false}
-]
-```
-
-The **Plan Critic** checks it captures the full intent and that no step uses a dropped column; the **Validator** confirms every column exists; `execute_plan` runs the steps in order. Output: one row per branch with `customer_count`. The same engine handles deeper questions - e.g. "fleet owners (3+ loans) per branch who have 1 or more unpaid loans, with their unpaid count, by SOH" uses a conditional aggregation (`where`) + `derive` across five steps.
+**Output** (`ui/tabs/ai_query.py`): KPI summary row, the 42-row filtered table sorted by SOH, the AI bullet observations, and an Excel download button.
 
 ---
-
