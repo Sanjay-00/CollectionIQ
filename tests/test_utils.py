@@ -88,6 +88,21 @@ class TestLoadAndValidateSerialDates:
         assert pd.isna(result_df["Last Receipt Date"].iloc[1])
         assert pd.notna(result_df["Last Receipt Date"].iloc[0])
 
+    def test_mnt_name_normalized_case_and_whitespace_at_load(self):
+        # MNT NAME is manually retyped each month (not a controlled vocabulary), so
+        # normalize once here rather than in every downstream consumer that groups by it.
+        buf = _build_upload({"MNT NAME": ["Sunil Waghmare", " SUNIL WAGHMARE ", "Raj"]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df["MNT NAME"].iloc[0] == "SUNIL WAGHMARE"
+        assert result_df["MNT NAME"].iloc[1] == "SUNIL WAGHMARE"
+
+    def test_mnt_name_blank_stays_null_not_literal_nan_string(self):
+        buf = _build_upload({"MNT NAME": ["Raj", None, "Sam"]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert pd.isna(result_df["MNT NAME"].iloc[1])
+
 
 class TestAssignBuckets:
     """Bucket assignment is the foundation - every downstream calculation depends on it."""
@@ -348,7 +363,14 @@ class TestIsYes:
     def test_matches_y_case_and_whitespace_insensitive(self):
         df = pd.DataFrame({"flag": [" y", "Y", "n", "N", "yes", None]})
         result = is_yes(df, "flag")
-        assert result.tolist() == [True, True, False, False, False, False]
+        assert result.tolist() == [True, True, False, False, True, False]
+
+    def test_matches_yes_spelled_out_full_word(self):
+        # Some monthly extracts spell the flag as "Yes"/"No" instead of "Y"/"N"
+        # (e.g. Non Starter column) -- both spellings must count as true.
+        df = pd.DataFrame({"flag": ["Yes", "YES", " yes ", "No", "NO"]})
+        result = is_yes(df, "flag")
+        assert result.tolist() == [True, True, True, False, False]
 
     def test_missing_column_returns_all_false_aligned_to_df(self):
         df = pd.DataFrame({"other": [1, 2, 3]})

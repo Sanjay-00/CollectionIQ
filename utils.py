@@ -288,6 +288,13 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     df["Strike"] = df["Strike"].astype(str).str.strip().str.upper()
     if "Unit" in df.columns:
         df["Unit"] = df["Unit"].astype(str).str.strip().str.upper()
+    if "MNT NAME" in df.columns:
+        # Manually retyped each month, so the same executive shows up as "Sunil Waghmare" one
+        # month and "SUNIL WAGHMARE " the next -- normalize once here rather than in every
+        # consumer that groups by this column. astype(str).notna() mask keeps real blanks as
+        # NaN instead of turning them into the literal string "NAN".
+        mask = df["MNT NAME"].notna()
+        df.loc[mask, "MNT NAME"] = df.loc[mask, "MNT NAME"].astype(str).str.strip().str.upper()
 
     # Mobile numbers: if even one row is blank, Excel/pandas silently upgrades the
     # whole column to float64, so every number renders as "9876543210.0" (or worse,
@@ -357,10 +364,15 @@ def clean_mobile(series: pd.Series) -> pd.Series:
 
 
 def is_yes(df: pd.DataFrame, col: str) -> pd.Series:
-    """Boolean mask for a Y/N flag column, index-aligned to `df` (False when `col` is absent)."""
+    """Boolean mask for a Y/N flag column, index-aligned to `df` (False when `col` is absent).
+
+    Some monthly LCC extracts spell the flag out as "Yes" instead of "Y" (seen in
+    Non Starter/Strike columns), so both spellings count as true.
+    """
     if col not in df.columns:
         return pd.Series(False, index=df.index)
-    return df[col].astype(str).str.strip().str.upper() == "Y"
+    normalized = df[col].astype(str).str.strip().str.upper()
+    return normalized.isin(["Y", "YES"])
 
 
 def compute_strike_pct(df: pd.DataFrame) -> float:
