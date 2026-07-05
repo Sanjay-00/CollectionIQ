@@ -1,3 +1,5 @@
+import logging
+
 from report_agent.state import ReportState
 from report_agent.sections import (
     portfolio_health,
@@ -41,6 +43,8 @@ _SECTION_FN = {
     "executive_strike_rankings": lambda c, p: executive_strike_rankings.compute_executive_strike_rankings(c, p),
 }
 
+logger = logging.getLogger(__name__)
+
 
 def portfolio_analyzer_node(state: ReportState) -> ReportState:
     df_curr = state["df_curr"]
@@ -57,6 +61,7 @@ def portfolio_analyzer_node(state: ReportState) -> ReportState:
             if result is not None:
                 section_data[name] = result
         except Exception as e:
+            logger.warning("Report section '%s' failed to compute: %s", name, e)
             section_data[f"{name}_error"] = str(e)
 
     return {**state, "section_data": section_data, "error": ""}

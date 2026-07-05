@@ -4,7 +4,10 @@ Email-safe: all multi-column layouts use <table> instead of CSS grid/flex.
 """
 import datetime
 import html
+import logging
 from report_agent.state import ReportState
+
+logger = logging.getLogger(__name__)
 
 YELLOW = "#FFC000"
 DARK   = "#0d1117"
@@ -1058,8 +1061,8 @@ def report_builder_node(state: ReportState) -> ReportState:
                 body_parts.append(_render_portfolio_health(sd[name], curr_month, prev_month))
             else:
                 body_parts.append(_RENDERERS[name](sd[name]))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Report section '%s' failed to render: %s", name, e)
 
     body_html = "\n".join(body_parts)
     prev_label = f" &nbsp;&bull;&nbsp; vs {prev_month}" if prev_month else ""
