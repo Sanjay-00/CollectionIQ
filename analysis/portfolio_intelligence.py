@@ -298,7 +298,7 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
     """
     has_prev = len(df_prev) > 0
 
-    def _dim_rows(df_c, df_p, col, extra_cols: list[tuple[str, str]] | None = None, prefix_fallback: bool = False):
+    def _dim_rows(df_c, df_p, col, extra_cols: list[tuple[str, str]] | None = None, prefix_fallback: bool = False, precomputed_curr: dict | None = None):
         """extra_cols: [(source_column, output_label), ...] context columns pulled from the group's first row.
 
         prefix_fallback: for free-text columns like MNT NAME (manually retyped each month, not a
@@ -307,6 +307,16 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
         month vs "...DNYANESHWAR FA" last month). When the exact normalized name has no match,
         fall back to a prefix relationship -- but only when exactly one previous-period name is a
         prefix-match candidate, so two different people with similar names never get merged.
+
+        precomputed_curr: {name: {"npa", "sma2"}} -- when given (the "Unit"/branch call site),
+        skip recomputing the current-period NPA/SMA-2 counts inline and use these instead. They
+        come from _branch_aggregates, which already did this exact groupby+count pass for
+        compute_branch_quadrant -- avoids a second, independent full df_curr.groupby("Unit")
+        pass over the same rows for the same numbers. Deliberately does NOT cover Roll Fwd%/Bwd%
+        -- _branch_aggregates coerces a None roll rate (no prev_bucket data) to 0.0, but this
+        function's own _roll_rates(grp) call below preserves None, and that distinction must
+        not change here. Prev-period matching (this function's actual unique logic) is
+        untouched either way.
         """
         if col not in df_c.columns:
             return []
@@ -340,8 +350,14 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
             n = account_count(grp)
             if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
                 continue
-            npa_c  = int((grp["curr_bucket"] == "NPA").sum())  if "curr_bucket" in grp.columns else 0
-            sma2_c = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
+            if precomputed_curr is not None:
+                pc = precomputed_curr.get(name)
+                if pc is None:
+                    continue
+                npa_c, sma2_c = pc["npa"], pc["sma2"]
+            else:
+                npa_c  = int((grp["curr_bucket"] == "NPA").sum())  if "curr_bucket" in grp.columns else 0
+                sma2_c = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
             prev   = _lookup(_key(grp_key))
             npa_p  = prev.get("npa")
             sma2_p = prev.get("sma2")
@@ -469,7 +485,12 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
     if rows:
         result["region"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
 
-    rows = _dim_rows(df_curr, df_prev, "Unit", extra_cols=[("RegionName", "Region")])
+    _branch_agg = _branch_aggregates(df_curr)
+    _branch_curr = (
+        {r["Branch"]: {"npa": r["NPA"], "sma2": r["SMA-2"]} for r in _branch_agg.to_dict("records")}
+        if not _branch_agg.empty else {}
+    )
+    rows = _dim_rows(df_curr, df_prev, "Unit", extra_cols=[("RegionName", "Region")], precomputed_curr=_branch_curr)
     if rows:
         result["branch"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
 
@@ -483,35 +504,64 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
 
 # ── Section 2: Branch Quadrant ────────────────────────────────────────────────
 
-def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Figure]:
-    """Branch scatter (Collection% vs NPA%, bubble=SOH) + concern score table."""
+def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
+    """One row per branch (Unit): current-period-only stats shared by
+    compute_branch_quadrant and compute_npa_sma2_comparison's branch pass,
+    which previously each ran their own independent `df_curr.groupby("Unit")`
+    Python loop recomputing the same NPA/SMA-2 counts, Collection%, and roll
+    rates. Deliberately CURRENT-period only (no df_prev, no name-matching) --
+    compute_npa_sma2_comparison's prev-period fuzzy name-matching logic is
+    unique to that function and stays there unchanged; this helper only
+    replaces the parts with zero cross-function behavioral risk (plain counts
+    and percentages, no reimplementation of a shared correctness-critical
+    function like compute_strike_pct).
+
+    Columns: Branch, Region, Accounts, NPA, NPA%, SMA-2, SMA-2%, Collection%,
+    Hard Bucket%, SOH (Cr), Roll Fwd%, Roll Bwd%, Chronic (3M+).
+    Rows below MIN_ACCOUNTS_DIMENSION_BREAKDOWN are excluded (both consumers
+    already applied this exact same threshold independently).
+    """
     if "Unit" not in df_curr.columns or df_curr.empty:
-        return pd.DataFrame(), go.Figure()
+        return pd.DataFrame()
 
     rows = []
     for branch, grp in df_curr.groupby("Unit"):
         n = account_count(grp)
         if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
             continue
-        roll_fwd, _ = _roll_rates(grp)
+        roll_fwd, roll_bwd = _roll_rates(grp)
         chronic = int(is_yes(grp, "No Coll 3 Months and >6 EMI").sum())
+        npa_n  = int((grp["curr_bucket"] == "NPA").sum())   if "curr_bucket" in grp.columns else 0
         sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
+        region = str(grp["RegionName"].iloc[0]) if "RegionName" in grp.columns and len(grp) else None
         rows.append({
             "Branch": str(branch),
+            "Region": region,
             "Accounts": n,
-            "Collection%": _coll_pct(grp),
+            "NPA": npa_n,
+            "NPA%": _safe_div(npa_n, n),
+            "SMA-2": sma2_n,
             "SMA-2%": _safe_div(sma2_n, n),
-            "NPA%": _npa_pct(grp),
+            "Collection%": _coll_pct(grp),
             "Hard Bucket%": compute_hard_bucket_pct(grp),
             "SOH (Cr)": _soh_cr(grp),
             "Roll Fwd%": roll_fwd if roll_fwd is not None else 0.0,
+            "Roll Bwd%": roll_bwd if roll_bwd is not None else 0.0,
             "Chronic (3M+)": chronic,
         })
+    return pd.DataFrame(rows)
 
-    if not rows:
+
+def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Figure]:
+    """Branch scatter (Collection% vs NPA%, bubble=SOH) + concern score table."""
+    agg = _branch_aggregates(df_curr)
+    if agg.empty:
         return pd.DataFrame(), go.Figure()
 
-    df = pd.DataFrame(rows)
+    # NPA% here uses the SAME per-branch NPA-count/account-count ratio as
+    # _branch_aggregates -- confirmed identical to the original inline
+    # _npa_pct(grp) call (both are npa_count/n*100, _safe_div rounds the same way).
+    df = agg[["Branch", "Accounts", "Collection%", "SMA-2%", "NPA%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)"]].copy()
     for col, w in CONCERN_SCORE_WEIGHTS.items():
         df[f"_r_{col}"] = df[col].rank(ascending=True, pct=True) * w
     df["Concern Score"] = df[[c for c in df.columns if c.startswith("_r_")]].sum(axis=1).mul(100).round(0).astype(int)
