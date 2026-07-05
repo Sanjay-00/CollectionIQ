@@ -13,14 +13,20 @@ def _filter_options(df: pd.DataFrame, col: str) -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
-def _cached_filtered_roll_rate(df_curr_f: pd.DataFrame, df_prev_f: pd.DataFrame):
+def _cached_filtered_roll_rate(_df_curr_f: pd.DataFrame, _df_prev_f: pd.DataFrame, data_version: int, drilldown_key: str):
     """Same cached-recompute pattern app.py's own `_cached_roll_rate` uses for
     the unfiltered case -- without this, a drill-down filter recomputes the
     full roll-rate matrix (a set-build + merge over every matched account) on
     EVERY Streamlit rerun, including reruns triggered by unrelated widgets
-    elsewhere on the page, not just when the filter selection actually changes."""
+    elsewhere on the page, not just when the filter selection actually changes.
+
+    _df_curr_f/_df_prev_f are underscore-prefixed (never hashed by Streamlit --
+    hashing the full sliced DataFrame every rerun was the actual cost this
+    cache was meant to avoid); data_version + drilldown_key (which already
+    captures both the sidebar's filter selection AND this tab's own local
+    Region/Branch/Executive drill-down) are the cheap, explicit stand-ins."""
     from analysis.roll_rate import compute_roll_rate_matrix
-    return compute_roll_rate_matrix(df_curr_f, df_prev_f)
+    return compute_roll_rate_matrix(_df_curr_f, _df_prev_f)
 
 
 def _bucket_summary_table_html(df: pd.DataFrame) -> str:
@@ -62,6 +68,8 @@ def render_migration_tab(
     df_prev: pd.DataFrame,
     rr_matrix,
     rr_meta: dict | None,
+    data_version: int = 0,
+    sidebar_filter_key: str = "",
 ) -> None:
     if rr_meta is None:
         _empty_state(
@@ -118,7 +126,11 @@ def render_migration_tab(
         if len(df_curr_f) == 0:
             st.warning("No accounts match this Region / Branch / Executive combination.")
             return
-        rr_matrix, rr_meta = _cached_filtered_roll_rate(df_curr_f, df_prev_f)
+        # Combines the sidebar's own filter selection (already baked into
+        # df_curr's content, but not otherwise visible to this cache key) with
+        # this tab's own local drill-down -- both determine df_curr_f's content.
+        drilldown_key = f"{sidebar_filter_key}|{sel_region}|{sel_branch}|{sel_exec}"
+        rr_matrix, rr_meta = _cached_filtered_roll_rate(df_curr_f, df_prev_f, data_version, drilldown_key)
 
     # ── KPI row ──────────────────────────────────────────────────────────────
     st.markdown('<div class="section-label" style="margin-top:16px;">Roll-Rate Summary</div>', unsafe_allow_html=True)

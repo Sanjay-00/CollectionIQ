@@ -8,6 +8,19 @@ import streamlit as st
 from utils import load_and_validate
 
 
+def _bump_data_version() -> None:
+    """Call exactly once at every point df_curr_raw/df_prev_raw are freshly
+    assigned in session_state (a new "Generate Dashboard" click, the sample-data
+    button, or the deferred prev-file auto-load). Every @st.cache_data-wrapped
+    function downstream keys on this counter instead of hashing the full
+    DataFrame content -- Streamlit's default hasher walking a 50k-row x
+    85-column frame on every rerun (even on a guaranteed cache hit) is the
+    single biggest cost paid on every interaction with this app, not just
+    actual filter changes. Missing a call site here means every downstream
+    cache silently serves stale data with no error -- never skip this."""
+    st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
+
+
 def _style_main_content_selectbox(color: str = "#fff") -> None:
     """Fix near-invisible dark-on-dark text on a main-content (non-sidebar)
     st.selectbox -- ui/styles.py's white-text rule only targets
