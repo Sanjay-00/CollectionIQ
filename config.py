@@ -5,12 +5,6 @@ import os
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-# v2 shadow mode: when enabled, each query ALSO runs the new
-# LLM -> IR-1 -> compiler -> engine path and records a comparison against the
-# legacy result, WITHOUT changing what the user sees. Off by default; enable with
-# COLLECTIONIQ_SHADOW=1 to validate the v2 path against real traffic.
-SHADOW_MODE = os.environ.get("COLLECTIONIQ_SHADOW", "").strip().lower() in ("1", "true", "yes", "on")
-
 # Query outcome logging: every AI Query run appends one line (timestamp, raw query
 # text, outcome classification, matched view/intent, error if any) to a local
 # JSONL file. Purpose: find out what real users ask that the registry vocabulary
@@ -122,3 +116,10 @@ RISK_INDICATOR_STABLE_PP = 0.2
 # indicators (e.g. "+3 accounts") use the count value
 RISK_INDICATOR_MATERIALITY_PP = 0.3
 RISK_INDICATOR_MATERIALITY_COUNT = 1
+
+# Vintage chart (NPA %/SMA-2 % by disbursement cohort): marker color and
+# "Critical"/"Watch" reference-band cutoffs. The label text in
+# build_vintage_chart reads these same constants, so a retuned threshold
+# can't silently go stale in the chart's own annotation.
+VINTAGE_CHART_CRITICAL_PCT = 10
+VINTAGE_CHART_WATCH_PCT = 5

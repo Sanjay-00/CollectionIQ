@@ -26,6 +26,8 @@ from config import (
     RISK_INDICATOR_STABLE_PP,
     RISK_INDICATOR_MATERIALITY_PP,
     RISK_INDICATOR_MATERIALITY_COUNT,
+    VINTAGE_CHART_CRITICAL_PCT,
+    VINTAGE_CHART_WATCH_PCT,
 )
 
 YELLOW = "#FFC000"
@@ -887,8 +889,9 @@ def build_vintage_chart(vintage_df: pd.DataFrame) -> go.Figure:
     npa_vals  = df["NPA%"].tolist()
     sma2_vals = df["SMA-2%"].tolist() if "SMA-2%" in df.columns else [0.0] * len(df)
 
-    npa_colors  = _marker_colors(npa_vals,  (10, 5))
-    sma2_colors = _marker_colors(sma2_vals, (10, 5))
+    _thresholds = (VINTAGE_CHART_CRITICAL_PCT, VINTAGE_CHART_WATCH_PCT)
+    npa_colors  = _marker_colors(npa_vals,  _thresholds)
+    sma2_colors = _marker_colors(sma2_vals, _thresholds)
 
     n_points = len(x)
     # Show labels only when not too crowded
@@ -935,15 +938,15 @@ def build_vintage_chart(vintage_df: pd.DataFrame) -> go.Figure:
     ))
 
     # Threshold reference bands
-    fig.add_hrect(y0=10, y1=max(max(npa_vals + sma2_vals) * 1.1, 12),
+    fig.add_hrect(y0=VINTAGE_CHART_CRITICAL_PCT, y1=max(max(npa_vals + sma2_vals) * 1.1, VINTAGE_CHART_CRITICAL_PCT + 2),
                   fillcolor="rgba(153,27,27,0.04)", line_width=0, layer="below")
-    fig.add_hrect(y0=5, y1=10,
+    fig.add_hrect(y0=VINTAGE_CHART_WATCH_PCT, y1=VINTAGE_CHART_CRITICAL_PCT,
                   fillcolor="rgba(217,119,6,0.04)", line_width=0, layer="below")
-    fig.add_hline(y=10, line_dash="dash", line_color="#991b1b", line_width=1,
-                  annotation_text="Critical  10%", annotation_position="right",
+    fig.add_hline(y=VINTAGE_CHART_CRITICAL_PCT, line_dash="dash", line_color="#991b1b", line_width=1,
+                  annotation_text=f"Critical  {VINTAGE_CHART_CRITICAL_PCT}%", annotation_position="right",
                   annotation_font=dict(size=10, color="#991b1b"))
-    fig.add_hline(y=5, line_dash="dash", line_color="#d97706", line_width=1,
-                  annotation_text="Watch  5%", annotation_position="right",
+    fig.add_hline(y=VINTAGE_CHART_WATCH_PCT, line_dash="dash", line_color="#d97706", line_width=1,
+                  annotation_text=f"Watch  {VINTAGE_CHART_WATCH_PCT}%", annotation_position="right",
                   annotation_font=dict(size=10, color="#d97706"))
 
     fig.update_layout(

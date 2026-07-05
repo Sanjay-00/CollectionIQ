@@ -15,7 +15,9 @@ from analysis.portfolio_intelligence import (
     compute_top_accounts,
     compute_repossession_list,
     compute_good_customers,
+    build_vintage_chart,
 )
+import analysis.portfolio_intelligence as pi
 from helpers import make_df
 
 
@@ -644,3 +646,45 @@ class TestComputeGoodCustomers:
         curr = make_df([{"LCC%": 100.0}]).drop(columns=["Loan No"], errors="ignore")
         out = compute_good_customers(make_df([{"LCC%": 100.0}]))
         assert out.empty
+
+
+# ── build_vintage_chart ──────────────────────────────────────────────────────
+# Regression: the "Critical"/"Watch" marker-color and reference-band cutoffs
+# used to be hardcoded (10, 5) directly in this function, duplicating semantics
+# that live nowhere in config.py - contradicting the "every threshold lives in
+# config.py" rule the rest of the analysis layer follows. Now sourced from
+# config.VINTAGE_CHART_CRITICAL_PCT / VINTAGE_CHART_WATCH_PCT.
+
+class TestBuildVintageChartThresholds:
+    def _vintage_df(self):
+        return pd.DataFrame({
+            "Disbursement Month": ["2025-01", "2025-02", "2025-03"],
+            "NPA%":  [3.0, 6.0, 11.0],   # below watch / between / above critical
+            "SMA-2%": [1.0, 2.0, 3.0],
+        })
+
+    def test_empty_df_returns_empty_figure(self):
+        fig = build_vintage_chart(pd.DataFrame())
+        assert fig.data == ()
+
+    def test_marker_colors_follow_config_thresholds(self):
+        fig = build_vintage_chart(self._vintage_df())
+        npa_trace = next(t for t in fig.data if t.name == "NPA %")
+        assert list(npa_trace.marker.color) == ["#16a34a", "#f97316", "#991b1b"]
+
+    def test_marker_colors_follow_a_retuned_threshold(self, monkeypatch):
+        # Tightening the critical threshold to 5 should reclassify the 6.0%
+        # cohort (previously "watch") as critical - proving the chart reads
+        # the live config value rather than a baked-in 10/5.
+        monkeypatch.setattr(pi, "VINTAGE_CHART_CRITICAL_PCT", 5)
+        fig = build_vintage_chart(self._vintage_df())
+        npa_trace = next(t for t in fig.data if t.name == "NPA %")
+        assert list(npa_trace.marker.color) == ["#16a34a", "#991b1b", "#991b1b"]
+
+    def test_annotation_text_reflects_configured_thresholds(self, monkeypatch):
+        monkeypatch.setattr(pi, "VINTAGE_CHART_CRITICAL_PCT", 15)
+        monkeypatch.setattr(pi, "VINTAGE_CHART_WATCH_PCT", 8)
+        fig = build_vintage_chart(self._vintage_df())
+        annotations = [a.text for a in fig.layout.annotations]
+        assert any("15%" in a for a in annotations)
+        assert any("8%" in a for a in annotations)
