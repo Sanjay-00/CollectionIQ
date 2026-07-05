@@ -14,6 +14,7 @@ Prompt structure:
 import os
 import json
 import re
+from functools import lru_cache
 
 from google import genai
 from langsmith import traceable
@@ -29,8 +30,14 @@ from agents.domain_expert import (
 )
 
 
+@lru_cache(maxsize=1)
 def build_catalog() -> str:
-    """Generate the catalog section from the registry (injected whole  -  no RAG)."""
+    """Generate the catalog section from the registry (injected whole  -  no RAG).
+
+    Cached: this is a zero-argument function depending only on registry/ module
+    contents, which are static for the process lifetime -- _build_full_system_prompt
+    rebuilt this from scratch on EVERY query (including a second time on any
+    compile/validate repair retry) despite it never actually varying per-query."""
     lines = [
         "CONCEPTS (use the name in filters; the compiler expands to the full definition):",
     ]
@@ -45,9 +52,12 @@ def build_catalog() -> str:
     return "\n".join(lines)
 
 
+@lru_cache(maxsize=1)
 def build_views_catalog() -> str:
     """Generate the VIEWS catalog section  -  pre-computed analyses to prefer over
-    building filters/dimensions/measures from scratch when one matches exactly."""
+    building filters/dimensions/measures from scratch when one matches exactly.
+
+    Cached -- same rationale as build_catalog() above."""
     lines = ["VIEWS (pre-computed analyses -- try to match one of these FIRST):"]
     for name, v in VIEWS.items():
         lines.append(f"  {name}: {v['description']}")

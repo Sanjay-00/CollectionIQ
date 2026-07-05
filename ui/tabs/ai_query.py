@@ -27,6 +27,23 @@ def _grain_noun(grain: str, plural: bool = True) -> str:
     return plural_noun if plural else singular
 
 
+_AI_CACHE_MAX_ENTRIES = 20
+
+
+def _ai_cache_get(cache: dict, key: tuple):
+    return cache.get(key)
+
+
+def _ai_cache_put(cache: dict, key: tuple, value: dict) -> None:
+    # Plain session-scoped dict, not st.cache_data -- the QueryState result
+    # holds full result DataFrames, so wrapping it in st.cache_data would
+    # reintroduce the exact same full-DataFrame-hashing cost this whole
+    # optimization pass just removed from app.py's cached functions.
+    if len(cache) >= _AI_CACHE_MAX_ENTRIES and key not in cache:
+        cache.pop(next(iter(cache)))  # evict oldest (dict preserves insertion order)
+    cache[key] = value
+
+
 def render_ai_query_tab(
     df_curr: pd.DataFrame,
     snapshot_dates: dict | None = None,
@@ -35,8 +52,20 @@ def render_ai_query_tab(
     alerts_curr: list | None = None,
     alerts_prev: list | None = None,
     rr_meta: dict | None = None,
+    data_version: int = 0,
+    filter_key: str = "",
 ) -> None:
     from graph import run_query
+
+    # Exact-repeat query cache: re-asking an identical question (same text,
+    # same underlying data + filter selection) skips both Gemini calls
+    # entirely instead of re-running the full pipeline from scratch. Keyed on
+    # (query, data_version, filter_key) -- data_version changes whenever the
+    # raw uploaded data changes, filter_key changes whenever the sidebar
+    # filter selection changes (the exact same signal app.py already uses to
+    # invalidate "ai_result" on a filter change) -- together they cover every
+    # way df_curr seen by run_query can change.
+    _ai_cache = st.session_state.setdefault("_ai_query_cache", {})
 
     # ── Example chips (cross-frame JS fill) ──────────────────────────────────
     st.components.v1.html("""
@@ -112,15 +141,26 @@ function fill(text) {
         elif not os.environ.get("GOOGLE_API_KEY"):
             st.error("GOOGLE_API_KEY not found in .env file.")
         else:
-            with st.status("Running AI pipeline...", expanded=True) as _status:
-                def _on_step(label: str) -> None:
-                    _status.write(label)
-                _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step,
-                                       snapshot_dates=snapshot_dates, df_prev=df_prev,
-                                       precomputed_views=precomputed_views,
-                                       alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                       rr_meta=rr_meta)
-                _status.update(label="Query complete", state="complete", expanded=False)
+            _q = ai_query.strip()
+            _cache_key = (_q, data_version, filter_key)
+            _cached = _ai_cache_get(_ai_cache, _cache_key)
+            if _cached is not None:
+                _ai_result = _cached
+            else:
+                with st.status("Running AI pipeline...", expanded=True) as _status:
+                    def _on_step(label: str) -> None:
+                        _status.write(label)
+                    _ai_result = run_query(_q, df_curr, on_step=_on_step,
+                                           snapshot_dates=snapshot_dates, df_prev=df_prev,
+                                           precomputed_views=precomputed_views,
+                                           alerts_curr=alerts_curr, alerts_prev=alerts_prev,
+                                           rr_meta=rr_meta)
+                    _status.update(label="Query complete", state="complete", expanded=False)
+                if not _ai_result.get("error"):
+                    # Don't cache a transient failure (e.g. a network blip) --
+                    # re-asking the same question should get a fresh attempt,
+                    # not the same error replayed from cache forever.
+                    _ai_cache_put(_ai_cache, _cache_key, _ai_result)
             st.session_state["ai_result"] = _ai_result
 
     # ── Render result ─────────────────────────────────────────────────────────
@@ -151,15 +191,25 @@ function fill(text) {
         for i, opt in enumerate(q_options):
             if st.button(opt, key=f"clarify_opt_{i}", width='stretch'):
                 augmented = f"{orig_query} (interpretation: {opt})"
-                with st.status("Running AI pipeline...", expanded=True) as _status:
-                    def _on_step(label: str) -> None:
-                        _status.write(label)
-                    _res = run_query(augmented, df_curr, on_step=_on_step,
-                                     snapshot_dates=snapshot_dates, allow_clarification=False,
-                                     df_prev=df_prev, precomputed_views=precomputed_views,
-                                     alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                     rr_meta=rr_meta)
-                    _status.update(label="Query complete", state="complete", expanded=False)
+                # A different query string (the interpretation is appended), so
+                # this naturally gets its own cache key -- no collision with the
+                # original ambiguous query's entry.
+                _cache_key = (augmented, data_version, filter_key)
+                _cached = _ai_cache_get(_ai_cache, _cache_key)
+                if _cached is not None:
+                    _res = _cached
+                else:
+                    with st.status("Running AI pipeline...", expanded=True) as _status:
+                        def _on_step(label: str) -> None:
+                            _status.write(label)
+                        _res = run_query(augmented, df_curr, on_step=_on_step,
+                                         snapshot_dates=snapshot_dates, allow_clarification=False,
+                                         df_prev=df_prev, precomputed_views=precomputed_views,
+                                         alerts_curr=alerts_curr, alerts_prev=alerts_prev,
+                                         rr_meta=rr_meta)
+                        _status.update(label="Query complete", state="complete", expanded=False)
+                    if not _res.get("error"):
+                        _ai_cache_put(_ai_cache, _cache_key, _res)
                 st.session_state["ai_result"] = _res
                 st.rerun()
 
