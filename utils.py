@@ -1,4 +1,5 @@
-﻿import pandas as pd
+﻿import html
+import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -307,8 +308,15 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
 
     # Drop duplicate Loan Nos  -  keep the first occurrence.
     # Duplicates inflate every count-based metric (NPA count, roll rates, etc.).
+    # A real extract shouldn't have dupes at all, so the count is surfaced via
+    # df.attrs (survives a plain return, doesn't touch the errs contract that
+    # _load_and_concat treats as fatal-per-file) rather than dropped silently.
+    dropped_duplicates = 0
     if "Loan No" in df.columns:
+        before = len(df)
         df = df.drop_duplicates(subset=["Loan No"])
+        dropped_duplicates = before - len(df)
+    df.attrs["dropped_duplicate_loans"] = dropped_duplicates
 
     return df, []
 
@@ -634,6 +642,16 @@ def build_html_export(
 ) -> str:
     import datetime as _dt
 
+    def _esc(val) -> str:
+        """Escape any string that came from the uploaded data before it enters an
+        f-string HTML fragment. Manually-entered LCC fields (executive/branch/
+        customer names) can contain &, <, > - unescaped, those break the
+        surrounding table markup, and this HTML is also offered as a raw
+        download, not just rendered inline."""
+        if val is None:
+            return ""
+        return html.escape(str(val), quote=False)
+
     def _fig_html(fig):
         return pio.to_html(fig, full_html=False, include_plotlyjs=False)
 
@@ -675,9 +693,9 @@ def build_html_export(
             f'{title}</div>'
         )
 
-    filter_info = " | ".join(f"<b>{k}:</b> {v}" for k, v in filters.items() if v != "All") or "All data"
+    filter_info = " | ".join(f"<b>{_esc(k)}:</b> {_esc(v)}" for k, v in filters.items() if v != "All") or "All data"
     generated_at = _dt.datetime.now().strftime("%d %b %Y, %I:%M %p")
-    month_label = curr_month or filters.get("Year Month", "")
+    month_label = _esc(curr_month or filters.get("Year Month", ""))
 
     # ── Smart Alerts section ──────────────────────────────────────────────────
     alerts_html = ""
@@ -730,7 +748,7 @@ def build_html_export(
                 sma2_color = "#d97706" if sma2 > 0 else "#16a34a"
                 rows += (
                     f'<tr style="border-bottom:1px solid #f3f4f6;">'
-                    f'<td style="padding:7px 10px;font-size:12px;font-weight:600;color:#111;">{row["Executive (Branch)"]}</td>'
+                    f'<td style="padding:7px 10px;font-size:12px;font-weight:600;color:#111;">{_esc(row["Executive (Branch)"])}</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Accounts"]}</td>'
                     f'<td style="padding:7px 10px;font-size:13px;font-weight:800;color:{coll_color};text-align:center;">{coll}%</td>'
                     f'<td style="padding:7px 10px;font-size:12px;text-align:center;">{row["Strike Rate %"]}%</td>'
@@ -795,7 +813,7 @@ def build_html_export(
             f'<div style="display:flex;gap:10px;">{rr_cards}</div>'
         )
 
-    html = f"""<!DOCTYPE html>
+    page_html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -862,4 +880,4 @@ def build_html_export(
 </div>
 </body>
 </html>"""
-    return html
+    return page_html

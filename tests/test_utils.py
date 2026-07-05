@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export
 from helpers import make_df
 
 
@@ -102,6 +102,27 @@ class TestLoadAndValidateSerialDates:
         result_df, errs = load_and_validate.__wrapped__(buf)
         assert errs == []
         assert pd.isna(result_df["MNT NAME"].iloc[1])
+
+
+class TestLoadAndValidateDuplicateLoanNos:
+    """Regression: duplicate Loan Nos were dropped with zero count surfaced
+    anywhere - a real data-quality signal (why does the extract have dupes?)
+    thrown away silently. The count now rides along on df.attrs rather than
+    the errs list, since errs is treated as fatal-per-file by _load_and_concat."""
+
+    def test_no_duplicates_reports_zero(self):
+        buf = _build_upload({"Loan No": ["L1", "L2", "L3"]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df.attrs["dropped_duplicate_loans"] == 0
+
+    def test_duplicate_loan_nos_are_counted_and_first_occurrence_kept(self):
+        buf = _build_upload({"Loan No": ["L1", "L1", "L2"], "POS": [1000.0, 9999.0, 1000.0]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert len(result_df) == 2
+        assert result_df.attrs["dropped_duplicate_loans"] == 1
+        assert result_df.loc[result_df["Loan No"] == "L1", "POS"].iloc[0] == 1000.0
 
 
 class TestAssignBuckets:
@@ -396,3 +417,46 @@ class TestCleanMobile:
         result = clean_mobile(pd.Series([9876543210.0, float("nan")]))
         assert result.iloc[1] == ""
         assert "nan" not in result.tolist()
+
+
+class TestBuildHtmlExportEscaping:
+    """Regression: build_html_export interpolates filter values and the
+    scorecard's free-text 'Executive (Branch)' column into raw f-string HTML,
+    same bug class already fixed in report_agent/nodes/report_builder.py.
+    A manually-entered name like "RAJESH & SONS <TRANSPORT>" must not break
+    the surrounding table markup, and the file is offered as a raw download."""
+
+    def _metrics(self):
+        keys = ["Month Demand", "Total Collection", "Collection %", "Strike %",
+                 "NPA %", "Hard Bucket %", "Count", "SOH", "LCC%", "CMD %"]
+        return {k: (1.0, 0.0) for k in keys}
+
+    def test_filter_values_are_escaped(self):
+        import plotly.graph_objects as go
+
+        html_out = build_html_export(
+            make_df([]), make_df([]), self._metrics(),
+            go.Figure(), go.Figure(), go.Figure(),
+            filters={"Branch": "RAJESH & SONS <TRANSPORT>"},
+            curr_month="Jan-2026",
+        )
+        assert "RAJESH & SONS <TRANSPORT>" not in html_out
+        assert "RAJESH &amp; SONS &lt;TRANSPORT&gt;" in html_out
+
+    def test_scorecard_executive_name_is_escaped(self):
+        import plotly.graph_objects as go
+
+        scorecard_df = pd.DataFrame([{
+            "Executive (Branch)": "A & B <script>alert(1)</script>",
+            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
+            "Tier": "top",
+        }])
+        html_out = build_html_export(
+            make_df([]), make_df([]), self._metrics(),
+            go.Figure(), go.Figure(), go.Figure(),
+            filters={}, scorecard_df=scorecard_df,
+        )
+        assert "<script>alert(1)</script>" not in html_out
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
+        # Table structure survives - matching open/close tags around the row.
+        assert html_out.count("<tr") == html_out.count("</tr>")

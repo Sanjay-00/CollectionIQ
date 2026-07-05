@@ -151,6 +151,18 @@ if "df_curr_raw" not in st.session_state:
 df_curr_raw: pd.DataFrame = st.session_state["df_curr_raw"]
 df_prev_raw: pd.DataFrame = st.session_state["df_prev_raw"]
 
+# A real LCC extract shouldn't have duplicate Loan Nos at all, so surface the
+# count instead of dropping them with zero trace -- see utils.py::load_and_validate.
+_dup_curr = df_curr_raw.attrs.get("dropped_duplicate_loans", 0)
+_dup_prev = df_prev_raw.attrs.get("dropped_duplicate_loans", 0)
+if _dup_curr or _dup_prev:
+    _dup_parts = []
+    if _dup_curr:
+        _dup_parts.append(f"{_dup_curr} in the current month file")
+    if _dup_prev:
+        _dup_parts.append(f"{_dup_prev} in the previous month file")
+    st.caption(f"ℹ️ Removed duplicate Loan No row(s): {', '.join(_dup_parts)}.")
+
 # Auto-load prev if uploaded after initial generate (cache hit  -  no cost)
 if prev_file and len(df_prev_raw) == 0:
     _prev_tmp, _prev_err = _load_and_concat(prev_file)

@@ -81,11 +81,34 @@ def _excel_bytes(df: pd.DataFrame) -> bytes:
 
 
 def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
-    """Right-aligned compact Excel download button."""
+    """Right-aligned compact Excel download button.
+
+    Streamlit reruns the ENTIRE script (all 7 tabs, not just the active one --
+    tabs are only CSS-hidden when inactive, their code still executes) on
+    every single interaction anywhere in the app, e.g. clicking "Run Query" in
+    the AI Query tab. Without caching, that meant every one of this app's ~20
+    _dl_btn call sites re-ran an uncached openpyxl df.to_excel() -- cell-by-cell,
+    not vectorized -- on every rerun, regardless of whether the underlying
+    table had changed. Cache one entry per button key, keyed on `df is` the
+    exact object we cached bytes for last time (the df objects passed in are
+    themselves already st.cache_data-cached upstream, so the SAME object
+    survives across reruns whenever filters/data are unchanged). This holds a
+    strong reference to that df in the cache entry itself, which is what makes
+    the identity check safe: as long as the entry exists, Python can't garbage
+    -collect that df and hand its id to an unrelated object -- the exact
+    ABA-style collision an `id(df)`-keyed cache would otherwise be exposed to."""
+    cache = st.session_state.setdefault("_excel_bytes_cache", {})
+    cached = cache.get(key)
+    if cached is not None and cached[0] is df:
+        data = cached[1]
+    else:
+        data = _excel_bytes(df)
+        cache[key] = (df, data)
+
     _, col = st.columns([5, 1])
     with col:
         st.download_button(
-            "⬇ Excel", data=_excel_bytes(df), file_name=filename,
+            "⬇ Excel", data=data, file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key, width='stretch',
         )
@@ -197,11 +220,13 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
         files = [files]
 
     dfs, errors = [], []
+    dropped_dupes = 0  # per-file dupes (from load_and_validate) + any cross-file dupes below
     for f in files:
         df, errs = load_and_validate(f)
         if errs:
             errors.append(f"{getattr(f, 'name', 'file')}: {errs[0]}")
         else:
+            dropped_dupes += df.attrs.get("dropped_duplicate_loans", 0)
             dfs.append(df)
 
     if not dfs:
@@ -221,5 +246,10 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     dfs = [_normalize_dt(d) for d in dfs]
     combined = pd.concat(dfs, ignore_index=True)
     if "Loan No" in combined.columns:
+        before = len(combined)
         combined = combined.drop_duplicates(subset=["Loan No"], keep="first")
+        dropped_dupes += before - len(combined)
+    # pd.concat doesn't propagate .attrs from its inputs, so set it explicitly
+    # on the combined frame -- this is the only place callers need to check.
+    combined.attrs["dropped_duplicate_loans"] = dropped_dupes
     return combined, errors
