@@ -14,6 +14,7 @@ break a real query, so every failure mode here is swallowed.
 """
 import datetime
 import json
+import re
 from pathlib import Path
 
 from config import QUERY_LOG_ENABLED, QUERY_LOG_PATH, QUERY_LOG_RETENTION_DAYS
@@ -23,6 +24,21 @@ from config import QUERY_LOG_ENABLED, QUERY_LOG_PATH, QUERY_LOG_RETENTION_DAYS
 # once/day regardless of query volume, instead of paying a full file rewrite on
 # every single logged query.
 _PRUNE_CHECK_INTERVAL = datetime.timedelta(days=1)
+
+# A user can type a customer/guarantor phone number straight into the query
+# box (e.g. "loans for 9876543210"), and that's a mechanically-detectable PII
+# leak in an otherwise-plaintext log. Matches a 10-digit Indian mobile number
+# (optionally with a +91/91/0 prefix), with or without a separating space/dash.
+# Free-text names typed into a query aren't caught here - there's no reliable
+# regex for that without a false-positive-prone NER pass, and the log's whole
+# value is seeing real query phrasing, so this intentionally scrubs only the
+# one PII class that can be matched without collateral damage.
+_PHONE_RE = re.compile(r"(?:\+?91[-\s]?|0)?[6-9]\d{9}\b")
+
+
+def _redact_query(text: str) -> str:
+    """Scrub phone-number-shaped substrings from logged query text."""
+    return _PHONE_RE.sub("[REDACTED-PHONE]", text or "")
 
 
 def classify_outcome(state: dict) -> str:
@@ -91,7 +107,7 @@ def log_query_outcome(state: dict) -> None:
         entry = {
             "ts":                      datetime.datetime.now().isoformat(timespec="seconds"),
             "run_id":                  state.get("run_id", ""),
-            "query":                   state.get("query", ""),
+            "query":                   _redact_query(state.get("query", "")),
             "outcome":                 classify_outcome(state),
             "intent":                  ir1.get("intent", ""),
             "view":                    view.get("name") if isinstance(view, dict) else view,

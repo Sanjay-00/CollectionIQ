@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 import query_log
-from query_log import classify_outcome, log_query_outcome, _prune_old_entries
+from query_log import classify_outcome, log_query_outcome, _prune_old_entries, _redact_query
 
 
 class TestClassifyOutcome:
@@ -27,6 +27,23 @@ class TestClassifyOutcome:
             "view_hit_bare_string", "compiled_ok_explicit", "compiled_ok_empty_state"])
     def test_classify_outcome(self, state, expected):
         assert classify_outcome(state) == expected
+
+
+class TestRedactQuery:
+    """A phone number typed straight into the query box (real customer/guarantor
+    PII, since MNT NAME/Cust Mob No are free-text-adjacent LCC fields) must not
+    be persisted verbatim to the local, unencrypted query log."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("show loans for 9876543210", "show loans for [REDACTED-PHONE]"),
+        ("call +91 9876543210 today", "call [REDACTED-PHONE] today"),
+        ("check 91-9876543210 status", "check [REDACTED-PHONE] status"),
+        ("who hasn't paid this month in Pune", "who hasn't paid this month in Pune"),  # no phone, unchanged
+        ("", ""),
+        (None, ""),
+    ], ids=["plain_10digit", "plus91_prefix", "91_dash_prefix", "no_phone_unchanged", "empty_string", "none"])
+    def test_redact_query(self, raw, expected):
+        assert _redact_query(raw) == expected
 
 
 class TestLogQueryOutcome:
@@ -57,6 +74,16 @@ class TestLogQueryOutcome:
         assert e["outcome"] == "compiled_ok"
         assert e["intent"] == "loan_table"
         assert e["result_rows"] == 2
+
+    def test_phone_number_in_query_is_redacted_before_writing(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "query_log.jsonl"
+        monkeypatch.setattr(query_log, "QUERY_LOG_PATH", str(log_path))
+        monkeypatch.setattr(query_log, "QUERY_LOG_ENABLED", True)
+
+        log_query_outcome({"query": "loans for guarantor 9876543210"})
+
+        entries = self._read_lines(log_path)
+        assert entries[0]["query"] == "loans for guarantor [REDACTED-PHONE]"
 
     def test_creates_parent_directory(self, tmp_path, monkeypatch):
         log_path = tmp_path / "does" / "not" / "exist" / "query_log.jsonl"
