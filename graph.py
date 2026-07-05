@@ -1,4 +1,5 @@
-﻿import threading
+﻿import re
+import threading
 import uuid as _uuid
 from typing import Any, Callable, Optional, TypedDict
 
@@ -16,7 +17,7 @@ from agents.logical_planner import plan_logical
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
-from registry.views import VIEWS, normalize_view_output, resolve_view_fn
+from registry.views import VIEWS, _METRIC_DIRECTION, _METRIC_AGG, normalize_view_output, resolve_view_fn
 from query_log import log_query_outcome
 
 
@@ -93,6 +94,8 @@ class QueryState(TypedDict):
     result_df: Any
     result_kpis: dict
     result_rankings: dict
+    result_highlights: list  # query-aware standout KPI cards (view path only; see view_node)
+    result_portfolio_kpis: list  # unconditional portfolio-wide rollup (view path only; see view_node)
 
     # Insight output
     insights: str
@@ -193,6 +196,138 @@ def logical_planner_node(state: QueryState) -> QueryState:
         return {**state, "error": f"Query planning failed: {e}"}
 
 
+def _normalize_col(s: str) -> str:
+    # "Δ" (month-over-month delta prefix, e.g. "Δ NPA%") must NOT be stripped as
+    # punctuation -- doing so collapsed "NPA%"/"NPA"/"Δ NPA%" to the identical
+    # normalized string "npa", so a near-miss column request like "NPA %" could
+    # resolve to the WRONG column (the delta) via silent dict-key collision in
+    # _resolve_column_fuzzy's norm_map. Spelling it out keeps them distinct
+    # ("npa" vs "deltanpa") while still normalizing away spacing/case/punctuation.
+    return re.sub(r"[^a-z0-9]", "", s.replace("Δ", "delta").lower())
+
+
+def _resolve_column_fuzzy(name: str, columns) -> str | None:
+    """Resolve a planner-supplied column name against a view's real columns,
+    tolerating minor cross-view spelling drift (e.g. the planner naming
+    "Strike Rate %" -- executive_scorecard's spelling -- while looking at
+    region_scorecard, whose own column is "Strike%"). Exact match first, then
+    a normalized (strip spacing/punctuation/case) exact match, then a
+    normalized substring match in either direction, gated to a minimum length
+    so short names like "NPA" can't spuriously match unrelated columns.
+    Returns None (never raises) when nothing reasonably matches -- the caller
+    treats that as "leave the view's default order alone"."""
+    if name in columns:
+        return name
+    norm_name = _normalize_col(name)
+    norm_map = {_normalize_col(c): c for c in columns}
+    if norm_name in norm_map:
+        return norm_map[norm_name]
+    if len(norm_name) >= 4:
+        for norm_c, c in norm_map.items():
+            if len(norm_c) >= 4 and (norm_name in norm_c or norm_c in norm_name):
+                return c
+    return None
+
+
+def _apply_sort_by(result_df: pd.DataFrame, sort_by: dict | None) -> pd.DataFrame:
+    """Query-aware ranking: "rank regions by Collection%" re-sorts the view's own
+    table by whatever column the user asked for, instead of always showing the
+    view's built-in default order. An unresolvable column, or no request at
+    all, is a no-op -- the view's default sort stands. Never worth failing the
+    whole query over a sort request that doesn't quite resolve."""
+    if not sort_by:
+        return result_df
+    col = _resolve_column_fuzzy(sort_by.get("column", ""), result_df.columns)
+    if col is None:
+        return result_df
+    result_df = result_df.sort_values(
+        col, ascending=(sort_by.get("dir") == "asc")
+    ).reset_index(drop=True)
+    # branch_quadrant ships its own "Rank" column (1..N by Concern Score). Since
+    # we just re-sorted by a DIFFERENT column, that Rank now describes the OLD
+    # order -- e.g. row 1 could show "Rank: 7", contradicting its new position.
+    # Recompute it to match the display order actually shown, same convention
+    # compute_branch_quadrant itself uses (1-indexed, best-to-worst per this sort).
+    if "Rank" in result_df.columns:
+        result_df["Rank"] = range(1, len(result_df) + 1)
+    return result_df
+
+
+def _format_metric_value(col: str, value) -> str:
+    """Shared display formatting for a metric value, used by both highlight
+    cards and the portfolio KPI rollup -- a percent-named column always shows
+    2 decimals + '%'; a whole-number value shows with thousands separators;
+    anything else shows 2 decimals."""
+    if "%" in col:
+        return f"{value:.2f}%"
+    if float(value) == int(value):
+        return f"{int(value):,}"
+    return f"{value:.2f}"
+
+
+def _build_highlights(spec: dict, result_df: pd.DataFrame, requests: list) -> list:
+    """Turn the planner's highlight_metrics requests into standout KPI cards.
+    The planner only names WHICH columns/direction matter to the question --
+    every value here is a real idxmax/idxmin lookup on result_df, never an
+    LLM-supplied number. Any request referencing a column this view doesn't
+    declare in "metrics" (typo, wrong view, or a column with no known
+    good/bad direction) is silently skipped, same fallthrough-safe pattern as
+    the rest of the view layer -- a bad highlight request should never fail
+    the whole query, just render fewer cards."""
+    label_col = spec.get("label_col")
+    allowed = set(spec.get("metrics") or [])
+    if not requests or not label_col or label_col not in result_df.columns:
+        return []
+
+    highlights = []
+    for req in requests:
+        col, agg = req.get("column"), req.get("agg")
+        if col not in allowed or col not in result_df.columns or col not in _METRIC_DIRECTION:
+            continue
+        series = result_df[col].dropna()
+        if series.empty:
+            continue
+        idx = series.idxmax() if agg == "max" else series.idxmin()
+        row = result_df.loc[idx]
+        value = row[col]
+        direction = _METRIC_DIRECTION[col]
+        is_bad = (agg == "max" and direction == "high_bad") or (agg == "min" and direction == "low_bad")
+        highlights.append({
+            "label":  f"{'Highest' if agg == 'max' else 'Lowest'} {col}",
+            "entity": str(row[label_col]),
+            "value":  _format_metric_value(col, value),
+            "bad":    is_bad,
+        })
+    return highlights
+
+
+def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame) -> list:
+    """Unconditional portfolio-wide rollup for every view that declares
+    "metrics" -- e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
+    table. Unlike highlight_metrics/sort_by, this needs no LLM judgment call
+    (which columns, mean vs sum, is static per-column knowledge in
+    _METRIC_AGG), so it always renders regardless of what the planner asked
+    for, giving portfolio-level context for whatever entities are ranked."""
+    metrics = spec.get("metrics") or []
+    if not metrics or result_df is None or result_df.empty:
+        return []
+
+    kpis = []
+    for col in metrics:
+        if col not in result_df.columns or col not in _METRIC_AGG:
+            continue
+        series = result_df[col].dropna()
+        if series.empty:
+            continue
+        agg = _METRIC_AGG[col]
+        value = series.mean() if agg == "mean" else series.sum()
+        kpis.append({
+            "label": f"{'Avg' if agg == 'mean' else 'Total'} {col}",
+            "value": _format_metric_value(col, value),
+        })
+    return kpis
+
+
 # ── Node 1b: Fast-Path View (deterministic, reuses cached analysis/ results) ──
 # "If the query is already computed then just fetch that result, if not computed
 # then do v2 ai query search normally" -- this node IS that fetch. It never fails
@@ -279,6 +414,8 @@ def view_node(state: QueryState) -> QueryState:
     except Exception:
         return _fallthrough()
 
+    result_df = _apply_sort_by(result_df, view_spec.get("sort_by"))
+
     result_kpis = {"Count": len(result_df), **result_kpis}
     # analyze_node's insight generator only understands two kpis shapes: an
     # "aggregation result" (has "_agg_rows") or a "loan-level filter result"
@@ -289,6 +426,11 @@ def view_node(state: QueryState) -> QueryState:
     # it real sample rows to describe instead, regardless of which view this is.
     if "_agg_rows" not in result_kpis and result_df is not None and len(result_df):
         result_kpis["_agg_rows"] = result_df.head(5).to_dict(orient="records")
+
+    result_highlights = _build_highlights(
+        spec, result_df, view_spec.get("highlight_metrics") or []
+    )
+    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
 
     return {
         **state,
@@ -305,6 +447,8 @@ def view_node(state: QueryState) -> QueryState:
         "result_df":         result_df,
         "result_kpis":       result_kpis,
         "result_rankings":   result_rankings,
+        "result_highlights": result_highlights,
+        "result_portfolio_kpis": result_portfolio_kpis,
         "error":             "",
     }
 
@@ -581,6 +725,8 @@ def run_query(
         "result_df":        pd.DataFrame(),
         "result_kpis":      {},
         "result_rankings":  {},
+        "result_highlights": [],
+        "result_portfolio_kpis": [],
         "insights":         "",
         "error":            "",
         "run_id":           run_id,

@@ -341,7 +341,7 @@ with tabs[2]:
 
 with tabs[3]:
     try:
-        render_migration_tab(df_curr, df_prev_raw, rr_matrix, rr_meta)
+        render_migration_tab(df_curr, df_prev, rr_matrix, rr_meta)
     except Exception as _e:
         _tab_error("Migration", _e)
 

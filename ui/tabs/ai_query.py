@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from utils import fmt_value
-from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html
+from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox
 
 # result_grain -> (singular, plural) display noun, used wherever the UI used to
 # hardcode "accounts"/"Customer Records" regardless of the result's actual row
@@ -201,6 +201,35 @@ function fill(text) {
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Portfolio-wide KPI rollup: unconditional context for a matched view's
+    # own table (e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
+    # rows). Unlike the highlight cards below, this isn't query-specific -- it
+    # always renders for any view that declares highlightable metrics, giving
+    # a baseline to compare the ranked/highlighted entities against.
+    portfolio_kpis = result.get("result_portfolio_kpis") or []
+    if portfolio_kpis:
+        cards_html = "".join(
+            _static_kpi_card_html(p["label"], p["value"])
+            for p in portfolio_kpis
+        )
+        st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;margin-bottom:10px;">{cards_html}</div>', unsafe_allow_html=True)
+
+    # ── Query-aware highlight cards (Fix B): standout entity per requested metric,
+    # e.g. "Highest NPA% -- CS NAGAR -- 16.93%". Only present when the planner asked
+    # for one on a matched view (view_node computes the real value from result_df;
+    # this block only renders it). Not a fixed "risky/watch"-style KPI row -- the
+    # cards themselves are literally the columns/direction the question asked about.
+    highlights = result.get("result_highlights") or []
+    if highlights:
+        cards_html = "".join(
+            _static_kpi_card_html(
+                h["label"], h["value"], h["entity"],
+                color="#dc2626" if h["bad"] else "#16a34a",
+            )
+            for h in highlights
+        )
+        st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;margin-bottom:16px;">{cards_html}</div>', unsafe_allow_html=True)
+
     # ── Fast-path view: KPI cards (e.g. portfolio pulse) ──────────────────────
     if view_render == "kpi_cards":
         rows = (kpis_q.get("_agg_rows") or []).copy()
@@ -322,12 +351,12 @@ function fill(text) {
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("""
-<style>
-div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !important; }
-</style>""", unsafe_allow_html=True)
+        # MUST match ui/tabs/migration.py's own call to this same helper -- an
+        # unscoped style rule here applies page-wide (every tab's markup renders
+        # into the DOM every rerun, just CSS-hidden when inactive), so a different
+        # color per tab means whichever tab's code runs later in a given rerun
+        # silently wins for every selectbox on the page, not just this one.
+        _style_main_content_selectbox("#fff")
 
         sel_col, _ = st.columns([1, 3])
         with sel_col:

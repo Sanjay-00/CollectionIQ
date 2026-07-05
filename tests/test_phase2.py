@@ -60,6 +60,50 @@ class TestNormalizeIR1:
         assert ir["filters"] == [{"concept": "npa"}]
         assert ir["limit"] == 5
 
+    def test_view_highlight_metrics_are_coerced(self):
+        ir = _normalize_ir1({"view": {
+            "name": "region_scorecard",
+            "highlight_metrics": [{"column": "NPA%", "agg": "max"}, {"column": "Collection%", "agg": "min"}],
+        }})
+        assert ir["view"]["highlight_metrics"] == [
+            {"column": "NPA%", "agg": "max"}, {"column": "Collection%", "agg": "min"},
+        ]
+
+    def test_view_highlight_metrics_drops_malformed_entries(self):
+        ir = _normalize_ir1({"view": {
+            "name": "region_scorecard",
+            "highlight_metrics": [
+                {"column": "NPA%", "agg": "max"},      # valid
+                {"column": "NPA%"},                     # missing agg
+                {"column": "NPA%", "agg": "average"},   # invalid agg
+                "not a dict",                           # wrong type
+            ],
+        }})
+        assert ir["view"]["highlight_metrics"] == [{"column": "NPA%", "agg": "max"}]
+
+    def test_view_highlight_metrics_defaults_to_empty(self):
+        ir = _normalize_ir1({"view": {"name": "region_scorecard"}})
+        assert ir["view"]["highlight_metrics"] == []
+        assert _normalize_ir1({})["view"] is None
+
+    def test_view_sort_by_is_coerced(self):
+        ir = _normalize_ir1({"view": {"name": "region_scorecard", "sort_by": {"column": "Collection%", "dir": "asc"}}})
+        assert ir["view"]["sort_by"] == {"column": "Collection%", "dir": "asc"}
+
+    def test_view_sort_by_dir_defaults_to_desc(self):
+        ir = _normalize_ir1({"view": {"name": "region_scorecard", "sort_by": {"column": "Collection%"}}})
+        assert ir["view"]["sort_by"] == {"column": "Collection%", "dir": "desc"}
+
+    def test_view_sort_by_invalid_dir_falls_back_to_desc(self):
+        ir = _normalize_ir1({"view": {"name": "region_scorecard", "sort_by": {"column": "Collection%", "dir": "sideways"}}})
+        assert ir["view"]["sort_by"]["dir"] == "desc"
+
+    def test_view_sort_by_missing_column_is_none(self):
+        ir = _normalize_ir1({"view": {"name": "region_scorecard", "sort_by": {"dir": "asc"}}})
+        assert ir["view"]["sort_by"] is None
+        ir2 = _normalize_ir1({"view": {"name": "region_scorecard"}})
+        assert ir2["view"]["sort_by"] is None
+
 
 class TestRunNewPath:
     def test_injected_planner_produces_correct_result(self):

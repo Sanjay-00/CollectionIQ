@@ -219,6 +219,33 @@ class TestViewsIntegrity:
             for req in spec.get("requires") or []:
                 assert req in _VALID_INPUTS, f"view {name}: unknown 'requires' entry '{req}'"
 
+    def test_highlightable_metrics_have_known_direction_and_label_col(self):
+        # Fix B: a view declaring "metrics" (highlight_metrics targets) must also
+        # declare "label_col" (view_node needs it to build a card caption), and
+        # every metric column must have a known good/bad direction -- otherwise
+        # view_node would silently drop it and the planner's request would go
+        # nowhere, which is safe but should never happen for a column we ourselves
+        # declared highlightable.
+        from registry.views import _METRIC_DIRECTION
+        for name, spec in VIEWS.items():
+            metrics = spec.get("metrics")
+            if not metrics:
+                continue
+            assert spec.get("label_col"), f"view {name}: has 'metrics' but no 'label_col'"
+            for col in metrics:
+                assert col in _METRIC_DIRECTION, f"view {name}: metric '{col}' has no direction in _METRIC_DIRECTION"
+
+    def test_highlightable_metrics_have_known_aggregation_kind(self):
+        # Portfolio KPI rollup: every declared metric column must know whether
+        # a portfolio-wide summary should mean() or sum() it -- otherwise
+        # _build_portfolio_kpis silently drops it (safe, but should never
+        # happen for a column we ourselves declared highlightable).
+        from registry.views import _METRIC_AGG
+        for name, spec in VIEWS.items():
+            for col in spec.get("metrics") or []:
+                assert col in _METRIC_AGG, f"view {name}: metric '{col}' has no aggregation kind in _METRIC_AGG"
+                assert _METRIC_AGG[col] in ("mean", "sum")
+
     def test_view_module_paths_resolve_without_importing_agents_or_compiler(self):
         # analysis/ must stay a leaf dependency (no import cycle risk) -- every
         # VIEWS 'fn' should live under the analysis package.

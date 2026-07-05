@@ -5,6 +5,7 @@ from analysis.roll_rate import (
     VALID_BUCKETS,
     compute_roll_rate_matrix,
     compute_roll_rate_kpis,
+    compute_bucket_roll_summary,
     build_roll_rate_heatmap,
 )
 from helpers import make_df
@@ -154,6 +155,74 @@ class TestComputeRollRateKpis:
         assert kpis["roll_forward_rate"] == 0.0
         assert kpis["roll_backward_rate"] == 0.0
         assert kpis["npa_formation_rate"] == 0.0
+
+
+class TestComputeBucketRollSummary:
+    def test_all_stable_bucket(self):
+        # 10 STD accounts, all stayed STD -> 0% fwd, 100% stable, 0% bwd
+        matrix = _make_matrix({("STD", "STD"): 10, ("NPA", "NPA"): 5})
+        summary = compute_bucket_roll_summary(matrix)
+        std_row = summary[summary["Bucket"] == "STD"].iloc[0]
+        assert std_row["Accounts"] == 10
+        assert std_row["Roll Fwd%"] == 0.0
+        assert std_row["Stable%"] == 100.0
+        assert std_row["Roll Bwd%"] == 0.0
+
+    def test_mixed_bucket_percentages_sum_to_100(self):
+        # SMA-1: 2 rolled fwd to SMA-2, 2 cured to STD, 6 stayed SMA-1 (10 total)
+        matrix = _make_matrix({
+            ("SMA-1", "SMA-2"): 2,
+            ("SMA-1", "STD"):   2,
+            ("SMA-1", "SMA-1"): 6,
+        })
+        summary = compute_bucket_roll_summary(matrix)
+        row = summary[summary["Bucket"] == "SMA-1"].iloc[0]
+        assert row["Accounts"] == 10
+        assert row["Roll Fwd%"] == 20.0
+        assert row["Stable%"] == 60.0
+        assert row["Roll Bwd%"] == 20.0
+        assert row["Roll Fwd%"] + row["Stable%"] + row["Roll Bwd%"] == pytest.approx(100.0)
+
+    def test_std_bucket_can_never_roll_backward(self):
+        # STD is the best bucket -- nothing can be "better", so Roll Bwd% must be 0
+        # regardless of matrix contents (score comparison, not a special case).
+        matrix = _make_matrix({("STD", "STD"): 5, ("STD", "NPA"): 5})
+        row = compute_bucket_roll_summary(matrix)
+        std_row = row[row["Bucket"] == "STD"].iloc[0]
+        assert std_row["Roll Bwd%"] == 0.0
+        assert std_row["Roll Fwd%"] == 50.0
+
+    def test_percentages_always_sum_to_exactly_100(self):
+        # Regression: independently rounding Fwd%/Stable%/Bwd% can each round
+        # correctly yet sum to 99.99 or 100.01 (e.g. a 1/1/1 split of 3 accounts:
+        # 33.33+33.33+33.33=99.99). Stable% must be derived as the remainder,
+        # not rounded independently, to make the "sums to 100" docstring claim
+        # actually hold for every possible account count.
+        matrix = _make_matrix({("SMA-1", "SMA-2"): 1, ("SMA-1", "STD"): 1, ("SMA-1", "SMA-1"): 1})
+        row = compute_bucket_roll_summary(matrix)
+        sma1_row = row[row["Bucket"] == "SMA-1"].iloc[0]
+        assert sma1_row["Roll Fwd%"] + sma1_row["Stable%"] + sma1_row["Roll Bwd%"] == 100.0
+
+    def test_npa_bucket_can_never_roll_forward(self):
+        # NPA is the worst bucket -- nothing can be "worse".
+        matrix = _make_matrix({("NPA", "NPA"): 5, ("NPA", "STD"): 5})
+        row = compute_bucket_roll_summary(matrix)
+        npa_row = row[row["Bucket"] == "NPA"].iloc[0]
+        assert npa_row["Roll Fwd%"] == 0.0
+        assert npa_row["Roll Bwd%"] == 50.0
+
+    def test_zero_accounts_in_a_bucket_is_all_zero_not_divide_error(self):
+        matrix = pd.DataFrame(0, index=VALID_BUCKETS, columns=VALID_BUCKETS)
+        summary = compute_bucket_roll_summary(matrix)
+        assert (summary["Accounts"] == 0).all()
+        assert (summary["Roll Fwd%"] == 0.0).all()
+        assert (summary["Stable%"] == 0.0).all()
+        assert (summary["Roll Bwd%"] == 0.0).all()
+
+    def test_returns_one_row_per_valid_bucket(self):
+        matrix = _make_matrix({("STD", "STD"): 1})
+        summary = compute_bucket_roll_summary(matrix)
+        assert summary["Bucket"].tolist() == VALID_BUCKETS
 
 
 class TestHeatmapColoring:

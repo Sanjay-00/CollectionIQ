@@ -8,6 +8,27 @@ import streamlit as st
 from utils import load_and_validate
 
 
+def _style_main_content_selectbox(color: str = "#fff") -> None:
+    """Fix near-invisible dark-on-dark text on a main-content (non-sidebar)
+    st.selectbox -- ui/styles.py's white-text rule only targets
+    `[data-testid="stSidebar"] .stSelectbox`, so any selectbox rendered
+    outside the sidebar keeps the default dark text on the dark selectbox
+    background.
+
+    This targets EVERY `stSelectbox` on the page (Streamlit doesn't scope
+    injected `st.markdown` styles to one tab -- all tabs render into the DOM
+    simultaneously, just CSS-hidden when inactive), so every caller must use
+    the SAME color, or whichever caller renders last in a given rerun wins
+    for all of them. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py.
+    """
+    st.markdown(f"""
+<style>
+div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+div[data-testid="stSelectbox"] [data-baseweb="select"] span {{ color: {color} !important; }}
+</style>""", unsafe_allow_html=True)
+
+
 def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce mixed-type object columns to string for safe st.dataframe display."""
     df = df.copy()
