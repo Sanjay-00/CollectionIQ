@@ -2,6 +2,7 @@
 
 import pandas as pd
 import streamlit as st
+from langsmith import traceable
 
 from utils import fmt_value
 from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox
@@ -32,6 +33,17 @@ _AI_CACHE_MAX_ENTRIES = 20
 
 def _ai_cache_get(cache: dict, key: tuple):
     return cache.get(key)
+
+
+@traceable(run_type="chain", name="AIQueryCacheHit", tags=["cache-hit"])
+def _log_ai_cache_hit(query: str, data_version: int, filter_key: str) -> None:
+    """A cache hit skips run_query() entirely (that's the whole point -- zero
+    Gemini calls), which otherwise means zero LangSmith visibility into how
+    often the cache is actually paying off. This is a real, near-zero-duration
+    trace whose only job is to make cache hits show up in LangSmith too,
+    alongside the real pipeline runs, so hit rate is visible, not just inferred
+    from "a query with no trace must have been a cache hit"."""
+    return None
 
 
 def _ai_cache_put(cache: dict, key: tuple, value: dict) -> None:
@@ -125,9 +137,17 @@ function fill(text) {
         height=90, label_visibility="collapsed",
     )
 
-    col_run, col_hint = st.columns([1, 4])
+    col_run, col_opt, col_hint = st.columns([1, 1.6, 3])
     with col_run:
         run_btn = st.button("🔍  Run Query", type="primary", width='stretch')
+    with col_opt:
+        skip_insights = not st.checkbox(
+            "Generate AI summary", value=False, key="ai_gen_summary",
+            help="Off by default: skips the 2nd Gemini call that writes the bullet-point "
+                 "observations below the table. The table/KPIs/highlights are unaffected -- "
+                 "check this only if you also want the written narrative, which can add "
+                 "several extra seconds (sometimes the slower of the two calls).",
+        )
     with col_hint:
         st.markdown(
             "<div style='padding-top:10px;font-size:12px;color:#aaa;'>"
@@ -142,9 +162,13 @@ function fill(text) {
             st.error("GOOGLE_API_KEY not found in .env file.")
         else:
             _q = ai_query.strip()
-            _cache_key = (_q, data_version, filter_key)
+            # skip_insights is part of the cache key -- a query cached WITHOUT
+            # the AI summary (checkbox off) must not be silently reused once
+            # the user turns the checkbox on and re-asks the identical question.
+            _cache_key = (_q, data_version, filter_key, skip_insights)
             _cached = _ai_cache_get(_ai_cache, _cache_key)
             if _cached is not None:
+                _log_ai_cache_hit(_q, data_version, filter_key)
                 _ai_result = _cached
             else:
                 with st.status("Running AI pipeline...", expanded=True) as _status:
@@ -154,7 +178,7 @@ function fill(text) {
                                            snapshot_dates=snapshot_dates, df_prev=df_prev,
                                            precomputed_views=precomputed_views,
                                            alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                           rr_meta=rr_meta)
+                                           rr_meta=rr_meta, skip_insights=skip_insights)
                     _status.update(label="Query complete", state="complete", expanded=False)
                 if not _ai_result.get("error"):
                     # Don't cache a transient failure (e.g. a network blip) --
@@ -194,9 +218,10 @@ function fill(text) {
                 # A different query string (the interpretation is appended), so
                 # this naturally gets its own cache key -- no collision with the
                 # original ambiguous query's entry.
-                _cache_key = (augmented, data_version, filter_key)
+                _cache_key = (augmented, data_version, filter_key, skip_insights)
                 _cached = _ai_cache_get(_ai_cache, _cache_key)
                 if _cached is not None:
+                    _log_ai_cache_hit(augmented, data_version, filter_key)
                     _res = _cached
                 else:
                     with st.status("Running AI pipeline...", expanded=True) as _status:
@@ -206,7 +231,7 @@ function fill(text) {
                                          snapshot_dates=snapshot_dates, allow_clarification=False,
                                          df_prev=df_prev, precomputed_views=precomputed_views,
                                          alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                         rr_meta=rr_meta)
+                                         rr_meta=rr_meta, skip_insights=skip_insights)
                         _status.update(label="Query complete", state="complete", expanded=False)
                     if not _res.get("error"):
                         _ai_cache_put(_ai_cache, _cache_key, _res)
@@ -712,16 +737,19 @@ function fill(text) {
         _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")
 
     # ── AI Observations ───────────────────────────────────────────────────────
-    obs_lines = "".join(
-        f'<div class="obs-line">{line}</div>'
-        for line in insights.split("\n") if line.strip()
-    )
-    st.markdown(f"""
-    <div class="obs-card">
-      <div class="obs-title">💡 AI Observations</div>
-      {obs_lines}
-    </div>
-    """, unsafe_allow_html=True)
+    # Empty when "Generate AI summary" was left unchecked (skip_insights=True) --
+    # don't render an empty card in that case, not just an empty-looking one.
+    if insights.strip():
+        obs_lines = "".join(
+            f'<div class="obs-line">{line}</div>'
+            for line in insights.split("\n") if line.strip()
+        )
+        st.markdown(f"""
+        <div class="obs-card">
+          <div class="obs-title">💡 AI Observations</div>
+          {obs_lines}
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── LangSmith feedback ────────────────────────────────────────────────────
     _ls_key = (os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY", "")).strip()
