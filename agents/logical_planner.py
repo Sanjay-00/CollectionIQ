@@ -209,6 +209,12 @@ KEY COLUMNS FOR FILTERS (exact names; prefer catalog concepts when they fit):
   Numeric: SOH | POS | Closing Arrears | Arrears / EMI | LCC%
            Month Collection (Excluding Reserve Collection) | Net Collection Demand Inst+Exp+BC
            ARREARS AGAINST INST | ARREARS AGAINST EXP
+           Overdue | MonthDemandExclPC | Overdue Collection % | Month Demand Collection %
+             -- per-loan waterfall: a payment clears carried-over overdue (Arrear Opening)
+             FIRST, only the remainder counts against this month's own EMI demand
+             (Inst+Exp+BC, PC excluded). Use these exact column names in display_columns
+             when a user asks to see overdue/month-demand collection % "case wise" /
+             "loan wise" / per account -- do NOT invent a different name for them.
   Dates (YYYY-MM-DD for filter values): Ag_Date | Last Receipt Date
   Identity: Loan No | Cust Name | Cust Mob No | RegionName | Unit | MNT NAME | MNT CODE | SRC Name
 
@@ -272,6 +278,10 @@ OUTPUT  -  return a JSON object with EXACTLY these keys:
   "order_by":       [...],        // sort order
   "limit":          null,
   "display_columns": [],          // for loan_table: columns to show (see DISPLAY COLUMNS)
+  "show_all_columns": false,      // true = user wants EVERY column -- see DISPLAY COLUMNS. OVERRIDES
+                                   // display_columns: the compiler shows every column when this is true,
+                                   // even if display_columns is also non-empty, so don't worry about
+                                   // getting that list exactly right when this is set.
   "time":           null
 }}
 
@@ -343,19 +353,29 @@ TIME format:
   snapshot = both periods side-by-side; change = also compute the delta column (curr - prev)
 
 DISPLAY COLUMNS (for loan_table intent):
-  Leave display_columns EMPTY for general queries  -  the system then falls back to a
-  curated ~40-column default view (identifiers, region/branch/executive, dates, dues,
-  arrears, POS/SOH, LCC%, Strike, contact info), NOT every column in the source file.
-  Columns like CoLending_Loans, LGL_FLAG/LGL_DESCRIPTION, SegmentName/Segment,
-  CUSTOMER_STATUS, Make, and several cumulative-collection/arrears-open columns are
-  OUTSIDE that default view and will not appear unless explicitly requested.
-  Populate display_columns explicitly in two cases:
-    1. The user EXPLICITLY asks for specific columns (e.g. "show me only Loan No, SOH
-       and branch" or "give me just the contact details").
-    2. The query's own filter concept depends on a column outside the default view as
-       its evidence (e.g. a co-lending query should include CoLending_Loans; a legal/
-       recovery query should include LGL_FLAG and LGL_DESCRIPTION; a segment breakdown
-       should include SegmentName) - the reader needs to see WHY a row matched, not just
+  For "show me everything / all columns / every column / full details" requests
+  -- INCLUDING when the user also names specific columns they care about
+  alongside "all columns" (e.g. "all columns including overdue collection % and
+  month demand collection%") -- set show_all_columns: true. This OVERRIDES
+  display_columns entirely: the system shows EVERY column from the uploaded
+  file, in the standard LCC template order (never jumbled, regardless of which
+  regional file it came from), no matter what you also put in display_columns.
+  Do NOT try to enumerate all ~85 column names yourself for an "all columns"
+  request, and do NOT treat named columns inside an "all columns" request as
+  a reason to build a limited display_columns list instead -- naming a column
+  the user is especially interested in does not mean they want ONLY that
+  column plus a few others; show_all_columns: true already includes it, since
+  it includes everything.
+  Populate display_columns (leaving show_all_columns false) in two cases instead:
+    1. The user EXPLICITLY asks for a SPECIFIC, LIMITED set of columns and
+       nothing else (e.g. "show me only Loan No, SOH and branch" or "give me
+       just the contact details") -- NOT when "all"/"every" column appears
+       anywhere in the request, which is the show_all_columns case above.
+    2. The query's own filter concept depends on a column outside the columns a
+       reader would normally expect as its evidence (e.g. a co-lending query
+       should include CoLending_Loans; a legal/recovery query should include
+       LGL_FLAG and LGL_DESCRIPTION; a segment breakdown should include
+       SegmentName) - the reader needs to see WHY a row matched, not just
        that it did. In this case, include the default-view columns you still want PLUS
        the evidence column(s), since setting display_columns replaces the default set
        rather than adding to it.
@@ -504,11 +524,28 @@ def _normalize_ir1(raw: dict) -> dict:
         "order_by":               raw.get("order_by") or [],
         "limit":                  raw.get("limit"),
         "display_columns":        raw.get("display_columns") or [],
+        "show_all_columns":       bool(raw.get("show_all_columns", False)),
         "time":                   raw.get("time"),
     }
 
 
 MAX_QUERY_CHARS = 1000  # guardrail: a real business question never needs more than this
+
+# Cheap, deterministic backstop for "show all/every column(s)" phrasing. The
+# Logical Planner setting show_all_columns itself is an LLM judgment call, not
+# a guarantee -- observed in practice to be inconsistent even across two calls
+# with the EXACT same query text (one call correctly set it, the next call for
+# an identical real-world query did not, and also built a display_columns list
+# missing the very columns the user named). A keyword match can't cover every
+# possible phrasing the model might otherwise parse correctly, but it reliably
+# catches the common, explicit case as a SECOND, independent layer -- same
+# two-layers-not-one philosophy this codebase already applies to the derive
+# -expression sandbox (compile-time AND execute-time) and HTML escaping.
+_ALL_COLUMNS_PATTERN = re.compile(r"\b(?:all|every)\s+(?:the\s+)?columns?\b", re.IGNORECASE)
+
+
+def _query_requests_all_columns(query: str) -> bool:
+    return bool(_ALL_COLUMNS_PATTERN.search(query))
 
 
 def _out_of_scope_ir(message: str) -> dict:
@@ -575,4 +612,7 @@ def plan_logical(
             "I couldn't understand that as a portfolio question. I can answer "
             "things like \"top 10 delinquent customers by SOH\" or \"NPA% by branch\"."
         )
-    return _normalize_ir1(parsed)
+    ir1 = _normalize_ir1(parsed)
+    if _query_requests_all_columns(query):
+        ir1["show_all_columns"] = True
+    return ir1
