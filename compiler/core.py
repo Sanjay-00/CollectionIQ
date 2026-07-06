@@ -627,10 +627,24 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
 
     _append_sort_limit(ir, plan)
 
-    # For loan_table queries, append a select step to subset visible columns.
-    display_cols = ir.get("display_columns") or []
-    if display_cols and ir.get("intent") in (None, "", "loan_table"):
-        plan.append({"op": "select", "columns": display_cols})
+    # For loan_table queries, append a select step to subset visible columns --
+    # unless show_all_columns is set, which deterministically means "every
+    # column, full stop" and OVERRIDES display_columns entirely. Without this
+    # override, a "show me all columns" request depended on the Logical
+    # Planner reliably leaving display_columns EMPTY -- an LLM instruction, not
+    # a guarantee, and it demonstrably didn't hold (a real query asking for
+    # "all columns including X and Y" got a hand-built ~28-column list instead
+    # of the full ~85+, because "including X and Y" pattern-matched the
+    # planner's OTHER rule about naming specific evidence columns). Checking
+    # show_all_columns first makes "show everything" an explicit affirmative
+    # signal the compiler enforces, not an easy-to-drift omission the model
+    # has to get exactly right.
+    if ir.get("show_all_columns"):
+        pass  # no select step at all -- every column in df flows through, in template order
+    else:
+        display_cols = ir.get("display_columns") or []
+        if display_cols and ir.get("intent") in (None, "", "loan_table"):
+            plan.append({"op": "select", "columns": display_cols})
 
     # Reuse the existing deterministic column validator as the final gate.
     if plan and not errs:
