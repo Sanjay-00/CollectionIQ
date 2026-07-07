@@ -66,8 +66,13 @@ def _parse_date_column(col: pd.Series) -> tuple[pd.Series, int, int]:
     raw_blank = col.isna() | col.astype(str).str.strip().str.lower().isin(["", "nan", "none", "nat"])
 
     is_dt_obj = col.map(lambda v: isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date)))
+    # bool is a subclass of int, so pd.to_numeric() silently accepts a stray
+    # True/False in a date column and converts it into a (wrong) serial date
+    # instead of failing -- exclude it so it falls through to the string
+    # branch, which correctly reports it as a parse failure.
+    is_bool_obj = col.map(lambda v: isinstance(v, bool))
     numeric = pd.to_numeric(col, errors="coerce")
-    is_numeric = numeric.notna() & ~is_dt_obj
+    is_numeric = numeric.notna() & ~is_dt_obj & ~is_bool_obj
 
     result = pd.Series(pd.NaT, index=col.index, dtype="datetime64[ns]")
 
