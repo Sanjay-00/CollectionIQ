@@ -1,6 +1,6 @@
 import logging
 
-from report_agent.state import ReportState
+from report_agent.state import ReportState, _fetch_large
 from report_agent.sections import (
     portfolio_health,
     verdict,
@@ -13,6 +13,8 @@ from report_agent.sections import (
     region_scorecard,
     overdue_demand,
     new_advances,
+    new_advances_trend,
+    new_advances_by_dimension,
     product_analysis,
     top_accounts,
     fleet_exposure,
@@ -25,11 +27,12 @@ from report_agent.sections import (
 )
 
 # Every section fn takes (df_curr, df_prev, curr_month) uniformly, even though
-# only product_analysis/repossession/new_advances actually use curr_month (the
-# report's own reporting month, for date-anchored logic that must not silently
-# fall back to wall-clock "now" -- see analysis/portfolio_intelligence.py's
-# as_of param). The rest just ignore their 3rd argument. One shared call
-# signature here beats a special case per section in portfolio_analyzer_node below.
+# only product_analysis/repossession/new_advances/new_advances_trend/
+# new_advances_by_dimension actually use curr_month (the report's own
+# reporting month, for date-anchored logic that must not silently fall back
+# to wall-clock "now" -- see analysis/portfolio_intelligence.py's as_of
+# param). The rest just ignore their 3rd argument. One shared call signature
+# here beats a special case per section in portfolio_analyzer_node below.
 _SECTION_FN = {
     "portfolio_health":    lambda c, p, m: portfolio_health.compute_portfolio_health(c, p),
     "verdict":             lambda c, p, m: verdict.compute_verdict(c, p),
@@ -42,6 +45,8 @@ _SECTION_FN = {
     "region_scorecard":    lambda c, p, m: region_scorecard.compute_region_scorecard_section(c, p),
     "overdue_demand":      lambda c, p, m: overdue_demand.compute_overdue_demand_section(c, p),
     "new_advances":        lambda c, p, m: new_advances.compute_new_advances_section(c, p, curr_month=m),
+    "new_advances_trend":  lambda c, p, m: new_advances_trend.compute_new_advances_trend_section(c, p, curr_month=m),
+    "new_advances_by_dimension": lambda c, p, m: new_advances_by_dimension.compute_new_advances_by_dimension_section(c, p, curr_month=m),
     "product_analysis":    lambda c, p, m: product_analysis.compute_product_analysis_section(c, p, curr_month=m),
     "top_accounts":        lambda c, p, m: top_accounts.compute_top_accounts_section(c, p),
     "fleet_exposure":      lambda c, p, m: fleet_exposure.compute_fleet_exposure_section(c, p),
@@ -57,8 +62,13 @@ logger = logging.getLogger(__name__)
 
 
 def portfolio_analyzer_node(state: ReportState) -> ReportState:
-    df_curr = state["df_curr"]
-    df_prev = state["df_prev"]
+    # df_curr/df_prev are stashed OUTSIDE state by run_report() (see
+    # report_agent/state.py::_stash_large) so LangGraph's own per-node-
+    # transition tracing never serializes the full raw file. _fetch_large
+    # falls back to state.get(...) when nothing was stashed (e.g. this node
+    # called directly with a hand-built state, as tests do).
+    df_curr = _fetch_large(state, "df_curr")
+    df_prev = _fetch_large(state, "df_prev")
     curr_month = state.get("curr_month")
     enabled = state.get("enabled_sections", list(_SECTION_FN.keys()))
 

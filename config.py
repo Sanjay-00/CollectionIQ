@@ -85,6 +85,19 @@ MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE = 11
 NEW_ADVANCES_TREND_DEFAULT_MONTHS = 24
 NEW_ADVANCES_TREND_MONTH_OPTIONS = [6, 12, 24, 36, 60, "All"]
 
+# The monthly report is a static, non-interactive document (no dropdown to
+# pick a window), so its own New Advances Trend chart uses a fixed window --
+# deliberately NOT reusing NEW_ADVANCES_TREND_DEFAULT_MONTHS, since the report
+# and dashboard defaults are allowed to diverge for good reason (a printed
+# report favors a longer, more complete trend; the dashboard default favors a
+# faster first render).
+NEW_ADVANCES_REPORT_TREND_MONTHS = 36
+
+# Report top-N cap for the New Advances by Region/Branch/Executive section --
+# same "printed document, not a scrollable table" reasoning as
+# branch_performance.py's own top5/bottom5 cap.
+NEW_ADVANCES_REPORT_TOP_N = 5
+
 # SegmentName/Segment values are sometimes truncated inconsistently by the
 # source system at DIFFERENT lengths for the SAME real segment (observed in
 # real production data: "Passenger Commerc" / "Passenger Commerci" /
