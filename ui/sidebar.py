@@ -72,8 +72,19 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
         if st.button("Clear cache & reload", width='stretch', key="clear_cache_btn"):
             st.cache_data.clear()
+            # _ai_query_cache was missing here -- ui/tabs/ai_query.py's exact
+            # -repeat query cache (keyed on query text + data_version + filter_key
+            # + skip_insights) is a plain session_state dict, NOT an
+            # st.cache_data-wrapped function, so st.cache_data.clear() above
+            # never touches it. Without popping it explicitly, re-asking the
+            # EXACT same question after "clearing the cache" silently replayed
+            # whatever answer got cached the FIRST time that question was ever
+            # asked in this session -- including a stale, since-fixed answer
+            # from before a pipeline bug fix, with the button's own promise
+            # ("clear cache & reload") not actually being honored for this cache.
             for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result",
-                       "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region"]:
+                       "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region",
+                       "_ai_query_cache"]:
                 st.session_state.pop(_k, None)
             st.rerun()
 
