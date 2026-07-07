@@ -16,6 +16,7 @@ from report_agent.sections.product_analysis import compute_product_analysis_sect
 from report_agent.sections.repossession import compute_repossession_section
 from report_agent.sections.good_customers import compute_good_customers_section
 from report_agent.sections.executive_strike_rankings import compute_executive_strike_rankings
+from report_agent.sections.overdue_demand import compute_overdue_demand_section
 from report_agent.charts import fig_to_base64
 from helpers import make_df
 
@@ -265,6 +266,20 @@ class TestComputeBranchQuadrantSection:
         assert len(result["top_concern"]) <= 5
         assert result["image"] is None or result["image"].startswith("data:image/png;base64,")
 
+    def test_top_concern_has_region_and_strike_no_concern_score(self):
+        # Regression: "Highest Concern Branches" used to show Concern Score
+        # (an internal composite a report reader can't interpret on its own)
+        # and no Region/Strike% -- business request was to add Region and
+        # Strike%, drop Concern Score from the DISPLAYED columns (ranking is
+        # still by Concern Score internally, via Rank).
+        rows = [{"Unit": "MAHAD", "RegionName": "WEST", "Strike": "Y", "curr_bucket": "NPA", "Arrears / EMI": 6.0}] * 3 \
+             + [{"Unit": "PUNE", "RegionName": "EAST", "Strike": "N", "curr_bucket": "STD", "Arrears / EMI": 0.0}] * 3
+        curr = make_df(rows)
+        result = compute_branch_quadrant_section(curr)
+        row = result["top_concern"][0]
+        assert "Region" in row and "Strike%" in row
+        assert "Concern Score" not in row
+
 
 # ── compute_executive_recovery_section ────────────────────────────────────────
 
@@ -314,6 +329,117 @@ class TestComputeRepossessionSection:
         result = compute_repossession_section(curr)
         assert result is not None
         assert result["total"] == 1
+
+    def test_curr_month_is_threaded_through_as_the_reporting_date(self):
+        # Regression: this section used to call compute_repossession_list with
+        # no reporting date at all, silently anchoring the repossession window
+        # to wall-clock "now" instead of the report's own curr_month.
+        report_month = "2020-01"
+        just_within_window = pd.Timestamp("2020-01-01") - pd.DateOffset(months=6)
+        curr = make_df([{"curr_bucket": "NPA", "Ag_Date": just_within_window, "SOH": 1_00_000.0}])
+
+        result = compute_repossession_section(curr, curr_month=report_month)
+        assert result is not None
+        assert result["total"] == 1
+
+        # Without curr_month, the same loan is years outside the window
+        # relative to wall-clock today and must not appear.
+        assert compute_repossession_section(curr) is None
+
+
+# ── compute_overdue_demand_section ────────────────────────────────────────────
+# Regression: this section used to print EVERY region/branch/executive row
+# (unlimited), which was responsible for roughly half of a real report's total
+# row count and a real, user-reported generation slowdown. Now capped to top 5
+# / bottom 5 by Month Demand Collection %, same convention branch_performance.py
+# already uses.
+
+class TestComputeOverdueDemandSection:
+    def _row(self, region, unit, exec_name, demand_pct):
+        # Bypass the real waterfall math (already covered by
+        # test_utils.py::TestOverdueDemandCollectionPct) -- set the derived
+        # columns directly, same pattern compute_overdue_demand_scorecard's
+        # own tests use, since only the RANKING/CAPPING behavior is under test here.
+        demand_total = 100_000.0
+        return {
+            "RegionName": region, "Unit": unit, "MNT NAME": exec_name,
+            "Overdue": 0, "OverdueCollected": 0,
+            "MonthDemandExclPC": demand_total, "DemandCollected": demand_total * demand_pct / 100,
+        }
+
+    def test_caps_at_top5_and_bottom5_per_dimension(self):
+        # 12 distinct regions -- more than double top5+bottom5, so capping
+        # actually has to do something (not just "show everything anyway").
+        curr = make_df([
+            self._row(f"REGION_{i}", "U1", "E1", demand_pct=i * 5)
+            for i in range(12)
+        ])
+        result = compute_overdue_demand_section(curr)
+        assert result is not None
+        assert len(result["region"]["top5"]) == 5
+        assert len(result["region"]["bottom5"]) == 5
+        assert result["region"]["total"] == 12
+
+    def test_top5_is_highest_demand_pct_bottom5_is_lowest(self):
+        curr = make_df([
+            self._row(f"REGION_{i}", "U1", "E1", demand_pct=i * 5)
+            for i in range(12)
+        ])
+        result = compute_overdue_demand_section(curr)
+        top_pcts = [r["demand_pct"] for r in result["region"]["top5"]]
+        bottom_pcts = [r["demand_pct"] for r in result["region"]["bottom5"]]
+        assert top_pcts == sorted(top_pcts, reverse=True)
+        assert min(top_pcts) > max(bottom_pcts)
+
+    def test_fewer_than_ten_entities_does_not_duplicate_across_top_and_bottom(self):
+        curr = make_df([
+            self._row(f"REGION_{i}", "U1", "E1", demand_pct=i * 10)
+            for i in range(4)
+        ])
+        result = compute_overdue_demand_section(curr)
+        top_names = {r["name"] for r in result["region"]["top5"]}
+        bottom_names = {r["name"] for r in result["region"]["bottom5"]}
+        assert not (top_names & bottom_names)
+        assert len(top_names) + len(bottom_names) == 4
+
+    def test_returns_none_for_empty_df(self):
+        assert compute_overdue_demand_section(make_df([])) is None
+
+    def test_branch_and_executive_dimensions_also_capped(self):
+        # Each executive needs >= MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE (11)
+        # accounts to survive the executive-grain filter.
+        curr = make_df([
+            self._row("WEST", f"BRANCH_{i}", f"EXEC_{i}", demand_pct=i * 5)
+            for i in range(12) for _ in range(11)
+        ])
+        result = compute_overdue_demand_section(curr)
+        assert len(result["branch"]["top5"]) == 5
+        assert len(result["executive"]["top5"]) == 5
+
+    def test_region_rows_carry_overdue_cr_no_identity_cols(self):
+        curr = make_df([self._row("REGION_A", "U1", "E1", demand_pct=50)])
+        result = compute_overdue_demand_section(curr)
+        row = result["region"]["top5"][0]
+        assert "overdue_cr" in row
+        assert "region" not in row and "branch" not in row
+
+    def test_branch_rows_carry_region_identity(self):
+        curr = make_df([self._row("EAST", "BR1", "E1", demand_pct=50)])
+        result = compute_overdue_demand_section(curr)
+        row = result["branch"]["top5"][0]
+        assert row["name"] == "BR1"
+        assert row["region"] == "EAST"
+        assert "branch" not in row
+
+    def test_executive_rows_carry_branch_and_region_identity(self):
+        # >= MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE (11) accounts, or EXEC1 is
+        # filtered out of the executive grain entirely.
+        curr = make_df([self._row("EAST", "BR1", "EXEC1", demand_pct=50)] * 11)
+        result = compute_overdue_demand_section(curr)
+        row = result["executive"]["top5"][0]
+        assert row["name"] == "EXEC1"
+        assert row["branch"] == "BR1"
+        assert row["region"] == "EAST"
 
 
 # ── compute_good_customers_section ────────────────────────────────────────────

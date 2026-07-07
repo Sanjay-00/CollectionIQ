@@ -8,12 +8,13 @@ import plotly.graph_objects as go
 
 from utils import (
     BUCKET_ORDER, BUCKET_SCORE, BUCKET_COLORS, to_num, account_count, is_yes,
-    compute_strike_pct, compute_hard_bucket_pct,
+    compute_strike_pct, compute_hard_bucket_pct, compute_overdue_demand_pct,
 )
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN,
     MIN_ACCOUNTS_PRODUCT_SEGMENT,
     MIN_ACCOUNTS_SOURCE_VINTAGE,
+    MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE,
     REPOSSESSION_WINDOW_MONTHS,
     GOOD_CUSTOMER_MIN_TENURE_PCT,
     GOOD_CUSTOMER_MIN_LCC_PCT,
@@ -188,11 +189,14 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         hard_pct = compute_hard_bucket_pct(df)
         coll = _coll_pct(df)
         strike_pct = compute_strike_pct(df)
+        overdue_demand = compute_overdue_demand_pct(df)
         return {
             "accounts": total, "soh": soh,
             "npa_count": npa_count, "npa_pct": npa_pct,
             "sma2_count": sma2_count, "sma2_pct": sma2_pct,
             "hard_pct": hard_pct, "coll_pct": coll, "strike_pct": strike_pct,
+            "overdue_coll_pct": overdue_demand["overdue_pct"],
+            "demand_coll_pct": overdue_demand["demand_pct"],
         }
 
     c = _calc(df_curr)
@@ -229,6 +233,8 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         _card("NPA %",          "npa_pct",   f"{c.get('npa_pct',0):.2f}%",   "%",  True),
         _card("Collection %",   "coll_pct",  f"{c.get('coll_pct',0):.2f}%",  "%",  False),
         _card("Strike %",       "strike_pct", f"{c.get('strike_pct',0):.2f}%", "%", True),
+        _card("Overdue Collection %", "overdue_coll_pct", f"{c.get('overdue_coll_pct',0):.2f}%", "%", False),
+        _card("Month Demand Collection %", "demand_coll_pct", f"{c.get('demand_coll_pct',0):.2f}%", "%", False),
     ]
 
 
@@ -289,6 +295,124 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
+
+
+# ── Section 2b: Overdue vs Month Demand Collection (Region / Branch / Executive) ──
+
+# Single source of truth for "a branch carries Region; an executive carries
+# Branch+Region" -- compute_overdue_demand_scorecard's own output shape below.
+# Its three consumers (the dashboard table in ui/tabs/portfolio_intelligence.py,
+# the report section in report_agent/sections/overdue_demand.py, and the report
+# renderer in report_agent/nodes/report_builder.py) used to each hardcode their
+# own copy of this exact mapping -- correct, but three independently-maintained
+# copies (with inconsistent Title-case/lowercase casing between them) that a
+# future 4th grain or a rename would need to update in lockstep with nothing
+# enforcing that. Import this dict instead of redefining it.
+OVERDUE_DEMAND_IDENTITY_COLS: dict[str, list[str]] = {
+    "region": [],
+    "branch": ["Region"],
+    "executive": ["Branch", "Region"],
+}
+
+
+def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """One row per Region / Branch (Unit) / Executive (MNT NAME): Overdue and Month
+    Demand collection (amount + %), plus Overall Collection (amount + %) -- each
+    computed at that entity's own total via utils.compute_overdue_demand_pct,
+    never averaged from per-loan percentages, so a branch with one huge loan and
+    nine tiny ones isn't skewed by the nine.
+
+    Overall Collection is deliberately NOT (overdue_collected + demand_collected)
+    over (Overdue + MonthDemandExclPC) -- that would be a THIRD, independently
+    -derived definition of "collection %", disagreeing with the dashboard's own
+    Collection % KPI on real data (confirmed: Net Collection Demand Inst+Exp+BC is
+    NOT equal to Arrear Opening + Month Due-Inst/Exp/BC -- it's a distinct
+    source-system field with its own logic, not a sum of the two). Overall
+    Collection here calls the SAME _coll_pct() this file already uses for the
+    Pulse KPI and compute_region_scorecard, so "Overall Collection %" in this
+    table is always numerically identical to "Collection %" everywhere else in
+    the app, by construction, not by coincidence.
+
+    Branch rows carry their Region alongside (a branch belongs to exactly one
+    region); Executive rows carry both Branch and Region -- same identity-column
+    pattern compute_npa_sma2_comparison already uses (grp[src].iloc[0], since
+    every row in a Unit/MNT NAME group shares the same parent Region/Branch)."""
+    def _rows(col: str, label: str, extra_cols: list[tuple[str, str]] | None = None, min_accounts: int = 0) -> pd.DataFrame:
+        if col not in df_curr.columns or df_curr.empty:
+            return pd.DataFrame()
+        extra_cols = extra_cols or []
+        rows = []
+        for name, grp in df_curr.groupby(col):
+            n = account_count(grp)
+            if n < min_accounts:
+                continue
+            stats = compute_overdue_demand_pct(grp)
+            overall_paid = to_num(grp, "Month Collection (Excluding Reserve Collection)").sum()
+            row = {label: name}
+            for src, out_label in extra_cols:
+                row[out_label] = grp[src].iloc[0] if src in grp.columns and len(grp) else None
+            row.update({
+                "Accounts": n,
+                "Overdue (Cr)": round(stats["overdue_total"] / 1e7, 2),
+                "Overdue Collection (Cr)": round(stats["overdue_collected"] / 1e7, 2),
+                "Overdue Collection %": stats["overdue_pct"],
+                "Month Demand (Cr)": round(stats["demand_total"] / 1e7, 2),
+                "Month Demand Collection (Cr)": round(stats["demand_collected"] / 1e7, 2),
+                "Month Demand Collection %": stats["demand_pct"],
+                "Overall Collection (Cr)": round(overall_paid / 1e7, 2),
+                "Overall Collection %": _coll_pct(grp),
+            })
+            rows.append(row)
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values("Overdue Collection %").reset_index(drop=True)
+
+    return {
+        "region":    _rows("RegionName", "Region"),
+        "branch":    _rows("Unit", "Branch", extra_cols=[("RegionName", "Region")]),
+        "executive": _rows("MNT NAME", "Executive", extra_cols=[("Unit", "Branch"), ("RegionName", "Region")],
+                            min_accounts=MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE),
+    }
+
+
+def compute_overdue_demand_chart(df: pd.DataFrame, label_col: str, title_suffix: str, top_n: int = 15) -> go.Figure:
+    """Grouped bar: Overdue Collection % vs Month Demand Collection % per entity.
+    Capped to the top_n entities by Overdue exposure (Cr) so a branch/executive
+    breakdown with a long tail stays readable -- the underlying table (caller's
+    own DataFrame from compute_overdue_demand_scorecard) still shows every row."""
+    fig = go.Figure()
+    if df.empty or label_col not in df.columns:
+        fig.update_layout(title=dict(text="No data available", font=dict(size=13, color="#111")), height=300)
+        return fig
+
+    plot_df = df.sort_values("Overdue (Cr)", ascending=False).head(top_n)
+    names = plot_df[label_col].tolist()
+
+    fig.add_trace(go.Bar(
+        name="Overdue Collection %", x=names, y=plot_df["Overdue Collection %"].tolist(),
+        marker=dict(color="#991b1b", line=dict(width=0)),
+        text=[f"{v:.1f}%" for v in plot_df["Overdue Collection %"]],
+        textposition="outside", cliponaxis=False, textfont=dict(size=10, color="#111"),
+        hovertemplate="<b>%{x}</b><br>Overdue Collection: %{y:.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="Month Demand Collection %", x=names, y=plot_df["Month Demand Collection %"].tolist(),
+        marker=dict(color="#1d4ed8", line=dict(width=0)),
+        text=[f"{v:.1f}%" for v in plot_df["Month Demand Collection %"]],
+        textposition="outside", cliponaxis=False, textfont=dict(size=10, color="#111"),
+        hovertemplate="<b>%{x}</b><br>Month Demand Collection: %{y:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(text=f"Overdue vs Month Demand Collection %  -  {title_suffix}", font=dict(size=13, color="#111"), x=0),
+        barmode="group", bargap=0.25, bargroupgap=0.08,
+        plot_bgcolor="white", paper_bgcolor="white",
+        xaxis=dict(tickangle=-30, showgrid=False, tickfont=dict(size=11, color="#374151")),
+        yaxis=dict(title="Collection %", range=[0, 115], showgrid=True, gridcolor="#f3f4f6", tickfont=dict(color="#6b7280")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=11)),
+        margin=dict(l=20, r=20, t=60, b=90),
+        height=400,
+    )
+    return fig
 
 
 # ── Section 2: NPA & SMA-2 Comparison (Region / Branch / Executive) ──────────
@@ -519,7 +643,7 @@ def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
     function like compute_strike_pct).
 
     Columns: Branch, Region, Accounts, NPA, NPA%, SMA-2, SMA-2%, Collection%,
-    Hard Bucket%, SOH (Cr), Roll Fwd%, Roll Bwd%, Chronic (3M+).
+    Strike%, Hard Bucket%, SOH (Cr), Roll Fwd%, Roll Bwd%, Chronic (3M+).
     Rows below MIN_ACCOUNTS_DIMENSION_BREAKDOWN are excluded (both consumers
     already applied this exact same threshold independently).
     """
@@ -545,6 +669,7 @@ def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
             "SMA-2": sma2_n,
             "SMA-2%": _safe_div(sma2_n, n),
             "Collection%": _coll_pct(grp),
+            "Strike%": compute_strike_pct(grp),
             "Hard Bucket%": compute_hard_bucket_pct(grp),
             "SOH (Cr)": _soh_cr(grp),
             "Roll Fwd%": roll_fwd if roll_fwd is not None else 0.0,
@@ -563,7 +688,7 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
     # NPA% here uses the SAME per-branch NPA-count/account-count ratio as
     # _branch_aggregates -- confirmed identical to the original inline
     # _npa_pct(grp) call (both are npa_count/n*100, _safe_div rounds the same way).
-    df = agg[["Branch", "Accounts", "Collection%", "SMA-2%", "NPA%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)"]].copy()
+    df = agg[["Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)"]].copy()
     for col, w in CONCERN_SCORE_WEIGHTS.items():
         df[f"_r_{col}"] = df[col].rank(ascending=True, pct=True) * w
     df["Concern Score"] = df[[c for c in df.columns if c.startswith("_r_")]].sum(axis=1).mul(100).round(0).astype(int)
@@ -798,7 +923,16 @@ def compute_risk_flag_comparison(alerts_curr: list, alerts_prev: list) -> pd.Dat
 
 # ── Section 5: Product / Segment Analysis ─────────────────────────────────────
 
-def compute_product_analysis(df_curr: pd.DataFrame) -> dict:
+def compute_product_analysis(df_curr: pd.DataFrame, as_of=None) -> dict:
+    """as_of: the report's OWN reporting month/date (e.g. app.py's Reporting
+    Month picker, or report_agent's curr_month) -- NOT necessarily today's real
+    date. Defaults to the real wall-clock date only when the caller doesn't
+    have a reporting date to hand (e.g. a script or test calling this
+    directly). Without this, "exclude post-dated agreement dates" silently
+    compared against whatever day the code happened to RUN rather than the
+    month the upload is actually reporting on -- re-analyzing an old file
+    (e.g. a March extract opened in July) would wrongly exclude/include
+    cohorts relative to July, not March."""
     results: dict[str, pd.DataFrame] = {}
 
     seg_col = next((c for c in ["SegmentName", "Segment"] if c in df_curr.columns), None)
@@ -815,7 +949,8 @@ def compute_product_analysis(df_curr: pd.DataFrame) -> dict:
     if "Ag_Date" in df_curr.columns:
         df_v = df_curr.copy()
         df_v["_cohort"] = pd.to_datetime(df_v["Ag_Date"], errors="coerce").dt.to_period("M")
-        _today_period = pd.Period.now("M")
+        _ref_date = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.now()
+        _today_period = _ref_date.to_period("M")
         cohort_rows = []
         for cohort, grp in df_v.dropna(subset=["_cohort"]).groupby("_cohort"):
             if cohort > _today_period:
@@ -1149,15 +1284,29 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
         npa_ops = len(has_npa)
 
     # Top fleet customers by SOH
+    def _mode(s: pd.Series) -> str:
+        m = s.dropna().mode()
+        return str(m.iat[0]) if not m.empty else ""
+
     top_rows = []
     for mob, grp in fleet_df.groupby("Cust Mob No"):
         cust_name = grp["Cust Name"].iloc[0] if "Cust Name" in grp.columns else str(mob)
         n_loans   = grp["Loan No"].nunique()
         soh       = _soh_cr(grp)
         npa_count = int((grp["curr_bucket"] == "NPA").sum()) if "curr_bucket" in grp.columns else 0
+        # A fleet customer's loans CAN span multiple regions/branches (Cust Mob
+        # No isn't guaranteed unique per branch, per this function's own
+        # docstring) -- the most common (mode) region/branch is shown as a
+        # single representative value, not necessarily every branch this
+        # customer touches. Same convention report_agent's own fleet section
+        # used to compute independently; now the single source of truth.
+        region = _mode(grp["RegionName"]) if "RegionName" in grp.columns else ""
+        unit   = _mode(grp["Unit"]) if "Unit" in grp.columns else ""
         top_rows.append({
             "Customer": str(cust_name),
             "Mobile": str(mob),
+            "Region": region,
+            "Unit": unit,
             "Loans": n_loans,
             "NPA Loans": npa_count,
             "Total SOH (Cr)": soh,
@@ -1235,18 +1384,26 @@ _REPO_DISPLAY_COLS = [
 ]
 
 
-def compute_repossession_list(df_curr: pd.DataFrame) -> pd.DataFrame:
+def compute_repossession_list(df_curr: pd.DataFrame, as_of=None) -> pd.DataFrame:
     """
     Accounts eligible for repossession:
       - curr_bucket in ["SMA-2", "NPA"]  (2+ EMI overdue, deep delinquent)
       - Ag_Date within last 18 months    (recent loans  -  still have collateral value)
+
+    as_of: the report's OWN reporting month/date, same reasoning as
+    compute_product_analysis's as_of -- defaults to the real wall-clock date
+    only when the caller has no reporting date to hand. Without this, the
+    "still within the repossession window" cutoff silently measured backward
+    from whatever day the code happened to RUN, not the month the upload is
+    reporting on -- wrong for any retroactive/historical analysis.
 
     Returns cleaned DataFrame. Caller sorts for the 3 views.
     """
     if df_curr.empty:
         return pd.DataFrame()
 
-    cutoff = pd.Timestamp.today() - pd.DateOffset(months=REPOSSESSION_WINDOW_MONTHS)
+    _ref_date = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.today()
+    cutoff = _ref_date - pd.DateOffset(months=REPOSSESSION_WINDOW_MONTHS)
 
     bucket_mask = pd.Series(False, index=df_curr.index)
     if "curr_bucket" in df_curr.columns:

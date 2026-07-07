@@ -68,7 +68,9 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
     st.markdown(f'<div class="kpi-row">{_kpi_row(kpis[:4])}</div>', unsafe_allow_html=True)
     if len(kpis) > 4:
-        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[4:])}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[4:8])}</div>', unsafe_allow_html=True)
+    if len(kpis) > 8:
+        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[8:])}</div>', unsafe_allow_html=True)
 
     col_wf, col_npa = st.columns([3, 1])
     with col_wf:
@@ -167,6 +169,84 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
     _dl_btn(df, "region_scorecard.xlsx", "dl_region")
 
 
+# ── Section 2b: Overdue vs Month Demand Collection ────────────────────────────
+
+def _render_overdue_demand(scorecard_data: dict) -> None:
+    from analysis.portfolio_intelligence import compute_overdue_demand_chart, OVERDUE_DEMAND_IDENTITY_COLS
+
+    _section("Section 2b  -  Overdue vs Month Demand Collection", margin_top="24px")
+    st.caption(
+        "A payment clears last month's carried-over overdue FIRST; only what's left over "
+        "counts against this month's own EMI demand. 100% means nothing was outstanding on "
+        "that side to begin with, not that nothing was collected."
+    )
+
+    if not scorecard_data:
+        st.info("No data available.")
+        return
+
+    dim_tabs_avail = []
+    if not scorecard_data.get("region", pd.DataFrame()).empty:    dim_tabs_avail.append(("Region",    "Region",    "region"))
+    if not scorecard_data.get("branch", pd.DataFrame()).empty:    dim_tabs_avail.append(("Branch",    "Branch",    "branch"))
+    if not scorecard_data.get("executive", pd.DataFrame()).empty: dim_tabs_avail.append(("Executive", "Executive", "executive"))
+
+    if not dim_tabs_avail:
+        st.info("No dimension data found.")
+        return
+
+    _IDENTITY_COLS = OVERDUE_DEMAND_IDENTITY_COLS
+    _PCT_COLS = {"Overdue Collection %", "Month Demand Collection %", "Overall Collection %"}
+    _CR_COLS = {"Overdue (Cr)", "Overdue Collection (Cr)", "Month Demand (Cr)", "Month Demand Collection (Cr)", "Overall Collection (Cr)"}
+
+    dim_sub = st.tabs([t[0] for t in dim_tabs_avail])
+    for tab, (label, col, key) in zip(dim_sub, dim_tabs_avail):
+        with tab:
+            df = scorecard_data[key]
+            _chart_card(compute_overdue_demand_chart(df, col, label))
+
+            identity_cols = _IDENTITY_COLS.get(key, [])
+            show_cols = [
+                col, *identity_cols, "Accounts",
+                "Overdue (Cr)", "Overdue Collection (Cr)", "Overdue Collection %",
+                "Month Demand (Cr)", "Month Demand Collection (Cr)", "Month Demand Collection %",
+                "Overall Collection (Cr)", "Overall Collection %",
+            ]
+            show_cols = [c for c in show_cols if c in df.columns]
+            th = "".join(
+                f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
+                f'text-align:{"left" if c in (col, *identity_cols) else "center"};white-space:nowrap;">{c}</th>'
+                for c in show_cols
+            )
+            rows_html = ""
+            for _, row in df.iterrows():
+                cells = ""
+                for c in show_cols:
+                    val = row[c]
+                    align = "left" if c in (col, *identity_cols) else "center"
+                    style = f"padding:6px 10px;font-size:12px;text-align:{align};"
+                    if c == col:
+                        cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                    elif c in identity_cols:
+                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
+                    elif c in _PCT_COLS:
+                        color = "#16a34a" if val >= 90 else ("#d97706" if val >= 60 else "#dc2626")
+                        cells += f'<td style="{style}color:{color};font-weight:700;">{val:.2f}%</td>'
+                    elif c in _CR_COLS:
+                        cells += f'<td style="{style}">₹{val:.2f}Cr</td>'
+                    else:
+                        cells += f'<td style="{style}">{int(val):,}</td>'
+                rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
+
+            st.markdown(
+                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e5e7eb;">'
+                f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
+                f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+            _dl_btn(df, f"overdue_demand_{key}.xlsx", f"dl_overdue_demand_{key}")
+
+
 def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp):
     _section("Section 2  -  Who Needs Attention?  (Region / Branch / Executive)", margin_top="24px")
 
@@ -213,8 +293,18 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
 
             st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-top:12px;">Branch Rankings (Sortable)</div>', unsafe_allow_html=True)
             with st.expander(f"View all {len(branch_df)} branches", expanded=False):
-                st.dataframe(_safe_df(branch_df), use_container_width=True, hide_index=True)
-                _dl_btn(branch_df, "branch_quadrant.xlsx", "dl_branch_quad")
+                # Explicit subset (adds Region, keeps everything else this table
+                # already showed) -- compute_branch_quadrant's df also carries
+                # Strike% now (needed for the report's own branch table), which
+                # this dashboard view deliberately does NOT show, so a column
+                # added for one consumer doesn't silently change another's.
+                _branch_display_cols = [c for c in [
+                    "Rank", "Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%",
+                    "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)", "Concern Score",
+                ] if c in branch_df.columns]
+                _branch_display_df = branch_df[_branch_display_cols]
+                st.dataframe(_safe_df(_branch_display_df), use_container_width=True, hide_index=True)
+                _dl_btn(_branch_display_df, "branch_quadrant.xlsx", "dl_branch_quad")
         else:
             st.info("No branch data (Unit column not found).")
 
@@ -874,6 +964,7 @@ def render_portfolio_intelligence_tab(
     npa_sma2_cmp: dict | None = None,
     good_customers: pd.DataFrame | None = None,
     top_accounts_summary: dict | None = None,
+    overdue_demand_scorecard: dict | None = None,
 ) -> None:
     if not has_prev:
         st.info(
@@ -885,6 +976,9 @@ def render_portfolio_intelligence_tab(
     _divider()
 
     _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp or {})
+    _divider()
+
+    _render_overdue_demand(overdue_demand_scorecard or {})
     _divider()
 
     _render_good_bad(good_bad, has_prev)

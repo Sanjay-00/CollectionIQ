@@ -71,6 +71,30 @@ MIN_ACCOUNTS_PRODUCT_SEGMENT = 11
 # Sourcing channel and disbursement-vintage cohort breakdowns
 MIN_ACCOUNTS_SOURCE_VINTAGE = 10
 
+# Overdue vs Month Demand Collection breakdown (Section 2b / report) -- executive
+# grain only. An executive with a handful of loans can swing to 0% or 100% on a
+# single account, which isn't a meaningful signal at the top/bottom of a league
+# table. n >= this value, so 11 enforces "more than 10 accounts" (strictly >10).
+# Region/Branch grains aren't filtered this way -- they don't suffer the same
+# tiny-N volatility at realistic portfolio sizes.
+MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE = 11
+
+# SegmentName/Segment values are sometimes truncated inconsistently by the
+# source system at DIFFERENT lengths for the SAME real segment (observed in
+# real production data: "Passenger Commerc" / "Passenger Commerci" /
+# "Passenger Commercial" all the same segment, split into 3 separate rows in
+# every NPA/SOH breakdown instead of one). Two values whose first this-many
+# characters match are treated as the same segment and merged under whichever
+# variant is longest (the most complete-looking name available, since there's
+# no canonical enum to match against). 15 was verified against real data to
+# merge exactly the truncation clusters present, with zero false merges
+# against any of the ~25 other distinct real segment names -- a deliberate,
+# evidence-based choice, not an arbitrary one, but still a heuristic: two
+# genuinely different segments sharing the same first 15 characters would be
+# wrongly merged (accepted risk, given the alternative is a hardcoded alias
+# list that needs maintaining every time a new truncation length appears).
+SEGMENT_NAME_PREFIX_MATCH_CHARS = 15
+
 #  Portfolio Intelligence business-rule thresholds ────────────────────────────
 
 # "Hard Bucket": accounts this many EMIs or more overdue - a narrower, more

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export, compute_overdue_demand_pct, normalize_truncated_names
 from helpers import make_df
 
 
@@ -34,6 +34,42 @@ def _build_upload(overrides: dict, n: int = 3) -> io.BytesIO:
     buf.seek(0)
     buf.name = "test.xlsx"
     return buf
+
+
+class TestLoadAndValidateColumnOrder:
+    """Regression: different regional files (or a re-exported sheet) can hand
+    back the same ~85 columns in a different order. Without reordering to the
+    canonical template sequence, an AI Query result that includes every column
+    (e.g. "give me all cases with all columns") rendered a visibly jumbled,
+    upload-dependent column order instead of the familiar template layout."""
+
+    def test_shuffled_upload_is_restored_to_canonical_order(self):
+        upload = _build_upload({})
+        # Deliberately scramble the column order before it's ever read by
+        # load_and_validate -- a real regional file could easily have its own
+        # internal column order that doesn't match REQUIRED_COLS at all.
+        raw = pd.read_excel(upload, engine="openpyxl")
+        shuffled_cols = list(reversed(raw.columns))
+        raw = raw[shuffled_cols]
+        buf = io.BytesIO()
+        raw.to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        buf.name = "shuffled.xlsx"
+
+        df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        canon_subset = [c for c in REQUIRED_COLS if c in df.columns]
+        actual_subset = [c for c in df.columns if c in REQUIRED_COLS]
+        assert actual_subset == canon_subset
+
+    def test_unknown_extra_columns_kept_but_appended_after_known_ones(self):
+        upload = _build_upload({"Some Legacy Column": ["x", "x", "x"]})
+        df, errs = load_and_validate.__wrapped__(upload)
+        assert errs == []
+        assert "Some Legacy Column" in df.columns
+        known_cols = [c for c in df.columns if c in REQUIRED_COLS]
+        extra_pos = list(df.columns).index("Some Legacy Column")
+        assert extra_pos > list(df.columns).index(known_cols[-1])
 
 
 class TestLoadAndValidateSerialDates:
@@ -125,6 +161,57 @@ class TestLoadAndValidateDuplicateLoanNos:
         assert result_df.loc[result_df["Loan No"] == "L1", "POS"].iloc[0] == 1000.0
 
 
+class TestLoadAndValidateMissingOptionalCols:
+    """Regression: utils.py's own module docstring claims a missing non
+    -critical column (REQUIRED_COLS minus CRITICAL_COLS) 'shows a warning, not
+    an error' -- no such warning existed anywhere in the codebase. A missing
+    CoLending_Loans/LGL_FLAG/SegmentName was previously indistinguishable from
+    a real zero-count answer (e.g. a co-lending query silently reporting 'no
+    co-lending accounts' when the column simply isn't in this upload at all)."""
+
+    def test_all_columns_present_reports_none_missing(self):
+        buf = _build_upload({})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df.attrs["missing_optional_cols"] == []
+
+    def test_missing_non_critical_columns_are_listed(self):
+        data = {c: ["x"] * 3 for c in REQUIRED_COLS if c not in ("CoLending_Loans", "LGL_FLAG")}
+        data.update({
+            "Loan No": ["L1", "L2", "L3"], "Arrears / EMI": [0.0] * 3,
+            "Month Receipt Amount": [100.0] * 3,
+            "Month Collection (Excluding Reserve Collection)": [100.0] * 3,
+            "Net Collection Demand Inst+Exp+BC": [100.0] * 3,
+            "POS": [1000.0] * 3, "LCC%": [100.0] * 3, "Closing Arrears": [0.0] * 3,
+            "Month Due-Inst": [100.0] * 3, "Month Due-Exp": [0.0] * 3,
+            "Total Cum Collection": [1000.0] * 3, "Strike": ["Y"] * 3, "Due Dt": [5] * 3,
+        })
+        buf = io.BytesIO()
+        pd.DataFrame(data).to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        buf.name = "missing_cols.xlsx"
+
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert "CoLending_Loans" in result_df.attrs["missing_optional_cols"]
+        assert "LGL_FLAG" in result_df.attrs["missing_optional_cols"]
+        # Never flag a CRITICAL column as merely "optional" -- that path is a
+        # hard failure (missing critical column(s)) long before this point.
+        assert "Loan No" not in result_df.attrs["missing_optional_cols"]
+
+    def test_missing_critical_column_still_hard_fails_not_just_warns(self):
+        data = {c: ["x"] * 3 for c in REQUIRED_COLS if c != "POS"}
+        data.update({"Loan No": ["L1", "L2", "L3"], "Arrears / EMI": [0.0] * 3})
+        buf = io.BytesIO()
+        pd.DataFrame(data).to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        buf.name = "missing_critical.xlsx"
+
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert result_df is None
+        assert errs and "POS" in errs[0]
+
+
 class TestAssignBuckets:
     """Bucket assignment is the foundation - every downstream calculation depends on it."""
 
@@ -150,6 +237,21 @@ class TestAssignBuckets:
         result = assign_buckets(df)
         assert result["curr_bucket"].iloc[0] == expected
 
+    def test_na_bucket_has_no_severity_score(self):
+        # Regression: BUCKET_SCORE used to map "NA" (Arrears/EMI missing/
+        # unparseable that period -- not a real delinquency state) to -1, lower
+        # than every real bucket. That made a loan going from "NA" (unknown) to
+        # STD (the healthiest real bucket) register as "rolled forward"
+        # (worsened) purely because -1 < 0 -- confirmed on real production data.
+        # "NA" must map to NaN (not comparable), never a real number.
+        df = pd.DataFrame({
+            "Arrears / EMI": [np.nan],
+            "POS": [0.0], "Closing Arrears": [0.0],
+        })
+        result = assign_buckets(df)
+        assert result["curr_bucket"].iloc[0] == "NA"
+        assert pd.isna(result["curr_score"].iloc[0])
+
     def test_multiple_rows_assigned_independently(self):
         df = pd.DataFrame({
             "Arrears / EMI": [0.0, 1.5, 5.0],
@@ -168,6 +270,140 @@ class TestAssignBuckets:
         base = {"Arrears / EMI": 0.0}
         df = pd.DataFrame({k: [v] for k, v in {**base, **row}.items()})
         assert assign_buckets(df)["SOH"].iloc[0] == expected_soh
+
+
+def _overdue_demand_row(
+    arrear_opening: float, month_due_inst: float = 0.0, month_due_exp: float = 0.0,
+    month_due_bc: float = 0.0, month_due_pc: float = 0.0, paid: float = 0.0,
+) -> pd.DataFrame:
+    """One-loan DataFrame through the REAL assign_buckets path (not a hand-built
+    'Overdue'/'MonthDemandExclPC' column), so these tests exercise the exact same
+    code production uses."""
+    return assign_buckets(pd.DataFrame({
+        "Arrears / EMI": [0.0], "POS": [0.0], "Closing Arrears": [0.0],
+        "Arrear Opening": [arrear_opening],
+        "Month Due-Inst": [month_due_inst], "Month Due-Exp": [month_due_exp],
+        "MONTH DUE (BC)": [month_due_bc], "MONTH DUE PC": [month_due_pc],
+        "Month Collection (Excluding Reserve Collection)": [paid],
+    }))
+
+
+class TestOverdueDemandCollectionPct:
+    """The overdue-first collection waterfall: a payment clears last month's
+    carried-over overdue (Arrear Opening) BEFORE any of it counts against this
+    month's own EMI demand -- confirmed against real business examples worked
+    through with the user, not invented after the fact."""
+
+    def test_example_1_overdue_cleared_then_partial_demand(self):
+        # prev overdue 10k, month demand 20k, paid 20k -> overdue 100%, demand 50%
+        df = _overdue_demand_row(arrear_opening=10_000, month_due_inst=20_000, paid=20_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == 50.0
+
+    def test_example_2_overdue_partial_no_demand_collected(self):
+        # prev overdue 40k, month demand 10k, paid 10k -> overdue 25%, demand 0%
+        df = _overdue_demand_row(arrear_opening=40_000, month_due_inst=10_000, paid=10_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 25.0
+        assert stats["demand_pct"] == 0.0
+
+    def test_example_3_overdue_cleared_then_60pct_demand(self):
+        # prev overdue 10k, month demand 50k, paid 40k -> overdue 100%, demand 60%
+        df = _overdue_demand_row(arrear_opening=10_000, month_due_inst=50_000, paid=40_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == 60.0
+
+    def test_example_4_overpayment_caps_both_at_100(self):
+        # prev overdue 20k, month demand 50k, paid 70k+ -> both 100%, never > 100%
+        df = _overdue_demand_row(arrear_opening=20_000, month_due_inst=50_000, paid=75_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == 100.0
+
+    def test_negative_overdue_clipped_both_full_paid(self):
+        # Arrear Opening -20k (customer already in credit) clips to 0 -- the
+        # whole 60k payment is free to apply to demand. overdue_pct is 100%
+        # (nothing outstanding), not 0% and not N/A.
+        df = _overdue_demand_row(arrear_opening=-20_000, month_due_inst=60_000, paid=60_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == 100.0
+
+    def test_negative_overdue_clipped_partial_demand(self):
+        # Same negative-overdue case, but only 50k of the 60k demand gets paid.
+        # overdue_pct is still 100% (nothing outstanding); demand_pct = 50/60.
+        df = _overdue_demand_row(arrear_opening=-20_000, month_due_inst=60_000, paid=50_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == round(50_000 / 60_000 * 100, 2)
+
+    def test_zero_overdue_and_zero_demand_is_100_not_na_not_0(self):
+        # A loan with no carried-over overdue AND nothing due this month (e.g. a
+        # closed/matured account) must never divide by zero -- 100%, not N/A.
+        df = _overdue_demand_row(arrear_opening=0, month_due_inst=0, paid=0)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == 100.0
+
+    def test_penal_charges_excluded_from_month_demand(self):
+        # MONTH DUE PC must NOT inflate Month Demand -- per the business rule,
+        # penal charges are not core EMI demand for this metric.
+        df = _overdue_demand_row(arrear_opening=0, month_due_inst=10_000, month_due_pc=999_999, paid=10_000)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["demand_total"] == 10_000
+        assert stats["demand_pct"] == 100.0
+
+    def test_group_level_sums_not_averaged(self):
+        # Two loans in the same group: one fully collected, one not -- the group
+        # % must come from SUMMING overdue/collected across loans, then dividing
+        # once, never averaging each loan's own %.
+        df = pd.concat([
+            _overdue_demand_row(arrear_opening=10_000, paid=10_000),   # overdue fully collected
+            _overdue_demand_row(arrear_opening=10_000, paid=0),        # nothing collected
+        ], ignore_index=True)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_total"] == 20_000
+        assert stats["overdue_collected"] == 10_000
+        assert stats["overdue_pct"] == 50.0  # not (100+0)/2
+
+    def test_one_loans_credit_does_not_offset_anothers_overdue(self):
+        # A credit-balance loan (Arrear Opening -5k, clipped to 0) must contribute
+        # ZERO to the group's total overdue -- not a negative amount that would
+        # silently reduce another loan's real overdue in the same group.
+        df = pd.concat([
+            _overdue_demand_row(arrear_opening=-5_000, paid=0),   # in credit, no real overdue
+            _overdue_demand_row(arrear_opening=10_000, paid=5_000),  # real overdue, half collected
+        ], ignore_index=True)
+        stats = compute_overdue_demand_pct(df)
+        assert stats["overdue_total"] == 10_000  # NOT 10_000 - 5_000
+        assert stats["overdue_collected"] == 5_000
+        assert stats["overdue_pct"] == 50.0
+
+    def test_empty_df_returns_100_defaults(self):
+        stats = compute_overdue_demand_pct(pd.DataFrame())
+        assert stats["overdue_pct"] == 100.0
+        assert stats["demand_pct"] == 100.0
+
+    def test_per_loan_pct_columns_exist_for_loan_table_display(self):
+        # A loan_table ("case wise") AI Query can only SELECT a real per-row
+        # column, never an aggregate ratio measure -- these two literal columns
+        # are what makes "show overdue collection % case wise" possible at all.
+        df = _overdue_demand_row(arrear_opening=10_000, month_due_inst=20_000, paid=20_000)
+        assert df["Overdue Collection %"].iloc[0] == 100.0
+        assert df["Month Demand Collection %"].iloc[0] == 50.0
+
+    def test_per_loan_pct_columns_zero_denominator_is_100(self):
+        df = _overdue_demand_row(arrear_opening=0, month_due_inst=0, paid=0)
+        assert df["Overdue Collection %"].iloc[0] == 100.0
+        assert df["Month Demand Collection %"].iloc[0] == 100.0
+
+    def test_per_loan_pct_columns_match_group_level_for_single_loan(self):
+        df = _overdue_demand_row(arrear_opening=40_000, month_due_inst=10_000, paid=10_000)
+        stats = compute_overdue_demand_pct(df)
+        assert df["Overdue Collection %"].iloc[0] == stats["overdue_pct"]
+        assert df["Month Demand Collection %"].iloc[0] == stats["demand_pct"]
 
 
 class TestApplyFilters:
@@ -417,6 +653,55 @@ class TestCleanMobile:
         result = clean_mobile(pd.Series([9876543210.0, float("nan")]))
         assert result.iloc[1] == ""
         assert "nan" not in result.tolist()
+
+
+class TestNormalizeTruncatedNames:
+    """Regression: SegmentName values truncated at different lengths by the
+    source system for the SAME real segment (confirmed on real production
+    data -- "Passenger Commerc" / "Passenger Commerci" / "Passenger
+    Commercial") used to split one segment's NPA/SOH numbers across several
+    rows in every segment-wise breakdown instead of one."""
+
+    def test_truncated_variants_merge_to_longest(self):
+        s = pd.Series(["Passenger Commerc", "Passenger Commerci", "Passenger Commercial"])
+        result = normalize_truncated_names(s)
+        assert (result == "Passenger Commercial").all()
+
+    def test_distinct_segments_are_not_merged(self):
+        s = pd.Series(["Heavy Goods Vehicle", "Light Goods Vehicle", "Private Car", "Machinery"])
+        result = normalize_truncated_names(s)
+        assert result.tolist() == s.tolist()
+
+    def test_nan_left_untouched(self):
+        s = pd.Series(["Passenger Commerc", None, "Passenger Commercial"])
+        result = normalize_truncated_names(s)
+        assert pd.isna(result.iloc[1])
+        assert result.iloc[0] == "Passenger Commercial"
+
+    def test_empty_series_returns_as_is(self):
+        s = pd.Series([], dtype=object)
+        assert normalize_truncated_names(s).empty
+
+    def test_all_nan_series_returns_untouched(self):
+        s = pd.Series([None, None])
+        result = normalize_truncated_names(s)
+        assert result.isna().all()
+
+    def test_custom_prefix_length(self):
+        s = pd.Series(["ABCDEFGHIJ-1", "ABCDEFGHIJ-2"])
+        result = normalize_truncated_names(s, prefix_chars=10)
+        assert (result == "ABCDEFGHIJ-1").all() or (result == "ABCDEFGHIJ-2").all()
+        assert result.iloc[0] == result.iloc[1]  # merged either way
+
+
+class TestLoadAndValidateSegmentNormalization:
+    def test_segment_name_truncation_variants_merged_on_load(self):
+        buf = _build_upload({
+            "SegmentName": ["Passenger Commerc", "Passenger Commerci", "Passenger Commercial"],
+        })
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert (result_df["SegmentName"] == "Passenger Commercial").all()
 
 
 class TestBuildHtmlExportEscaping:

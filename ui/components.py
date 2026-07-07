@@ -5,7 +5,7 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
-from utils import load_and_validate
+from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
 
 
 def _bump_data_version() -> None:
@@ -252,4 +252,11 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     # pd.concat doesn't propagate .attrs from its inputs, so set it explicitly
     # on the combined frame -- this is the only place callers need to check.
     combined.attrs["dropped_duplicate_loans"] = dropped_dupes
+    # Recomputed fresh on the FINAL combined frame, not unioned from individual
+    # files' own attrs -- pd.concat already merges each file's columns (a column
+    # present in only one regional file still ends up in `combined`, NaN-filled
+    # for the others), so "missing" only means anything once evaluated here.
+    combined.attrs["missing_optional_cols"] = [
+        c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in combined.columns
+    ]
     return combined, errors

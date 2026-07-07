@@ -30,7 +30,7 @@ def _base_state(**overrides):
 
 class TestPortfolioAnalyzerLogsSwallowedErrors:
     def test_failing_section_is_logged_and_recorded(self, monkeypatch, caplog):
-        monkeypatch.setitem(_SECTION_FN, "verdict", lambda c, p: (_ for _ in ()).throw(ValueError("boom")))
+        monkeypatch.setitem(_SECTION_FN, "verdict", lambda c, p, m: (_ for _ in ()).throw(ValueError("boom")))
         state = _base_state(enabled_sections=["verdict"])
 
         with caplog.at_level(logging.WARNING, logger="report_agent.nodes.portfolio_analyzer"):

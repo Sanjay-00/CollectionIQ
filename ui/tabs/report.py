@@ -54,6 +54,7 @@ def render_report_tab(
         inc_concentration = st.checkbox("Concentration Map", value=True, key="rpt_concentration")
     with rpt_c3:
         inc_region  = st.checkbox("Region Scorecard",     value=True, key="rpt_region")
+        inc_overdue_demand = st.checkbox("Overdue vs Month Demand", value=True, key="rpt_overdue_demand")
         inc_product = st.checkbox("Segment NPA Breakdown", value=True, key="rpt_product")
         inc_top_acc = st.checkbox("Top At-Risk Accounts", value=True, key="rpt_top_accounts")
         inc_fleet   = st.checkbox("Fleet Exposure",       value=True, key="rpt_fleet")
@@ -118,6 +119,7 @@ def render_report_tab(
         if st.session_state.get("rpt_quadrant"):      enabled_sections.append("branch_quadrant")
         if st.session_state.get("rpt_concentration"): enabled_sections.append("concentration")
         if st.session_state.get("rpt_region"):        enabled_sections.append("region_scorecard")
+        if st.session_state.get("rpt_overdue_demand"): enabled_sections.append("overdue_demand")
         if st.session_state.get("rpt_product"):       enabled_sections.append("product_analysis")
         if st.session_state.get("rpt_top_accounts"):  enabled_sections.append("top_accounts")
         if st.session_state.get("rpt_fleet"):         enabled_sections.append("fleet_exposure")

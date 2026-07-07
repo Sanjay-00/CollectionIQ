@@ -6,6 +6,7 @@ import datetime
 import html
 import logging
 from report_agent.state import ReportState
+from analysis.portfolio_intelligence import OVERDUE_DEMAND_IDENTITY_COLS
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +331,104 @@ def _render_region_scorecard(data: dict) -> str:
         f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
         f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
     )
+
+
+def _render_overdue_demand(data: dict) -> str:
+    """Top 5 / bottom 5 by Month Demand Collection %, per dimension (Region/
+    Branch/Executive) -- NOT every row (see compute_overdue_demand_section's
+    docstring: printing every branch/executive was responsible for roughly
+    half this report's total row count). A payment clears last month's
+    carried-over overdue FIRST, only the remainder counts against this
+    month's own EMI demand (see utils.compute_overdue_demand_pct). 100% means
+    nothing was outstanding on that side, not that nothing was collected.
+    Branch rows carry their Region; Executive rows carry both Branch and Region."""
+    def _pct_color(pct):
+        return "#16a34a" if pct >= 90 else "#d97706" if pct >= 60 else "#dc2626"
+
+    # Derived from the single source of truth (analysis/portfolio_intelligence.py's
+    # OVERDUE_DEMAND_IDENTITY_COLS, Title-case column names) rather than a second
+    # hardcoded copy -- {"region": "Region", "branch": "Branch"} used to be
+    # maintained separately here, independently of the identical mapping in
+    # ui/tabs/portfolio_intelligence.py and report_agent/sections/overdue_demand.py.
+    _IDENTITY_LABEL = {c.lower(): c for cols in OVERDUE_DEMAND_IDENTITY_COLS.values() for c in cols}
+    # Fixed column widths, keyed by identity-column count (0 = region's own
+    # table, 1 = branch's, 2 = executive's) -- with table-layout:fixed below,
+    # this is what makes the top5 and bottom5 tables in the same row (and the
+    # region/branch/executive tables as a family) line up as a real grid
+    # instead of each table silently auto-sizing its columns from its own
+    # content/header text width, which is what made the report look
+    # misaligned: two tables showing the SAME columns end up with DIFFERENT
+    # column widths purely because one has longer names or fewer rows.
+    _COL_WIDTHS = {
+        0: [25, 15, 15, 15, 15, 15],           # Name, Accounts, Overdue, Month Demand, Overdue%, Demand%
+        1: [20, 15, 13, 13, 13, 13, 13],       # + one identity column
+        2: [18, 11, 11, 12, 12, 12, 12, 12],   # + two identity columns
+    }
+
+    def _table(items, name_label, identity_keys, label, label_color, label_bg):
+        widths = _COL_WIDTHS[len(identity_keys)]
+        colgroup = "".join(f'<col style="width:{w}%;">' for w in widths)
+        identity_headers = "".join(
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{_IDENTITY_LABEL[k]}</th>'
+            for k in identity_keys
+        )
+        _num_th = (
+            'style="background:#111827;color:{c};padding:9px 10px;text-align:right;'
+            'font-size:10px;font-weight:700;text-transform:uppercase;"'
+        ).format(c=YELLOW)
+        header = (
+            f'<tr><th style="background:#111827;color:{YELLOW};padding:9px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{name_label}</th>'
+            f'{identity_headers}'
+            f'<th {_num_th}>Accounts</th>'
+            f'<th {_num_th}>Overdue</th>'
+            f'<th {_num_th}>Month Demand</th>'
+            f'<th {_num_th}>Overdue Coll %</th>'
+            f'<th {_num_th}>Demand Coll %</th></tr>'
+        )
+        rows = "".join(
+            f'<tr style="background:{"#f0fdf4" if label_color=="#16a34a" else "#fff5f5"};">'
+            f'<td style="padding:8px 10px;font-weight:600;font-size:12px;word-break:break-word;">{_esc(r["name"])}</td>'
+            + "".join(
+                f'<td style="padding:8px 10px;font-size:12px;word-break:break-word;">{_esc(r.get(k, "") or "&#8212;")}</td>'
+                for k in identity_keys
+            )
+            + f'<td style="padding:8px 10px;font-size:12px;text-align:right;">{r["accounts"]:,}</td>'
+            f'<td style="padding:8px 10px;font-size:12px;text-align:right;">&#8377;{r["overdue_cr"]:.2f}Cr</td>'
+            f'<td style="padding:8px 10px;font-size:12px;text-align:right;">&#8377;{r["demand_cr"]:.2f}Cr</td>'
+            f'<td style="padding:8px 10px;font-size:12px;text-align:right;color:{_pct_color(r["overdue_pct"])};">{r["overdue_pct"]:.2f}%</td>'
+            f'<td style="padding:8px 10px;font-weight:800;font-size:12px;text-align:right;color:{_pct_color(r["demand_pct"])};">{r["demand_pct"]:.2f}%</td>'
+            f'</tr>'
+            for r in items
+        )
+        return (
+            f'<td width="50%" valign="top" style="padding:4px;">'
+            f'<div style="font-size:10px;font-weight:700;color:{label_color};text-transform:uppercase;'
+            f'letter-spacing:1px;background:{label_bg};padding:5px 10px;border-radius:6px;margin-bottom:8px;">{label}</div>'
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;overflow-x:auto;">'
+            f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;">'
+            f'<colgroup>{colgroup}</colgroup>'
+            f'<thead>{header}</thead><tbody>{rows}</tbody></table></div>'
+            f'</td>'
+        )
+
+    dim_labels = [
+        (key, key.capitalize(), [c.lower() for c in OVERDUE_DEMAND_IDENTITY_COLS[key]])
+        for key in ("region", "branch", "executive")
+    ]
+    blocks = ""
+    for key, name_label, identity_keys in dim_labels:
+        dim_data = data.get(key)
+        if not dim_data or not (dim_data.get("top5") or dim_data.get("bottom5")):
+            continue
+        top_td = _table(dim_data.get("top5", []),    name_label, identity_keys, "&#9650; Top 5 by Month Demand Collection %", "#16a34a", "rgba(22,163,74,0.10)")
+        bot_td = _table(dim_data.get("bottom5", []), name_label, identity_keys, "&#9660; Bottom 5 by Month Demand Collection %", "#dc2626", "rgba(220,38,38,0.10)")
+        blocks += (
+            f'<div style="font-size:11px;font-weight:700;color:#374151;margin:12px 0 6px;text-transform:uppercase;letter-spacing:0.6px;">By {name_label} ({dim_data.get("total", 0)} total)</div>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:14px;"><tr>{top_td}{bot_td}</tr></table>'
+        )
+    if not blocks:
+        return ""
+    return _sec_label("Overdue vs Month Demand Collection") + blocks
 
 
 def _render_top_accounts(data: dict) -> str:
@@ -840,22 +939,27 @@ def _render_branch_quadrant(data: dict) -> str:
     if concern:
         header = "".join(
             f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
-            for h in ["Rank", "Branch", "Concern Score", "Collection%", "NPA%", "SOH"]
+            for h in ["Rank", "Branch", "Region", "Accounts", "SMA-2%", "NPA%", "Collection%", "Strike%", "Roll Fwd%", "Chronic (3M+)", "SOH"]
         )
         rows = "".join(
             f'<tr>'
             f'<td style="padding:8px 12px;font-size:12px;">{c["Rank"]}</td>'
             f'<td style="padding:8px 12px;font-weight:600;font-size:12px;">{_esc(c["Branch"])}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;font-weight:700;color:#dc2626;">{c["Concern Score"]}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;">{c["Collection%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{_esc(c.get("Region", "") or "&#8212;")}</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Accounts"]:,}</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["SMA-2%"]:.1f}%</td>'
             f'<td style="padding:8px 12px;font-size:12px;">{c["NPA%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Collection%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Strike%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Roll Fwd%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Chronic (3M+)"]:,}</td>'
             f'<td style="padding:8px 12px;font-size:12px;">&#8377;{c["SOH (Cr)"]:.2f}Cr</td>'
             f'</tr>'
             for c in concern
         )
         table_html = (
             f'<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Highest Concern Branches</div>'
-            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;overflow-x:auto;">'
             f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
             f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
         )
@@ -1007,7 +1111,7 @@ def _render_good_customers(data: dict) -> str:
 SECTION_ORDER = [
     "portfolio_health", "verdict", "risk_flags", "risk_indicators",
     "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
-    "region_scorecard", "product_analysis", "top_accounts", "fleet_exposure",
+    "region_scorecard", "overdue_demand", "product_analysis", "top_accounts", "fleet_exposure",
     "repossession", "good_customers", "branch_performance",
     "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]
@@ -1021,6 +1125,7 @@ _RENDERERS = {
     "branch_quadrant":            _render_branch_quadrant,
     "concentration":              _render_concentration,
     "region_scorecard":           _render_region_scorecard,
+    "overdue_demand":             _render_overdue_demand,
     "product_analysis":           _render_product_analysis,
     "top_accounts":               _render_top_accounts,
     "fleet_exposure":             _render_fleet_exposure,

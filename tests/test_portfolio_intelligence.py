@@ -16,6 +16,7 @@ from analysis.portfolio_intelligence import (
     compute_repossession_list,
     compute_good_customers,
     build_vintage_chart,
+    compute_overdue_demand_scorecard,
 )
 import analysis.portfolio_intelligence as pi
 from helpers import make_df
@@ -71,6 +72,33 @@ class TestComputePulseKpis:
 
 # ── compute_region_scorecard ─────────────────────────────────────────────────
 
+class TestRollRatesNaBucketNotComparable:
+    """Regression: analysis.portfolio_intelligence._roll_rates() -- shared by the
+    region scorecard, branch quadrant, and NPA/SMA-2 comparison -- used to treat
+    "NA" (Arrears/EMI missing/unparseable that period) as a real, ordered bucket
+    scoring -1, lower than every real bucket. A loan moving from "NA" to STD (the
+    healthiest real bucket) was miscounted as "rolled forward" purely from that
+    score gap. Confirmed on real production data."""
+
+    def test_na_to_std_is_not_counted_as_roll_forward(self):
+        grp = make_df([
+            {"prev_bucket": "NA", "curr_bucket": "STD"},
+            {"prev_bucket": "NA", "curr_bucket": "STD"},
+        ])
+        assert pi._roll_rates(grp) == (None, None)
+
+    def test_mixed_na_and_real_transitions(self):
+        grp = make_df([
+            {"prev_bucket": "NA", "curr_bucket": "STD"},     # not comparable, excluded
+            {"prev_bucket": "SMA-2", "curr_bucket": "NPA"},  # real roll-forward
+            {"prev_bucket": "NPA", "curr_bucket": "STD"},    # real roll-backward
+        ])
+        fwd, bwd = pi._roll_rates(grp)
+        # Denominator must be 2 (the 2 real comparisons), not 3.
+        assert fwd == 50.0
+        assert bwd == 50.0
+
+
 class TestComputeRegionScorecard:
     def _dfs(self):
         curr = make_df([
@@ -115,6 +143,118 @@ class TestComputeRegionScorecard:
         out = compute_region_scorecard(curr, prev).set_index("Region")
         assert pd.isna(out.loc["NORTH", "Δ NPA%"])
         assert pd.isna(out.loc["NORTH", "Δ SMA-2%"])
+
+
+# ── compute_overdue_demand_scorecard ─────────────────────────────────────────
+
+class TestComputeOverdueDemandScorecard:
+    """make_df sets 'Overdue'/'MonthDemandExclPC'/'OverdueCollected'/'DemandCollected'
+    directly (bypassing assign_buckets), the same pattern it already uses for SOH/
+    curr_bucket -- utils.compute_overdue_demand_pct's own formula is covered
+    end-to-end (through the real assign_buckets path) in test_utils.py."""
+
+    def _dfs(self):
+        # EXEC1/EXEC2 each need >= MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE (11)
+        # accounts to survive the executive-grain filter -- replicated 10x/11x
+        # rather than a single row per pattern, which preserves every ratio
+        # (sums scale linearly) so the existing % assertions stay valid.
+        return make_df(
+            [{"RegionName": "WEST", "Unit": "A", "MNT NAME": "EXEC1",
+              "Overdue": 10_000, "OverdueCollected": 10_000,
+              "MonthDemandExclPC": 20_000, "DemandCollected": 10_000}] * 10
+            + [{"RegionName": "WEST", "Unit": "A", "MNT NAME": "EXEC1",
+                "Overdue": 0, "OverdueCollected": 0,
+                "MonthDemandExclPC": 0, "DemandCollected": 0}]
+            + [{"RegionName": "EAST", "Unit": "B", "MNT NAME": "EXEC2",
+                "Overdue": 40_000, "OverdueCollected": 10_000,
+                "MonthDemandExclPC": 10_000, "DemandCollected": 0}] * 11
+        )
+
+    def test_region_grain_sums_not_averages(self):
+        out = compute_overdue_demand_scorecard(self._dfs())["region"]
+        west = out.set_index("Region").loc["WEST"]
+        # 2 loans: overdue 10k (fully collected) + overdue 0 (100% by the zero rule)
+        # must NOT average to (100+100)/2 by coincidence here -- assert via the
+        # underlying totals instead, since both loans happen to be 100%.
+        assert west["Overdue Collection %"] == 100.0
+
+    def test_region_with_partial_collection(self):
+        out = compute_overdue_demand_scorecard(self._dfs())["region"]
+        east = out.set_index("Region").loc["EAST"]
+        assert east["Overdue Collection %"] == 25.0
+        assert east["Month Demand Collection %"] == 0.0
+
+    def test_branch_and_executive_grains_present(self):
+        result = compute_overdue_demand_scorecard(self._dfs())
+        assert set(result.keys()) == {"region", "branch", "executive"}
+        assert not result["branch"].empty
+        assert not result["executive"].empty
+
+    def test_branch_rows_carry_region(self):
+        out = compute_overdue_demand_scorecard(self._dfs())["branch"]
+        assert "Region" in out.columns
+        assert out.set_index("Branch").loc["B", "Region"] == "EAST"
+
+    def test_executive_rows_carry_branch_and_region(self):
+        out = compute_overdue_demand_scorecard(self._dfs())["executive"]
+        assert {"Branch", "Region"} <= set(out.columns)
+        row = out.set_index("Executive").loc["EXEC2"]
+        assert row["Branch"] == "B"
+        assert row["Region"] == "EAST"
+
+    def test_overall_collection_matches_existing_collection_pct_formula(self):
+        # Overall Collection % must be the SAME formula as the dashboard's existing
+        # Collection % KPI (Month Collection (Excl Reserve) / Net Collection Demand
+        # Inst+Exp+BC) -- NOT a third, independently-derived ratio built from the
+        # new Overdue/MonthDemandExclPC columns (those two totals are NOT the same
+        # thing as Net Collection Demand Inst+Exp+BC on real data).
+        df = make_df([
+            {"RegionName": "WEST",
+             "Month Collection (Excluding Reserve Collection)": 30_000.0,
+             "Net Collection Demand Inst+Exp+BC": 100_000.0,
+             # Overdue/demand deliberately set to totally different numbers, so a
+             # test that accidentally used them instead would fail loudly.
+             "Overdue": 999_000, "OverdueCollected": 999_000,
+             "MonthDemandExclPC": 1, "DemandCollected": 1},
+        ])
+        out = compute_overdue_demand_scorecard(df)["region"]
+        west = out.set_index("Region").loc["WEST"]
+        assert west["Overall Collection %"] == 30.0
+        assert west["Overall Collection (Cr)"] == round(30_000 / 1e7, 2)
+
+    def test_amount_columns_present_alongside_percentages(self):
+        out = compute_overdue_demand_scorecard(self._dfs())["region"]
+        for c in ["Overdue Collection (Cr)", "Month Demand Collection (Cr)", "Overall Collection (Cr)", "Overall Collection %"]:
+            assert c in out.columns
+
+    def test_empty_df_returns_empty_dict_of_empty_frames(self):
+        result = compute_overdue_demand_scorecard(make_df([]))
+        assert all(df.empty for df in result.values())
+
+    def test_executive_below_min_accounts_excluded(self):
+        # MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE = 11 -- an executive with only
+        # a handful of loans can swing to 0%/100% on a single account, not a
+        # meaningful signal in a league table. Region/Branch grains aren't
+        # filtered this way.
+        curr = make_df([
+            {"RegionName": "WEST", "Unit": "A", "MNT NAME": "TINY_EXEC",
+             "Overdue": 1_000, "OverdueCollected": 1_000,
+             "MonthDemandExclPC": 1_000, "DemandCollected": 1_000},
+        ] * 5)  # only 5 accounts -- below the threshold
+        out = compute_overdue_demand_scorecard(curr)
+        assert "TINY_EXEC" not in out["executive"].get("Executive", pd.Series(dtype=object)).values
+        # But the SAME loans still count at the region/branch grain.
+        assert not out["region"].empty
+        assert not out["branch"].empty
+
+    def test_executive_at_min_accounts_included(self):
+        curr = make_df([
+            {"RegionName": "WEST", "Unit": "A", "MNT NAME": "JUST_ENOUGH",
+             "Overdue": 1_000, "OverdueCollected": 1_000,
+             "MonthDemandExclPC": 1_000, "DemandCollected": 1_000},
+        ] * 11)  # exactly the threshold
+        out = compute_overdue_demand_scorecard(curr)
+        assert "JUST_ENOUGH" in out["executive"]["Executive"].values
 
 
 # ── compute_npa_sma2_comparison ──────────────────────────────────────────────
@@ -301,6 +441,21 @@ class TestComputeBranchQuadrant:
         assert rows.loc["BADBR", "NPA%"] == 40.0   # 2 of 5
         assert rows.loc["GOODBR", "NPA%"] == 0.0
 
+    def test_region_and_strike_pct_present(self):
+        # Region and Strike% were added on request -- Region so the dashboard's
+        # branch table and the report's "Highest Concern Branches" table can
+        # both show which region a branch belongs to; Strike% specifically for
+        # the report table (the dashboard table deliberately doesn't display it).
+        curr = make_df([
+            {"Unit": "BR1", "RegionName": "AKOLA", "Strike": "Y"} for _ in range(3)
+        ] + [
+            {"Unit": "BR1", "RegionName": "AKOLA", "Strike": "N"} for _ in range(2)
+        ])
+        out, _ = compute_branch_quadrant(curr)
+        row = out.set_index("Branch").loc["BR1"]
+        assert row["Region"] == "AKOLA"
+        assert row["Strike%"] == 60.0  # 3 of 5
+
 
 # ── compute_executive_recovery ───────────────────────────────────────────────
 
@@ -335,6 +490,27 @@ class TestComputeExecutiveRecovery:
     def test_sorted_descending_by_net_recovery(self):
         out = compute_executive_recovery(self._df())
         assert out.iloc[0]["Executive"].startswith("EXEC2")
+
+    def test_na_prev_bucket_never_counts_as_slipped(self):
+        # Regression: "NA" (Arrears/EMI missing/unparseable last period, not a
+        # real delinquency state) used to score as -1 in BUCKET_SCORE, lower
+        # than every real bucket -- so a loan moving from "NA" to STD (the
+        # HEALTHIEST real bucket) was miscounted as "slipped" (worsened) purely
+        # from the score gap, with zero real deterioration. Confirmed on real
+        # production data (an executive with 0% NPA/SMA-2 showing 100% Roll
+        # Fwd%, driven entirely by "NA"-origin loans).
+        df = make_df([
+            {"MNT NAME": "EXEC3", "prev_bucket": "NA", "curr_bucket": "STD"},
+            {"MNT NAME": "EXEC3", "prev_bucket": "NA", "curr_bucket": "STD"},
+            {"MNT NAME": "EXEC3", "prev_bucket": "NA", "curr_bucket": "STD"},
+        ])
+        out = compute_executive_recovery(df)
+        # With every comparison excluded (no real prior bucket to compare against),
+        # the executive is either dropped entirely (no valid comparisons at all) or
+        # kept with Slipped/Rescued both 0 -- never counted as having slipped.
+        assert out.empty or (
+            out.loc[out["Executive"].str.startswith("EXEC3"), "Slipped"] == 0
+        ).all()
 
 
 # ── compute_good_bad ─────────────────────────────────────────────────────────
@@ -457,6 +633,39 @@ class TestComputeProductAnalysis:
         out = compute_product_analysis(curr)
         assert "vintage" not in out
 
+    def test_as_of_anchors_future_exclusion_to_reporting_month_not_wall_clock(self):
+        # Regression: "exclude post-dated agreement dates" used to anchor to
+        # the real wall-clock date (pd.Period.now), not the report's OWN
+        # reporting month. Retroactively analyzing an old file (e.g. a March
+        # extract opened today, months later) would silently exclude/include
+        # cohorts relative to TODAY instead of March.
+        report_month = pd.Timestamp("2026-03-15")
+        # A cohort that is in the FUTURE relative to the March report month,
+        # but in the PAST relative to the real wall-clock date this test runs
+        # on -- the only way to prove as_of is actually driving the cutoff,
+        # not incidentally agreeing with wall-clock "now".
+        cohort_after_report_month = pd.Timestamp.today() - pd.DateOffset(months=1)
+        assert cohort_after_report_month > report_month  # sanity: test premise holds
+        cohort_before_report_month = pd.Timestamp("2025-12-01")
+
+        curr = make_df([
+            *[{"Ag_Date": cohort_before_report_month, "curr_bucket": "STD"} for _ in range(10)],
+            *[{"Ag_Date": cohort_after_report_month, "curr_bucket": "STD"} for _ in range(10)],
+        ])
+
+        out_with_as_of = compute_product_analysis(curr, as_of=report_month)
+        cohorts_with = out_with_as_of["vintage"]["Disbursement Month"].tolist()
+        assert str(cohort_after_report_month.to_period("M")) not in cohorts_with
+        assert str(cohort_before_report_month.to_period("M")) in cohorts_with
+
+        # Without as_of (defaults to wall-clock now), the same "future" cohort
+        # is NOT excluded, since it's actually in the past relative to today --
+        # demonstrating the old, buggy behavior this default preserves only for
+        # callers with no reporting date to hand.
+        out_without_as_of = compute_product_analysis(curr)
+        cohorts_without = out_without_as_of["vintage"]["Disbursement Month"].tolist()
+        assert str(cohort_after_report_month.to_period("M")) in cohorts_without
+
 
 # ── compute_risk_indicators ───────────────────────────────────────────────────
 
@@ -546,6 +755,30 @@ class TestComputeFleetExposure:
         assert result["count"] == 0
         assert result["top_df"].empty
 
+    def test_top_df_includes_region_and_unit(self):
+        curr = make_df([
+            *[{"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "AKOLA", "Unit": "UNIT_1"} for _ in range(3)],
+        ])
+        result = compute_fleet_exposure(curr)
+        row = result["top_df"].iloc[0]
+        assert row["Region"] == "AKOLA"
+        assert row["Unit"] == "UNIT_1"
+
+    def test_region_and_unit_use_most_common_when_customer_spans_branches(self):
+        # Cust Mob No isn't guaranteed unique per branch -- a fleet customer's
+        # loans can legitimately span more than one region/branch. The most
+        # common (mode) value is shown as a single representative, not every
+        # branch this customer touches.
+        curr = make_df([
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "AKOLA", "Unit": "UNIT_1"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "AKOLA", "Unit": "UNIT_1"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "LATUR", "Unit": "UNIT_2"},
+        ])
+        result = compute_fleet_exposure(curr)
+        row = result["top_df"].iloc[0]
+        assert row["Region"] == "AKOLA"
+        assert row["Unit"] == "UNIT_1"
+
 
 # ── compute_top_accounts ──────────────────────────────────────────────────────
 
@@ -619,6 +852,25 @@ class TestComputeRepossessionList:
         old = pd.Timestamp.today() - pd.DateOffset(months=24)
         curr = make_df([{"curr_bucket": "NPA", "Ag_Date": old}])
         assert compute_repossession_list(curr).empty
+
+    def test_as_of_anchors_window_to_reporting_month_not_wall_clock(self):
+        # Regression: the "still within the repossession window" cutoff used
+        # to measure backward from the real wall-clock date, not the report's
+        # OWN reporting month -- wrong for any retroactive/historical analysis
+        # (e.g. re-opening an old file long after its actual reporting month).
+        report_date = pd.Timestamp("2020-01-01")
+        within_window_of_report = report_date - pd.DateOffset(months=6)  # well within 18mo of Jan 2020
+        curr = make_df([{"curr_bucket": "NPA", "Ag_Date": within_window_of_report}])
+
+        out_with_as_of = compute_repossession_list(curr, as_of=report_date)
+        assert len(out_with_as_of) == 1
+
+        # Without as_of (defaults to wall-clock today), the same loan is years
+        # outside the 18-month window and must NOT appear -- the old, buggy
+        # behavior this default preserves only for callers with no reporting
+        # date to hand.
+        out_without_as_of = compute_repossession_list(curr)
+        assert out_without_as_of.empty
 
 
 # ── compute_good_customers ────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ from analysis.portfolio_intelligence import (
     compute_concentration_treemap, compute_fleet_exposure,
     compute_top_accounts, compute_repossession_list,
     compute_risk_flag_comparison, compute_npa_sma2_comparison,
-    compute_good_customers,
+    compute_good_customers, compute_overdue_demand_scorecard,
 )
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.report import render_report_tab
@@ -163,6 +163,19 @@ if _dup_curr or _dup_prev:
         _dup_parts.append(f"{_dup_prev} in the previous month file")
     st.caption(f"ℹ️ Removed duplicate Loan No row(s): {', '.join(_dup_parts)}.")
 
+# Non-critical columns (e.g. CoLending_Loans, LGL_FLAG, SegmentName) can be
+# missing from an extract without erroring -- surface which ones, so "no
+# co-lending accounts found" isn't confused with "that column isn't in this
+# file at all." See utils.py::load_and_validate.
+_missing_curr = set(df_curr_raw.attrs.get("missing_optional_cols", []))
+_missing_prev = set(df_prev_raw.attrs.get("missing_optional_cols", []))
+_missing_cols = _missing_curr | _missing_prev
+if _missing_cols:
+    st.caption(
+        f"ℹ️ {len(_missing_cols)} optional column(s) not found in this upload: "
+        f"{', '.join(sorted(_missing_cols))}. Features relying on these may show no results, not an error."
+    )
+
 # Auto-load prev if uploaded after initial generate (cache hit  -  no cost)
 if prev_file and len(df_prev_raw) == 0:
     _prev_tmp, _prev_err = _load_and_concat(prev_file)
@@ -229,6 +242,7 @@ def _cached_portfolio_intel(
     data_version: int, region: str, branch: str, status: str, segment: tuple,
     rr_matched: int, rr_fwd: float, rr_bwd: float, rr_formation: float,
     alerts_curr_counts: tuple, alerts_prev_counts: tuple,
+    curr_month: str,
 ):
     df_c, df_p = _df_c, _df_p
     rr_meta_local = {
@@ -241,21 +255,23 @@ def _cached_portfolio_intel(
     region_df               = compute_region_scorecard(df_c, df_p)
     branch_df, fig_quadrant = compute_branch_quadrant(df_c)
     exec_recovery_df        = compute_executive_recovery(df_c)
-    product_data            = compute_product_analysis(df_c)
+    product_data            = compute_product_analysis(df_c, as_of=curr_month)
     risk_indicators         = compute_risk_indicators(df_c, df_p, rr_meta_local if rr_matched > 0 else None)
     exec_df_for_gb          = exec_recovery_df
     good_bad                = compute_good_bad(region_df, branch_df, risk_indicators, exec_df_for_gb, has_prev)
     fig_treemap             = compute_concentration_treemap(df_c)
     fleet                   = compute_fleet_exposure(df_c)
     top_accounts, top_accounts_summary = compute_top_accounts(df_c)
-    repo_df                 = compute_repossession_list(df_c)
+    repo_df                 = compute_repossession_list(df_c, as_of=curr_month)
     npa_sma2_cmp            = compute_npa_sma2_comparison(df_c, df_p)
     good_customers          = compute_good_customers(df_c)
+    overdue_demand_scorecard = compute_overdue_demand_scorecard(df_c)
     return (
         pulse_kpis, fig_waterfall,
         region_df, branch_df, fig_quadrant,
         exec_recovery_df, product_data, risk_indicators, good_bad,
         fig_treemap, fleet, top_accounts, top_accounts_summary, repo_df, npa_sma2_cmp, good_customers,
+        overdue_demand_scorecard,
     )
 
 # ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
@@ -293,6 +309,7 @@ _rr = rr_meta or {}
     pi_region, pi_branch, pi_fig_quad,
     pi_exec, pi_product, pi_risk, pi_good_bad,
     pi_fig_treemap, pi_fleet, pi_top_accounts, pi_top_accounts_summary, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
+    pi_overdue_demand,
 ) = _cached_portfolio_intel(
     df_curr, df_prev,
     data_version, sel_region, sel_branch, sel_status, _seg_t,
@@ -302,6 +319,7 @@ _rr = rr_meta or {}
     float(_rr.get("npa_formation_rate", 0.0)),
     tuple((a["count"], a["title"]) for a in alerts),
     tuple((a["count"], a["title"]) for a in alerts_prev),
+    curr_month,
 )
 
 # Precomputed analysis/ results, keyed for the AI Query tab's fast-path view
@@ -325,6 +343,7 @@ precomputed_views = {
     "pi_product":         pi_product,
     "pi_pulse_kpis":      pi_pulse_kpis,
     "pi_good_bad":        pi_good_bad,
+    "pi_overdue_demand":  pi_overdue_demand,
 }
 
 # ── Active filter bar ─────────────────────────────────────────────────────────
@@ -406,6 +425,7 @@ with tabs[4]:
             repo_df=pi_repo_df,
             npa_sma2_cmp=pi_npa_sma2_cmp,
             good_customers=pi_good_customers,
+            overdue_demand_scorecard=pi_overdue_demand,
         )
     except Exception as _e:
         _tab_error("Portfolio Intelligence", _e)

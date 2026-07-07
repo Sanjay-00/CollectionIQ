@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from config import HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR
+from config import HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS
 
 YELLOW = "#FFC000"
 
@@ -53,7 +53,21 @@ REQUIRED_COLS = [
 ]
 
 BUCKET_ORDER = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA", "NA"]
-BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4, "NA": -1}
+# "NA" deliberately has NO entry here -- it means "Arrears / EMI was missing/
+# unparseable that period," not a real delinquency state, so it must never be
+# treated as comparable to a real bucket. It used to map to -1 (lower than
+# every real score), which meant a loan going from "NA" (unknown) to STD (the
+# HEALTHIEST real bucket) registered as "rolled forward" (worsened) purely
+# because -1 < 0 -- a false deterioration signal with zero basis, confirmed on
+# real production data (an executive with 0% NPA/SMA-2 showing 100% Roll Fwd%,
+# entirely from 2 loans whose prior bucket was "NA"). Every consumer below maps
+# through this dict and treats an unmapped key as NaN, then excludes NaN rows
+# from its own "valid comparison" mask (`curr_score.notna() & prev_score.notna()`)
+# -- so leaving "NA" out here makes it automatically un-comparable everywhere,
+# in one place, rather than patching each consumer's mask individually.
+# agents/data_executor.py's independent _BUCKET_SCORE (bucket_worse_than/
+# bucket_better_than AI Query filters) already omits "NA" the same way.
+BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
 BUCKET_COLORS = {
     "STD":      "#16a34a",
     "1-30 DPD": "#FFC000",
@@ -107,7 +121,94 @@ def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
     _pos = pd.to_numeric(df["POS"], errors="coerce").fillna(0) if "POS" in df.columns else pd.Series(0.0, index=df.index)
     _arr = pd.to_numeric(df["Closing Arrears"], errors="coerce").fillna(0) if "Closing Arrears" in df.columns else pd.Series(0.0, index=df.index)
     df["SOH"] = _pos + _arr
+
+    # Overdue-first collection waterfall: a payment clears "Arrear Opening" (the
+    # amount already overdue coming INTO this month) before any of it counts
+    # against this month's own EMI demand -- never the two other way round, and
+    # never averaged across loans (a customer's overpayment can't offset a
+    # different customer's shortfall). Computed once per loan here, exactly like
+    # SOH above, so the dashboard KPI cards, the region/branch/executive
+    # breakdown table, the report section, and the AI Query registry metric are
+    # all reading the same two columns instead of five independent
+    # reimplementations of the same waterfall.
+    #
+    # "Overdue" clips a negative Arrear Opening (a customer already in credit)
+    # to 0 -- there's nothing outstanding to collect, so it must not contribute
+    # a negative amount that would silently inflate ANOTHER loan's apparent
+    # collection rate once summed into the same branch/region total.
+    #
+    # "MonthDemandExclPC" deliberately excludes MONTH DUE PC (penal charges) --
+    # explicit business call: penal charges are not treated as core EMI demand
+    # for this metric, same Inst+Exp+BC scope elsewhere would use, minus BC's
+    # own carve-out reasoning not applying here (BC is a real due amount; PC is
+    # a penalty, not principal/EMI demand).
+    _overdue = pd.to_numeric(df.get("Arrear Opening"), errors="coerce").fillna(0).clip(lower=0) \
+        if "Arrear Opening" in df.columns else pd.Series(0.0, index=df.index)
+    _demand = (
+        pd.to_numeric(df.get("Month Due-Inst"), errors="coerce").fillna(0)
+        + pd.to_numeric(df.get("Month Due-Exp"), errors="coerce").fillna(0)
+        + pd.to_numeric(df.get("MONTH DUE (BC)"), errors="coerce").fillna(0)
+    ) if "Month Due-Inst" in df.columns else pd.Series(0.0, index=df.index)
+    _paid = pd.to_numeric(df.get("Month Collection (Excluding Reserve Collection)"), errors="coerce").fillna(0) \
+        if "Month Collection (Excluding Reserve Collection)" in df.columns else pd.Series(0.0, index=df.index)
+
+    df["Overdue"] = _overdue
+    df["MonthDemandExclPC"] = _demand
+    df["OverdueCollected"] = np.minimum(_paid, _overdue)
+    df["DemandCollected"] = np.minimum((_paid - _overdue).clip(lower=0), _demand)
+
+    # Per-loan % versions of the same two figures -- needed so a loan_table
+    # ("case wise") AI Query can SELECT these directly as plain columns. The
+    # aggregate ratio metrics (registry/ontology.py's overdue_collection_pct /
+    # month_demand_collection_pct) only work through group_aggregate, which a
+    # loan_table query's plain column-select never invokes -- without a real
+    # per-row column, the Logical Planner has nothing to put in display_columns
+    # and silently drops the request instead of erroring. Same zero-denominator
+    # -> 100% rule as compute_overdue_demand_pct (nothing owed = fully clear).
+    df["Overdue Collection %"] = (
+        df["OverdueCollected"] / df["Overdue"].replace(0, np.nan) * 100
+    ).fillna(100.0).round(2)
+    df["Month Demand Collection %"] = (
+        df["DemandCollected"] / df["MonthDemandExclPC"].replace(0, np.nan) * 100
+    ).fillna(100.0).round(2)
     return df
+
+
+def compute_overdue_demand_pct(df: pd.DataFrame) -> dict:
+    """Overdue Collection % and Month Demand Collection % for whatever slice of
+    `df` is passed in (portfolio total, or a region/branch/executive group) --
+    the single shared implementation of the waterfall business rule assign_buckets
+    computes per loan above (Overdue/MonthDemandExclPC/OverdueCollected/DemandCollected).
+
+    Sums first, divides once (never averages a per-loan %, which would let a
+    handful of tiny loans skew a group's real rate).
+
+    Deliberate rule, confirmed with the business: when the group's total Overdue
+    (or total MonthDemandExclPC) is zero -- nothing was ever owed on that side --
+    the % is 100, not 0 and not "N/A". Nothing outstanding is the same accounting
+    outcome as everything outstanding having been collected.
+    """
+    cols = ("Overdue", "MonthDemandExclPC", "OverdueCollected", "DemandCollected")
+    if df.empty or not all(c in df.columns for c in cols):
+        return {
+            "overdue_pct": 100.0, "demand_pct": 100.0,
+            "overdue_total": 0.0, "overdue_collected": 0.0,
+            "demand_total": 0.0, "demand_collected": 0.0,
+        }
+
+    overdue_total     = float(df["Overdue"].sum())
+    overdue_collected = float(df["OverdueCollected"].sum())
+    demand_total      = float(df["MonthDemandExclPC"].sum())
+    demand_collected  = float(df["DemandCollected"].sum())
+
+    overdue_pct = 100.0 if overdue_total == 0 else round(overdue_collected / overdue_total * 100, 2)
+    demand_pct  = 100.0 if demand_total == 0 else round(demand_collected / demand_total * 100, 2)
+
+    return {
+        "overdue_pct": overdue_pct, "demand_pct": demand_pct,
+        "overdue_total": overdue_total, "overdue_collected": overdue_collected,
+        "demand_total": demand_total, "demand_collected": demand_collected,
+    }
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -175,6 +276,25 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _reorder_to_template(df: pd.DataFrame) -> pd.DataFrame:
+    """Reorder columns to the canonical LCC template sequence -- REQUIRED_COLS'
+    own order, confirmed column-for-column against a real ZONAG-format extract --
+    rather than whatever order THIS particular upload happened to have. Different
+    regional files (multi-file uploads) or a re-exported sheet can hand back the
+    same ~85 columns in a different sequence; without this, an AI Query result
+    that includes every column (e.g. "give me all cases with all columns")
+    rendered them in a visibly jumbled, upload-dependent order instead of the
+    familiar template layout. Anything not in REQUIRED_COLS (an unexpected
+    column, or a later template addition) is kept, just appended after in its
+    original relative order -- never dropped. Called right after
+    _normalize_columns(), before assign_buckets(), so the derived business
+    columns (SOH, curr_bucket, Overdue, ...) land after the reordered raw
+    block, not interleaved into it."""
+    known_order = [c for c in REQUIRED_COLS if c in df.columns]
+    extra_cols  = [c for c in df.columns if c not in REQUIRED_COLS]
+    return df[known_order + extra_cols]
+
+
 @__import__("streamlit").cache_data(show_spinner=False)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
@@ -193,6 +313,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
 
     # Normalize column names (strips spaces, fixes capitalisation, maps truncated names)
     df = _normalize_columns(df)
+    df = _reorder_to_template(df)
 
     # If critical columns are missing from sheet 0, try a sheet named "LCC"
     missing_critical = [c for c in CRITICAL_COLS if c not in df.columns]
@@ -207,6 +328,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
                     file.seek(0)
                 df = pd.read_excel(file, engine=engine, sheet_name=lcc)
                 df = _normalize_columns(df)
+                df = _reorder_to_template(df)
                 missing_critical = [c for c in CRITICAL_COLS if c not in df.columns]
         except Exception:
             pass  # fall through to the error below
@@ -297,6 +419,15 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         mask = df["MNT NAME"].notna()
         df.loc[mask, "MNT NAME"] = df.loc[mask, "MNT NAME"].astype(str).str.strip().str.upper()
 
+    # SegmentName/Segment: the source system truncates the same real segment
+    # at different lengths across rows (confirmed on real data -- see
+    # config.py::SEGMENT_NAME_PREFIX_MATCH_CHARS), which otherwise splits one
+    # segment's NPA/SOH numbers across several rows in every segment-wise
+    # breakdown instead of one.
+    for col in ["SegmentName", "Segment"]:
+        if col in df.columns:
+            df[col] = normalize_truncated_names(df[col])
+
     # Mobile numbers: if even one row is blank, Excel/pandas silently upgrades the
     # whole column to float64, so every number renders as "9876543210.0" (or worse,
     # scientific notation) everywhere it's displayed or exported. Strip that artifact.
@@ -317,6 +448,19 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         df = df.drop_duplicates(subset=["Loan No"])
         dropped_duplicates = before - len(df)
     df.attrs["dropped_duplicate_loans"] = dropped_duplicates
+
+    # Non-critical columns (REQUIRED_COLS minus CRITICAL_COLS) can be missing or
+    # fail to normalize-match without ever raising an error -- this module's own
+    # docstring says that's "surfaced as a warning," but no such warning existed
+    # anywhere in the codebase. Without it, a missing column like CoLending_Loans
+    # or LGL_FLAG is invisible: a co-lending query silently reports "no co
+    # -lending accounts" instead of "column not found," identical in outward
+    # behavior to a real zero-count answer. Surfaced via df.attrs (same
+    # survives-a-plain-return pattern as dropped_duplicate_loans above) rather
+    # than raised, since a missing optional column is legitimately not fatal.
+    df.attrs["missing_optional_cols"] = [
+        c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in df.columns
+    ]
 
     return df, []
 
@@ -357,6 +501,23 @@ def to_num(df: pd.DataFrame, col: str, fill: float | None = None) -> pd.Series:
 def account_count(df: pd.DataFrame, col: str = "Loan No") -> int:
     """Distinct-loan count, falling back to row count when `col` is absent."""
     return df[col].nunique() if col in df.columns else len(df)
+
+
+def normalize_truncated_names(series: pd.Series, prefix_chars: int = SEGMENT_NAME_PREFIX_MATCH_CHARS) -> pd.Series:
+    """Merge values that are truncated-at-different-lengths variants of the
+    same real name (e.g. "Passenger Commerc" / "Passenger Commerci" /
+    "Passenger Commercial") under whichever variant is longest -- see
+    config.py::SEGMENT_NAME_PREFIX_MATCH_CHARS for the full rationale and the
+    real-data evidence behind the 15-character default. Leaves NaN untouched."""
+    mask = series.notna()
+    if not mask.any():
+        return series
+    values = series[mask].astype(str).str.strip()
+    prefix = values.str[:prefix_chars]
+    canonical = values.groupby(prefix).transform(lambda s: max(s, key=len))
+    result = series.copy()
+    result[mask] = canonical
+    return result
 
 
 def clean_mobile(series: pd.Series) -> pd.Series:

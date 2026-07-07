@@ -19,7 +19,11 @@ from registry import (
 
 # Columns that exist only AFTER load + assign_buckets() / the prev-file merge,
 # so they are legitimately not in the raw REQUIRED_COLS list.
-_DERIVED_COLS = {"curr_bucket", "curr_score", "SOH", "prev_bucket"} | set(PREV_CARRYOVER_COLS.values())
+_DERIVED_COLS = {
+    "curr_bucket", "curr_score", "SOH", "prev_bucket",
+    "Overdue", "MonthDemandExclPC", "OverdueCollected", "DemandCollected",
+    "Overdue Collection %", "Month Demand Collection %",
+} | set(PREV_CARRYOVER_COLS.values())
 # The dynamic cutoff placeholder is resolved at execution time, not a real value.
 _DYNAMIC_VALUES = {"__CUTOFF_1Y__"}
 
