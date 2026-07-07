@@ -128,8 +128,13 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
     bq = section_data.get("branch_quadrant")
     if bq:
         parts.append("\nBRANCH QUADRANT (highest concern):")
+        # branch_quadrant's own top_concern records deliberately don't carry
+        # "Concern Score" (an internal composite the business asked NOT to
+        # surface to a report reader -- see report_agent/sections/branch_quadrant.py's
+        # docstring); ranking is still by that score internally (Rank reflects
+        # it), just not shown as a raw number here either.
         for c in bq.get("top_concern", []):
-            parts.append(f"  {c['Branch']}: concern score {c['Concern Score']}, Coll {c['Collection%']}%, NPA {c['NPA%']}%")
+            parts.append(f"  {c['Branch']}: Coll {c['Collection%']}%, NPA {c['NPA%']}%")
 
     pa = section_data.get("product_analysis")
     if pa:

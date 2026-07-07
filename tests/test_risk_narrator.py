@@ -155,6 +155,31 @@ class TestCallGeminiWithRetry:
             rn._call_gemini_with_retry(_Client(), "model", "prompt", {}, max_retries=1)
 
 
+class TestBuildPrompt:
+    def test_branch_quadrant_top_concern_without_concern_score_key(self):
+        # Regression: branch_quadrant's real top_concern records don't carry
+        # "Concern Score" (deliberately dropped from the displayed columns --
+        # see report_agent/sections/branch_quadrant.py's docstring) but
+        # _build_prompt used to hard-index c['Concern Score'], raising a raw
+        # KeyError that crashed the whole report whenever Branch Quadrant Chart
+        # and AI Summary were both enabled (e.g. via the "Select All" button).
+        section_data = {
+            "branch_quadrant": {
+                "image": None,
+                "top_concern": [
+                    {"Rank": 1, "Branch": "MAHAD", "Region": "WEST", "Accounts": 10,
+                     "SMA-2%": 5.0, "NPA%": 3.0, "Collection%": 85.0, "Strike%": 70.0,
+                     "Roll Fwd%": 12.0, "Chronic (3M+)": 2, "SOH (Cr)": 1.2},
+                ],
+                "total_branches": 1,
+            },
+        }
+        prompt = rn._build_prompt(section_data, "2026-06")
+        assert "MAHAD" in prompt
+        assert "Coll 85.0%" in prompt
+        assert "NPA 3.0%" in prompt
+
+
 class TestAddTokenUsage:
     def test_never_raises_even_if_langsmith_import_fails(self):
         # Best-effort only -- must not break report generation over a metadata hiccup.

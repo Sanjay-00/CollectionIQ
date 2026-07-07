@@ -5,6 +5,7 @@ Email-safe: all multi-column layouts use <table> instead of CSS grid/flex.
 import datetime
 import html
 import logging
+import pandas as pd
 from report_agent.state import ReportState
 from analysis.portfolio_intelligence import OVERDUE_DEMAND_IDENTITY_COLS
 
@@ -505,6 +506,71 @@ def _render_new_advances(data: dict) -> str:
     return _sec_label("New Advances This Month (Business)") + stat_row + mom_row + seg_table
 
 
+def _render_new_advances_trend(data: dict) -> str:
+    img = data.get("image")
+    if not img:
+        return ""
+    months = data.get("months", 0)
+    return (
+        _sec_label(f"New Advances Trend  -  Last {months} Months") +
+        f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;background:#fff;padding:8px;">'
+        f'<img src="{img}" width="100%" style="display:block;border-radius:6px;" alt="New Advances Trend"/>'
+        f'</div>'
+    )
+
+
+def _render_new_advances_by_dimension(data: dict) -> str:
+    """Top N Regions / Branches / Executives by new advances this month --
+    NOT every row (same "printed document" reasoning as branch_performance.py's
+    top5/bottom5 cap). Each dict entry is already sorted by Accounts This
+    Month descending (compute_new_advances_by_dimension's own sort), so this
+    is purely a rendering pass, no re-ranking."""
+    _DIM_LABEL = {"region": "Region", "branch": "Branch", "executive": "Executive"}
+    _DIM_LABEL_PLURAL = {"region": "Regions", "branch": "Branches", "executive": "Executives"}
+    _IDENTITY_KEYS = {"region": [], "branch": ["Region"], "executive": ["Branch", "Region"]}
+
+    blocks = ""
+    for key in ("region", "branch", "executive"):
+        rows_data = data.get(key, [])
+        if not rows_data:
+            continue
+        name_label = _DIM_LABEL[key]
+        identity_keys = _IDENTITY_KEYS[key]
+        identity_headers = "".join(
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{k}</th>'
+            for k in identity_keys
+        )
+        header = (
+            f'<tr><th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{name_label}</th>'
+            f'{identity_headers}'
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;">Total Accounts</th>'
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;">Accounts This Month</th>'
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;">Funded</th></tr>'
+        )
+        rows = "".join(
+            f'<tr>'
+            f'<td style="padding:9px 12px;font-weight:600;font-size:12px;">{_esc(r.get(name_label, ""))}</td>'
+            + "".join(
+                f'<td style="padding:9px 12px;font-size:12px;">{_esc(r.get(k, "") or "&#8212;")}</td>'
+                for k in identity_keys
+            )
+            + f'<td style="padding:9px 12px;font-size:12px;text-align:right;">{r.get("Total Accounts", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-weight:800;font-size:12px;text-align:right;">{r.get("Accounts This Month", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;text-align:right;">&#8377;{r.get("Funded (Cr)", 0):.2f}Cr</td>'
+            f'</tr>'
+            for r in rows_data
+        )
+        blocks += (
+            f'<div style="font-size:11px;font-weight:700;color:#374151;margin:14px 0 6px;text-transform:uppercase;letter-spacing:0.6px;">Top {len(rows_data)} {_DIM_LABEL_PLURAL[key]} by New Advances</div>'
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
+            f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'<thead>{header}</thead><tbody>{rows}</tbody></table></div>'
+        )
+    if not blocks:
+        return ""
+    return _sec_label("New Advances by Region / Branch / Executive") + blocks
+
+
 def _render_top_accounts(data: dict) -> str:
     rows_data = data.get("rows", [])
     if not rows_data:
@@ -598,7 +664,15 @@ def _movement_stat_card(label: str, value: str, color: str = "#111827") -> str:
 
 
 def _movement_delta_color(delta) -> str:
-    if delta is None:
+    # pd.isna catches both None and NaN uniformly -- a region/branch/executive
+    # present in one period's file but not the other (a real case for two
+    # independently-uploaded monthly extracts, e.g. a branch opened or closed
+    # between months) produces NaN, not None, on the missing side after
+    # compute_npa_sma2_comparison's merge. `delta is None` alone let NaN
+    # silently fall through to `delta > 0` (always False for NaN, no crash
+    # here, just a wrong "neutral" color) -- see _movement_fmt's own
+    # docstring for where the SAME gap raised a real crash.
+    if pd.isna(delta):
         return "#6b7280"
     if delta > 0:
         return "#dc2626"
@@ -608,15 +682,21 @@ def _movement_delta_color(delta) -> str:
 
 
 def _movement_fmt(val, is_pct: bool = False) -> str:
-    """Plain formatting for a raw curr/prev value - no +/- sign (that's reserved for deltas)."""
-    if val is None:
+    """Plain formatting for a raw curr/prev value - no +/- sign (that's reserved for deltas).
+    pd.isna, not `val is None` -- a value missing on one side of a curr/prev
+    comparison (region/branch/executive present in only one period's file)
+    comes back as NaN, not None, and `int(float('nan'))` raises
+    ValueError -- this used to crash the entire report generation."""
+    if pd.isna(val):
         return "&#8212;"
     return f"{val:.1f}%" if is_pct else f"{int(val):,}"
 
 
 def _movement_fmt_delta(val, is_pct: bool = False) -> str:
-    """Signed formatting for a delta/%change value."""
-    if val is None:
+    """Signed formatting for a delta/%change value. See _movement_fmt's
+    docstring -- same pd.isna reasoning (NaN, not None, for a one-sided
+    curr/prev comparison)."""
+    if pd.isna(val):
         return "&#8212;"
     sign = "+" if val >= 0 else ""
     return f"{sign}{val:.1f}%" if is_pct else f"{sign}{int(val):,}"
@@ -1185,7 +1265,8 @@ def _render_good_customers(data: dict) -> str:
 SECTION_ORDER = [
     "portfolio_health", "verdict", "risk_flags", "risk_indicators",
     "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
-    "region_scorecard", "overdue_demand", "new_advances", "product_analysis", "top_accounts", "fleet_exposure",
+    "region_scorecard", "overdue_demand", "new_advances", "new_advances_trend", "new_advances_by_dimension",
+    "product_analysis", "top_accounts", "fleet_exposure",
     "repossession", "good_customers", "branch_performance",
     "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]
@@ -1201,6 +1282,8 @@ _RENDERERS = {
     "region_scorecard":           _render_region_scorecard,
     "overdue_demand":             _render_overdue_demand,
     "new_advances":               _render_new_advances,
+    "new_advances_trend":         _render_new_advances_trend,
+    "new_advances_by_dimension":  _render_new_advances_by_dimension,
     "product_analysis":           _render_product_analysis,
     "top_accounts":               _render_top_accounts,
     "fleet_exposure":             _render_fleet_exposure,
