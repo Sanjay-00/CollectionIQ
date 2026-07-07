@@ -33,45 +33,106 @@ def render_report_tab(
     """, unsafe_allow_html=True)
 
     # ── Section toggles ──────────────────────────────────────────────────────
+    # Core (default ON, always visible) vs Additional (default OFF, tucked
+    # into a collapsed expander) -- a flat 22-checkbox grid was the actual
+    # source of "the report feels too long," not just needing better columns.
+    # Core = what every monthly board report needs; Additional = opt-in
+    # deep-dive detail a leader checks only when this specific report calls
+    # for it.
     st.markdown('<div class="section-label" style="margin-top:20px;">Report Sections</div>', unsafe_allow_html=True)
     has_prev = len(df_prev) > 0
-    rpt_c1, rpt_c2, rpt_c3, rpt_c4, rpt_c5 = st.columns(5)
-    with rpt_c1:
-        inc_health     = st.checkbox("Portfolio Health",     value=True, key="rpt_health")
-        inc_verdict    = st.checkbox("Good vs Bad Verdict",  value=True, key="rpt_verdict")
-        inc_flags      = st.checkbox("Risk Flags",           value=True, key="rpt_flags")
-        inc_indicators = st.checkbox("Risk Indicators",      value=True, key="rpt_indicators",
-                                      help="Early-warning signals: SMA-1 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk")
-    with rpt_c2:
-        inc_migrate = st.checkbox(
-            "Bucket Migration", value=has_prev, key="rpt_migrate",
-            disabled=not has_prev, help="Upload previous month file to enable",
+
+    def _col_caption(text: str) -> None:
+        st.markdown(
+            f'<div style="font-size:10px;font-weight:700;color:#9ca3af;'
+            f'text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">{text}</div>',
+            unsafe_allow_html=True,
         )
-        inc_movement = st.checkbox("NPA & SMA-2 Movement", value=True, key="rpt_movement",
-                                    help="This-month vs last-month NPA/SMA-2 counts, deltas, and %change - portfolio, region, branch, and executive")
-        inc_quadrant = st.checkbox("Branch Quadrant Chart", value=True, key="rpt_quadrant",
-                                    help="Collection% vs NPA% scatter, bubble = SOH")
-        inc_concentration = st.checkbox("Concentration Map", value=True, key="rpt_concentration")
-    with rpt_c3:
-        inc_region  = st.checkbox("Region Scorecard",     value=True, key="rpt_region")
-        inc_overdue_demand = st.checkbox("Overdue vs Month Demand", value=True, key="rpt_overdue_demand")
-        inc_new_advances = st.checkbox("New Advances (Business)", value=True, key="rpt_new_advances",
-                                        help="New business funded this reporting month - accounts, funded amount, segment breakdown, MoM comparison")
-        inc_product = st.checkbox("Segment NPA Breakdown", value=True, key="rpt_product")
-        inc_top_acc = st.checkbox("Top At-Risk Accounts", value=True, key="rpt_top_accounts")
-        inc_fleet   = st.checkbox("Fleet Exposure",       value=True, key="rpt_fleet")
-    with rpt_c4:
-        inc_repo    = st.checkbox("Repossession Candidates", value=True, key="rpt_repo")
-        inc_good    = st.checkbox("Good Customers",          value=True, key="rpt_good")
-        inc_branch  = st.checkbox("Branch Performance",      value=True, key="rpt_branch")
-    with rpt_c5:
-        inc_recovery = st.checkbox("Executive Recovery",   value=True, key="rpt_recovery",
-                                    help="Rescued vs slipped accounts per executive - behavior signal, distinct from collection%")
-        inc_exec        = st.checkbox("Executive Rankings",        value=True, key="rpt_exec")
-        inc_exec_strike = st.checkbox("Executive Rankings (Strike %)", value=True, key="rpt_exec_strike",
-                                       help="Same executives, ranked by Strike % instead of Collection % - who's actually current on installment obligation this month")
-        inc_ai       = st.checkbox("AI Summary",           value=True, key="rpt_ai",
-                                    help="Uncheck to skip Gemini and generate a faster, pandas-only report")
+
+    with st.container(border=True):
+        st.markdown(
+            '<div style="font-size:13px;font-weight:800;color:#111827;margin-bottom:2px;">🎯 Core Sections</div>'
+            '<div style="font-size:11px;color:#6b7280;margin-bottom:16px;">'
+            'Included in every report by default : uncheck anything you don\'t need this month.</div>',
+            unsafe_allow_html=True,
+        )
+        core_c1, core_c2, core_c3 = st.columns(3)
+        with core_c1:
+            _col_caption("Health & Verdict")
+            inc_health  = st.checkbox("Portfolio Health",    value=True, key="rpt_health")
+            inc_verdict = st.checkbox("Good vs Bad Verdict", value=True, key="rpt_verdict")
+            inc_flags   = st.checkbox("Risk Flags",          value=True, key="rpt_flags")
+        with core_c2:
+            _col_caption("Movement & Region")
+            inc_movement = st.checkbox("NPA & SMA-2 Movement", value=True, key="rpt_movement",
+                                        help="This-month vs last-month NPA/SMA-2 counts, deltas, and %change - portfolio, region, branch, and executive")
+            inc_migrate  = st.checkbox(
+                "Bucket Migration", value=has_prev, key="rpt_migrate",
+                disabled=not has_prev, help="Upload previous month file to enable",
+            )
+            inc_region   = st.checkbox("Region Scorecard", value=True, key="rpt_region")
+        with core_c3:
+            _col_caption("Business & Leaders")
+            inc_new_advances = st.checkbox("New Advances (Business)", value=True, key="rpt_new_advances",
+                                            help="New business funded this reporting month - accounts, funded amount, segment breakdown, MoM comparison")
+            inc_branch = st.checkbox("Branch Performance", value=True, key="rpt_branch")
+            inc_exec   = st.checkbox("Executive Rankings", value=True, key="rpt_exec")
+
+    _ADDITIONAL_KEYS = [
+        "rpt_indicators", "rpt_product", "rpt_overdue_demand",
+        "rpt_quadrant", "rpt_concentration",
+        "rpt_new_advances_trend", "rpt_new_advances_dim",
+        "rpt_top_accounts", "rpt_fleet", "rpt_repo", "rpt_good",
+        "rpt_recovery", "rpt_exec_strike", "rpt_ai",
+    ]
+    with st.expander(f"➕ Additional Sections  ({len(_ADDITIONAL_KEYS)} more available)", expanded=False):
+        st.caption("✍️ Deep-dive detail: check whatever this specific report needs.")
+
+        add_c1, add_c2, add_c3, add_c4, add_c5 = st.columns(5)
+        with add_c1:
+            _col_caption("Risk & Segments")
+            inc_indicators = st.checkbox("Risk Indicators", value=False, key="rpt_indicators",
+                                          help="Early-warning signals: SMA-1 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk")
+            inc_product = st.checkbox("Segment NPA Breakdown", value=False, key="rpt_product")
+            inc_overdue_demand = st.checkbox("Overdue vs Month Demand", value=False, key="rpt_overdue_demand")
+
+            st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+            add_bulk_c1, add_bulk_c2 = st.columns(2)
+            with add_bulk_c1:
+                if st.button("Select All", key="rpt_additional_select_all"):
+                    for k in _ADDITIONAL_KEYS:
+                        st.session_state[k] = True
+                    st.rerun()
+            with add_bulk_c2:
+                if st.button("Clear All", key="rpt_additional_clear_all"):
+                    for k in _ADDITIONAL_KEYS:
+                        st.session_state[k] = False
+                    st.rerun()
+        with add_c2:
+            _col_caption("Charts")
+            inc_quadrant = st.checkbox("Branch Quadrant Chart", value=False, key="rpt_quadrant",
+                                        help="Collection% vs NPA% scatter, bubble = SOH")
+            inc_concentration = st.checkbox("Concentration Map", value=False, key="rpt_concentration")
+        with add_c3:
+            _col_caption("New Advances Detail")
+            inc_new_advances_trend = st.checkbox("New Advances Trend (36mo)", value=False, key="rpt_new_advances_trend",
+                                                  help="New advances by month, last 36 months")
+            inc_new_advances_dim = st.checkbox("New Advances by Region/Branch/Exec", value=False, key="rpt_new_advances_dim",
+                                                help="Top 5 Regions, Branches, and Executives by new advances this month")
+        with add_c4:
+            _col_caption("Account Lists")
+            inc_top_acc = st.checkbox("Top At-Risk Accounts", value=False, key="rpt_top_accounts")
+            inc_fleet   = st.checkbox("Fleet Exposure", value=False, key="rpt_fleet")
+            inc_repo    = st.checkbox("Repossession Candidates", value=False, key="rpt_repo")
+            inc_good    = st.checkbox("Good Customers", value=False, key="rpt_good")
+        with add_c5:
+            _col_caption("Executive Extras & AI")
+            inc_recovery = st.checkbox("Executive Recovery", value=False, key="rpt_recovery",
+                                        help="Rescued vs slipped accounts per executive - behavior signal, distinct from collection%")
+            inc_exec_strike = st.checkbox("Executive Rankings (Strike %)", value=False, key="rpt_exec_strike",
+                                           help="Same executives, ranked by Strike % instead of Collection % - who's actually current on installment obligation this month")
+            inc_ai = st.checkbox("AI Summary", value=False, key="rpt_ai",
+                                  help="Uncheck to skip Gemini and generate a faster, pandas-only report")
 
     # ── Email (optional) ─────────────────────────────────────────────────────
     smtp_ok = bool(os.environ.get("SMTP_HOST", ""))
@@ -123,6 +184,8 @@ def render_report_tab(
         if st.session_state.get("rpt_region"):        enabled_sections.append("region_scorecard")
         if st.session_state.get("rpt_overdue_demand"): enabled_sections.append("overdue_demand")
         if st.session_state.get("rpt_new_advances"):  enabled_sections.append("new_advances")
+        if st.session_state.get("rpt_new_advances_trend"): enabled_sections.append("new_advances_trend")
+        if st.session_state.get("rpt_new_advances_dim"):   enabled_sections.append("new_advances_by_dimension")
         if st.session_state.get("rpt_product"):       enabled_sections.append("product_analysis")
         if st.session_state.get("rpt_top_accounts"):  enabled_sections.append("top_accounts")
         if st.session_state.get("rpt_fleet"):         enabled_sections.append("fleet_exposure")
