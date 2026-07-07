@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from google import genai
@@ -5,14 +6,17 @@ from langsmith import traceable
 from config import GEMINI_MODEL
 from report_agent.state import ReportState
 
+logger = logging.getLogger(__name__)
+
 
 def _call_gemini_with_retry(client, model, contents, config, max_retries=2):
     for attempt in range(max_retries + 1):
         try:
             return client.models.generate_content(model=model, contents=contents, config=config)
-        except Exception:
+        except Exception as e:
             if attempt == max_retries:
                 raise
+            logger.warning("Risk Narrator Gemini call failed (attempt %d/%d): %s", attempt + 1, max_retries + 1, e)
             time.sleep(2 ** attempt)
 
 
@@ -29,8 +33,11 @@ def _add_token_usage(response) -> None:
                 "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
                 "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
             })
-    except Exception:
-        pass
+    except Exception as e:
+        # Best-effort observability only -- must never break report generation
+        # over a metadata-recording hiccup, but a silent `pass` here means a
+        # broken metadata path could go unnoticed indefinitely. Log and move on.
+        logger.warning("Risk Narrator token-usage metadata recording failed: %s", e)
 
 
 def _fmt_money(val):
@@ -197,15 +204,26 @@ def risk_narrator_node(state: ReportState) -> ReportState:
     prompt = _build_prompt(sd, state["curr_month"])
     client = genai.Client(api_key=api_key)
 
+    # Two INDEPENDENT calls, two independent try/excepts -- a failure in the
+    # action-plan call must not throw away a successfully-generated narrative
+    # (and vice versa). Previously both lived under one try/except, so any
+    # failure on the second call discarded the first call's good output too.
+    narrative = ""
     try:
         resp = _call_gemini_with_retry(client, GEMINI_MODEL, prompt, {"system_instruction": NARRATIVE_PROMPT})
         _add_token_usage(resp)
         narrative = resp.text.strip()
+    except Exception as e:
+        logger.warning("Risk Narrator: executive narrative generation failed: %s", e)
 
+    action_plan = ""
+    try:
         resp2 = _call_gemini_with_retry(client, GEMINI_MODEL, prompt, {"system_instruction": ACTION_PROMPT})
         _add_token_usage(resp2)
         action_plan = resp2.text.strip()
-    except Exception:
-        return _empty
+    except Exception as e:
+        logger.warning("Risk Narrator: action plan generation failed: %s", e)
 
+    if not narrative and not action_plan:
+        return _empty
     return {**state, "executive_narrative": narrative, "action_plan": action_plan, "ai_skipped": False}
