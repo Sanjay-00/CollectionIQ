@@ -67,7 +67,12 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     color: #FFC000 !important; font-weight: 600; font-size: 11px;
     text-transform: uppercase; letter-spacing: 0.8px;
 }
-[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div {
+/* Same BaseWeb-removal issue as the tab navigation block above -- as of
+   Streamlit 1.59.0 there's no `data-baseweb="select"` wrapper any more, only
+   the standard ARIA `role="combobox"` on the clickable box itself. Both
+   selectors kept side by side for the same cross-version-safety reason. */
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
+[data-testid="stSidebar"] .stSelectbox [role="combobox"] {
     background: #1a1a1a !important; border: 1px solid #2d2d2d !important;
     color: #fff !important; border-radius: 8px !important;
 }
@@ -317,17 +322,24 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
 }
 [data-baseweb="calendar"] [data-today="true"]:not([aria-selected="true"]) * { color: #FFC000 !important; font-weight: 700 !important; }
 
-/* ══ MONTH / YEAR DROPDOWN LIST ══════════════════════════════════════════ */
-[data-baseweb="menu"] {
+/* ══ MONTH / YEAR DROPDOWN LIST ══════════════════════════════════════════
+   Same BaseWeb-removal issue as tabs/sidebar-selectbox above -- this popup's
+   new container role is `role="listbox"`, items are `role="option"` (not
+   necessarily `<li>` any more). Old + new selectors kept side by side. */
+[data-baseweb="menu"],
+[role="listbox"] {
     background: #161b22 !important; border: 1px solid #21262d !important;
     border-radius: 12px !important; box-shadow: 0 12px 40px rgba(0,0,0,0.65) !important; padding: 4px !important;
 }
-[data-baseweb="menu"] li {
+[data-baseweb="menu"] li,
+[role="listbox"] [role="option"] {
     color: #8b949e !important; font-size: 13px !important;
     border-radius: 8px !important; margin: 1px 0 !important;
 }
-[data-baseweb="menu"] li:hover { background: rgba(255,192,0,0.10) !important; color: #FFC000 !important; }
-[data-baseweb="menu"] [aria-selected="true"] { background: rgba(255,192,0,0.16) !important; color: #FFC000 !important; font-weight: 700 !important; }
+[data-baseweb="menu"] li:hover,
+[role="listbox"] [role="option"]:hover { background: rgba(255,192,0,0.10) !important; color: #FFC000 !important; }
+[data-baseweb="menu"] [aria-selected="true"],
+[role="listbox"] [role="option"][aria-selected="true"] { background: rgba(255,192,0,0.16) !important; color: #FFC000 !important; font-weight: 700 !important; }
 
 /* ── Text area ── */
 .stTextArea textarea {
@@ -339,7 +351,8 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
 .stTextArea textarea:focus { border-color: #FFC000 !important; box-shadow: 0 0 0 3px rgba(255,192,0,0.15) !important; }
 
 /* ── Selectbox ── */
-[data-baseweb="select"] > div { border-radius: 8px !important; }
+[data-baseweb="select"] > div,
+[role="combobox"] { border-radius: 8px !important; }
 
 /* ── AI panel ── */
 .ai-panel {
@@ -458,20 +471,39 @@ div[data-testid="stAlert"][kind="error"]   { background: rgba(220,38,38,0.08) !i
 /* ── Dataframe ── */
 [data-testid="stDataFrame"] { border-radius: 10px !important; overflow: hidden !important; }
 
-/* ══ TAB NAVIGATION ══════════════════════════════════════════════════════ */
-.stTabs [data-baseweb="tab-list"] {
+/* ══ TAB NAVIGATION ══════════════════════════════════════════════════════
+   Streamlit's Tabs widget dropped BaseWeb entirely as of 1.58ish -- every
+   `data-baseweb="tab*"` attribute this block used to target is gone from
+   the frontend bundle as of 1.59.0 (confirmed: zero `data-baseweb`
+   occurrences anywhere in the built JS), silently reverting every tab to
+   Streamlit's unstyled default look on any deploy that resolves a newer
+   Streamlit than whatever was last used to test this file locally --
+   requirements.txt pins `streamlit>=1.35.0` (open-ended), so that drift is
+   a real, live risk, not hypothetical (it already happened once: Cloud
+   resolved 1.59.0 while local dev was still on 1.57.0). New per-tab testid
+   is `data-testid="stTab"` (singular); the row container has no dedicated
+   testid, just the standard ARIA `role="tablist"`. Both OLD (data-baseweb)
+   and NEW (data-testid/role) selectors are kept side by side -- same
+   defensive pattern this file's own stSidebarCollapsed/stExpandSidebarButton
+   rule above already uses -- so this survives a Streamlit version change
+   in either direction instead of silently breaking again next time. */
+.stTabs [data-baseweb="tab-list"],
+.stTabs [role="tablist"] {
     gap: 2px; background: #ffffff; padding: 5px 6px; border-radius: 12px;
     border: 1px solid #e5e7eb; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     margin-bottom: 20px; overflow-x: auto;
 }
-.stTabs [data-baseweb="tab"] {
+.stTabs [data-baseweb="tab"],
+.stTabs [data-testid="stTab"] {
     height: 36px; padding: 0 18px; border-radius: 8px;
     font-size: 13px; font-weight: 600; color: #6b7280;
     background: transparent; border: none;
     transition: background 0.15s, color 0.15s; white-space: nowrap;
 }
-.stTabs [data-baseweb="tab"]:hover { background: #f3f4f6; color: #374151; }
-.stTabs [data-baseweb="tab"][aria-selected="true"] {
+.stTabs [data-baseweb="tab"]:hover,
+.stTabs [data-testid="stTab"]:hover { background: #f3f4f6; color: #374151; }
+.stTabs [data-baseweb="tab"][aria-selected="true"],
+.stTabs [data-testid="stTab"][aria-selected="true"] {
     background: #FFC000 !important; color: #000000 !important;
     font-weight: 700 !important; box-shadow: 0 2px 8px rgba(255,192,0,0.35) !important;
 }

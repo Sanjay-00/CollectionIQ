@@ -34,11 +34,17 @@ def _style_main_content_selectbox(color: str = "#fff") -> None:
     the SAME color, or whichever caller renders last in a given rerun wins
     for all of them. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py.
     """
+    # data-baseweb="select" is gone as of Streamlit 1.59.0 (the Selectbox
+    # widget dropped BaseWeb entirely) -- role="combobox" is the new stable
+    # target. Both kept side by side, same cross-version-safety reasoning as
+    # ui/styles.py's own tab-navigation/sidebar-selectbox fixes.
     st.markdown(f"""
 <style>
 div[data-testid="stSelectbox"] [data-baseweb="select"] *,
 div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-div[data-testid="stSelectbox"] [data-baseweb="select"] span {{ color: {color} !important; }}
+div[data-testid="stSelectbox"] [data-baseweb="select"] span,
+div[data-testid="stSelectbox"] [role="combobox"],
+div[data-testid="stSelectbox"] [role="combobox"] * {{ color: {color} !important; }}
 </style>""", unsafe_allow_html=True)
 
 
