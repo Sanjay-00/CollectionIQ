@@ -40,7 +40,7 @@ _compiled = _graph.compile()
 ALL_SECTIONS = [
     "portfolio_health", "verdict", "risk_flags", "risk_indicators",
     "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
-    "region_scorecard", "overdue_demand", "product_analysis", "top_accounts", "fleet_exposure",
+    "region_scorecard", "overdue_demand", "new_advances", "product_analysis", "top_accounts", "fleet_exposure",
     "repossession", "good_customers", "branch_performance",
     "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]

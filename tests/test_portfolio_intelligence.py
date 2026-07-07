@@ -17,6 +17,11 @@ from analysis.portfolio_intelligence import (
     compute_good_customers,
     build_vintage_chart,
     compute_overdue_demand_scorecard,
+    compute_new_advances,
+    compute_new_advances_by_dimension,
+    compute_new_advances_trend,
+    roll_new_advances_trend,
+    compute_new_advances_trend_chart,
 )
 import analysis.portfolio_intelligence as pi
 from helpers import make_df
@@ -255,6 +260,259 @@ class TestComputeOverdueDemandScorecard:
         ] * 11)  # exactly the threshold
         out = compute_overdue_demand_scorecard(curr)
         assert "JUST_ENOUGH" in out["executive"]["Executive"].values
+
+
+# ── compute_new_advances ─────────────────────────────────────────────────────
+
+class TestComputeNewAdvances:
+    """New business is identified by Ag_Date's own month == the report's
+    reporting month (as_of), never gated by curr_bucket. No df_prev upload
+    needed -- last month's own advances are sourced from THIS SAME df_curr's
+    Ag_Date history (curr_ym - 1), since a single LCC extract already
+    carries every still-open loan regardless of origination month."""
+
+    def test_filters_by_ag_date_month_not_bucket(self):
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-15"), "Loan Amount": 200_000.0, "curr_bucket": "NPA"},
+            {"Ag_Date": pd.Timestamp("2026-06-20"), "Loan Amount": 300_000.0, "curr_bucket": "STD"},
+            {"Ag_Date": pd.Timestamp("2026-05-01"), "Loan Amount": 999_000.0, "curr_bucket": "STD"},
+        ])
+        out = compute_new_advances(curr, as_of="2026-06-30")
+        assert out["accounts"] == 2
+        assert out["funded_cr"] == round(500_000 / 1e7, 2)
+
+    def test_no_prior_month_rows_has_prev_false_and_mom_none(self):
+        curr = make_df([{"Ag_Date": pd.Timestamp("2026-06-10"), "Loan Amount": 100_000.0}])
+        out = compute_new_advances(curr, as_of="2026-06-30")
+        assert out["has_prev"] is False
+        assert out["accounts_mom_pct"] is None
+        assert out["funded_mom_pct"] is None
+
+    def test_mom_comparison_from_same_upload_own_prior_month_rows(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0}] * 2
+            + [{"Ag_Date": pd.Timestamp("2026-05-05"), "Loan Amount": 100_000.0}]
+        )
+        out = compute_new_advances(curr, as_of="2026-06-30")
+        assert out["has_prev"] is True
+        assert out["prev_accounts"] == 1
+        assert out["accounts_mom_pct"] == 100.0
+        assert out["funded_mom_pct"] == 300.0
+
+    def test_rows_outside_prior_month_excluded(self):
+        # Only ONE calendar month back counts as "prior month" -- not any
+        # older Ag_Date row in the same upload.
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0}]
+            + [{"Ag_Date": pd.Timestamp("2026-04-01"), "Loan Amount": 500_000.0}]
+        )
+        out = compute_new_advances(curr, as_of="2026-06-30")
+        assert out["prev_accounts"] == 0
+        assert out["accounts_mom_pct"] is None
+
+    def test_segment_breakdown_gated_by_min_accounts(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-01"), "Loan Amount": 100_000.0, "SegmentName": "CV"}] * 11
+            + [{"Ag_Date": pd.Timestamp("2026-06-02"), "Loan Amount": 100_000.0, "SegmentName": "TINY"}] * 3
+        )
+        out = compute_new_advances(curr, as_of="2026-06-30")
+        segs = out["segment"]["Segment"].tolist()
+        assert "CV" in segs
+        assert "TINY" not in segs
+
+    def test_empty_df_returns_zeroed_result(self):
+        out = compute_new_advances(make_df([]), as_of="2026-06-30")
+        assert out["accounts"] == 0
+        assert out["segment"].empty
+
+    def test_missing_ag_date_column_returns_zeroed_result(self):
+        df = make_df([{"Loan Amount": 100_000.0}]).drop(columns=["Ag_Date"])
+        out = compute_new_advances(df, as_of="2026-06-30")
+        assert out["accounts"] == 0
+
+
+# ── compute_new_advances_by_dimension ─────────────────────────────────────────
+
+class TestComputeNewAdvancesByDimension:
+    """Business/origination view -- deliberately NO materiality floor on the
+    executive grain (unlike the Overdue vs Month Demand league table), so
+    even a single new advance shows up."""
+
+    def test_executive_shows_up_with_a_single_account(self):
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "SOLO_EXEC"},
+        ])
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        assert "SOLO_EXEC" in out["executive"]["Executive"].values
+
+    def test_branch_carries_region_executive_carries_branch_and_region(self):
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+             "RegionName": "EAST", "Unit": "BR1", "MNT NAME": "EXEC1"},
+        ])
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        branch_row = out["branch"].set_index("Branch").loc["BR1"]
+        assert branch_row["Region"] == "EAST"
+        exec_row = out["executive"].set_index("Executive").loc["EXEC1"]
+        assert exec_row["Branch"] == "BR1" and exec_row["Region"] == "EAST"
+
+    def test_mom_columns_sourced_from_same_upload(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0,
+              "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1"}] * 2
+            + [{"Ag_Date": pd.Timestamp("2026-05-05"), "Loan Amount": 100_000.0,
+                "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1"}]
+        )
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        row = out["region"].set_index("Region").loc["WEST"]
+        assert row["Prev Accounts"] == 1
+        assert row["Accounts MoM %"] == 100.0
+
+    def test_empty_df_returns_empty_frames(self):
+        out = compute_new_advances_by_dimension(make_df([]), as_of="2026-06-30")
+        assert all(df.empty for df in out.values())
+
+    def test_total_accounts_is_whole_book_not_just_this_month(self):
+        # EXEC1 has 3 loans total in df_curr (any Ag_Date), but only 1 was
+        # originated this reporting month -- Total Accounts must reflect the
+        # whole book, Accounts This Month only the fresh originations.
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1"},
+            {"Ag_Date": pd.Timestamp("2024-01-01"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1"},
+            {"Ag_Date": pd.Timestamp("2023-01-01"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1"},
+        ])
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        row = out["executive"].set_index("Executive").loc["EXEC1"]
+        assert row["Total Accounts"] == 3
+        assert row["Accounts This Month"] == 1
+
+    def test_sorted_by_accounts_this_month_descending(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 50_000.0,
+              "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "BIG_EXEC"}] * 5
+            + [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 999_000.0,
+                "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "SMALL_EXEC_HIGH_AMT"}] * 1
+        )
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        exec_df = out["executive"]
+        # SMALL_EXEC_HIGH_AMT has more Funded (Cr) but fewer accounts -- sort
+        # must be by Accounts This Month, not Funded (Cr).
+        assert exec_df.iloc[0]["Executive"] == "BIG_EXEC"
+        assert exec_df["Accounts This Month"].tolist() == sorted(exec_df["Accounts This Month"].tolist(), reverse=True)
+
+
+# ── compute_new_advances_trend / roll_new_advances_trend ──────────────────────
+
+class TestComputeNewAdvancesTrend:
+    def _spread_df(self):
+        # One loan per month from Jan 2025 through Jun 2026 (18 months).
+        rows = []
+        for y, m in [(2025, mo) for mo in range(1, 13)] + [(2026, mo) for mo in range(1, 7)]:
+            rows.append({"Ag_Date": pd.Timestamp(y, m, 15), "Loan Amount": 100_000.0})
+        return make_df(rows)
+
+    def test_default_window_uses_config_constant(self):
+        import config
+        df = self._spread_df()
+        out = compute_new_advances_trend(df, as_of="2026-06-30")
+        # Only 18 months of data exist -- fewer than the 24-month default cap,
+        # so every month present should show up (cap is a ceiling, not a floor).
+        assert len(out) == 18
+        assert config.NEW_ADVANCES_TREND_DEFAULT_MONTHS == 24
+
+    def test_months_none_returns_full_history(self):
+        df = self._spread_df()
+        out = compute_new_advances_trend(df, as_of="2026-06-30", months=None)
+        assert len(out) == 18
+
+    def test_months_caps_window(self):
+        df = self._spread_df()
+        out = compute_new_advances_trend(df, as_of="2026-06-30", months=6)
+        assert len(out) == 6
+        assert out["Month"].min() == "2026-01"
+        assert out["Month"].max() == "2026-06"
+
+    def test_excludes_post_dated_cohorts(self):
+        df = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0},
+            {"Ag_Date": pd.Timestamp("2026-12-05"), "Loan Amount": 999_000.0},
+        ])
+        out = compute_new_advances_trend(df, as_of="2026-06-30")
+        assert "2026-12" not in out["Month"].values
+
+    def test_empty_returns_empty(self):
+        assert compute_new_advances_trend(make_df([]), as_of="2026-06-30").empty
+
+
+class TestRollNewAdvancesTrend:
+    def _trend_df(self):
+        return pd.DataFrame([
+            {"Month": "2025-04", "Accounts": 2, "Funded (Cr)": 0.20, "Avg Ticket (L)": 10.0},
+            {"Month": "2025-05", "Accounts": 3, "Funded (Cr)": 0.30, "Avg Ticket (L)": 10.0},
+            {"Month": "2026-01", "Accounts": 1, "Funded (Cr)": 0.10, "Avg Ticket (L)": 10.0},
+            {"Month": "2026-04", "Accounts": 4, "Funded (Cr)": 0.40, "Avg Ticket (L)": 10.0},
+        ])
+
+    def test_monthly_is_a_passthrough(self):
+        df = self._trend_df()
+        out = roll_new_advances_trend(df, "Monthly")
+        pd.testing.assert_frame_equal(out, df)
+
+    def test_quarterly_sums_within_calendar_quarter(self):
+        out = roll_new_advances_trend(self._trend_df(), "Quarterly")
+        q2_2025 = out.set_index("Month").loc["Q2-2025"]
+        assert q2_2025["Accounts"] == 5  # Apr + May 2025
+        assert q2_2025["Funded (Cr)"] == pytest.approx(0.50)
+
+    def test_financial_year_groups_apr_to_mar_together(self):
+        # FY25-26 = Apr 2025 - Mar 2026 -- must include BOTH the 2025-04/05
+        # rows AND the 2026-01 row, and NOT the 2026-04 row (that's FY26-27).
+        out = roll_new_advances_trend(self._trend_df(), "Financial Year")
+        fy = out.set_index("Month").loc["FY25-26"]
+        assert fy["Accounts"] == 2 + 3 + 1
+        assert "FY26-27" in out["Month"].values
+        fy_next = out.set_index("Month").loc["FY26-27"]
+        assert fy_next["Accounts"] == 4
+
+    def test_financial_year_sorted_chronologically(self):
+        out = roll_new_advances_trend(self._trend_df(), "Financial Year")
+        assert out["Month"].tolist() == ["FY25-26", "FY26-27"]
+
+    def test_avg_ticket_recomputed_not_averaged(self):
+        # 2 accounts @10L + 3 accounts @10L should still be 10L avg, not
+        # some other artifact of summing the per-month averages directly.
+        out = roll_new_advances_trend(self._trend_df(), "Quarterly")
+        q2_2025 = out.set_index("Month").loc["Q2-2025"]
+        assert q2_2025["Avg Ticket (L)"] == pytest.approx(10.0)
+
+    def test_empty_df_returns_empty(self):
+        assert roll_new_advances_trend(pd.DataFrame(), "Quarterly").empty
+
+
+class TestComputeNewAdvancesTrendChart:
+    def test_monthly_adds_quarter_end_markers(self):
+        df = pd.DataFrame([
+            {"Month": "2026-01", "Accounts": 1, "Funded (Cr)": 0.1, "Avg Ticket (L)": 10.0},
+            {"Month": "2026-02", "Accounts": 1, "Funded (Cr)": 0.1, "Avg Ticket (L)": 10.0},
+            {"Month": "2026-03", "Accounts": 1, "Funded (Cr)": 0.1, "Avg Ticket (L)": 10.0},
+        ])
+        fig = compute_new_advances_trend_chart(df, granularity="Monthly")
+        assert len(fig.layout.shapes) == 1  # only March is a quarter-end month
+
+    def test_non_monthly_granularity_has_no_markers(self):
+        df = pd.DataFrame([
+            {"Month": "Q1-2026", "Accounts": 3, "Funded (Cr)": 0.3, "Avg Ticket (L)": 10.0},
+        ])
+        fig = compute_new_advances_trend_chart(df, granularity="Quarterly")
+        assert len(fig.layout.shapes) == 0
+
+    def test_empty_df_returns_placeholder_figure(self):
+        fig = compute_new_advances_trend_chart(pd.DataFrame())
+        assert fig.layout.title.text == "No data available"
 
 
 # ── compute_npa_sma2_comparison ──────────────────────────────────────────────

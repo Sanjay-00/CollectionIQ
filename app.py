@@ -22,6 +22,7 @@ from ui.tabs.scorecard import render_scorecard_tab
 from ui.tabs.alerts import render_alerts_tab
 from ui.tabs.migration import render_migration_tab
 from ui.tabs.portfolio_intelligence import render_portfolio_intelligence_tab
+from ui.tabs.business import render_business_tab
 from analysis.portfolio_intelligence import (
     compute_pulse_kpis, compute_bucket_waterfall,
     compute_region_scorecard, compute_branch_quadrant,
@@ -31,6 +32,7 @@ from analysis.portfolio_intelligence import (
     compute_top_accounts, compute_repossession_list,
     compute_risk_flag_comparison, compute_npa_sma2_comparison,
     compute_good_customers, compute_overdue_demand_scorecard,
+    compute_new_advances, compute_new_advances_by_dimension,
 )
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.report import render_report_tab
@@ -266,12 +268,14 @@ def _cached_portfolio_intel(
     npa_sma2_cmp            = compute_npa_sma2_comparison(df_c, df_p)
     good_customers          = compute_good_customers(df_c)
     overdue_demand_scorecard = compute_overdue_demand_scorecard(df_c)
+    new_advances            = compute_new_advances(df_c, as_of=curr_month)
+    new_advances_by_dim     = compute_new_advances_by_dimension(df_c, as_of=curr_month)
     return (
         pulse_kpis, fig_waterfall,
         region_df, branch_df, fig_quadrant,
         exec_recovery_df, product_data, risk_indicators, good_bad,
         fig_treemap, fleet, top_accounts, top_accounts_summary, repo_df, npa_sma2_cmp, good_customers,
-        overdue_demand_scorecard,
+        overdue_demand_scorecard, new_advances, new_advances_by_dim,
     )
 
 # ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
@@ -309,7 +313,7 @@ _rr = rr_meta or {}
     pi_region, pi_branch, pi_fig_quad,
     pi_exec, pi_product, pi_risk, pi_good_bad,
     pi_fig_treemap, pi_fleet, pi_top_accounts, pi_top_accounts_summary, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
-    pi_overdue_demand,
+    pi_overdue_demand, pi_new_advances, pi_new_advances_by_dim,
 ) = _cached_portfolio_intel(
     df_curr, df_prev,
     data_version, sel_region, sel_branch, sel_status, _seg_t,
@@ -344,6 +348,8 @@ precomputed_views = {
     "pi_pulse_kpis":      pi_pulse_kpis,
     "pi_good_bad":        pi_good_bad,
     "pi_overdue_demand":  pi_overdue_demand,
+    "pi_new_advances":    pi_new_advances,
+    "pi_new_advances_by_dim": pi_new_advances_by_dim,
 }
 
 # ── Active filter bar ─────────────────────────────────────────────────────────
@@ -366,7 +372,7 @@ if active_filters:
 n_alerts    = sum(1 for a in alerts if a["count"] > 0)
 alert_label = f"🚨 Alerts ({n_alerts})" if n_alerts else "✅ Alerts"
 
-tabs = st.tabs(["🗂️ Dashboard", "👤 Scorecard", alert_label, "📈 Migration", "📊 Portfolio Intelligence", "🤖 AI Query", "📋 Report"])
+tabs = st.tabs(["🗂️ Dashboard", "👤 Scorecard", alert_label, "📈 Migration", "📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query", "📋 Report"])
 
 
 def _tab_error(name: str, exc: Exception) -> None:
@@ -432,6 +438,18 @@ with tabs[4]:
 
 with tabs[5]:
     try:
+        render_business_tab(
+            new_advances=pi_new_advances,
+            df_curr=df_curr,
+            curr_month=curr_month,
+            dimension_data=pi_new_advances_by_dim,
+            vintage_df=pi_product.get("vintage", pd.DataFrame()),
+        )
+    except Exception as _e:
+        _tab_error("Business", _e)
+
+with tabs[6]:
+    try:
         # Map uploaded files to their dated bucket columns so the AI can resolve
         # date references ("on 20th June") to curr_bucket / prev_bucket.
         _snapshot_dates = {"curr": curr_month_input.strftime("%Y-%m-%d")}
@@ -445,7 +463,7 @@ with tabs[5]:
     except Exception as _e:
         _tab_error("AI Query", _e)
 
-with tabs[6]:
+with tabs[7]:
     try:
         render_report_tab(
             df_curr, df_prev, curr_month, prev_month,

@@ -431,6 +431,80 @@ def _render_overdue_demand(data: dict) -> str:
     return _sec_label("Overdue vs Month Demand Collection") + blocks
 
 
+def _render_new_advances(data: dict) -> str:
+    """New business (advances) funded this reporting month -- identified by
+    Ag_Date's own month, never gated by curr_bucket (see
+    compute_new_advances_section's docstring for why curr_month, not
+    wall-clock "now", anchors "this month")."""
+    if not data or not data.get("accounts"):
+        return ""
+
+    accounts   = data.get("accounts", 0)
+    funded_cr  = data.get("funded_cr", 0.0)
+    avg_ticket = data.get("avg_ticket_l", 0.0)
+    has_prev   = data.get("has_prev", False)
+
+    def _mom_html(pct):
+        if pct is None:
+            return '<span style="color:#9ca3af;">&#8212;</span>'
+        color = "#16a34a" if pct >= 0 else "#dc2626"
+        arrow = "&#9650;" if pct >= 0 else "&#9660;"
+        return f'<span style="color:{color};font-weight:700;">{arrow} {abs(pct):.2f}%</span>'
+
+    def _stat_card(label, value):
+        return (
+            f'<td width="33%" valign="top" style="padding:4px;">'
+            f'<div style="background:#fff;border:1px solid #e5e7eb;border-bottom:3px solid {YELLOW};border-radius:10px;padding:14px 16px;">'
+            f'<div style="font-size:9px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">{label}</div>'
+            f'<div style="font-size:24px;font-weight:800;color:#111827;">{value}</div>'
+            f'</div></td>'
+        )
+
+    stat_row = (
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;"><tr>'
+        + _stat_card("New Advances", f"{accounts:,}")
+        + _stat_card("Funded Amount", f"&#8377;{funded_cr:,.2f}Cr")
+        + _stat_card("Avg Ticket Size", f"&#8377;{avg_ticket:,.2f}L")
+        + '</tr></table>'
+    )
+
+    mom_row = ""
+    if has_prev:
+        mom_row = (
+            f'<div style="font-size:12px;color:#374151;margin-bottom:14px;">'
+            f'Accounts vs last month: {data.get("prev_accounts", 0):,} &#8594; {accounts:,} '
+            f'({_mom_html(data.get("accounts_mom_pct"))}) &nbsp;|&nbsp; '
+            f'Funded vs last month: &#8377;{data.get("prev_funded_cr", 0):.2f}Cr &#8594; &#8377;{funded_cr:.2f}Cr '
+            f'({_mom_html(data.get("funded_mom_pct"))})'
+            f'</div>'
+        )
+
+    seg_rows_data = data.get("segment", [])
+    seg_table = ""
+    if seg_rows_data:
+        header = "".join(
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
+            for h in ["Segment", "Accounts", "Funded (Cr)", "Avg Ticket (L)", "Share %"]
+        )
+        rows = "".join(
+            f'<tr>'
+            f'<td style="padding:9px 12px;font-weight:600;font-size:12px;">{_esc(r.get("Segment", ""))}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Accounts", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">&#8377;{r.get("Funded (Cr)", 0):.2f}Cr</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">&#8377;{r.get("Avg Ticket (L)", 0):.2f}L</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Share %", 0):.1f}%</td>'
+            f'</tr>'
+            for r in seg_rows_data
+        )
+        seg_table = (
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
+            f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
+        )
+
+    return _sec_label("New Advances This Month (Business)") + stat_row + mom_row + seg_table
+
+
 def _render_top_accounts(data: dict) -> str:
     rows_data = data.get("rows", [])
     if not rows_data:
@@ -1111,7 +1185,7 @@ def _render_good_customers(data: dict) -> str:
 SECTION_ORDER = [
     "portfolio_health", "verdict", "risk_flags", "risk_indicators",
     "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
-    "region_scorecard", "overdue_demand", "product_analysis", "top_accounts", "fleet_exposure",
+    "region_scorecard", "overdue_demand", "new_advances", "product_analysis", "top_accounts", "fleet_exposure",
     "repossession", "good_customers", "branch_performance",
     "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]
@@ -1126,6 +1200,7 @@ _RENDERERS = {
     "concentration":              _render_concentration,
     "region_scorecard":           _render_region_scorecard,
     "overdue_demand":             _render_overdue_demand,
+    "new_advances":               _render_new_advances,
     "product_analysis":           _render_product_analysis,
     "top_accounts":               _render_top_accounts,
     "fleet_exposure":             _render_fleet_exposure,

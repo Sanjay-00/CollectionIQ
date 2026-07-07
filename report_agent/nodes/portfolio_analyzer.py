@@ -12,6 +12,7 @@ from report_agent.sections import (
     concentration,
     region_scorecard,
     overdue_demand,
+    new_advances,
     product_analysis,
     top_accounts,
     fleet_exposure,
@@ -24,11 +25,11 @@ from report_agent.sections import (
 )
 
 # Every section fn takes (df_curr, df_prev, curr_month) uniformly, even though
-# only product_analysis/repossession actually use curr_month (the report's own
-# reporting month, for date-anchored logic that must not silently fall back to
-# wall-clock "now" -- see analysis/portfolio_intelligence.py's as_of param).
-# The other 16 just ignore their 3rd argument. One shared call signature here
-# beats a special case per section in portfolio_analyzer_node below.
+# only product_analysis/repossession/new_advances actually use curr_month (the
+# report's own reporting month, for date-anchored logic that must not silently
+# fall back to wall-clock "now" -- see analysis/portfolio_intelligence.py's
+# as_of param). The rest just ignore their 3rd argument. One shared call
+# signature here beats a special case per section in portfolio_analyzer_node below.
 _SECTION_FN = {
     "portfolio_health":    lambda c, p, m: portfolio_health.compute_portfolio_health(c, p),
     "verdict":             lambda c, p, m: verdict.compute_verdict(c, p),
@@ -40,6 +41,7 @@ _SECTION_FN = {
     "concentration":       lambda c, p, m: concentration.compute_concentration_section(c, p),
     "region_scorecard":    lambda c, p, m: region_scorecard.compute_region_scorecard_section(c, p),
     "overdue_demand":      lambda c, p, m: overdue_demand.compute_overdue_demand_section(c, p),
+    "new_advances":        lambda c, p, m: new_advances.compute_new_advances_section(c, p, curr_month=m),
     "product_analysis":    lambda c, p, m: product_analysis.compute_product_analysis_section(c, p, curr_month=m),
     "top_accounts":        lambda c, p, m: top_accounts.compute_top_accounts_section(c, p),
     "fleet_exposure":      lambda c, p, m: fleet_exposure.compute_fleet_exposure_section(c, p),

@@ -585,25 +585,19 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
 
 
 def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
-    """Roll monthly cohorts up to Quarter / Half-Year / Year and recompute NPA% + SMA-2%."""
+    """Roll monthly cohorts up to Quarter / Half-Year / Year / Financial Year
+    and recompute NPA% + SMA-2%. Uses analysis/portfolio_intelligence.py's
+    _period_label/_period_sort_key -- the SAME definitions the New Advances
+    Trend chart's own rollup (roll_new_advances_trend) uses, so the Business
+    tab's two granularity pickers can't silently diverge into two different
+    "Quarterly"/"Financial Year" meanings."""
+    from analysis.portfolio_intelligence import _period_label, _period_sort_key
+
     if granularity == "Monthly" or df.empty:
         return df
 
-    def _label(month_str: str) -> str:
-        try:
-            y, m = int(month_str[:4]), int(month_str[5:7])
-        except Exception:
-            return month_str
-        if granularity == "Quarterly":
-            q = (m - 1) // 3 + 1
-            return f"Q{q}-{y}"
-        if granularity == "Half-Yearly":
-            h = 1 if m <= 6 else 2
-            return f"H{h}-{y}"
-        return str(y)  # Yearly
-
     df = df.copy()
-    df["_period"] = df["Disbursement Month"].apply(_label)
+    df["_period"] = df["Disbursement Month"].apply(lambda m: _period_label(m, granularity))
 
     agg = (
         df.groupby("_period", sort=False)
@@ -619,32 +613,22 @@ def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
     agg["NPA%"]   = (agg["NPA Count"]   / agg["Accounts"] * 100).round(2)
     agg["SMA-2%"] = (agg["SMA-2 Count"] / agg["Accounts"] * 100).round(2)
 
-    # Sort chronologically: extract year + sub-period for stable ordering
-    def _sort_key(label):
-        try:
-            if label.startswith("Q"):
-                q, y = label[1:].split("-")
-                return int(y) * 10 + int(q)
-            if label.startswith("H"):
-                h, y = label[1:].split("-")
-                return int(y) * 10 + int(h)
-            return int(label) * 10
-        except Exception:
-            return 0
-
-    agg["_sk"] = agg["Disbursement Month"].apply(_sort_key)
+    agg["_sk"] = agg["Disbursement Month"].apply(_period_sort_key)
     return agg.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
 
 
 def _render_vintage_sourcing(product_data: dict) -> None:
-    _section("Section 5  -  Vintage & Sourcing Analysis", margin_top="24px")
+    # Disbursement Vintage moved to the Business tab (ui/tabs/business.py) --
+    # it's a time-based Ag_Date-cohort view, the same axis as that tab's new
+    # advances trend, not a static portfolio-composition breakdown like the
+    # 3 sub-tabs remaining here.
+    _section("Section 5  -  Sourcing & Product Analysis", margin_top="24px")
 
     if not product_data:
-        st.info("No segment, fuel type, vintage, or source channel data found in this file.")
+        st.info("No segment, fuel type, or source channel data found in this file.")
         return
 
     tabs_avail = []
-    if "vintage" in product_data: tabs_avail.append(("Disbursement Vintage", "vintage"))
     if "source"  in product_data: tabs_avail.append(("Sourcing Channel", "source"))
     if "segment" in product_data: tabs_avail.append(("Vehicle Segment", "segment"))
     if "fuel"    in product_data: tabs_avail.append(("Fuel Type", "fuel"))
@@ -657,23 +641,7 @@ def _render_vintage_sourcing(product_data: dict) -> None:
     for sub_tab, (label, key) in zip(sub_tabs, tabs_avail):
         with sub_tab:
             df = product_data[key]
-            if key == "vintage":
-                st.caption(
-                    "Rising NPA% on older cohorts = expected ageing. "
-                    "Spike on a specific month = sourcing quality issue that month  -  collections can't fix it, credit can stop repeating it."
-                )
-                granularity = st.radio(
-                    "Group by", ["Monthly", "Quarterly", "Half-Yearly", "Yearly"],
-                    horizontal=True, key="vintage_gran", index=1,
-                )
-                plot_df = _roll_vintage(df, granularity)
-                from analysis.portfolio_intelligence import build_vintage_chart
-                fig_v = build_vintage_chart(plot_df)
-                if fig_v.data:
-                    _chart_card(fig_v)
-                    st.markdown("<br>", unsafe_allow_html=True)
-                _render_product_table(plot_df.drop(columns=["NPA Count", "SMA-2 Count"], errors="ignore"))
-            elif key == "source":
+            if key == "source":
                 st.caption(
                     "DSA/sourcing channel NPA%. "
                     "Politically sensitive but extremely valuable  -  bad sources get delisted."

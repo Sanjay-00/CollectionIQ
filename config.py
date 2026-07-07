@@ -79,6 +79,12 @@ MIN_ACCOUNTS_SOURCE_VINTAGE = 10
 # tiny-N volatility at realistic portfolio sizes.
 MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE = 11
 
+# New Advances (Business tab) trend chart -- how many trailing months to plot
+# by default. User-adjustable in the UI (dropdown, see
+# NEW_ADVANCES_TREND_MONTH_OPTIONS); this is only the pre-selected default.
+NEW_ADVANCES_TREND_DEFAULT_MONTHS = 24
+NEW_ADVANCES_TREND_MONTH_OPTIONS = [6, 12, 24, 36, 60, "All"]
+
 # SegmentName/Segment values are sometimes truncated inconsistently by the
 # source system at DIFFERENT lengths for the SAME real segment (observed in
 # real production data: "Passenger Commerc" / "Passenger Commerci" /

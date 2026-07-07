@@ -17,6 +17,7 @@ from report_agent.sections.repossession import compute_repossession_section
 from report_agent.sections.good_customers import compute_good_customers_section
 from report_agent.sections.executive_strike_rankings import compute_executive_strike_rankings
 from report_agent.sections.overdue_demand import compute_overdue_demand_section
+from report_agent.sections.new_advances import compute_new_advances_section
 from report_agent.charts import fig_to_base64
 from helpers import make_df
 
@@ -440,6 +441,37 @@ class TestComputeOverdueDemandSection:
         assert row["name"] == "EXEC1"
         assert row["branch"] == "BR1"
         assert row["region"] == "EAST"
+
+
+# ── compute_new_advances_section ──────────────────────────────────────────────
+
+class TestComputeNewAdvancesSection:
+    def test_returns_none_for_empty_df(self):
+        assert compute_new_advances_section(make_df([])) is None
+
+    def test_returns_none_when_no_advances_this_month(self):
+        curr = make_df([{"Ag_Date": pd.Timestamp("2026-01-01"), "Loan Amount": 100_000.0}])
+        assert compute_new_advances_section(curr, curr_month="2026-06") is None
+
+    def test_returns_totals_and_segment_rows(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0, "SegmentName": "CV"}] * 11
+        )
+        result = compute_new_advances_section(curr, curr_month="2026-06")
+        assert result is not None
+        assert result["accounts"] == 11
+        assert result["segment"][0]["Segment"] == "CV"
+
+    def test_mom_comparison_sourced_from_same_upload_no_df_prev_needed(self):
+        # df_prev is passed as None here on purpose -- MoM must still work,
+        # sourced entirely from df_curr's own Ag_Date history.
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0}] * 2
+            + [{"Ag_Date": pd.Timestamp("2026-05-05"), "Loan Amount": 100_000.0}]
+        )
+        result = compute_new_advances_section(curr, None, curr_month="2026-06")
+        assert result["has_prev"] is True
+        assert result["prev_accounts"] == 1
 
 
 # ── compute_good_customers_section ────────────────────────────────────────────
