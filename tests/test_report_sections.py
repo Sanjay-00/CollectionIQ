@@ -18,6 +18,8 @@ from report_agent.sections.good_customers import compute_good_customers_section
 from report_agent.sections.executive_strike_rankings import compute_executive_strike_rankings
 from report_agent.sections.overdue_demand import compute_overdue_demand_section
 from report_agent.sections.new_advances import compute_new_advances_section
+from report_agent.sections.new_advances_trend import compute_new_advances_trend_section
+from report_agent.sections.new_advances_by_dimension import compute_new_advances_by_dimension_section
 from report_agent.charts import fig_to_base64
 from helpers import make_df
 
@@ -472,6 +474,66 @@ class TestComputeNewAdvancesSection:
         result = compute_new_advances_section(curr, None, curr_month="2026-06")
         assert result["has_prev"] is True
         assert result["prev_accounts"] == 1
+
+
+# ── compute_new_advances_trend_section ────────────────────────────────────────
+
+class TestComputeNewAdvancesTrendSection:
+    def test_returns_none_for_empty_df(self):
+        assert compute_new_advances_trend_section(make_df([])) is None
+
+    def test_returns_base64_image_for_valid_data(self):
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-05-05"), "Loan Amount": 100_000.0},
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0},
+        ])
+        result = compute_new_advances_trend_section(curr, curr_month="2026-06")
+        assert result is not None
+        assert result["months"] == 2
+        assert result["image"] is None or result["image"].startswith("data:image/png;base64,")
+
+    def test_fixed_at_36_months_not_config_default(self):
+        # Report window is NEW_ADVANCES_REPORT_TREND_MONTHS (36), independent
+        # of the dashboard's NEW_ADVANCES_TREND_DEFAULT_MONTHS (24) -- a loan
+        # from 30 months back must still show up in the report's trend.
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2023-12-05"), "Loan Amount": 100_000.0},  # ~30 months before 2026-06
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0},
+        ])
+        result = compute_new_advances_trend_section(curr, curr_month="2026-06")
+        assert result["months"] == 2
+
+
+# ── compute_new_advances_by_dimension_section ─────────────────────────────────
+
+class TestComputeNewAdvancesByDimensionSection:
+    def test_returns_none_for_empty_df(self):
+        assert compute_new_advances_by_dimension_section(make_df([])) is None
+
+    def test_returns_top_n_per_grain(self):
+        import config
+        rows = []
+        for i in range(config.NEW_ADVANCES_REPORT_TOP_N + 3):
+            rows.append({
+                "Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+                "RegionName": f"REGION_{i}", "Unit": f"BR_{i}", "MNT NAME": f"EXEC_{i}",
+            })
+        curr = make_df(rows)
+        result = compute_new_advances_by_dimension_section(curr, curr_month="2026-06")
+        assert result is not None
+        assert len(result["region"]) == config.NEW_ADVANCES_REPORT_TOP_N
+        assert len(result["branch"]) == config.NEW_ADVANCES_REPORT_TOP_N
+        assert len(result["executive"]) == config.NEW_ADVANCES_REPORT_TOP_N
+
+    def test_sorted_by_accounts_this_month(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 50_000.0,
+              "RegionName": "BIG", "Unit": "U1", "MNT NAME": "E1"}] * 5
+            + [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 50_000.0,
+                "RegionName": "SMALL", "Unit": "U2", "MNT NAME": "E2"}] * 1
+        )
+        result = compute_new_advances_by_dimension_section(curr, curr_month="2026-06")
+        assert result["region"][0]["Region"] == "BIG"
 
 
 # ── compute_good_customers_section ────────────────────────────────────────────
