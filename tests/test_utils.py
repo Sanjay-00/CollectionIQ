@@ -110,6 +110,24 @@ class TestLoadAndValidateSerialDates:
         assert result_df["ParentLDueDate"].iloc[0] == pd.Timestamp("2023-03-15")
         assert result_df["ParentLDueDate"].dt.year.iloc[0] != 1970
 
+    def test_already_datetime64_column_is_not_misread_as_excel_serials(self):
+        # Regression: openpyxl (unlike pyxlsb) hands back REAL Timestamps
+        # directly for date-formatted .xlsx cells -- a proper datetime64
+        # column, not raw serial numbers. pd.to_numeric() on a datetime64
+        # column doesn't fail, it silently casts each date to a microsecond
+        # -since-epoch integer, which used to read as "100% numeric" and get
+        # WRONGLY treated as an Excel serial-date column, reinterpreted as
+        # "days since 1899" -- a value in the trillions, instantly out of
+        # range, nulled to NaT. Confirmed on a real file: 100% of Ag_Date
+        # (13,205/13,205 rows) silently vanished this way.
+        buf = _build_upload({"Ag_Date": [pd.Timestamp("2011-01-25"), pd.Timestamp("2022-09-15"), pd.Timestamp("2023-03-15")]})
+        result_df, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert result_df["Ag_Date"].isna().sum() == 0
+        assert result_df["Ag_Date"].iloc[0] == pd.Timestamp("2011-01-25")
+        assert result_df["Ag_Date"].iloc[1] == pd.Timestamp("2022-09-15")
+        assert result_df["Ag_Date"].iloc[2] == pd.Timestamp("2023-03-15")
+
     def test_implausible_date_becomes_nat_even_within_timestamp_bounds(self):
         # Regression: a rupee amount (e.g. 150000) that ends up in a date column
         # in the source LCC extract is numerically small enough to not overflow

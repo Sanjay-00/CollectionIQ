@@ -1,4 +1,5 @@
-﻿import html
+﻿import datetime
+import html
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -7,6 +8,85 @@ import plotly.io as pio
 from config import HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS
 
 YELLOW = "#FFC000"
+
+_EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+# pandas Timestamp is nanosecond-precision and bounded (~1677 to ~2262); a serial
+# number outside that range raises OutOfBoundsDatetime and used to crash the
+# ENTIRE upload for every user of that file, not just null out the one bad row.
+# One garbage cell (a placeholder sentinel, a fat-fingered huge number) took the
+# whole app down. Bound the serial range BEFORE the arithmetic that can overflow,
+# not after, so an out-of-range value becomes NaT like any other bad date instead
+# of an unrecoverable crash.
+# NOT (pd.Timestamp.max - _EXCEL_EPOCH).days -- that subtraction itself overflows,
+# since pd.Timedelta's range (~106751 days) is narrower than the gap between the
+# 1899 epoch and pd.Timestamp.max (~2262), so computing the bound that way raises
+# the exact OutOfBoundsDatetime this code exists to prevent.
+_MAX_SERIAL = pd.Timedelta.max.days - 1
+
+
+def _parse_date_column(col: pd.Series) -> tuple[pd.Series, int, int]:
+    """Per-CELL-aware date parsing -- correct regardless of what mix of raw
+    types a column contains. Replaces a fragile whole-column "guess the type"
+    heuristic that got this wrong in 3 separate, real ways in one session:
+
+    1. pyxlsb hands back numeric Excel serials for MOST cells but raw TEXT
+       date strings for any cell the source workbook formatted as text --
+       the old heuristic committed to ONE strategy for the whole column,
+       silently nulling whichever cells didn't fit it (observed: ~2,300+
+       text-formatted Ag_Date cells lost on a real file).
+    2. A faster-engine swap under evaluation (calamine) hands back real
+       datetime objects for MOST cells but raw numeric serials for any cell
+       lacking explicit date-format metadata -- the mirror-image problem
+       (observed: ~10,000+ cells would have been lost the same way).
+    3. openpyxl hands back an ALREADY-CORRECT datetime64 column for a
+       cleanly-formatted .xlsx. pd.to_numeric() on that doesn't fail, it
+       silently casts every date to a microsecond-since-epoch integer, which
+       the old heuristic misread as "100% Excel serials" and reinterpreted
+       as literal out-of-range day-counts. Observed: 100% of a real file's
+       Ag_Date column (13,205/13,205 rows) vanished this way.
+
+    Every one of those is the SAME root mistake: deciding one parsing
+    strategy for an entire column based on a majority-vote guess, instead of
+    checking what each CELL actually is. This function classifies each cell
+    by its own real type (already-a-datetime object, numeric, or text) and
+    parses it with the matching strategy -- fully vectorized via boolean
+    masks, no per-row Python loop, so this isn't a performance regression
+    versus the old column-level heuristic.
+
+    Returns (parsed_series, unexpected_failure_count, total_non_blank_count).
+    unexpected_failure_count excludes cells that were already blank to begin
+    with (a legitimate, expected outcome -- e.g. Last Receipt Date on a loan
+    with no payment yet -- not a parsing failure), so a caller can
+    distinguish "this column has some genuinely missing data" from
+    "something in this column failed to parse and needs attention".
+    total_non_blank_count is the denominator for turning that into a rate."""
+    if pd.api.types.is_datetime64_any_dtype(col):
+        return col, 0, int(col.notna().sum())
+
+    raw_blank = col.isna() | col.astype(str).str.strip().str.lower().isin(["", "nan", "none", "nat"])
+
+    is_dt_obj = col.map(lambda v: isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date)))
+    numeric = pd.to_numeric(col, errors="coerce")
+    is_numeric = numeric.notna() & ~is_dt_obj
+
+    result = pd.Series(pd.NaT, index=col.index, dtype="datetime64[ns]")
+
+    if is_dt_obj.any():
+        result.loc[is_dt_obj] = pd.to_datetime(col[is_dt_obj], errors="coerce")
+
+    if is_numeric.any():
+        in_range = (numeric > 0) & (numeric <= _MAX_SERIAL)
+        serial_mask = is_numeric & in_range
+        if serial_mask.any():
+            result.loc[serial_mask] = _EXCEL_EPOCH + pd.to_timedelta(numeric[serial_mask], unit="D")
+        # numeric but out of range stays NaT -- same crash-prevention bound as before.
+
+    remaining = ~is_dt_obj & ~is_numeric
+    if remaining.any():
+        result.loc[remaining] = pd.to_datetime(col[remaining], errors="coerce")
+
+    unexpected_failures = int((result.isna() & ~raw_blank).sum())
+    return result, unexpected_failures, int((~raw_blank).sum())
 
 # Columns that MUST exist for calculations to work
 CRITICAL_COLS = [
@@ -340,57 +420,40 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             f"Missing critical column(s): {', '.join(missing_critical)}"
         ]
 
-    _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
-    # pandas Timestamp is nanosecond-precision and bounded (~1677 to ~2262); a serial
-    # number outside that range raises OutOfBoundsDatetime and used to crash the
-    # ENTIRE upload for every user of that file, not just null out the one bad row.
-    # One garbage cell (a placeholder sentinel, a fat-fingered huge number) took the
-    # whole app down. Bound the serial range BEFORE the arithmetic that can overflow,
-    # not after, so an out-of-range value becomes NaT like any other bad date instead
-    # of an unrecoverable crash.
-    # NOT (pd.Timestamp.max - _EXCEL_EPOCH).days -- that subtraction itself overflows,
-    # since pd.Timedelta's range (~106751 days) is narrower than the gap between the
-    # 1899 epoch and pd.Timestamp.max (~2262), so computing the bound that way raises
-    # the exact OutOfBoundsDatetime this code exists to prevent.
-    _MAX_SERIAL = pd.Timedelta.max.days - 1
+    date_parse_warnings = []
     for date_col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
         if date_col not in df.columns:
             continue
-        col = df[date_col]
-        numeric = pd.to_numeric(col, errors="coerce")
-        # Decide serial-vs-already-a-date by CONTENT, not just the declared dtype.
-        # pyxlsb can hand back an "object" dtype column that is still overwhelmingly
-        # numeric Excel serial dates -- a single stray blank/string cell is enough to
-        # upgrade the whole column's dtype from int/float to object, so
-        # is_numeric_dtype(col) alone was False even though 99%+ of the values were
-        # real serial numbers. That used to fall into the pd.to_datetime() branch
-        # below, which doesn't know these are day-counts and silently reinterprets a
-        # bare number as NANOSECONDS SINCE 1970 -- every date in the column came out
-        # as "1970-01-01 plus a few microseconds", wrong for the entire column, not
-        # just the one bad cell. Threshold on the fraction that parses as numeric
-        # instead: a real date-string/datetime column has ~0% successful numeric
-        # parses, a serial-date column (even with a few corrupt cells) has ~100%.
-        frac_numeric = numeric.notna().mean() if len(col) else 0.0
-        if pd.api.types.is_numeric_dtype(col) or frac_numeric >= 0.5:
-            # xlsb files store dates as Excel serial numbers (days since 1899-12-30)
-            in_range = numeric.notna() & (numeric > 0) & (numeric <= _MAX_SERIAL)
-            safe_numeric = numeric.where(in_range)  # out-of-range -> NaN before the arithmetic
-            df[date_col] = _EXCEL_EPOCH + pd.to_timedelta(safe_numeric, unit="D")
-            df[date_col] = df[date_col].where(in_range, pd.NaT)
-        else:
-            df[date_col] = pd.to_datetime(col, errors="coerce")
+        df[date_col], unexpected_failures, total_non_blank = _parse_date_column(df[date_col])
 
-        # Business-plausibility bound, applied to the final parsed date regardless
-        # of which branch produced it: a stray numeric value that isn't actually a
-        # date (e.g. a rupee amount that ended up in this column in the source
-        # extract) can be numerically small enough to parse into a "valid" but
-        # nonsense Timestamp (e.g. year 2170) without ever overflowing pandas'
-        # Timestamp range, so the crash-prevention bound above doesn't catch it.
-        # Reject anything outside a real loan portfolio's plausible date range
-        # instead of letting a wrong-but-well-formed date reach business logic
-        # (e.g. Last Receipt Date feeds "paid this month" AI Query filters directly).
-        plausible = df[date_col].dt.year.between(LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR)
-        df[date_col] = df[date_col].where(plausible | df[date_col].isna(), pd.NaT)
+        # Business-plausibility bound, applied AFTER per-cell parsing regardless
+        # of which strategy produced a given cell: a stray numeric value that
+        # isn't actually a date (e.g. a rupee amount that ended up in this
+        # column in the source extract) can be numerically small enough to
+        # parse into a "valid" but nonsense Timestamp (e.g. year 2170) without
+        # ever overflowing pandas' Timestamp range, so the crash-prevention
+        # bound inside _parse_date_column doesn't catch it. Reject anything
+        # outside a real loan portfolio's plausible date range instead of
+        # letting a wrong-but-well-formed date reach business logic (e.g. Last
+        # Receipt Date feeds "paid this month" AI Query filters directly).
+        implausible = df[date_col].notna() & ~df[date_col].dt.year.between(LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR)
+        unexpected_failures += int(implausible.sum())
+        df[date_col] = df[date_col].where(~implausible, pd.NaT)
+
+        # Safety net for whatever edge case NEITHER this function nor its 3
+        # known predecessors anticipated: surface it as a visible warning (same
+        # pattern as missing_optional_cols below) instead of it silently
+        # vanishing into the data a 4th time. Threshold on the FRACTION of
+        # originally non-blank cells that failed, not a raw count, so this
+        # scales correctly from a 400-row sample file to a 60k-row production
+        # one, and never fires on a column that's just legitimately sparse
+        # (e.g. Last Receipt Date on loans with no payment yet).
+        if total_non_blank > 0 and unexpected_failures / total_non_blank > 0.05:
+            date_parse_warnings.append(
+                f"{date_col}: {unexpected_failures} of {total_non_blank} value(s) could not be "
+                f"parsed as valid dates (showing blank instead of a wrong date)."
+            )
+    df.attrs["date_parse_warnings"] = date_parse_warnings
 
     # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number
     df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")

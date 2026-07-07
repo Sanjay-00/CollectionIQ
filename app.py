@@ -181,6 +181,20 @@ if _missing_cols:
         f"{', '.join(sorted(_missing_cols))}. Features relying on these may show no results, not an error."
     )
 
+# Safety net for a date column (Ag_Date/Last Receipt Date/ParentLDueDate)
+# where a meaningful fraction of values failed to parse -- see
+# utils.py::_parse_date_column's own docstring for the 3 real ways this
+# already happened silently before this warning existed. Shown as a warning
+# (not just an info caption) since a broken date column can silently distort
+# business logic (vintage cohorts, repossession windows, "paid this month"
+# filters), not just show an empty list.
+_date_warn_curr = df_curr_raw.attrs.get("date_parse_warnings", [])
+_date_warn_prev = df_prev_raw.attrs.get("date_parse_warnings", [])
+for _w in _date_warn_curr:
+    st.warning(f"⚠️ Current month file -- {_w}")
+for _w in _date_warn_prev:
+    st.warning(f"⚠️ Previous month file -- {_w}")
+
 # Auto-load prev if uploaded after initial generate (cache hit  -  no cost)
 if prev_file and len(df_prev_raw) == 0:
     _prev_tmp, _prev_err = _load_and_concat(prev_file)
