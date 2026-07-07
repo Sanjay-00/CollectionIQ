@@ -114,6 +114,32 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
         )
 
 
+def _cached_html_export(df_curr: pd.DataFrame, build_fn, *args, **kwargs) -> str:
+    """Same identity-cache idiom _dl_btn already uses above, for a different
+    culprit: ui/tabs/dashboard.py's build_html_export call ran unconditionally
+    on every render (not gated behind the download button click -- Streamlit's
+    download_button needs its `data=` bytes ready upfront, so there's no native
+    "compute on click" for this), and it's expensive: pio.to_html() on 3 full
+    Plotly figures plus assembling a large formatted HTML string, every single
+    Streamlit rerun of the ENTIRE app, since Dashboard is tabs[0] and always
+    executes regardless of which tab is actually visible.
+
+    Keyed on `df_curr is` the exact object from last time -- df_curr is itself
+    already st.cache_data-cached upstream (via app.py's _cached_filter), so the
+    SAME object survives across reruns whenever filters/data are unchanged, and
+    every other build_html_export argument (metrics, figures, alerts,
+    scorecard_df) is derived from that same df_curr+filter combination, so an
+    unchanged df_curr identity guarantees they're unchanged too -- same
+    reasoning _dl_btn's own docstring spells out for the Excel case."""
+    cache = st.session_state.setdefault("_html_export_cache", {})
+    cached = cache.get("dashboard")
+    if cached is not None and cached[0] is df_curr:
+        return cached[1]
+    html_content = build_fn(*args, **kwargs)
+    cache["dashboard"] = (df_curr, html_content)
+    return html_content
+
+
 def _kpi_card_html(
     label: str, value: str, delta, *, unit: str = "%", inverse: bool = False,
     count_delta: int | None = None, zero_delta_bad: bool = False,

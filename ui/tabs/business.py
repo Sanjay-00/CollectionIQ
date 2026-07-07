@@ -18,6 +18,37 @@ from config import NEW_ADVANCES_TREND_DEFAULT_MONTHS, NEW_ADVANCES_TREND_MONTH_O
 _GRANULARITY_OPTIONS = ["Monthly", "Quarterly", "Half-Yearly", "Yearly", "Financial Year"]
 
 
+# ── Cached recompute wrappers ─────────────────────────────────────────────────
+# Streamlit reruns EVERY tab's code on EVERY interaction anywhere on the page,
+# not just the currently-visible tab -- so a widget change on Dashboard still
+# re-executes this whole module's render functions. Without these caches, the
+# Ag_Date groupby + period rollup below (window/granularity dropdowns, both
+# tab-local widgets the sidebar-level app.py caches don't know about) reran
+# from scratch on every single click anywhere in the app, not just when the
+# Business tab's own selections actually changed -- same pattern
+# ui/tabs/migration.py's _cached_filtered_roll_rate already uses for its own
+# drill-down filter. _df_c/_vintage_df are underscore-prefixed so Streamlit
+# never hashes the frame itself; data_version + the sidebar filter tuple +
+# curr_month + this tab's own widget values are the cheap, explicit,
+# accuracy-preserving cache key -- any one of them changing is a cache miss,
+# so a genuinely different result is never served stale.
+@st.cache_data(show_spinner=False)
+def _cached_new_advances_trend(
+    _df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
+    curr_month: str, months, granularity: str,
+) -> pd.DataFrame:
+    trend_df = compute_new_advances_trend(_df_c, as_of=curr_month, months=months)
+    return roll_new_advances_trend(trend_df, granularity)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_vintage_rollup(
+    _vintage_df: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
+    granularity: str,
+) -> pd.DataFrame:
+    return _roll_vintage(_vintage_df, granularity)
+
+
 # ── Section 1: New Advances This Month ────────────────────────────────────────
 
 def _render_new_advances(data: dict) -> None:
@@ -66,7 +97,10 @@ def _render_new_advances(data: dict) -> None:
 
 # ── Section 2: New Advances Trend ─────────────────────────────────────────────
 
-def _render_new_advances_trend(df_curr: pd.DataFrame, curr_month: str) -> None:
+def _render_new_advances_trend(
+    df_curr: pd.DataFrame, curr_month: str,
+    data_version: int, region: str, branch: str, status: str, segment: tuple,
+) -> None:
     _section("Section 2  -  New Advances Trend", margin_top="24px")
     st.caption(
         "Accounts + funded amount by disbursement month, across this file's full Ag_Date history -- "
@@ -87,12 +121,13 @@ def _render_new_advances_trend(df_curr: pd.DataFrame, curr_month: str) -> None:
         )
     months = None if window_choice == "All" else int(window_choice)
 
-    trend_df = compute_new_advances_trend(df_curr, as_of=curr_month, months=months)
-    if trend_df.empty:
+    plot_df = _cached_new_advances_trend(
+        df_curr, data_version, region, branch, status, segment, curr_month, months, granularity,
+    )
+    if plot_df.empty:
         st.info("No Ag_Date history found for a trend view.")
         return
 
-    plot_df = roll_new_advances_trend(trend_df, granularity)
     _chart_card(compute_new_advances_trend_chart(plot_df, granularity))
     st.markdown("<br>", unsafe_allow_html=True)
     # plot_df is already chronologically ascending (roll_new_advances_trend's
@@ -128,7 +163,10 @@ def _render_new_advances_by_dimension(data: dict) -> None:
 
 # ── Section 4: Disbursement Vintage ───────────────────────────────────────────
 
-def _render_disbursement_vintage(vintage_df: pd.DataFrame) -> None:
+def _render_disbursement_vintage(
+    vintage_df: pd.DataFrame,
+    data_version: int, region: str, branch: str, status: str, segment: tuple,
+) -> None:
     _section("Section 4  -  Disbursement Vintage", margin_top="24px")
     st.caption(
         "Rising NPA% on older cohorts = expected ageing. "
@@ -143,7 +181,7 @@ def _render_disbursement_vintage(vintage_df: pd.DataFrame) -> None:
         "Group by", _GRANULARITY_OPTIONS,
         horizontal=True, key="vintage_gran", index=1,
     )
-    plot_df = _roll_vintage(vintage_df, granularity)
+    plot_df = _cached_vintage_rollup(vintage_df, data_version, region, branch, status, segment, granularity)
     fig_v = build_vintage_chart(plot_df)
     if fig_v.data:
         _chart_card(fig_v)
@@ -160,14 +198,18 @@ def render_business_tab(
     curr_month: str,
     dimension_data: dict,
     vintage_df: pd.DataFrame,
+    data_version: int, region: str, branch: str, status: str, segment: tuple,
 ) -> None:
     _render_new_advances(new_advances or {})
     _divider()
 
-    _render_new_advances_trend(df_curr, curr_month)
+    _render_new_advances_trend(df_curr, curr_month, data_version, region, branch, status, segment)
     _divider()
 
     _render_new_advances_by_dimension(dimension_data or {})
     _divider()
 
-    _render_disbursement_vintage(vintage_df if vintage_df is not None else pd.DataFrame())
+    _render_disbursement_vintage(
+        vintage_df if vintage_df is not None else pd.DataFrame(),
+        data_version, region, branch, status, segment,
+    )

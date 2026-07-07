@@ -7,7 +7,10 @@ load_dotenv()
 import streamlit as st
 import pandas as pd
 
-from utils import apply_filters, compute_metrics, PREV_CARRYOVER_COLS
+from utils import (
+    apply_filters, compute_metrics, PREV_CARRYOVER_COLS,
+    build_status_bar_chart, build_branch_bar_chart, build_closing_pc_chart,
+)
 from smart_alerts import run_all_alerts
 
 from ui.styles import inject_styles
@@ -227,6 +230,21 @@ def _cached_metrics(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int,
     return compute_metrics(_df_c, _df_p)
 
 @st.cache_data(show_spinner=False)
+def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
+    # These 3 chart builders used to run uncached directly inside
+    # ui/tabs/dashboard.py's render function -- since Dashboard is tabs[0]
+    # and Streamlit executes every tab's code on every rerun regardless of
+    # which tab is visible, that meant rebuilding all 3 Plotly figures on
+    # every single interaction anywhere in the app, not just when df_curr
+    # actually changed. Same cached-recompute pattern as every other
+    # _cached_* wrapper here.
+    return (
+        build_status_bar_chart(_df_c),
+        build_branch_bar_chart(_df_c),
+        build_closing_pc_chart(_df_c),
+    )
+
+@st.cache_data(show_spinner=False)
 def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str):
     return run_all_alerts(_df_c)
 
@@ -296,6 +314,9 @@ if len(df_curr) == 0:
 # ── Pre-compute shared data ───────────────────────────────────────────────────
 metrics = _cached_metrics(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t)
 alerts  = _cached_alerts(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, "curr")
+fig_status, fig_branch, fig_closing = _cached_dashboard_charts(
+    df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t,
+)
 
 scorecard_df = None
 if "MNT NAME" in df_curr.columns:
@@ -386,6 +407,7 @@ with tabs[0]:
             df_curr, df_prev, metrics, curr_month,
             sel_region, sel_branch, sel_status,
             alerts, scorecard_df, rr_meta,
+            fig_status, fig_branch, fig_closing,
         )
     except Exception as _e:
         _tab_error("Dashboard", _e)
@@ -444,6 +466,7 @@ with tabs[5]:
             curr_month=curr_month,
             dimension_data=pi_new_advances_by_dim,
             vintage_df=pi_product.get("vintage", pd.DataFrame()),
+            data_version=data_version, region=sel_region, branch=sel_branch, status=sel_status, segment=_seg_t,
         )
     except Exception as _e:
         _tab_error("Business", _e)
