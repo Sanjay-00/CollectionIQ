@@ -4,44 +4,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from analysis.portfolio_intelligence import compute_fleet_exposure
 
 
-def _mob_location_map(df_curr: pd.DataFrame) -> dict:
-    """Cust Mob No -> most common (Region, Branch), for display only.
-
-    compute_fleet_exposure groups purely by mobile number (a customer can span
-    branches), so this is a report-layer-only lookup - it doesn't touch analysis/.
-    """
-    if "Cust Mob No" not in df_curr.columns:
-        return {}
-    has_region = "RegionName" in df_curr.columns
-    has_branch = "Unit" in df_curr.columns
-
-    def _mode(s: pd.Series) -> str:
-        m = s.mode()
-        return str(m.iat[0] if not m.empty else s.iloc[0])
-
-    result = {}
-    for mob, grp in df_curr.groupby("Cust Mob No"):
-        result[mob] = (
-            _mode(grp["RegionName"]) if has_region else "",
-            _mode(grp["Unit"]) if has_branch else "",
-        )
-    return result
-
-
 def compute_fleet_exposure_section(df_curr: pd.DataFrame, df_prev: pd.DataFrame = None) -> dict | None:
     try:
         result = compute_fleet_exposure(df_curr)
         if result["count"] == 0:
             return None
 
-        loc_map = _mob_location_map(df_curr)
+        # Region/Unit (most common, since a fleet customer's loans can span
+        # branches) now come straight from compute_fleet_exposure's own top_df --
+        # this section used to maintain an independent, near-identical lookup
+        # (_mob_location_map) purely for report display; that's a second
+        # implementation of the same "which branch is this customer in" logic,
+        # now unnecessary since analysis/ computes it once, for every consumer.
         top = []
         for _, r in result["top_df"].head(8).iterrows():
-            region, branch = loc_map.get(r["Mobile"], ("", ""))
             top.append({
                 "customer":  str(r["Customer"]),
-                "region":    region,
-                "branch":    branch,
+                "region":    str(r.get("Region", "")),
+                "branch":    str(r.get("Unit", "")),
                 "loans":     int(r["Loans"]),
                 "npa_loans": int(r["NPA Loans"]),
                 "soh":       float(r["Total SOH (Cr)"]),
