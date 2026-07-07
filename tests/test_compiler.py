@@ -28,6 +28,53 @@ def _df():
     })
 
 
+class TestShowAllColumns:
+    """Regression: a real "give me all cases ... with all columns including X
+    and Y" query got a hand-built ~28-column list instead of every column,
+    because the Logical Planner's OWN "include named evidence columns" rule
+    fired instead of its "leave display_columns empty for all-columns
+    requests" rule -- a prompt-only instruction isn't a guarantee. show_all_
+    columns is a deterministic IR-1 field the compiler enforces regardless of
+    whatever the model also put in display_columns."""
+
+    def test_show_all_columns_true_skips_select_even_with_display_columns_set(self):
+        ir1 = {
+            "intent": "loan_table",
+            "filters": [{"column": "RegionName", "op": "==", "value": "PUNE"}],
+            "display_columns": ["Loan No", "SOH"],  # model built a list anyway
+            "show_all_columns": True,
+        }
+        plan, errs = compile_logical(ir1, list(_df().columns))
+        assert errs == []
+        assert not any(step.get("op") == "select" for step in plan)
+
+        out, exec_err = execute_plan(_df(), plan)
+        assert exec_err == ""
+        # Every original column present, not just the model's hand-built list.
+        assert set(_df().columns) <= set(out.columns)
+
+    def test_show_all_columns_false_still_applies_display_columns(self):
+        ir1 = {
+            "intent": "loan_table",
+            "filters": [{"column": "RegionName", "op": "==", "value": "PUNE"}],
+            "display_columns": ["Loan No", "SOH"],
+            "show_all_columns": False,
+        }
+        plan, errs = compile_logical(ir1, list(_df().columns))
+        assert errs == []
+        select_steps = [s for s in plan if s.get("op") == "select"]
+        assert len(select_steps) == 1
+        assert select_steps[0]["columns"] == ["Loan No", "SOH"]
+
+    def test_show_all_columns_defaults_to_false_when_absent(self):
+        # Older/hand-built IR-1 dicts without the field at all must behave
+        # exactly as before -- display_columns still applies normally.
+        ir1 = {"intent": "loan_table", "filters": [{"column": "RegionName", "op": "==", "value": "PUNE"}], "display_columns": ["Loan No"]}
+        plan, errs = compile_logical(ir1, list(_df().columns))
+        assert errs == []
+        assert any(step.get("op") == "select" and step["columns"] == ["Loan No"] for step in plan)
+
+
 class TestConceptExpansion:
     def test_colending_at_risk_expands_to_both_conditions(self):
         plan, errs = compile_logical(

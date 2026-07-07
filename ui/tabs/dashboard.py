@@ -3,14 +3,8 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
-from utils import (
-    build_branch_bar_chart,
-    build_closing_pc_chart,
-    build_html_export,
-    build_status_bar_chart,
-    fmt_value,
-)
-from ui.components import _kpi_card_html, _chart_card, _divider
+from utils import build_html_export, fmt_value
+from ui.components import _kpi_card_html, _chart_card, _divider, _cached_html_export
 
 _KIND = {
     "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
@@ -54,16 +48,19 @@ def render_dashboard_tab(
     alerts: list,
     scorecard_df,
     rr_meta: dict | None,
+    fig_status,
+    fig_branch,
+    fig_closing,
 ) -> None:
     # ── KPIs ────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-label">Key Performance Indicators</div>', unsafe_allow_html=True)
     _kpi_row(_KPI_TOP, metrics, count_deltas={"NPA %": _npa_count_delta(df_curr, df_prev)})
 
     # ── Charts ──────────────────────────────────────────────────────────────
+    # fig_status/fig_branch/fig_closing are now built once in app.py's
+    # cached pipeline (_cached_dashboard_charts), not rebuilt here on every
+    # rerun -- see that function's docstring for why.
     st.markdown('<div class="section-label">Portfolio Analysis</div>', unsafe_allow_html=True)
-    fig_status  = build_status_bar_chart(df_curr)
-    fig_branch  = build_branch_bar_chart(df_curr)
-    fig_closing = build_closing_pc_chart(df_curr)
 
     col_bar, col_hbar, col_lcc = st.columns([2, 2, 1])
     with col_bar:
@@ -110,7 +107,8 @@ def render_dashboard_tab(
             "Region": sel_region, "Branch": sel_branch,
             "Loan Status": sel_status, "Year Month": str(curr_month),
         }
-        html_content = build_html_export(
+        html_content = _cached_html_export(
+            df_curr, build_html_export,
             df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing,
             filters_applied, curr_month=curr_month, alerts=alerts,
             scorecard_df=scorecard_df,

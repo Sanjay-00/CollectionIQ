@@ -274,11 +274,12 @@ class TestViewNodeFallback:
         assert out["ir1"]["view"] is not None
         assert out["error"] == ""
         # Only PUNE rows (L1, L2) should have fed the "previous" computation.
-        # df_prev PUNE rows are both "NPA" -> NPA%(Prev) for Pune must be 100,
-        # not blended with MUM/DEL's mostly-STD prev rows.
+        # df_prev PUNE rows are both "NPA" -> NPA%(Prev) for Pune is 100, vs
+        # curr NPA% of 50 (L1 NPA, L2 STD) -> Δ NPA% must be -50, not blended
+        # with MUM/DEL's mostly-STD prev rows.
         rdf = out["result_df"]
         assert len(rdf) == 1
-        assert rdf.iloc[0]["NPA% (Prev)"] == 100.0
+        assert rdf.iloc[0]["Δ NPA%"] == -50.0
 
 
 # ── Out-of-scope / guardrail contract ───────────────────────────────────────
@@ -317,6 +318,64 @@ class TestOutOfScopeGuardrails:
         ir1 = lp.plan_logical("some query that confused the model")
         assert ir1["needs_clarification"] is True
         assert ir1["view"] is None
+
+    def test_all_columns_phrasing_forces_show_all_columns_even_if_model_omits_it(self, monkeypatch):
+        # Regression: observed in practice -- two live calls with the EXACT
+        # same real-world query text ("...with all columns including overdue
+        # collection % and month collection%...") produced DIFFERENT IR-1s;
+        # one correctly set show_all_columns, the other didn't and also built
+        # a display_columns list missing the very columns the user named. The
+        # model's own judgment on this field is not a guarantee -- this keyword
+        # backstop makes the common, explicit phrasing deterministic regardless
+        # of what the model decides to set.
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": [], "display_columns": ["Loan No", "SOH"], "show_all_columns": false}'
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        ir1 = lp.plan_logical("give me all cases with all columns including overdue collection %")
+        assert ir1["show_all_columns"] is True
+
+    def test_query_without_all_columns_phrasing_leaves_model_choice_alone(self, monkeypatch):
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": [], "display_columns": ["Loan No", "SOH"], "show_all_columns": false}'
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        ir1 = lp.plan_logical("show me Loan No and SOH only")
+        assert ir1["show_all_columns"] is False
+
+
+class TestQueryRequestsAllColumns:
+    """Unit coverage for the deterministic keyword backstop itself."""
+
+    @pytest.mark.parametrize("query", [
+        "give me all columns",
+        "show every column",
+        "all the columns please",
+        "GIVE ME ALL COLUMNS",
+        "with all columns including overdue collection % and month collection% case wise",
+    ])
+    def test_matches_common_phrasings(self, query):
+        from agents.logical_planner import _query_requests_all_columns
+        assert _query_requests_all_columns(query) is True
+
+    @pytest.mark.parametrize("query", [
+        "show me all the accounts in Akola",
+        "give me every executive's collection %",
+        "show me Loan No and SOH only",
+    ])
+    def test_does_not_false_positive_on_unrelated_all_every(self, query):
+        from agents.logical_planner import _query_requests_all_columns
+        assert _query_requests_all_columns(query) is False
 
 
 # ── Priority-mode result must keep its "Priority" column ────────────────────
@@ -369,6 +428,33 @@ class TestPriorityModeKeepsPriorityColumn:
         out = execute_node(state)
         distributed = distribute_priority_accounts(out["result_df"], 30)
         assert "Priority" in distributed.columns
+
+    def test_dedup_respects_rank_even_if_rules_list_is_out_of_order(self, monkeypatch):
+        # "Each loan appears only under its highest priority rule" (agents/
+        # data_executor.py::execute_priority_mode) depends on visiting rules in
+        # ascending rank order, since a loan gets claimed by whichever rule
+        # reaches it first. PRIORITY_RULES happens to be authored in rank order
+        # today, but nothing enforced that -- scramble the list here and confirm
+        # a loan matching both a rank-1 and a rank-7 rule still lands under
+        # rank 1 (its true highest priority), not whichever rule came first
+        # in an out-of-order list.
+        import agents.domain_expert as domain_expert
+        rules = list(domain_expert.PRIORITY_RULES)
+        rank1 = next(r for r in rules if r["rank"] == 1)
+        rank7 = next(r for r in rules if r["rank"] == 7)
+        scrambled = [rank7, rank1] + [r for r in rules if r["rank"] not in (1, 7)]
+        monkeypatch.setattr(domain_expert, "PRIORITY_RULES", scrambled)
+
+        # A Non Starter (rank 1: Non Starters) that's also NPA (rank 7: NPA
+        # Accounts) -- matches both tiers, must be claimed by rank 1.
+        df = self._priority_df()
+        df["Non Starter"] = ["Y", "N", "N"]  # L1 matches both rank-1 and rank-7 rules
+
+        from agents.data_executor import execute_priority_mode
+        out, err = execute_priority_mode(df)
+        assert err == ""
+        l1_row = out[out["Loan No"] == "L1"].iloc[0]
+        assert l1_row["Priority"].startswith("P1:")
 
 
 # ── Column-vs-column comparison (no_collection / short_collection) ─────────

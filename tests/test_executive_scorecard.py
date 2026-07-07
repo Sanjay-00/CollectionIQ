@@ -49,6 +49,58 @@ class TestStrikeRateNormalization:
         assert sc.iloc[0]["Strike Rate %"] == 60.0
 
 
+class TestRollRateNoPriorMatchIsNoneNotZero:
+    """Regression: a newly appointed executive (or one whose whole book is freshly
+    originated this month) has zero Loan No overlap with the previous file -- there
+    is no basis to compute a roll rate at all. This used to fabricate 0.0% for both
+    Roll Fwd % and Roll Bwd %, which reads as "verified: nothing got worse" -- a
+    different, false claim from the true state "not enough history to say".
+    analysis/portfolio_intelligence.py::_roll_rates() already returns None for the
+    identical situation at the region/branch grain; this brings the executive
+    scorecard's own inline roll-rate calc back in line with it."""
+
+    def _new_exec_df(self):
+        rows = [{
+            "MNT NAME": "NEW EXEC", "Unit": "MAHAD", "Strike": "N",
+            "curr_bucket": "NPA", "prev_bucket": None,
+        } for _ in range(5)]
+        return make_df(rows)
+
+    def test_no_prior_match_gives_none_not_zero(self):
+        sc = compute_executive_scorecard(self._new_exec_df(), min_accounts=5)
+        assert sc.iloc[0]["Roll Fwd %"] is None
+        assert sc.iloc[0]["Roll Bwd %"] is None
+
+    def test_partial_prior_match_still_computes_a_real_ratio(self):
+        # 3 loans have a real prev_bucket match (2 worsened, 1 stable), 2 are brand
+        # new (prev_bucket None) -- total_valid must be 3, not 5, and the 2 new
+        # loans must not be silently treated as "no change" (which would understate
+        # Roll Fwd%) or excluded from the executive entirely.
+        rows = (
+            [{"MNT NAME": "EXEC", "Unit": "MAHAD", "curr_bucket": "NPA", "prev_bucket": "SMA-2"}] * 2
+            + [{"MNT NAME": "EXEC", "Unit": "MAHAD", "curr_bucket": "STD", "prev_bucket": "STD"}]
+            + [{"MNT NAME": "EXEC", "Unit": "MAHAD", "curr_bucket": "NPA", "prev_bucket": None}] * 2
+        )
+        sc = compute_executive_scorecard(make_df(rows), min_accounts=5)
+        assert sc.iloc[0]["Roll Fwd %"] == round(2 / 3 * 100, 1)
+
+    def test_na_prev_bucket_is_not_comparable_either(self):
+        # Regression: this is DIFFERENT from "no prior match" (prev_bucket is
+        # None/NaN, a true merge miss). Here prev_bucket is the literal string
+        # "NA" -- a real match against a loan whose prior Arrears/EMI was itself
+        # missing/unparseable. That used to score as -1 (lower than every real
+        # bucket), so "NA" -> STD (the healthiest real bucket) was miscounted as
+        # a 100% roll-forward -- confirmed on real production data, not
+        # hypothetical. Must be excluded from the ratio exactly like a true NaN.
+        rows = [{
+            "MNT NAME": "EXEC4", "Unit": "MAHAD",
+            "curr_bucket": "STD", "prev_bucket": "NA",
+        } for _ in range(5)]
+        sc = compute_executive_scorecard(make_df(rows), min_accounts=5)
+        assert sc.iloc[0]["Roll Fwd %"] is None
+        assert sc.iloc[0]["Roll Bwd %"] is None
+
+
 class TestRankByMetric:
     def test_reranks_by_strike_rate_independently_of_collection_rank(self):
         sc = compute_executive_scorecard(_exec_df(), min_accounts=5)

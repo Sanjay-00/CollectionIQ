@@ -68,7 +68,9 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
     st.markdown(f'<div class="kpi-row">{_kpi_row(kpis[:4])}</div>', unsafe_allow_html=True)
     if len(kpis) > 4:
-        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[4:])}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[4:8])}</div>', unsafe_allow_html=True)
+    if len(kpis) > 8:
+        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[8:])}</div>', unsafe_allow_html=True)
 
     col_wf, col_npa = st.columns([3, 1])
     with col_wf:
@@ -96,11 +98,11 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
 def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
     display_cols = [
-        "Region", "Accounts",
+        "Region",
         "SMA-2", "SMA-2%",
-        "NPA% (Curr)",
-        *( ["NPA% (Prev)", "Δ NPA%"] if has_prev else []),
-        "Collection%", "Hard Bucket%", "SOH (Cr)",
+        "NPA", "NPA%",
+        *( ["Δ SMA-2%", "Δ NPA%"] if has_prev else []),
+        "Collection%", "Strike%", "SOH (Cr)",
         *( ["Roll Fwd%", "Roll Bwd%"] if "Roll Fwd%" in df.columns and df["Roll Fwd%"].notna().any() else []),
         "Status",
     ]
@@ -126,17 +128,17 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
                 cells += f'<td style="{style}font-weight:700;">{val}</td>'
             elif col == "Status":
                 cells += f'<td style="{style}">{_badge(str(val))}</td>'
-            elif col == "Δ NPA%":
+            elif col in ("Δ NPA%", "Δ SMA-2%"):
                 cells += f'<td style="{style}">{_delta_html(val)}</td>'
             elif col == "SMA-2%":
                 c = _sma2_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
-            elif col == "SMA-2":
+            elif col in ("SMA-2", "NPA"):
                 c = "#ef4444" if (val or 0) > 50 else "#374151"
                 display = f"{int(val):,}" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};">{display}</td>'
-            elif col in ("NPA% (Curr)", "NPA% (Prev)"):
+            elif col == "NPA%":
                 c = _npa_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
@@ -146,7 +148,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
             elif col == "Roll Bwd%":
                 c = "#16a34a" if (val or 0) > 10 else "#d97706"
                 cells += f'<td style="{style}color:{c};font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
-            elif col in ("Collection%", "Hard Bucket%"):
+            elif col in ("Collection%", "Strike%"):
                 cells += f'<td style="{style}">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
             elif col == "SOH (Cr)":
                 cells += f'<td style="{style}">₹{val:.2f}Cr</td>'
@@ -165,6 +167,84 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
         unsafe_allow_html=True,
     )
     _dl_btn(df, "region_scorecard.xlsx", "dl_region")
+
+
+# ── Section 2b: Overdue vs Month Demand Collection ────────────────────────────
+
+def _render_overdue_demand(scorecard_data: dict) -> None:
+    from analysis.portfolio_intelligence import compute_overdue_demand_chart, OVERDUE_DEMAND_IDENTITY_COLS
+
+    _section("Section 2b  -  Overdue vs Month Demand Collection", margin_top="24px")
+    st.caption(
+        "A payment clears last month's carried-over overdue FIRST; only what's left over "
+        "counts against this month's own EMI demand. 100% means nothing was outstanding on "
+        "that side to begin with, not that nothing was collected."
+    )
+
+    if not scorecard_data:
+        st.info("No data available.")
+        return
+
+    dim_tabs_avail = []
+    if not scorecard_data.get("region", pd.DataFrame()).empty:    dim_tabs_avail.append(("Region",    "Region",    "region"))
+    if not scorecard_data.get("branch", pd.DataFrame()).empty:    dim_tabs_avail.append(("Branch",    "Branch",    "branch"))
+    if not scorecard_data.get("executive", pd.DataFrame()).empty: dim_tabs_avail.append(("Executive", "Executive", "executive"))
+
+    if not dim_tabs_avail:
+        st.info("No dimension data found.")
+        return
+
+    _IDENTITY_COLS = OVERDUE_DEMAND_IDENTITY_COLS
+    _PCT_COLS = {"Overdue Collection %", "Month Demand Collection %", "Overall Collection %"}
+    _CR_COLS = {"Overdue (Cr)", "Overdue Collection (Cr)", "Month Demand (Cr)", "Month Demand Collection (Cr)", "Overall Collection (Cr)"}
+
+    dim_sub = st.tabs([t[0] for t in dim_tabs_avail])
+    for tab, (label, col, key) in zip(dim_sub, dim_tabs_avail):
+        with tab:
+            df = scorecard_data[key]
+            _chart_card(compute_overdue_demand_chart(df, col, label))
+
+            identity_cols = _IDENTITY_COLS.get(key, [])
+            show_cols = [
+                col, *identity_cols, "Accounts",
+                "Overdue (Cr)", "Overdue Collection (Cr)", "Overdue Collection %",
+                "Month Demand (Cr)", "Month Demand Collection (Cr)", "Month Demand Collection %",
+                "Overall Collection (Cr)", "Overall Collection %",
+            ]
+            show_cols = [c for c in show_cols if c in df.columns]
+            th = "".join(
+                f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
+                f'text-align:{"left" if c in (col, *identity_cols) else "center"};white-space:nowrap;">{c}</th>'
+                for c in show_cols
+            )
+            rows_html = ""
+            for _, row in df.iterrows():
+                cells = ""
+                for c in show_cols:
+                    val = row[c]
+                    align = "left" if c in (col, *identity_cols) else "center"
+                    style = f"padding:6px 10px;font-size:12px;text-align:{align};"
+                    if c == col:
+                        cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                    elif c in identity_cols:
+                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
+                    elif c in _PCT_COLS:
+                        color = "#16a34a" if val >= 90 else ("#d97706" if val >= 60 else "#dc2626")
+                        cells += f'<td style="{style}color:{color};font-weight:700;">{val:.2f}%</td>'
+                    elif c in _CR_COLS:
+                        cells += f'<td style="{style}">₹{val:.2f}Cr</td>'
+                    else:
+                        cells += f'<td style="{style}">{int(val):,}</td>'
+                rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
+
+            st.markdown(
+                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e5e7eb;">'
+                f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
+                f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+            _dl_btn(df, f"overdue_demand_{key}.xlsx", f"dl_overdue_demand_{key}")
 
 
 def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp):
@@ -213,8 +293,18 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
 
             st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-top:12px;">Branch Rankings (Sortable)</div>', unsafe_allow_html=True)
             with st.expander(f"View all {len(branch_df)} branches", expanded=False):
-                st.dataframe(_safe_df(branch_df), use_container_width=True, hide_index=True)
-                _dl_btn(branch_df, "branch_quadrant.xlsx", "dl_branch_quad")
+                # Explicit subset (adds Region, keeps everything else this table
+                # already showed) -- compute_branch_quadrant's df also carries
+                # Strike% now (needed for the report's own branch table), which
+                # this dashboard view deliberately does NOT show, so a column
+                # added for one consumer doesn't silently change another's.
+                _branch_display_cols = [c for c in [
+                    "Rank", "Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%",
+                    "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)", "Concern Score",
+                ] if c in branch_df.columns]
+                _branch_display_df = branch_df[_branch_display_cols]
+                st.dataframe(_safe_df(_branch_display_df), use_container_width=True, hide_index=True)
+                _dl_btn(_branch_display_df, "branch_quadrant.xlsx", "dl_branch_quad")
         else:
             st.info("No branch data (Unit column not found).")
 
@@ -293,13 +383,18 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
             # ── delta table ──────────────────────────────────────────────────
             st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin:12px 0 6px;">Detailed Comparison Table</div>', unsafe_allow_html=True)
 
-            show_cols = [col, "Accounts", "NPA (Curr)", "SMA-2 (Curr)"]
+            identity_cols = {"region": [], "branch": ["Region"], "executive": ["Unit", "Region"]}.get(key, [])
+            show_cols = [col, *identity_cols, "Accounts", "SMA-2 (Curr)"]
             if has_prev:
-                show_cols += ["NPA (Prev)", "NPA Δ", "NPA Δ%", "SMA-2 (Prev)", "SMA-2 Δ", "SMA-2 Δ%"]
+                show_cols += ["SMA-2 (Prev)"]
+            show_cols += ["NPA (Curr)"]
+            if has_prev:
+                show_cols += ["NPA (Prev)", "SMA-2 Δ", "SMA-2 Δ%", "NPA Δ", "NPA Δ%"]
+            show_cols += ["Roll Fwd%", "Roll Bwd%"]
 
             th = "".join(
                 f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
-                f'text-align:{"left" if c == col else "center"};white-space:nowrap;">{c}</th>'
+                f'text-align:{"left" if c in (col, *identity_cols) else "center"};white-space:nowrap;">{c}</th>'
                 for c in show_cols if c in df.columns
             )
             rows_html = ""
@@ -307,11 +402,13 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                 cells = ""
                 for c in [c for c in show_cols if c in df.columns]:
                     val = row[c]
-                    align = "left" if c == col else "center"
+                    align = "left" if c in (col, *identity_cols) else "center"
                     style = f"padding:6px 10px;font-size:12px;text-align:{align};"
 
                     if c == col:
                         cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                    elif c in ("Region", "Unit"):
+                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
                     elif c in ("NPA Δ", "SMA-2 Δ"):
                         if val is None or (isinstance(val, float) and pd.isna(val)):
                             cells += f'<td style="{style}color:#9ca3af;"> - </td>'
@@ -332,6 +429,12 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                     elif c in ("SMA-2 (Curr)",):
                         color = "#f97316" if (val or 0) > 20 else "#374151"
                         cells += f'<td style="{style}color:{color};font-weight:700;">{int(val):,}</td>'
+                    elif c == "Roll Fwd%":
+                        clr = "#dc2626" if (val or 0) > 20 else ("#d97706" if (val or 0) > 10 else "#16a34a")
+                        cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
+                    elif c == "Roll Bwd%":
+                        clr = "#16a34a" if (val or 0) > 10 else "#d97706"
+                        cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
                     elif isinstance(val, (int, float)) and not pd.isna(val):
                         cells += f'<td style="{style}">{int(val):,}</td>'
                     else:
@@ -482,25 +585,19 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
 
 
 def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
-    """Roll monthly cohorts up to Quarter / Half-Year / Year and recompute NPA% + SMA-2%."""
+    """Roll monthly cohorts up to Quarter / Half-Year / Year / Financial Year
+    and recompute NPA% + SMA-2%. Uses analysis/portfolio_intelligence.py's
+    _period_label/_period_sort_key -- the SAME definitions the New Advances
+    Trend chart's own rollup (roll_new_advances_trend) uses, so the Business
+    tab's two granularity pickers can't silently diverge into two different
+    "Quarterly"/"Financial Year" meanings."""
+    from analysis.portfolio_intelligence import _period_label, _period_sort_key
+
     if granularity == "Monthly" or df.empty:
         return df
 
-    def _label(month_str: str) -> str:
-        try:
-            y, m = int(month_str[:4]), int(month_str[5:7])
-        except Exception:
-            return month_str
-        if granularity == "Quarterly":
-            q = (m - 1) // 3 + 1
-            return f"Q{q}-{y}"
-        if granularity == "Half-Yearly":
-            h = 1 if m <= 6 else 2
-            return f"H{h}-{y}"
-        return str(y)  # Yearly
-
     df = df.copy()
-    df["_period"] = df["Disbursement Month"].apply(_label)
+    df["_period"] = df["Disbursement Month"].apply(lambda m: _period_label(m, granularity))
 
     agg = (
         df.groupby("_period", sort=False)
@@ -516,32 +613,22 @@ def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
     agg["NPA%"]   = (agg["NPA Count"]   / agg["Accounts"] * 100).round(2)
     agg["SMA-2%"] = (agg["SMA-2 Count"] / agg["Accounts"] * 100).round(2)
 
-    # Sort chronologically: extract year + sub-period for stable ordering
-    def _sort_key(label):
-        try:
-            if label.startswith("Q"):
-                q, y = label[1:].split("-")
-                return int(y) * 10 + int(q)
-            if label.startswith("H"):
-                h, y = label[1:].split("-")
-                return int(y) * 10 + int(h)
-            return int(label) * 10
-        except Exception:
-            return 0
-
-    agg["_sk"] = agg["Disbursement Month"].apply(_sort_key)
+    agg["_sk"] = agg["Disbursement Month"].apply(_period_sort_key)
     return agg.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
 
 
 def _render_vintage_sourcing(product_data: dict) -> None:
-    _section("Section 5  -  Vintage & Sourcing Analysis", margin_top="24px")
+    # Disbursement Vintage moved to the Business tab (ui/tabs/business.py) --
+    # it's a time-based Ag_Date-cohort view, the same axis as that tab's new
+    # advances trend, not a static portfolio-composition breakdown like the
+    # 3 sub-tabs remaining here.
+    _section("Section 5  -  Sourcing & Product Analysis", margin_top="24px")
 
     if not product_data:
-        st.info("No segment, fuel type, vintage, or source channel data found in this file.")
+        st.info("No segment, fuel type, or source channel data found in this file.")
         return
 
     tabs_avail = []
-    if "vintage" in product_data: tabs_avail.append(("Disbursement Vintage", "vintage"))
     if "source"  in product_data: tabs_avail.append(("Sourcing Channel", "source"))
     if "segment" in product_data: tabs_avail.append(("Vehicle Segment", "segment"))
     if "fuel"    in product_data: tabs_avail.append(("Fuel Type", "fuel"))
@@ -554,23 +641,7 @@ def _render_vintage_sourcing(product_data: dict) -> None:
     for sub_tab, (label, key) in zip(sub_tabs, tabs_avail):
         with sub_tab:
             df = product_data[key]
-            if key == "vintage":
-                st.caption(
-                    "Rising NPA% on older cohorts = expected ageing. "
-                    "Spike on a specific month = sourcing quality issue that month  -  collections can't fix it, credit can stop repeating it."
-                )
-                granularity = st.radio(
-                    "Group by", ["Monthly", "Quarterly", "Half-Yearly", "Yearly"],
-                    horizontal=True, key="vintage_gran", index=1,
-                )
-                plot_df = _roll_vintage(df, granularity)
-                from analysis.portfolio_intelligence import build_vintage_chart
-                fig_v = build_vintage_chart(plot_df)
-                if fig_v.data:
-                    _chart_card(fig_v)
-                    st.markdown("<br>", unsafe_allow_html=True)
-                _render_product_table(plot_df.drop(columns=["NPA Count", "SMA-2 Count"], errors="ignore"))
-            elif key == "source":
+            if key == "source":
                 st.caption(
                     "DSA/sourcing channel NPA%. "
                     "Politically sensitive but extremely valuable  -  bad sources get delisted."
@@ -608,6 +679,8 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
                 cells += f'<td style="{style}color:#16a34a;font-weight:700;">{val}</td>'
             elif col == "Slipped":
                 cells += f'<td style="{style}color:#dc2626;font-weight:700;">{val}</td>'
+            elif col in ("Collection%", "Strike%"):
+                cells += f'<td style="{style}">{val:.1f}%</td>'
             elif isinstance(val, int):
                 cells += f'<td style="{style}">{val:,}</td>'
             else:
@@ -859,6 +932,7 @@ def render_portfolio_intelligence_tab(
     npa_sma2_cmp: dict | None = None,
     good_customers: pd.DataFrame | None = None,
     top_accounts_summary: dict | None = None,
+    overdue_demand_scorecard: dict | None = None,
 ) -> None:
     if not has_prev:
         st.info(
@@ -870,6 +944,9 @@ def render_portfolio_intelligence_tab(
     _divider()
 
     _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp or {})
+    _divider()
+
+    _render_overdue_demand(overdue_demand_scorecard or {})
     _divider()
 
     _render_good_bad(good_bad, has_prev)
@@ -912,7 +989,7 @@ def _render_good_customers(good_df: pd.DataFrame) -> None:
 
     cards = (
         _static_kpi_card_html("Good Customers", f"{n:,}", "Refinance eligible")
-        + _static_kpi_card_html("Total SOH (Cr)", f"&#8377;{total_soh_cr:,.2f}", "Outstanding principal")
+        + _static_kpi_card_html("Total SOH (Cr)", f"&#8377;{total_soh_cr:,.2f}", "Outstanding exposure (POS + arrears)")
         + _static_kpi_card_html("Avg Tenure Completed", f"{avg_tenure}%", "Across all good customers")
     )
     st.markdown(f'<div class="kpi-row">{cards}</div>', unsafe_allow_html=True)

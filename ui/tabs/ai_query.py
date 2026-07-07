@@ -2,9 +2,58 @@
 
 import pandas as pd
 import streamlit as st
+from langsmith import traceable
 
 from utils import fmt_value
-from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html
+from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox
+
+# result_grain -> (singular, plural) display noun, used wherever the UI used to
+# hardcode "accounts"/"Customer Records" regardless of the result's actual row
+# grain (a region_scorecard result is 6 regions, not 6 accounts).
+_GRAIN_LABELS = {
+    "loan":      ("account", "accounts"),
+    "customer":  ("customer", "customers"),
+    "region":    ("region", "regions"),
+    "branch":    ("branch", "branches"),
+    "executive": ("executive", "executives"),
+    "segment":   ("segment", "segments"),
+    "signal":    ("signal", "signals"),
+    "matrix":    ("row", "rows"),
+    "portfolio": ("KPI", "KPIs"),
+}
+
+
+def _grain_noun(grain: str, plural: bool = True) -> str:
+    singular, plural_noun = _GRAIN_LABELS.get(grain, _GRAIN_LABELS["loan"])
+    return plural_noun if plural else singular
+
+
+_AI_CACHE_MAX_ENTRIES = 20
+
+
+def _ai_cache_get(cache: dict, key: tuple):
+    return cache.get(key)
+
+
+@traceable(run_type="chain", name="AIQueryCacheHit", tags=["cache-hit"])
+def _log_ai_cache_hit(query: str, data_version: int, filter_key: str) -> None:
+    """A cache hit skips run_query() entirely (that's the whole point -- zero
+    Gemini calls), which otherwise means zero LangSmith visibility into how
+    often the cache is actually paying off. This is a real, near-zero-duration
+    trace whose only job is to make cache hits show up in LangSmith too,
+    alongside the real pipeline runs, so hit rate is visible, not just inferred
+    from "a query with no trace must have been a cache hit"."""
+    return None
+
+
+def _ai_cache_put(cache: dict, key: tuple, value: dict) -> None:
+    # Plain session-scoped dict, not st.cache_data -- the QueryState result
+    # holds full result DataFrames, so wrapping it in st.cache_data would
+    # reintroduce the exact same full-DataFrame-hashing cost this whole
+    # optimization pass just removed from app.py's cached functions.
+    if len(cache) >= _AI_CACHE_MAX_ENTRIES and key not in cache:
+        cache.pop(next(iter(cache)))  # evict oldest (dict preserves insertion order)
+    cache[key] = value
 
 
 def render_ai_query_tab(
@@ -15,8 +64,20 @@ def render_ai_query_tab(
     alerts_curr: list | None = None,
     alerts_prev: list | None = None,
     rr_meta: dict | None = None,
+    data_version: int = 0,
+    filter_key: str = "",
 ) -> None:
     from graph import run_query
+
+    # Exact-repeat query cache: re-asking an identical question (same text,
+    # same underlying data + filter selection) skips both Gemini calls
+    # entirely instead of re-running the full pipeline from scratch. Keyed on
+    # (query, data_version, filter_key) -- data_version changes whenever the
+    # raw uploaded data changes, filter_key changes whenever the sidebar
+    # filter selection changes (the exact same signal app.py already uses to
+    # invalidate "ai_result" on a filter change) -- together they cover every
+    # way df_curr seen by run_query can change.
+    _ai_cache = st.session_state.setdefault("_ai_query_cache", {})
 
     # ── Example chips (cross-frame JS fill) ──────────────────────────────────
     st.components.v1.html("""
@@ -76,9 +137,17 @@ function fill(text) {
         height=90, label_visibility="collapsed",
     )
 
-    col_run, col_hint = st.columns([1, 4])
+    col_run, col_opt, col_hint = st.columns([1, 1.6, 3])
     with col_run:
         run_btn = st.button("🔍  Run Query", type="primary", width='stretch')
+    with col_opt:
+        skip_insights = not st.checkbox(
+            "Generate AI summary", value=False, key="ai_gen_summary",
+            help="Off by default: skips the 2nd Gemini call that writes the bullet-point "
+                 "observations below the table. The table/KPIs/highlights are unaffected -- "
+                 "check this only if you also want the written narrative, which can add "
+                 "several extra seconds (sometimes the slower of the two calls).",
+        )
     with col_hint:
         st.markdown(
             "<div style='padding-top:10px;font-size:12px;color:#aaa;'>"
@@ -92,15 +161,30 @@ function fill(text) {
         elif not os.environ.get("GOOGLE_API_KEY"):
             st.error("GOOGLE_API_KEY not found in .env file.")
         else:
-            with st.status("Running AI pipeline...", expanded=True) as _status:
-                def _on_step(label: str) -> None:
-                    _status.write(label)
-                _ai_result = run_query(ai_query.strip(), df_curr, on_step=_on_step,
-                                       snapshot_dates=snapshot_dates, df_prev=df_prev,
-                                       precomputed_views=precomputed_views,
-                                       alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                       rr_meta=rr_meta)
-                _status.update(label="Query complete", state="complete", expanded=False)
+            _q = ai_query.strip()
+            # skip_insights is part of the cache key -- a query cached WITHOUT
+            # the AI summary (checkbox off) must not be silently reused once
+            # the user turns the checkbox on and re-asks the identical question.
+            _cache_key = (_q, data_version, filter_key, skip_insights)
+            _cached = _ai_cache_get(_ai_cache, _cache_key)
+            if _cached is not None:
+                _log_ai_cache_hit(_q, data_version, filter_key)
+                _ai_result = _cached
+            else:
+                with st.status("Running AI pipeline...", expanded=True) as _status:
+                    def _on_step(label: str) -> None:
+                        _status.write(label)
+                    _ai_result = run_query(_q, df_curr, on_step=_on_step,
+                                           snapshot_dates=snapshot_dates, df_prev=df_prev,
+                                           precomputed_views=precomputed_views,
+                                           alerts_curr=alerts_curr, alerts_prev=alerts_prev,
+                                           rr_meta=rr_meta, skip_insights=skip_insights)
+                    _status.update(label="Query complete", state="complete", expanded=False)
+                if not _ai_result.get("error"):
+                    # Don't cache a transient failure (e.g. a network blip) --
+                    # re-asking the same question should get a fresh attempt,
+                    # not the same error replayed from cache forever.
+                    _ai_cache_put(_ai_cache, _cache_key, _ai_result)
             st.session_state["ai_result"] = _ai_result
 
     # ── Render result ─────────────────────────────────────────────────────────
@@ -131,15 +215,26 @@ function fill(text) {
         for i, opt in enumerate(q_options):
             if st.button(opt, key=f"clarify_opt_{i}", width='stretch'):
                 augmented = f"{orig_query} (interpretation: {opt})"
-                with st.status("Running AI pipeline...", expanded=True) as _status:
-                    def _on_step(label: str) -> None:
-                        _status.write(label)
-                    _res = run_query(augmented, df_curr, on_step=_on_step,
-                                     snapshot_dates=snapshot_dates, allow_clarification=False,
-                                     df_prev=df_prev, precomputed_views=precomputed_views,
-                                     alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                     rr_meta=rr_meta)
-                    _status.update(label="Query complete", state="complete", expanded=False)
+                # A different query string (the interpretation is appended), so
+                # this naturally gets its own cache key -- no collision with the
+                # original ambiguous query's entry.
+                _cache_key = (augmented, data_version, filter_key, skip_insights)
+                _cached = _ai_cache_get(_ai_cache, _cache_key)
+                if _cached is not None:
+                    _log_ai_cache_hit(augmented, data_version, filter_key)
+                    _res = _cached
+                else:
+                    with st.status("Running AI pipeline...", expanded=True) as _status:
+                        def _on_step(label: str) -> None:
+                            _status.write(label)
+                        _res = run_query(augmented, df_curr, on_step=_on_step,
+                                         snapshot_dates=snapshot_dates, allow_clarification=False,
+                                         df_prev=df_prev, precomputed_views=precomputed_views,
+                                         alerts_curr=alerts_curr, alerts_prev=alerts_prev,
+                                         rr_meta=rr_meta, skip_insights=skip_insights)
+                        _status.update(label="Query complete", state="complete", expanded=False)
+                    if not _res.get("error"):
+                        _ai_cache_put(_ai_cache, _cache_key, _res)
                 st.session_state["ai_result"] = _res
                 st.rerun()
 
@@ -155,6 +250,7 @@ function fill(text) {
     is_priority    = result.get("priority_mode", False)
     is_aggregation = result.get("aggregation_mode", False)
     result_type    = result.get("result_type") or "loan_table"
+    result_grain   = result.get("result_grain") or "loan"
     view_render    = result.get("view_render") or ""
     category       = (result.get("query_category") or "general").replace("_", " ").title()
     query_title    = result.get("query_title") or ""
@@ -179,6 +275,35 @@ function fill(text) {
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Portfolio-wide KPI rollup: unconditional context for a matched view's
+    # own table (e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
+    # rows). Unlike the highlight cards below, this isn't query-specific -- it
+    # always renders for any view that declares highlightable metrics, giving
+    # a baseline to compare the ranked/highlighted entities against.
+    portfolio_kpis = result.get("result_portfolio_kpis") or []
+    if portfolio_kpis:
+        cards_html = "".join(
+            _static_kpi_card_html(p["label"], p["value"])
+            for p in portfolio_kpis
+        )
+        st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;margin-bottom:10px;">{cards_html}</div>', unsafe_allow_html=True)
+
+    # ── Query-aware highlight cards (Fix B): standout entity per requested metric,
+    # e.g. "Highest NPA% -- CS NAGAR -- 16.93%". Only present when the planner asked
+    # for one on a matched view (view_node computes the real value from result_df;
+    # this block only renders it). Not a fixed "risky/watch"-style KPI row -- the
+    # cards themselves are literally the columns/direction the question asked about.
+    highlights = result.get("result_highlights") or []
+    if highlights:
+        cards_html = "".join(
+            _static_kpi_card_html(
+                h["label"], h["value"], h["entity"],
+                color="#dc2626" if h["bad"] else "#16a34a",
+            )
+            for h in highlights
+        )
+        st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;margin-bottom:16px;">{cards_html}</div>', unsafe_allow_html=True)
 
     # ── Fast-path view: KPI cards (e.g. portfolio pulse) ──────────────────────
     if view_render == "kpi_cards":
@@ -301,12 +426,12 @@ function fill(text) {
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("""
-<style>
-div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !important; }
-</style>""", unsafe_allow_html=True)
+        # MUST match ui/tabs/migration.py's own call to this same helper -- an
+        # unscoped style rule here applies page-wide (every tab's markup renders
+        # into the DOM every rerun, just CSS-hidden when inactive), so a different
+        # color per tab means whichever tab's code runs later in a given rerun
+        # silently wins for every selectbox on the page, not just this one.
+        _style_main_content_selectbox("#fff")
 
         sel_col, _ = st.columns([1, 3])
         with sel_col:
@@ -513,7 +638,7 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
         st.markdown(f"""
         <div style="background:#1a2e1a;border-left:4px solid #16a34a;border-radius:8px;
                     padding:12px 16px;margin:0 0 16px 0;color:#86efac;font-weight:600;font-size:14px;">
-            ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} accounts</strong>
+            ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} {_grain_noun(result_grain)}</strong>
             &nbsp; {plain}
         </div>
         """, unsafe_allow_html=True)
@@ -601,8 +726,8 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
             st.markdown(right_html, unsafe_allow_html=True)
 
         st.markdown(
-            "<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
-            "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching Customer Records</div>",
+            f"<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
+            f"text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching {_grain_noun(result_grain).title()} Records</div>",
             unsafe_allow_html=True,
         )
         display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
@@ -612,16 +737,19 @@ div[data-testid="stSelectbox"] [data-baseweb="select"] span { color: #FFC000 !im
         _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")
 
     # ── AI Observations ───────────────────────────────────────────────────────
-    obs_lines = "".join(
-        f'<div class="obs-line">{line}</div>'
-        for line in insights.split("\n") if line.strip()
-    )
-    st.markdown(f"""
-    <div class="obs-card">
-      <div class="obs-title">💡 AI Observations</div>
-      {obs_lines}
-    </div>
-    """, unsafe_allow_html=True)
+    # Empty when "Generate AI summary" was left unchecked (skip_insights=True) --
+    # don't render an empty card in that case, not just an empty-looking one.
+    if insights.strip():
+        obs_lines = "".join(
+            f'<div class="obs-line">{line}</div>'
+            for line in insights.split("\n") if line.strip()
+        )
+        st.markdown(f"""
+        <div class="obs-card">
+          <div class="obs-title">💡 AI Observations</div>
+          {obs_lines}
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── LangSmith feedback ────────────────────────────────────────────────────
     _ls_key = (os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY", "")).strip()

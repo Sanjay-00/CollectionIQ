@@ -1,9 +1,12 @@
-﻿import threading
+﻿import re
+import threading
 import uuid as _uuid
 from typing import Any, Callable, Optional, TypedDict
 
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 
 from agents.data_executor import (
     _build_mask,
@@ -16,11 +19,45 @@ from agents.logical_planner import plan_logical
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
-from registry.views import VIEWS, normalize_view_output, resolve_view_fn
+from registry.views import VIEWS, _METRIC_DIRECTION, _METRIC_AGG, normalize_view_output, resolve_view_fn
+from query_log import log_query_outcome
 
 
 # ── Per-thread step callback ──────────────────────────────────────────────────
 _tls = threading.local()
+
+# ── Large-object side channel ────────────────────────────────────────────────
+# The actual fix for the LangGraph-tracing payload blowup: result_df_full,
+# df_prev, precomputed_views, and result_df (the per-query answer table, which
+# can itself be as large as the whole file if a query matches most rows) never
+# go INTO the QueryState dict that LangGraph passes between nodes and traces
+# at every transition. They live here instead, in the SAME thread the query
+# runs in (matching the existing _tls step-callback pattern -- one query runs
+# synchronously per thread, so no cross-query collision risk). Every node that
+# used to read these via state.get(...) now reads them via _fetch_large(...)
+# instead; state itself only ever carries a small placeholder for them, so
+# LangGraph's own tracing (which serializes the full state on every node
+# transition, independent of and not controllable via this file's
+# process_inputs/process_outputs on the @traceable node wrappers) never sees
+# anything but tiny scalar/dict fields, regardless of how large the real file is.
+def _stash_large(key: str, value) -> None:
+    if not hasattr(_tls, "large_data"):
+        _tls.large_data = {}
+    _tls.large_data[key] = value
+
+
+def _fetch_large(state: dict, key: str, default=None):
+    """Check the thread-local stash first (the real path via run_query()); if
+    nothing was stashed (e.g. a node function called directly with a hand-built
+    state dict, as tests do), fall back to reading the field straight out of
+    state -- preserves backward compatibility for any caller that still puts
+    the real object directly in state, while run_query()'s real invocation
+    benefits from never putting it there in the first place."""
+    stash = getattr(_tls, "large_data", {})
+    if key in stash:
+        return stash[key]
+    return state.get(key, default)
+
 
 _STEP_LABELS: dict[str, str] = {
     "planner":  "🧠  Query Planner: understanding your question",
@@ -31,6 +68,68 @@ _STEP_LABELS: dict[str, str] = {
 }
 
 _MAX_REPAIRS = 1
+
+
+def _trace_metadata(fields: dict) -> None:
+    """Attach observability metadata to the CURRENT LangSmith run (the
+    @traceable-wrapped node function this is called from), same established
+    pattern as agents/domain_expert.py's/agents/insight_generator.py's token-
+    usage recording. Only the 2 Gemini-call functions were traced before this
+    pass -- graph.py's own nodes (view matching, compiler repair, executor)
+    had zero visibility: no way to see which view matched, whether a fast-path
+    view fell through and why, whether a repair attempt fired, or basic result
+    shape, without re-deriving it from the raw query outcome log. A no-op
+    outside a traced context (e.g. running graph.py functions directly in a
+    unit test with no LangSmith run active) -- never raises."""
+    try:
+        rt = get_current_run_tree()
+        if rt is not None:
+            rt.add_metadata(fields)
+    except Exception:
+        pass
+
+
+# Every node function's sole argument/return value is the full QueryState --
+# which carries the ENTIRE raw uploaded file (result_df_full, potentially tens
+# of thousands of rows) plus df_prev/result_df/precomputed_views, all full
+# DataFrames. @traceable's DEFAULT behavior serializes the complete input/
+# output of every traced call to send to LangSmith. Without stripping these
+# fields first, a single node call on a real ~60k-row file produced a ~47MB
+# trace payload -- LangSmith's limit is 20MB, so every one of those calls
+# failed to upload and RETRIED repeatedly, adding ~14+ seconds of pure
+# network-retry overhead PER NODE CALL (confirmed via direct measurement).
+# With ~4 traced nodes firing per query, that's 45-60+ seconds of pure
+# instrumentation overhead added on top of the real pipeline work -- the
+# actual root cause of a severe felt-latency regression after this session's
+# LangSmith tracing pass. process_inputs/process_outputs below replace those
+# large fields with a cheap shape summary before @traceable ever serializes
+# anything, so the trace stays small and fast while still showing which
+# fields were present and how big they were.
+_LARGE_STATE_FIELDS = ("result_df_full", "df_prev", "result_df", "precomputed_views", "alerts_curr", "alerts_prev")
+
+
+def _strip_large_state_fields(d: dict) -> dict:
+    if not isinstance(d, dict):
+        return d
+    out = dict(d)
+    for k in _LARGE_STATE_FIELDS:
+        v = out.get(k)
+        if v is not None and hasattr(v, "__len__"):
+            out[k] = f"<{type(v).__name__} len={len(v)}>"
+    return out
+
+
+def _trace_process_inputs(inputs: dict) -> dict:
+    # process_inputs receives {"state": <QueryState>} -- the param name -> value.
+    state = inputs.get("state")
+    if isinstance(state, dict):
+        return {**inputs, "state": _strip_large_state_fields(state)}
+    return inputs
+
+
+def _trace_process_outputs(outputs: dict) -> dict:
+    # process_outputs receives the raw returned QueryState dict directly.
+    return _strip_large_state_fields(outputs)
 
 
 def _announce(node: str) -> None:
@@ -76,6 +175,7 @@ class QueryState(TypedDict):
     plan_mode: bool
     plan: list
     result_type: str
+    result_grain: str  # row grain of result_df: "loan" (default), "region", "branch", "executive", "customer", "segment", "signal"
     view_render: str  # UI hint from a fast-path view (e.g. "kpi_cards"); "" for the normal compiler path
 
     # Clarification
@@ -84,6 +184,12 @@ class QueryState(TypedDict):
     clarification_question: str
     clarification_options: list
 
+    # Opt-out of the Insight Generator's Gemini call (skip_insights=True) --
+    # saves the entire 2nd Gemini call's latency (observed to sometimes be the
+    # SLOWER of the two calls, not always the cheap second step) for users who
+    # only want the table/KPIs, not the written narrative.
+    skip_insights: bool
+
     # Kept for UI backward compat (plain_english display)
     parsed_filters: dict
 
@@ -91,6 +197,8 @@ class QueryState(TypedDict):
     result_df: Any
     result_kpis: dict
     result_rankings: dict
+    result_highlights: list  # query-aware standout KPI cards (view path only; see view_node)
+    result_portfolio_kpis: list  # unconditional portfolio-wide rollup (view path only; see view_node)
 
     # Insight output
     insights: str
@@ -106,6 +214,7 @@ class QueryState(TypedDict):
 
 
 # ── Node 1: Logical Planner (Gemini) ─────────────────────────────────────────
+@traceable(run_type="chain", name="LogicalPlannerNode", tags=["node"], process_inputs=_trace_process_inputs, process_outputs=_trace_process_outputs)
 def logical_planner_node(state: QueryState) -> QueryState:
     _announce("planner")
     try:
@@ -165,6 +274,14 @@ def logical_planner_node(state: QueryState) -> QueryState:
         }
         query_category = _cat_map.get(intent, "general")
 
+        _trace_metadata({
+            "intent": intent,
+            "view_requested": (ir1.get("view") or {}).get("name"),
+            "needs_clarification": bool(ir1.get("needs_clarification", False)),
+            "priority_mode": priority_mode,
+            "risk_flag": ir1.get("risk_flag") or "medium",
+        })
+
         return {
             **state,
             "ir1":               ir1,
@@ -180,6 +297,7 @@ def logical_planner_node(state: QueryState) -> QueryState:
             "plan_mode":         False,          # never set; all results display via agg/filter UI
             "plan":              [],
             "result_type":       result_type,
+            "result_grain":      "loan",
             "needs_clarification":    bool(ir1.get("needs_clarification", False)),
             "clarification_question": ir1.get("clarification_question") or "",
             "clarification_options":  ir1.get("clarification_options") or [],
@@ -190,6 +308,138 @@ def logical_planner_node(state: QueryState) -> QueryState:
         return {**state, "error": f"Query planning failed: {e}"}
 
 
+def _normalize_col(s: str) -> str:
+    # "Δ" (month-over-month delta prefix, e.g. "Δ NPA%") must NOT be stripped as
+    # punctuation -- doing so collapsed "NPA%"/"NPA"/"Δ NPA%" to the identical
+    # normalized string "npa", so a near-miss column request like "NPA %" could
+    # resolve to the WRONG column (the delta) via silent dict-key collision in
+    # _resolve_column_fuzzy's norm_map. Spelling it out keeps them distinct
+    # ("npa" vs "deltanpa") while still normalizing away spacing/case/punctuation.
+    return re.sub(r"[^a-z0-9]", "", s.replace("Δ", "delta").lower())
+
+
+def _resolve_column_fuzzy(name: str, columns) -> str | None:
+    """Resolve a planner-supplied column name against a view's real columns,
+    tolerating minor cross-view spelling drift (e.g. the planner naming
+    "Strike Rate %" -- executive_scorecard's spelling -- while looking at
+    region_scorecard, whose own column is "Strike%"). Exact match first, then
+    a normalized (strip spacing/punctuation/case) exact match, then a
+    normalized substring match in either direction, gated to a minimum length
+    so short names like "NPA" can't spuriously match unrelated columns.
+    Returns None (never raises) when nothing reasonably matches -- the caller
+    treats that as "leave the view's default order alone"."""
+    if name in columns:
+        return name
+    norm_name = _normalize_col(name)
+    norm_map = {_normalize_col(c): c for c in columns}
+    if norm_name in norm_map:
+        return norm_map[norm_name]
+    if len(norm_name) >= 4:
+        for norm_c, c in norm_map.items():
+            if len(norm_c) >= 4 and (norm_name in norm_c or norm_c in norm_name):
+                return c
+    return None
+
+
+def _apply_sort_by(result_df: pd.DataFrame, sort_by: dict | None) -> pd.DataFrame:
+    """Query-aware ranking: "rank regions by Collection%" re-sorts the view's own
+    table by whatever column the user asked for, instead of always showing the
+    view's built-in default order. An unresolvable column, or no request at
+    all, is a no-op -- the view's default sort stands. Never worth failing the
+    whole query over a sort request that doesn't quite resolve."""
+    if not sort_by:
+        return result_df
+    col = _resolve_column_fuzzy(sort_by.get("column", ""), result_df.columns)
+    if col is None:
+        return result_df
+    result_df = result_df.sort_values(
+        col, ascending=(sort_by.get("dir") == "asc")
+    ).reset_index(drop=True)
+    # branch_quadrant ships its own "Rank" column (1..N by Concern Score). Since
+    # we just re-sorted by a DIFFERENT column, that Rank now describes the OLD
+    # order -- e.g. row 1 could show "Rank: 7", contradicting its new position.
+    # Recompute it to match the display order actually shown, same convention
+    # compute_branch_quadrant itself uses (1-indexed, best-to-worst per this sort).
+    if "Rank" in result_df.columns:
+        result_df["Rank"] = range(1, len(result_df) + 1)
+    return result_df
+
+
+def _format_metric_value(col: str, value) -> str:
+    """Shared display formatting for a metric value, used by both highlight
+    cards and the portfolio KPI rollup -- a percent-named column always shows
+    2 decimals + '%'; a whole-number value shows with thousands separators;
+    anything else shows 2 decimals."""
+    if "%" in col:
+        return f"{value:.2f}%"
+    if float(value) == int(value):
+        return f"{int(value):,}"
+    return f"{value:.2f}"
+
+
+def _build_highlights(spec: dict, result_df: pd.DataFrame, requests: list) -> list:
+    """Turn the planner's highlight_metrics requests into standout KPI cards.
+    The planner only names WHICH columns/direction matter to the question --
+    every value here is a real idxmax/idxmin lookup on result_df, never an
+    LLM-supplied number. Any request referencing a column this view doesn't
+    declare in "metrics" (typo, wrong view, or a column with no known
+    good/bad direction) is silently skipped, same fallthrough-safe pattern as
+    the rest of the view layer -- a bad highlight request should never fail
+    the whole query, just render fewer cards."""
+    label_col = spec.get("label_col")
+    allowed = set(spec.get("metrics") or [])
+    if not requests or not label_col or label_col not in result_df.columns:
+        return []
+
+    highlights = []
+    for req in requests:
+        col, agg = req.get("column"), req.get("agg")
+        if col not in allowed or col not in result_df.columns or col not in _METRIC_DIRECTION:
+            continue
+        series = result_df[col].dropna()
+        if series.empty:
+            continue
+        idx = series.idxmax() if agg == "max" else series.idxmin()
+        row = result_df.loc[idx]
+        value = row[col]
+        direction = _METRIC_DIRECTION[col]
+        is_bad = (agg == "max" and direction == "high_bad") or (agg == "min" and direction == "low_bad")
+        highlights.append({
+            "label":  f"{'Highest' if agg == 'max' else 'Lowest'} {col}",
+            "entity": str(row[label_col]),
+            "value":  _format_metric_value(col, value),
+            "bad":    is_bad,
+        })
+    return highlights
+
+
+def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame) -> list:
+    """Unconditional portfolio-wide rollup for every view that declares
+    "metrics" -- e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
+    table. Unlike highlight_metrics/sort_by, this needs no LLM judgment call
+    (which columns, mean vs sum, is static per-column knowledge in
+    _METRIC_AGG), so it always renders regardless of what the planner asked
+    for, giving portfolio-level context for whatever entities are ranked."""
+    metrics = spec.get("metrics") or []
+    if not metrics or result_df is None or result_df.empty:
+        return []
+
+    kpis = []
+    for col in metrics:
+        if col not in result_df.columns or col not in _METRIC_AGG:
+            continue
+        series = result_df[col].dropna()
+        if series.empty:
+            continue
+        agg = _METRIC_AGG[col]
+        value = series.mean() if agg == "mean" else series.sum()
+        kpis.append({
+            "label": f"{'Avg' if agg == 'mean' else 'Total'} {col}",
+            "value": _format_metric_value(col, value),
+        })
+    return kpis
+
+
 # ── Node 1b: Fast-Path View (deterministic, reuses cached analysis/ results) ──
 # "If the query is already computed then just fetch that result, if not computed
 # then do v2 ai query search normally" -- this node IS that fetch. It never fails
@@ -198,6 +448,7 @@ def logical_planner_node(state: QueryState) -> QueryState:
 # from the analysis/ function itself) clears ir1["view"] and routes back into the
 # normal compile_and_validate_node -> execute_node path with the SAME ir1, so the
 # query still gets answered via the general pipeline rather than failing outright.
+@traceable(run_type="tool", name="ViewNode", tags=["node"], process_inputs=_trace_process_inputs, process_outputs=_trace_process_outputs)
 def view_node(state: QueryState) -> QueryState:
     _announce("view")
     ir1 = state.get("ir1") or {}
@@ -205,26 +456,32 @@ def view_node(state: QueryState) -> QueryState:
     name = view_spec.get("name")
     spec = VIEWS.get(name)
 
-    def _fallthrough(new_state=None):
+    def _fallthrough(reason: str, new_state=None):
+        # Reason is genuinely useful observability on its own: it tells you
+        # whether the fast-path view layer is actually serving requests or
+        # silently falling through most of the time (and why) -- invisible
+        # before this pass, since a fallthrough looks identical to "no view
+        # matched at all" from outside view_node.
+        _trace_metadata({"view_name": name, "view_served": False, "view_fallthrough_reason": reason})
         s = new_state if new_state is not None else state
         return {**s, "ir1": {**ir1, "view": None}}
 
     if spec is None:
-        return _fallthrough()
+        return _fallthrough("no_view_matched")
 
-    df_curr = state.get("result_df_full")
+    df_curr = _fetch_large(state, "result_df_full")
     if df_curr is None or len(df_curr) == 0:
-        return _fallthrough()
+        return _fallthrough("no_data")
 
-    df_prev = state.get("df_prev")
+    df_prev = _fetch_large(state, "df_prev")
     if "df_prev" in (spec.get("requires") or []) and (df_prev is None or len(df_prev) == 0):
-        return _fallthrough()
+        return _fallthrough("missing_required_prev_file")
 
     filters = view_spec.get("filters") or []
     if filters and not spec.get("filterable", True):
         # Planner attached a filter to a view that can't take one -- don't
         # silently drop the user's requested restriction, fall through instead.
-        return _fallthrough()
+        return _fallthrough("filter_on_unfilterable_view")
 
     param_specs = spec.get("params") or {}
     requested_params = view_spec.get("params") or {}
@@ -233,10 +490,11 @@ def view_node(state: QueryState) -> QueryState:
         if k in param_specs and v != param_specs[k].get("default")
     }
 
-    precomputed = state.get("precomputed_views") or {}
+    precomputed = _fetch_large(state, "precomputed_views") or {}
 
     rr_meta = state.get("rr_meta")
 
+    cache_hit = False
     try:
         if not filters and not non_default_params:
             # Reuse the literal cached object -- zero recomputation, guarantees
@@ -244,6 +502,7 @@ def view_node(state: QueryState) -> QueryState:
             cache_key = spec.get("cache_key")
             if cache_key and cache_key in precomputed:
                 raw = precomputed[cache_key]
+                cache_hit = True
             else:
                 raw = _call_view_fn(name, spec, df_curr, df_prev, {}, rr_meta)
         else:
@@ -255,7 +514,7 @@ def view_node(state: QueryState) -> QueryState:
                 errs: list = []
                 conditions = _expand_filters(filters, errs)
                 if errs:
-                    return _fallthrough()
+                    return _fallthrough("filter_expansion_error")
                 input_df = df_curr[_build_mask(df_curr, conditions)]
                 # Apply the SAME conditions to df_prev too -- a view that consumes
                 # both (e.g. region_scorecard) must compare like-for-like (e.g.
@@ -269,12 +528,14 @@ def view_node(state: QueryState) -> QueryState:
 
             raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
     except Exception:
-        return _fallthrough()
+        return _fallthrough("analysis_fn_raised")
 
     try:
         result_df, result_kpis, result_rankings = normalize_view_output(spec, raw)
     except Exception:
-        return _fallthrough()
+        return _fallthrough("output_normalization_failed")
+
+    result_df = _apply_sort_by(result_df, view_spec.get("sort_by"))
 
     result_kpis = {"Count": len(result_df), **result_kpis}
     # analyze_node's insight generator only understands two kpis shapes: an
@@ -287,6 +548,21 @@ def view_node(state: QueryState) -> QueryState:
     if "_agg_rows" not in result_kpis and result_df is not None and len(result_df):
         result_kpis["_agg_rows"] = result_df.head(5).to_dict(orient="records")
 
+    result_highlights = _build_highlights(
+        spec, result_df, view_spec.get("highlight_metrics") or []
+    )
+    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
+
+    _trace_metadata({
+        "view_name": name,
+        "view_served": True,
+        "view_cache_hit": cache_hit,
+        "view_had_filters": bool(filters),
+        "view_row_count": len(result_df),
+        "highlight_metrics_count": len(result_highlights),
+        "sort_by_requested": bool(view_spec.get("sort_by")),
+    })
+
     return {
         **state,
         "query_title":       ir1.get("query_title") or spec.get("label") or "Custom Query",
@@ -296,11 +572,14 @@ def view_node(state: QueryState) -> QueryState:
         "plan_mode":         False,
         "plan":              [],
         "result_type":       "loan_table",
+        "result_grain":      spec.get("grain", "loan"),
         "view_render":       spec.get("render") or "",
         "parsed_filters":    {"plain_english": ir1.get("description") or state["query"]},
         "result_df":         result_df,
         "result_kpis":       result_kpis,
         "result_rankings":   result_rankings,
+        "result_highlights": result_highlights,
+        "result_portfolio_kpis": result_portfolio_kpis,
         "error":             "",
     }
 
@@ -334,25 +613,36 @@ def _call_view_fn(name: str, spec: dict, df_curr, df_prev, call_params: dict, rr
 # previously only validator failures got a retry, so any compiler-stage error
 # (e.g. "unknown metric 'curr_npa_count'") failed hard with zero chance to
 # self-correct. This was the root cause behind several real query failures.
+@traceable(run_type="tool", name="CompileAndValidateNode", tags=["node"], process_inputs=_trace_process_inputs, process_outputs=_trace_process_outputs)
 def compile_and_validate_node(state: QueryState) -> QueryState:
     _announce("compile")
     ir1 = state.get("ir1") or {}
-    df: pd.DataFrame = state.get("result_df_full")
+    df: pd.DataFrame = _fetch_large(state, "result_df_full")
     cols = list(df.columns) if df is not None and len(df) > 0 else []
 
     for attempt in range(_MAX_REPAIRS + 1):
         try:
             plan, errs = compile_logical(ir1, cols)
         except Exception as e:
+            _trace_metadata({"repair_attempts": attempt, "compiled_ok": False, "compiler_exception": str(e)})
             return {**state, "error": f"Compiler failed: {e}"}
 
         if not errs:
+            # repair_attempts tells you directly, per query, whether the
+            # Logical Planner got it right first try or needed a repair --
+            # previously invisible (query_log.py's classify_outcome only ever
+            # recorded the end state "compiled_ok", the same label whether or
+            # not a repair fired). Useful signal for whether prompt growth
+            # (e.g. this session's highlight_metrics/sort_by additions) is
+            # increasing how often the planner needs correcting.
+            _trace_metadata({"repair_attempts": attempt, "compiled_ok": True})
             return {**state, "ir1": ir1, "plan": plan}
 
         err_msg = "; ".join(errs)
         if attempt == _MAX_REPAIRS:
             if "prev_bucket" in err_msg:
                 err_msg += ". Tip: upload a previous-period file to enable snapshot comparisons."
+            _trace_metadata({"repair_attempts": attempt, "compiled_ok": False, "compile_errors": err_msg})
             return {**state, "error": f"Could not compile query: {err_msg}"}
 
         # One repair attempt: re-run the planner with the compile/validate errors as context.
@@ -375,9 +665,10 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
 
 
 # ── Node 4: Data Executor (pandas) ───────────────────────────────────────────
+@traceable(run_type="tool", name="ExecuteNode", tags=["node"], process_inputs=_trace_process_inputs, process_outputs=_trace_process_outputs)
 def execute_node(state: QueryState) -> QueryState:
     _announce("execute")
-    df: pd.DataFrame = state.get("result_df_full")
+    df: pd.DataFrame = _fetch_large(state, "result_df_full")
     if df is None or len(df) == 0:
         return {**state, "error": "No data loaded."}
 
@@ -433,6 +724,7 @@ def execute_node(state: QueryState) -> QueryState:
             kpis     = compute_result_kpis(df, display_df)
             rankings = compute_contextual_rankings(df, display_df)
 
+        _trace_metadata({"intent": intent, "result_row_count": len(display_df)})
         return {**state, "result_df": display_df, "result_kpis": kpis,
                 "result_rankings": rankings, "error": ""}
 
@@ -441,7 +733,14 @@ def execute_node(state: QueryState) -> QueryState:
 
 
 # ── Node 5: Insight Generator (Gemini) ───────────────────────────────────────
+@traceable(run_type="chain", name="AnalyzeNode", tags=["node"], process_inputs=_trace_process_inputs, process_outputs=_trace_process_outputs)
 def analyze_node(state: QueryState) -> QueryState:
+    if state.get("skip_insights"):
+        # Don't announce the "writing AI observations" step at all when it's
+        # being skipped -- showing that label while the Gemini call never
+        # actually happens is misleading, implying work that isn't occurring.
+        _trace_metadata({"insights_skipped": True})
+        return {**state, "insights": ""}
     _announce("analyze")
     ir1 = state.get("ir1") or {}
     plain_english = ir1.get("description") or state.get("query") or ""
@@ -535,6 +834,7 @@ def run_query(
     alerts_curr: Optional[list] = None,
     alerts_prev: Optional[list] = None,
     rr_meta: Optional[dict] = None,
+    skip_insights: bool = False,
 ) -> QueryState:
     """Run the IR-1 → [fast-path view | compiler] → executor → insights pipeline.
 
@@ -543,16 +843,41 @@ def run_query(
     view layer (registry/views.py) -- precomputed_views lets it reuse the SAME
     cached analysis/ results app.py already computed for the dashboard tabs,
     instead of recomputing independently.
+    skip_insights=True skips the Insight Generator's Gemini call entirely
+    (result_df/result_kpis/result_highlights/result_portfolio_kpis are all
+    unaffected -- only the written narrative is skipped), for users who only
+    want the table/KPIs and don't want to pay for or wait on that 2nd call.
     """
     run_id = str(_uuid.uuid4())
+
+    # Stash the large objects OUTSIDE the traced QueryState (see _stash_large's
+    # docstring above) -- initial only ever gets tiny placeholders for these,
+    # regardless of how large the real file is. alerts_curr/alerts_prev are
+    # included even though no current node reads them via state.get(...) --
+    # each alert dict carries its own drilldown DataFrame (smart_alerts.py),
+    # and LangGraph traces whatever sits IN the state regardless of whether
+    # anything reads it back out.
+    _stash_large("result_df_full", df)
+    _stash_large("df_prev", df_prev if df_prev is not None else pd.DataFrame())
+    _stash_large("precomputed_views", precomputed_views or {})
+    _stash_large("alerts_curr", alerts_curr or [])
+    _stash_large("alerts_prev", alerts_prev or [])
+    # result_df is NOT stashed -- it's the query's actual OUTPUT (view_node/
+    # execute_node still return it directly in state, same as before this fix).
+    # It's typically a filtered SUBSET of the file (often much smaller than
+    # result_df_full), and only present in state for the last 1-2 node
+    # transitions rather than unconditionally on every node for every query --
+    # a smaller, bounded risk that isn't worth the return-contract break this
+    # caused for every direct caller/test of view_node/execute_node.
+
     initial: QueryState = {
         "query":            query,
-        "result_df_full":   df,
+        "result_df_full":   None,
         "snapshot_dates":   snapshot_dates or {},
-        "df_prev":          df_prev if df_prev is not None else pd.DataFrame(),
-        "precomputed_views": precomputed_views or {},
-        "alerts_curr":      alerts_curr or [],
-        "alerts_prev":      alerts_prev or [],
+        "df_prev":          None,
+        "precomputed_views": {},
+        "alerts_curr":      [],
+        "alerts_prev":      [],
         "rr_meta":          rr_meta or {},
         "ir1":              {},
         "enriched_query":   "",
@@ -567,15 +892,19 @@ def run_query(
         "plan_mode":        False,
         "plan":             [],
         "result_type":      "loan_table",
+        "result_grain":     "loan",
         "view_render":      "",
         "allow_clarification":    allow_clarification,
         "needs_clarification":    False,
         "clarification_question": "",
         "clarification_options":  [],
+        "skip_insights":          skip_insights,
         "parsed_filters":   {},
         "result_df":        pd.DataFrame(),
         "result_kpis":      {},
         "result_rankings":  {},
+        "result_highlights": [],
+        "result_portfolio_kpis": [],
         "insights":         "",
         "error":            "",
         "run_id":           run_id,
@@ -584,8 +913,33 @@ def run_query(
 
     _tls.step_callback = on_step
     try:
+        # LangGraph's OWN built-in tracing (separate from and not controlled by
+        # this file's @traceable/process_inputs additions on the node wrappers)
+        # serializes the FULL QueryState at every node transition whenever
+        # LangSmith env vars are active. Confirmed via direct measurement on a
+        # realistic 60k-row file: with the large fields (result_df_full,
+        # df_prev, precomputed_views, result_df, alerts_curr, alerts_prev) sitting
+        # directly in state, this produced 20-85MB trace payloads -- LangSmith's
+        # limit is 20MB, so every one of those calls failed to upload and
+        # RETRIED repeatedly, adding 60+ seconds of pure network-retry overhead
+        # PER QUERY, entirely invisible in the LangSmith UI (which only ever
+        # shows successful traces, never the silent failures). Fixed at the
+        # root: those fields are now stashed via _stash_large/_fetch_large
+        # (a thread-local side channel) instead of living in the traced state
+        # at all, so tracing stays fully enabled -- no tracing_context/enabled
+        # flag needed here anymore.
         result = _compiled.invoke(initial, config={"run_id": run_id})
     finally:
         _tls.step_callback = None
+        # Without this, _tls.large_data keeps holding THIS query's DataFrames on
+        # this thread indefinitely -- _fetch_large's fallback to state.get(...)
+        # (documented as the path a direct node call, e.g. a test, relies on)
+        # never actually triggers once anything has ever stashed data on this
+        # thread, since it only checks "was this key ever stashed here," not
+        # "was it stashed by the current call." Confirmed via direct repro:
+        # stash a small df once, then call execute_node() with a state dict
+        # carrying a DIFFERENT df, and the node silently uses the stale one.
+        _tls.large_data = {}
 
+    log_query_outcome(result)
     return result

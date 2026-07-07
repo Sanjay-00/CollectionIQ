@@ -1,6 +1,8 @@
 import pandas as pd
+import pytest
 
 from report_agent.sections.verdict import compute_verdict
+from report_agent.sections.risk_flags import compute_risk_flags
 from report_agent.sections.top_accounts import compute_top_accounts_section
 from report_agent.sections.fleet_exposure import compute_fleet_exposure_section
 from report_agent.sections.region_scorecard import compute_region_scorecard_section
@@ -14,6 +16,10 @@ from report_agent.sections.product_analysis import compute_product_analysis_sect
 from report_agent.sections.repossession import compute_repossession_section
 from report_agent.sections.good_customers import compute_good_customers_section
 from report_agent.sections.executive_strike_rankings import compute_executive_strike_rankings
+from report_agent.sections.overdue_demand import compute_overdue_demand_section
+from report_agent.sections.new_advances import compute_new_advances_section
+from report_agent.sections.new_advances_trend import compute_new_advances_trend_section
+from report_agent.sections.new_advances_by_dimension import compute_new_advances_by_dimension_section
 from report_agent.charts import fig_to_base64
 from helpers import make_df
 
@@ -48,6 +54,31 @@ class TestComputeVerdict:
         if result is not None:
             assert len(result["good"]) <= 6
             assert len(result["bad"]) <= 6
+
+
+# ── compute_risk_flags ────────────────────────────────────────────────────────
+
+class TestComputeRiskFlags:
+    def test_closing_arrears_is_carried_through_not_dropped(self):
+        # Regression: this wrapper used to copy title/subtitle/severity/count/pos/
+        # action/icon from smart_alerts.run_all_alerts()'s per-alert dict but NOT
+        # closing_arrears -- report_builder.py's renderer then fell back to its
+        # `.get("closing_arrears", 0)` default, showing "Rs 0" on every risk-flag
+        # card in the report regardless of the real value (while POS, which WAS
+        # copied, rendered correctly) -- a real production report exhibited this.
+        df = make_df([
+            {"CoLending_Loans": "Y", "Arrears / EMI": 2.0, "Closing Arrears": 50_000.0},
+            {"CoLending_Loans": "Y", "Arrears / EMI": 3.0, "Closing Arrears": 30_000.0},
+        ])
+        result = compute_risk_flags(df)
+        assert result is not None
+        flag = next(f for f in result["flags"] if f["title"] == "Co-lending Loans at Risk")
+        assert flag["closing_arrears"] == 80_000.0
+
+    def test_no_active_alerts_returns_empty_flags(self):
+        df = make_df([{"Arrears / EMI": 0.0}])
+        result = compute_risk_flags(df)
+        assert result == {"flags": []}
 
 
 # ── compute_top_accounts_section ──────────────────────────────────────────────
@@ -238,6 +269,20 @@ class TestComputeBranchQuadrantSection:
         assert len(result["top_concern"]) <= 5
         assert result["image"] is None or result["image"].startswith("data:image/png;base64,")
 
+    def test_top_concern_has_region_and_strike_no_concern_score(self):
+        # Regression: "Highest Concern Branches" used to show Concern Score
+        # (an internal composite a report reader can't interpret on its own)
+        # and no Region/Strike% -- business request was to add Region and
+        # Strike%, drop Concern Score from the DISPLAYED columns (ranking is
+        # still by Concern Score internally, via Rank).
+        rows = [{"Unit": "MAHAD", "RegionName": "WEST", "Strike": "Y", "curr_bucket": "NPA", "Arrears / EMI": 6.0}] * 3 \
+             + [{"Unit": "PUNE", "RegionName": "EAST", "Strike": "N", "curr_bucket": "STD", "Arrears / EMI": 0.0}] * 3
+        curr = make_df(rows)
+        result = compute_branch_quadrant_section(curr)
+        row = result["top_concern"][0]
+        assert "Region" in row and "Strike%" in row
+        assert "Concern Score" not in row
+
 
 # ── compute_executive_recovery_section ────────────────────────────────────────
 
@@ -267,7 +312,8 @@ class TestComputeProductAnalysisSection:
         assert compute_product_analysis_section(curr) is None
 
     def test_returns_segment_rows_only(self):
-        rows = [{"SegmentName": "AUTO", "curr_bucket": "NPA"}] * 5 + [{"SegmentName": "AUTO", "curr_bucket": "STD"}] * 5
+        # MIN_ACCOUNTS_PRODUCT_SEGMENT = 11 -- needs strictly more than 10 accounts.
+        rows = [{"SegmentName": "AUTO", "curr_bucket": "NPA"}] * 6 + [{"SegmentName": "AUTO", "curr_bucket": "STD"}] * 6
         curr = make_df(rows)
         result = compute_product_analysis_section(curr)
         assert result is not None
@@ -286,6 +332,208 @@ class TestComputeRepossessionSection:
         result = compute_repossession_section(curr)
         assert result is not None
         assert result["total"] == 1
+
+    def test_curr_month_is_threaded_through_as_the_reporting_date(self):
+        # Regression: this section used to call compute_repossession_list with
+        # no reporting date at all, silently anchoring the repossession window
+        # to wall-clock "now" instead of the report's own curr_month.
+        report_month = "2020-01"
+        just_within_window = pd.Timestamp("2020-01-01") - pd.DateOffset(months=6)
+        curr = make_df([{"curr_bucket": "NPA", "Ag_Date": just_within_window, "SOH": 1_00_000.0}])
+
+        result = compute_repossession_section(curr, curr_month=report_month)
+        assert result is not None
+        assert result["total"] == 1
+
+        # Without curr_month, the same loan is years outside the window
+        # relative to wall-clock today and must not appear.
+        assert compute_repossession_section(curr) is None
+
+
+# ── compute_overdue_demand_section ────────────────────────────────────────────
+# Regression: this section used to print EVERY region/branch/executive row
+# (unlimited), which was responsible for roughly half of a real report's total
+# row count and a real, user-reported generation slowdown. Now capped to top 5
+# / bottom 5 by Month Demand Collection %, same convention branch_performance.py
+# already uses.
+
+class TestComputeOverdueDemandSection:
+    def _row(self, region, unit, exec_name, demand_pct):
+        # Bypass the real waterfall math (already covered by
+        # test_utils.py::TestOverdueDemandCollectionPct) -- set the derived
+        # columns directly, same pattern compute_overdue_demand_scorecard's
+        # own tests use, since only the RANKING/CAPPING behavior is under test here.
+        demand_total = 100_000.0
+        return {
+            "RegionName": region, "Unit": unit, "MNT NAME": exec_name,
+            "Overdue": 0, "OverdueCollected": 0,
+            "MonthDemandExclPC": demand_total, "DemandCollected": demand_total * demand_pct / 100,
+        }
+
+    def test_caps_at_top5_and_bottom5_per_dimension(self):
+        # 12 distinct regions -- more than double top5+bottom5, so capping
+        # actually has to do something (not just "show everything anyway").
+        curr = make_df([
+            self._row(f"REGION_{i}", "U1", "E1", demand_pct=i * 5)
+            for i in range(12)
+        ])
+        result = compute_overdue_demand_section(curr)
+        assert result is not None
+        assert len(result["region"]["top5"]) == 5
+        assert len(result["region"]["bottom5"]) == 5
+        assert result["region"]["total"] == 12
+
+    def test_top5_is_highest_demand_pct_bottom5_is_lowest(self):
+        curr = make_df([
+            self._row(f"REGION_{i}", "U1", "E1", demand_pct=i * 5)
+            for i in range(12)
+        ])
+        result = compute_overdue_demand_section(curr)
+        top_pcts = [r["demand_pct"] for r in result["region"]["top5"]]
+        bottom_pcts = [r["demand_pct"] for r in result["region"]["bottom5"]]
+        assert top_pcts == sorted(top_pcts, reverse=True)
+        assert min(top_pcts) > max(bottom_pcts)
+
+    def test_fewer_than_ten_entities_does_not_duplicate_across_top_and_bottom(self):
+        curr = make_df([
+            self._row(f"REGION_{i}", "U1", "E1", demand_pct=i * 10)
+            for i in range(4)
+        ])
+        result = compute_overdue_demand_section(curr)
+        top_names = {r["name"] for r in result["region"]["top5"]}
+        bottom_names = {r["name"] for r in result["region"]["bottom5"]}
+        assert not (top_names & bottom_names)
+        assert len(top_names) + len(bottom_names) == 4
+
+    def test_returns_none_for_empty_df(self):
+        assert compute_overdue_demand_section(make_df([])) is None
+
+    def test_branch_and_executive_dimensions_also_capped(self):
+        # Each executive needs >= MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE (11)
+        # accounts to survive the executive-grain filter.
+        curr = make_df([
+            self._row("WEST", f"BRANCH_{i}", f"EXEC_{i}", demand_pct=i * 5)
+            for i in range(12) for _ in range(11)
+        ])
+        result = compute_overdue_demand_section(curr)
+        assert len(result["branch"]["top5"]) == 5
+        assert len(result["executive"]["top5"]) == 5
+
+    def test_region_rows_carry_overdue_cr_no_identity_cols(self):
+        curr = make_df([self._row("REGION_A", "U1", "E1", demand_pct=50)])
+        result = compute_overdue_demand_section(curr)
+        row = result["region"]["top5"][0]
+        assert "overdue_cr" in row
+        assert "region" not in row and "branch" not in row
+
+    def test_branch_rows_carry_region_identity(self):
+        curr = make_df([self._row("EAST", "BR1", "E1", demand_pct=50)])
+        result = compute_overdue_demand_section(curr)
+        row = result["branch"]["top5"][0]
+        assert row["name"] == "BR1"
+        assert row["region"] == "EAST"
+        assert "branch" not in row
+
+    def test_executive_rows_carry_branch_and_region_identity(self):
+        # >= MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE (11) accounts, or EXEC1 is
+        # filtered out of the executive grain entirely.
+        curr = make_df([self._row("EAST", "BR1", "EXEC1", demand_pct=50)] * 11)
+        result = compute_overdue_demand_section(curr)
+        row = result["executive"]["top5"][0]
+        assert row["name"] == "EXEC1"
+        assert row["branch"] == "BR1"
+        assert row["region"] == "EAST"
+
+
+# ── compute_new_advances_section ──────────────────────────────────────────────
+
+class TestComputeNewAdvancesSection:
+    def test_returns_none_for_empty_df(self):
+        assert compute_new_advances_section(make_df([])) is None
+
+    def test_returns_none_when_no_advances_this_month(self):
+        curr = make_df([{"Ag_Date": pd.Timestamp("2026-01-01"), "Loan Amount": 100_000.0}])
+        assert compute_new_advances_section(curr, curr_month="2026-06") is None
+
+    def test_returns_totals_and_segment_rows(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0, "SegmentName": "CV"}] * 11
+        )
+        result = compute_new_advances_section(curr, curr_month="2026-06")
+        assert result is not None
+        assert result["accounts"] == 11
+        assert result["segment"][0]["Segment"] == "CV"
+
+    def test_mom_comparison_sourced_from_same_upload_no_df_prev_needed(self):
+        # df_prev is passed as None here on purpose -- MoM must still work,
+        # sourced entirely from df_curr's own Ag_Date history.
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0}] * 2
+            + [{"Ag_Date": pd.Timestamp("2026-05-05"), "Loan Amount": 100_000.0}]
+        )
+        result = compute_new_advances_section(curr, None, curr_month="2026-06")
+        assert result["has_prev"] is True
+        assert result["prev_accounts"] == 1
+
+
+# ── compute_new_advances_trend_section ────────────────────────────────────────
+
+class TestComputeNewAdvancesTrendSection:
+    def test_returns_none_for_empty_df(self):
+        assert compute_new_advances_trend_section(make_df([])) is None
+
+    def test_returns_base64_image_for_valid_data(self):
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-05-05"), "Loan Amount": 100_000.0},
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0},
+        ])
+        result = compute_new_advances_trend_section(curr, curr_month="2026-06")
+        assert result is not None
+        assert result["months"] == 2
+        assert result["image"] is None or result["image"].startswith("data:image/png;base64,")
+
+    def test_fixed_at_36_months_not_config_default(self):
+        # Report window is NEW_ADVANCES_REPORT_TREND_MONTHS (36), independent
+        # of the dashboard's NEW_ADVANCES_TREND_DEFAULT_MONTHS (24) -- a loan
+        # from 30 months back must still show up in the report's trend.
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2023-12-05"), "Loan Amount": 100_000.0},  # ~30 months before 2026-06
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 200_000.0},
+        ])
+        result = compute_new_advances_trend_section(curr, curr_month="2026-06")
+        assert result["months"] == 2
+
+
+# ── compute_new_advances_by_dimension_section ─────────────────────────────────
+
+class TestComputeNewAdvancesByDimensionSection:
+    def test_returns_none_for_empty_df(self):
+        assert compute_new_advances_by_dimension_section(make_df([])) is None
+
+    def test_returns_top_n_per_grain(self):
+        import config
+        rows = []
+        for i in range(config.NEW_ADVANCES_REPORT_TOP_N + 3):
+            rows.append({
+                "Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+                "RegionName": f"REGION_{i}", "Unit": f"BR_{i}", "MNT NAME": f"EXEC_{i}",
+            })
+        curr = make_df(rows)
+        result = compute_new_advances_by_dimension_section(curr, curr_month="2026-06")
+        assert result is not None
+        assert len(result["region"]) == config.NEW_ADVANCES_REPORT_TOP_N
+        assert len(result["branch"]) == config.NEW_ADVANCES_REPORT_TOP_N
+        assert len(result["executive"]) == config.NEW_ADVANCES_REPORT_TOP_N
+
+    def test_sorted_by_accounts_this_month(self):
+        curr = make_df(
+            [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 50_000.0,
+              "RegionName": "BIG", "Unit": "U1", "MNT NAME": "E1"}] * 5
+            + [{"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 50_000.0,
+                "RegionName": "SMALL", "Unit": "U2", "MNT NAME": "E2"}] * 1
+        )
+        result = compute_new_advances_by_dimension_section(curr, curr_month="2026-06")
+        assert result["region"][0]["Region"] == "BIG"
 
 
 # ── compute_good_customers_section ────────────────────────────────────────────
@@ -336,11 +584,9 @@ class TestComputeExecutiveStrikeRankings:
 # ── fig_to_base64 ──────────────────────────────────────────────────────────────
 
 class TestFigToBase64:
-    def test_empty_figure_returns_none(self):
-        assert fig_to_base64(go.Figure()) is None
-
-    def test_none_figure_returns_none(self):
-        assert fig_to_base64(None) is None
+    @pytest.mark.parametrize("fig", [go.Figure(), None], ids=["empty_figure", "none"])
+    def test_empty_or_missing_figure_returns_none(self, fig):
+        assert fig_to_base64(fig) is None
 
     def test_valid_figure_returns_data_uri(self):
         fig = go.Figure(go.Bar(x=[1, 2], y=[3, 4]))

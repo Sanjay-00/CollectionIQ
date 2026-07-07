@@ -4,7 +4,12 @@ Email-safe: all multi-column layouts use <table> instead of CSS grid/flex.
 """
 import datetime
 import html
+import logging
+import pandas as pd
 from report_agent.state import ReportState
+from analysis.portfolio_intelligence import OVERDUE_DEMAND_IDENTITY_COLS
+
+logger = logging.getLogger(__name__)
 
 YELLOW = "#FFC000"
 DARK   = "#0d1117"
@@ -292,26 +297,32 @@ def _render_region_scorecard(data: dict) -> str:
 
     header = "".join(
         f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
-        for h in ["Region", "Accounts", "NPA% (This Mo.)", "NPA% (Last Mo.)", "NPA% Change (pp)", "Collection%", "Hard Bucket%", "SOH", "Status"]
+        for h in ["Region", "SMA-2", "SMA-2%", "NPA", "NPA%", "&#916; SMA-2%", "&#916; NPA%", "Collection%", "Strike%", "SOH", "Roll Fwd%", "Roll Bwd%", "Status"]
     )
     rows = ""
     for r in rows_data:
-        status   = r.get("Status", "-")
-        color    = STATUS_COLOR.get(status, "#6b7280")
-        prev_npa = r.get("NPA% (Prev)")
-        prev_s   = f"{prev_npa:.1f}%" if prev_npa is not None else "&#8212;"
-        delta    = r.get("Δ NPA%")
-        delta_s  = f"{delta:+.1f}" if delta is not None else "&#8212;"
+        status      = r.get("Status", "-")
+        color       = STATUS_COLOR.get(status, "#6b7280")
+        npa_delta   = r.get("Δ NPA%")
+        npa_delta_s = f"{npa_delta:+.1f}" if npa_delta is not None else "&#8212;"
+        sma2_delta   = r.get("Δ SMA-2%")
+        sma2_delta_s = f"{sma2_delta:+.1f}" if sma2_delta is not None else "&#8212;"
+        roll_fwd = r.get("Roll Fwd%")
+        roll_bwd = r.get("Roll Bwd%")
         rows += (
             f'<tr>'
             f'<td style="padding:9px 12px;font-weight:600;font-size:12px;">{_esc(r.get("Region", ""))}</td>'
-            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Accounts", 0):,}</td>'
-            f'<td style="padding:9px 12px;font-size:12px;">{r.get("NPA% (Curr)", 0):.1f}%</td>'
-            f'<td style="padding:9px 12px;font-size:12px;color:#6b7280;">{prev_s}</td>'
-            f'<td style="padding:9px 12px;font-size:12px;color:{color};font-weight:700;">{delta_s}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("SMA-2", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("SMA-2%", 0):.1f}%</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("NPA", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("NPA%", 0):.1f}%</td>'
+            f'<td style="padding:9px 12px;font-size:12px;color:{color};font-weight:700;">{sma2_delta_s}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;color:{color};font-weight:700;">{npa_delta_s}</td>'
             f'<td style="padding:9px 12px;font-size:12px;">{r.get("Collection%", 0):.1f}%</td>'
-            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Hard Bucket%", 0):.1f}%</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Strike%", 0):.1f}%</td>'
             f'<td style="padding:9px 12px;font-size:12px;">&#8377;{r.get("SOH (Cr)", 0):.2f}Cr</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{f"{roll_fwd:.1f}%" if roll_fwd is not None else "&#8212;"}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{f"{roll_bwd:.1f}%" if roll_bwd is not None else "&#8212;"}</td>'
             f'<td style="padding:9px 12px;font-size:11px;font-weight:700;color:{color};">{status}</td>'
             f'</tr>'
         )
@@ -321,6 +332,243 @@ def _render_region_scorecard(data: dict) -> str:
         f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
         f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
     )
+
+
+def _render_overdue_demand(data: dict) -> str:
+    """Top 5 / bottom 5 by Month Demand Collection %, per dimension (Region/
+    Branch/Executive) -- NOT every row (see compute_overdue_demand_section's
+    docstring: printing every branch/executive was responsible for roughly
+    half this report's total row count). A payment clears last month's
+    carried-over overdue FIRST, only the remainder counts against this
+    month's own EMI demand (see utils.compute_overdue_demand_pct). 100% means
+    nothing was outstanding on that side, not that nothing was collected.
+    Branch rows carry their Region; Executive rows carry both Branch and Region."""
+    def _pct_color(pct):
+        return "#16a34a" if pct >= 90 else "#d97706" if pct >= 60 else "#dc2626"
+
+    # Derived from the single source of truth (analysis/portfolio_intelligence.py's
+    # OVERDUE_DEMAND_IDENTITY_COLS, Title-case column names) rather than a second
+    # hardcoded copy -- {"region": "Region", "branch": "Branch"} used to be
+    # maintained separately here, independently of the identical mapping in
+    # ui/tabs/portfolio_intelligence.py and report_agent/sections/overdue_demand.py.
+    _IDENTITY_LABEL = {c.lower(): c for cols in OVERDUE_DEMAND_IDENTITY_COLS.values() for c in cols}
+    # Fixed column widths, keyed by identity-column count (0 = region's own
+    # table, 1 = branch's, 2 = executive's) -- with table-layout:fixed below,
+    # this is what makes the top5 and bottom5 tables in the same row (and the
+    # region/branch/executive tables as a family) line up as a real grid
+    # instead of each table silently auto-sizing its columns from its own
+    # content/header text width, which is what made the report look
+    # misaligned: two tables showing the SAME columns end up with DIFFERENT
+    # column widths purely because one has longer names or fewer rows.
+    _COL_WIDTHS = {
+        0: [25, 15, 15, 15, 15, 15],           # Name, Accounts, Overdue, Month Demand, Overdue%, Demand%
+        1: [20, 15, 13, 13, 13, 13, 13],       # + one identity column
+        2: [18, 11, 11, 12, 12, 12, 12, 12],   # + two identity columns
+    }
+
+    def _table(items, name_label, identity_keys, label, label_color, label_bg):
+        widths = _COL_WIDTHS[len(identity_keys)]
+        colgroup = "".join(f'<col style="width:{w}%;">' for w in widths)
+        identity_headers = "".join(
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{_IDENTITY_LABEL[k]}</th>'
+            for k in identity_keys
+        )
+        _num_th = (
+            'style="background:#111827;color:{c};padding:9px 10px;text-align:right;'
+            'font-size:10px;font-weight:700;text-transform:uppercase;"'
+        ).format(c=YELLOW)
+        header = (
+            f'<tr><th style="background:#111827;color:{YELLOW};padding:9px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{name_label}</th>'
+            f'{identity_headers}'
+            f'<th {_num_th}>Accounts</th>'
+            f'<th {_num_th}>Overdue</th>'
+            f'<th {_num_th}>Month Demand</th>'
+            f'<th {_num_th}>Overdue Coll %</th>'
+            f'<th {_num_th}>Demand Coll %</th></tr>'
+        )
+        rows = "".join(
+            f'<tr style="background:{"#f0fdf4" if label_color=="#16a34a" else "#fff5f5"};">'
+            f'<td style="padding:8px 10px;font-weight:600;font-size:12px;word-break:break-word;">{_esc(r["name"])}</td>'
+            + "".join(
+                f'<td style="padding:8px 10px;font-size:12px;word-break:break-word;">{_esc(r.get(k, "") or "&#8212;")}</td>'
+                for k in identity_keys
+            )
+            + f'<td style="padding:8px 10px;font-size:12px;text-align:right;">{r["accounts"]:,}</td>'
+            f'<td style="padding:8px 10px;font-size:12px;text-align:right;">&#8377;{r["overdue_cr"]:.2f}Cr</td>'
+            f'<td style="padding:8px 10px;font-size:12px;text-align:right;">&#8377;{r["demand_cr"]:.2f}Cr</td>'
+            f'<td style="padding:8px 10px;font-size:12px;text-align:right;color:{_pct_color(r["overdue_pct"])};">{r["overdue_pct"]:.2f}%</td>'
+            f'<td style="padding:8px 10px;font-weight:800;font-size:12px;text-align:right;color:{_pct_color(r["demand_pct"])};">{r["demand_pct"]:.2f}%</td>'
+            f'</tr>'
+            for r in items
+        )
+        return (
+            f'<td width="50%" valign="top" style="padding:4px;">'
+            f'<div style="font-size:10px;font-weight:700;color:{label_color};text-transform:uppercase;'
+            f'letter-spacing:1px;background:{label_bg};padding:5px 10px;border-radius:6px;margin-bottom:8px;">{label}</div>'
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;overflow-x:auto;">'
+            f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;">'
+            f'<colgroup>{colgroup}</colgroup>'
+            f'<thead>{header}</thead><tbody>{rows}</tbody></table></div>'
+            f'</td>'
+        )
+
+    dim_labels = [
+        (key, key.capitalize(), [c.lower() for c in OVERDUE_DEMAND_IDENTITY_COLS[key]])
+        for key in ("region", "branch", "executive")
+    ]
+    blocks = ""
+    for key, name_label, identity_keys in dim_labels:
+        dim_data = data.get(key)
+        if not dim_data or not (dim_data.get("top5") or dim_data.get("bottom5")):
+            continue
+        top_td = _table(dim_data.get("top5", []),    name_label, identity_keys, "&#9650; Top 5 by Month Demand Collection %", "#16a34a", "rgba(22,163,74,0.10)")
+        bot_td = _table(dim_data.get("bottom5", []), name_label, identity_keys, "&#9660; Bottom 5 by Month Demand Collection %", "#dc2626", "rgba(220,38,38,0.10)")
+        blocks += (
+            f'<div style="font-size:11px;font-weight:700;color:#374151;margin:12px 0 6px;text-transform:uppercase;letter-spacing:0.6px;">By {name_label} ({dim_data.get("total", 0)} total)</div>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:14px;"><tr>{top_td}{bot_td}</tr></table>'
+        )
+    if not blocks:
+        return ""
+    return _sec_label("Overdue vs Month Demand Collection") + blocks
+
+
+def _render_new_advances(data: dict) -> str:
+    """New business (advances) funded this reporting month -- identified by
+    Ag_Date's own month, never gated by curr_bucket (see
+    compute_new_advances_section's docstring for why curr_month, not
+    wall-clock "now", anchors "this month")."""
+    if not data or not data.get("accounts"):
+        return ""
+
+    accounts   = data.get("accounts", 0)
+    funded_cr  = data.get("funded_cr", 0.0)
+    avg_ticket = data.get("avg_ticket_l", 0.0)
+    has_prev   = data.get("has_prev", False)
+
+    def _mom_html(pct):
+        if pct is None:
+            return '<span style="color:#9ca3af;">&#8212;</span>'
+        color = "#16a34a" if pct >= 0 else "#dc2626"
+        arrow = "&#9650;" if pct >= 0 else "&#9660;"
+        return f'<span style="color:{color};font-weight:700;">{arrow} {abs(pct):.2f}%</span>'
+
+    def _stat_card(label, value):
+        return (
+            f'<td width="33%" valign="top" style="padding:4px;">'
+            f'<div style="background:#fff;border:1px solid #e5e7eb;border-bottom:3px solid {YELLOW};border-radius:10px;padding:14px 16px;">'
+            f'<div style="font-size:9px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">{label}</div>'
+            f'<div style="font-size:24px;font-weight:800;color:#111827;">{value}</div>'
+            f'</div></td>'
+        )
+
+    stat_row = (
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;"><tr>'
+        + _stat_card("New Advances", f"{accounts:,}")
+        + _stat_card("Funded Amount", f"&#8377;{funded_cr:,.2f}Cr")
+        + _stat_card("Avg Ticket Size", f"&#8377;{avg_ticket:,.2f}L")
+        + '</tr></table>'
+    )
+
+    mom_row = ""
+    if has_prev:
+        mom_row = (
+            f'<div style="font-size:12px;color:#374151;margin-bottom:14px;">'
+            f'Accounts vs last month: {data.get("prev_accounts", 0):,} &#8594; {accounts:,} '
+            f'({_mom_html(data.get("accounts_mom_pct"))}) &nbsp;|&nbsp; '
+            f'Funded vs last month: &#8377;{data.get("prev_funded_cr", 0):.2f}Cr &#8594; &#8377;{funded_cr:.2f}Cr '
+            f'({_mom_html(data.get("funded_mom_pct"))})'
+            f'</div>'
+        )
+
+    seg_rows_data = data.get("segment", [])
+    seg_table = ""
+    if seg_rows_data:
+        header = "".join(
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
+            for h in ["Segment", "Accounts", "Funded (Cr)", "Avg Ticket (L)", "Share %"]
+        )
+        rows = "".join(
+            f'<tr>'
+            f'<td style="padding:9px 12px;font-weight:600;font-size:12px;">{_esc(r.get("Segment", ""))}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Accounts", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">&#8377;{r.get("Funded (Cr)", 0):.2f}Cr</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">&#8377;{r.get("Avg Ticket (L)", 0):.2f}L</td>'
+            f'<td style="padding:9px 12px;font-size:12px;">{r.get("Share %", 0):.1f}%</td>'
+            f'</tr>'
+            for r in seg_rows_data
+        )
+        seg_table = (
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
+            f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
+        )
+
+    return _sec_label("New Advances This Month (Business)") + stat_row + mom_row + seg_table
+
+
+def _render_new_advances_trend(data: dict) -> str:
+    img = data.get("image")
+    if not img:
+        return ""
+    months = data.get("months", 0)
+    return (
+        _sec_label(f"New Advances Trend  -  Last {months} Months") +
+        f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;background:#fff;padding:8px;">'
+        f'<img src="{img}" width="100%" style="display:block;border-radius:6px;" alt="New Advances Trend"/>'
+        f'</div>'
+    )
+
+
+def _render_new_advances_by_dimension(data: dict) -> str:
+    """Top N Regions / Branches / Executives by new advances this month --
+    NOT every row (same "printed document" reasoning as branch_performance.py's
+    top5/bottom5 cap). Each dict entry is already sorted by Accounts This
+    Month descending (compute_new_advances_by_dimension's own sort), so this
+    is purely a rendering pass, no re-ranking."""
+    _DIM_LABEL = {"region": "Region", "branch": "Branch", "executive": "Executive"}
+    _DIM_LABEL_PLURAL = {"region": "Regions", "branch": "Branches", "executive": "Executives"}
+    _IDENTITY_KEYS = {"region": [], "branch": ["Region"], "executive": ["Branch", "Region"]}
+
+    blocks = ""
+    for key in ("region", "branch", "executive"):
+        rows_data = data.get(key, [])
+        if not rows_data:
+            continue
+        name_label = _DIM_LABEL[key]
+        identity_keys = _IDENTITY_KEYS[key]
+        identity_headers = "".join(
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{k}</th>'
+            for k in identity_keys
+        )
+        header = (
+            f'<tr><th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{name_label}</th>'
+            f'{identity_headers}'
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;">Total Accounts</th>'
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;">Accounts This Month</th>'
+            f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;">Funded</th></tr>'
+        )
+        rows = "".join(
+            f'<tr>'
+            f'<td style="padding:9px 12px;font-weight:600;font-size:12px;">{_esc(r.get(name_label, ""))}</td>'
+            + "".join(
+                f'<td style="padding:9px 12px;font-size:12px;">{_esc(r.get(k, "") or "&#8212;")}</td>'
+                for k in identity_keys
+            )
+            + f'<td style="padding:9px 12px;font-size:12px;text-align:right;">{r.get("Total Accounts", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-weight:800;font-size:12px;text-align:right;">{r.get("Accounts This Month", 0):,}</td>'
+            f'<td style="padding:9px 12px;font-size:12px;text-align:right;">&#8377;{r.get("Funded (Cr)", 0):.2f}Cr</td>'
+            f'</tr>'
+            for r in rows_data
+        )
+        blocks += (
+            f'<div style="font-size:11px;font-weight:700;color:#374151;margin:14px 0 6px;text-transform:uppercase;letter-spacing:0.6px;">Top {len(rows_data)} {_DIM_LABEL_PLURAL[key]} by New Advances</div>'
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
+            f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'<thead>{header}</thead><tbody>{rows}</tbody></table></div>'
+        )
+    if not blocks:
+        return ""
+    return _sec_label("New Advances by Region / Branch / Executive") + blocks
 
 
 def _render_top_accounts(data: dict) -> str:
@@ -416,7 +664,15 @@ def _movement_stat_card(label: str, value: str, color: str = "#111827") -> str:
 
 
 def _movement_delta_color(delta) -> str:
-    if delta is None:
+    # pd.isna catches both None and NaN uniformly -- a region/branch/executive
+    # present in one period's file but not the other (a real case for two
+    # independently-uploaded monthly extracts, e.g. a branch opened or closed
+    # between months) produces NaN, not None, on the missing side after
+    # compute_npa_sma2_comparison's merge. `delta is None` alone let NaN
+    # silently fall through to `delta > 0` (always False for NaN, no crash
+    # here, just a wrong "neutral" color) -- see _movement_fmt's own
+    # docstring for where the SAME gap raised a real crash.
+    if pd.isna(delta):
         return "#6b7280"
     if delta > 0:
         return "#dc2626"
@@ -426,15 +682,21 @@ def _movement_delta_color(delta) -> str:
 
 
 def _movement_fmt(val, is_pct: bool = False) -> str:
-    """Plain formatting for a raw curr/prev value - no +/- sign (that's reserved for deltas)."""
-    if val is None:
+    """Plain formatting for a raw curr/prev value - no +/- sign (that's reserved for deltas).
+    pd.isna, not `val is None` -- a value missing on one side of a curr/prev
+    comparison (region/branch/executive present in only one period's file)
+    comes back as NaN, not None, and `int(float('nan'))` raises
+    ValueError -- this used to crash the entire report generation."""
+    if pd.isna(val):
         return "&#8212;"
     return f"{val:.1f}%" if is_pct else f"{int(val):,}"
 
 
 def _movement_fmt_delta(val, is_pct: bool = False) -> str:
-    """Signed formatting for a delta/%change value."""
-    if val is None:
+    """Signed formatting for a delta/%change value. See _movement_fmt's
+    docstring -- same pd.isna reasoning (NaN, not None, for a one-sided
+    curr/prev comparison)."""
+    if pd.isna(val):
         return "&#8212;"
     sign = "+" if val >= 0 else ""
     return f"{sign}{val:.1f}%" if is_pct else f"{sign}{int(val):,}"
@@ -831,22 +1093,27 @@ def _render_branch_quadrant(data: dict) -> str:
     if concern:
         header = "".join(
             f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
-            for h in ["Rank", "Branch", "Concern Score", "Collection%", "NPA%", "SOH"]
+            for h in ["Rank", "Branch", "Region", "Accounts", "SMA-2%", "NPA%", "Collection%", "Strike%", "Roll Fwd%", "Chronic (3M+)", "SOH"]
         )
         rows = "".join(
             f'<tr>'
             f'<td style="padding:8px 12px;font-size:12px;">{c["Rank"]}</td>'
             f'<td style="padding:8px 12px;font-weight:600;font-size:12px;">{_esc(c["Branch"])}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;font-weight:700;color:#dc2626;">{c["Concern Score"]}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;">{c["Collection%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{_esc(c.get("Region", "") or "&#8212;")}</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Accounts"]:,}</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["SMA-2%"]:.1f}%</td>'
             f'<td style="padding:8px 12px;font-size:12px;">{c["NPA%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Collection%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Strike%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Roll Fwd%"]:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Chronic (3M+)"]:,}</td>'
             f'<td style="padding:8px 12px;font-size:12px;">&#8377;{c["SOH (Cr)"]:.2f}Cr</td>'
             f'</tr>'
             for c in concern
         )
         table_html = (
             f'<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Highest Concern Branches</div>'
-            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
+            f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;overflow-x:auto;">'
             f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
             f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
         )
@@ -998,7 +1265,8 @@ def _render_good_customers(data: dict) -> str:
 SECTION_ORDER = [
     "portfolio_health", "verdict", "risk_flags", "risk_indicators",
     "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
-    "region_scorecard", "product_analysis", "top_accounts", "fleet_exposure",
+    "region_scorecard", "overdue_demand", "new_advances", "new_advances_trend", "new_advances_by_dimension",
+    "product_analysis", "top_accounts", "fleet_exposure",
     "repossession", "good_customers", "branch_performance",
     "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]
@@ -1012,6 +1280,10 @@ _RENDERERS = {
     "branch_quadrant":            _render_branch_quadrant,
     "concentration":              _render_concentration,
     "region_scorecard":           _render_region_scorecard,
+    "overdue_demand":             _render_overdue_demand,
+    "new_advances":               _render_new_advances,
+    "new_advances_trend":         _render_new_advances_trend,
+    "new_advances_by_dimension":  _render_new_advances_by_dimension,
     "product_analysis":           _render_product_analysis,
     "top_accounts":               _render_top_accounts,
     "fleet_exposure":             _render_fleet_exposure,
@@ -1052,8 +1324,8 @@ def report_builder_node(state: ReportState) -> ReportState:
                 body_parts.append(_render_portfolio_health(sd[name], curr_month, prev_month))
             else:
                 body_parts.append(_RENDERERS[name](sd[name]))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Report section '%s' failed to render: %s", name, e)
 
     body_html = "\n".join(body_parts)
     prev_label = f" &nbsp;&bull;&nbsp; vs {prev_month}" if prev_month else ""

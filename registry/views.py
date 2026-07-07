@@ -31,6 +31,15 @@ Schema per entry:
     cache_key    key into the `precomputed_views` dict app.py threads through
                  QueryState -- used to serve the literal cached object when no
                  filter/non-default param requires a fresh call
+    grain        row grain of the returned table ("region", "branch", "executive",
+                 "customer", ...) -- threaded into QueryState.result_grain so the UI
+                 shows correct copy ("6 regions" not "6 accounts")
+    metrics      (optional) exact column names in this view's output that are valid
+                 targets for the planner's "highlight_metrics" IR-1 field (see
+                 agents/logical_planner.py) -- only set on views where a single
+                 "worst/best entity by X" callout makes sense
+    label_col    (required if "metrics" is set) the column holding the entity's
+                 display name, e.g. "Region" -- used to build a highlight card's caption
 """
 import importlib
 
@@ -52,6 +61,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df_dict_tuple",
         "cache_key": "pi_top_accounts",
+        "grain": "customer",
     },
     "fleet_operators": {
         "label": "Fleet Operator Exposure",
@@ -67,6 +77,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "dict_with_top_df",
         "cache_key": "pi_fleet",
+        "grain": "customer",
     },
     "executive_scorecard": {
         "label": "Executive Performance Scorecard",
@@ -83,6 +94,9 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "scorecard_df",
+        "grain": "executive",
+        "label_col": "Executive (Branch)",
+        "metrics": ["Collection %", "Strike Rate %", "NPA %", "SMA-2 %", "Roll Fwd %", "Roll Bwd %"],
     },
     "roll_rate_matrix": {
         "label": "Bucket Roll-Rate Migration",
@@ -99,6 +113,7 @@ VIEWS: dict[str, dict] = {
         "filterable": False,   # a migration crosstab isn't row-filterable the same way
         "output": "matrix_tuple",
         "cache_key": "rr_matrix",
+        "grain": "matrix",
     },
     "region_scorecard": {
         "label": "Region Delinquency Scorecard",
@@ -115,6 +130,9 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_region",
+        "grain": "region",
+        "label_col": "Region",
+        "metrics": ["NPA%", "Collection%", "SMA-2%", "Strike%", "Roll Fwd%", "Roll Bwd%", "Δ NPA%", "Δ SMA-2%"],
     },
     "branch_quadrant": {
         "label": "Branch Performance Quadrant",
@@ -131,6 +149,9 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "tuple_df_fig",
         "cache_key": "pi_branch",
+        "grain": "branch",
+        "label_col": "Branch",
+        "metrics": ["NPA%", "Collection%", "SMA-2%", "Hard Bucket%", "Roll Fwd%", "Concern Score"],
     },
     "executive_recovery": {
         "label": "Executive Recovery Ranking",
@@ -147,6 +168,9 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_exec",
+        "grain": "executive",
+        "label_col": "Executive",
+        "metrics": ["Collection%", "Strike%", "Net Recovery", "Rescued", "Slipped"],
     },
     "risk_indicators": {
         "label": "Early Warning Risk Indicators",
@@ -164,6 +188,7 @@ VIEWS: dict[str, dict] = {
         "output": "list_of_dicts",
         "render": "risk_indicator_table",   # UI hint: dedicated signal-table renderer, not a raw grid
         "cache_key": "pi_risk",
+        "grain": "signal",
     },
     "repossession_list": {
         "label": "Repossession-Eligible Accounts",
@@ -179,6 +204,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_repo_df",
+        "grain": "customer",
     },
     "good_customers": {
         "label": "Good Customers (Refinance Candidates)",
@@ -194,6 +220,7 @@ VIEWS: dict[str, dict] = {
         "filterable": True,
         "output": "df",
         "cache_key": "pi_good_customers",
+        "grain": "customer",
     },
     "npa_sma2_by_region": {
         "label": "NPA/SMA-2 Comparison by Region",
@@ -210,6 +237,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "region",
         "cache_key": "pi_npa_sma2_cmp",
+        "grain": "region",
     },
     "npa_sma2_by_branch": {
         "label": "NPA/SMA-2 Comparison by Branch",
@@ -226,6 +254,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "branch",
         "cache_key": "pi_npa_sma2_cmp",
+        "grain": "branch",
     },
     "npa_sma2_by_executive": {
         "label": "NPA/SMA-2 Comparison by Executive",
@@ -242,6 +271,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "executive",
         "cache_key": "pi_npa_sma2_cmp",
+        "grain": "executive",
     },
     "segment_analysis": {
         "label": "Delinquency by Vehicle Segment",
@@ -258,6 +288,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "segment",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "fuel_analysis": {
         "label": "Delinquency by Fuel Type",
@@ -273,6 +304,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "fuel",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "vintage_analysis": {
         "label": "Delinquency by Disbursement Vintage",
@@ -290,6 +322,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "vintage",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "source_analysis": {
         "label": "Delinquency by Sourcing Channel",
@@ -306,6 +339,7 @@ VIEWS: dict[str, dict] = {
         "output": "dict_subkey_df",
         "subkey": "source",
         "cache_key": "pi_product",
+        "grain": "segment",
     },
     "pulse_kpis": {
         "label": "Portfolio Pulse KPI Summary",
@@ -322,6 +356,7 @@ VIEWS: dict[str, dict] = {
         "output": "list_of_dicts",
         "render": "kpi_cards",   # UI hint: render as KPI cards, not a raw grid
         "cache_key": "pi_pulse_kpis",
+        "grain": "portfolio",
     },
     "good_bad_summary": {
         "label": "Good/Bad Portfolio Narrative",
@@ -342,7 +377,58 @@ VIEWS: dict[str, dict] = {
         "filterable": False,
         "output": "good_bad_dict",
         "cache_key": "pi_good_bad",
+        "grain": "signal",
     },
+}
+
+
+# ── Highlight metrics (Fix B: query-aware standout KPI cards) ───────────────
+# Static domain knowledge: for each highlightable metric column (declared per
+# view above in "metrics"), which direction is "bad". The Logical Planner only
+# ever picks WHICH columns are relevant to a question and whether to take the
+# max or min row -- it never invents a number. view_node does the actual
+# idxmax/idxmin lookup in pandas, so this dict is the one place direction is
+# encoded, shared across every view that reports the same column name.
+# "high_bad": a higher value is worse (e.g. NPA%). "low_bad": a lower value is
+# worse (e.g. Collection%). Column names vary in spacing/casing between
+# analysis/ functions ("NPA%" vs "NPA %"), so both spellings are listed.
+_METRIC_DIRECTION: dict[str, str] = {
+    "NPA%": "high_bad", "NPA %": "high_bad",
+    "SMA-2%": "high_bad", "SMA-2 %": "high_bad",
+    "Hard Bucket%": "high_bad",
+    "Roll Fwd%": "high_bad", "Roll Fwd %": "high_bad",
+    "Δ NPA%": "high_bad", "Δ SMA-2%": "high_bad",
+    "Concern Score": "high_bad",
+    "Slipped": "high_bad",
+    "Collection%": "low_bad", "Collection %": "low_bad",
+    "Strike%": "low_bad", "Strike Rate %": "low_bad",
+    "Roll Bwd%": "low_bad", "Roll Bwd %": "low_bad",
+    "Net Recovery": "low_bad", "Rescued": "low_bad",
+}
+
+
+# ── Portfolio-level KPI rollup ───────────────────────────────────────────────
+# Every view that declares "metrics" always gets a small unconditional
+# portfolio-wide summary row (e.g. "Avg NPA% 15.7%") alongside its per-entity
+# table -- unlike highlight_metrics/sort_by, this needs no LLM judgment call,
+# so it isn't gated behind IR-1 at all. "mean": a rate/score column, averaged
+# across entities (e.g. average NPA% across regions). "sum": a count-like
+# column, totaled across entities (e.g. total accounts rescued across
+# executives) -- summing a rate column like NPA% would be meaningless, and
+# averaging a count column like Rescued would answer "average per executive"
+# rather than the portfolio total, so this must be explicit per column, not
+# inferred from the column name.
+_METRIC_AGG: dict[str, str] = {
+    "NPA%": "mean", "NPA %": "mean",
+    "SMA-2%": "mean", "SMA-2 %": "mean",
+    "Hard Bucket%": "mean",
+    "Roll Fwd%": "mean", "Roll Fwd %": "mean",
+    "Roll Bwd%": "mean", "Roll Bwd %": "mean",
+    "Δ NPA%": "mean", "Δ SMA-2%": "mean",
+    "Concern Score": "mean",
+    "Collection%": "mean", "Collection %": "mean",
+    "Strike%": "mean", "Strike Rate %": "mean",
+    "Net Recovery": "sum", "Rescued": "sum", "Slipped": "sum",
 }
 
 

@@ -4,7 +4,7 @@ import pandas as pd
 from typing import Optional
 from langgraph.graph import StateGraph, START, END
 
-from report_agent.state import ReportState
+from report_agent.state import ReportState, _stash_large
 from report_agent.nodes.portfolio_analyzer import portfolio_analyzer_node
 from report_agent.nodes.risk_narrator import risk_narrator_node
 from report_agent.nodes.report_builder import report_builder_node
@@ -40,7 +40,8 @@ _compiled = _graph.compile()
 ALL_SECTIONS = [
     "portfolio_health", "verdict", "risk_flags", "risk_indicators",
     "bucket_migration", "npa_sma2_movement", "branch_quadrant", "concentration",
-    "region_scorecard", "product_analysis", "top_accounts", "fleet_exposure",
+    "region_scorecard", "overdue_demand", "new_advances", "new_advances_trend", "new_advances_by_dimension",
+    "product_analysis", "top_accounts", "fleet_exposure",
     "repossession", "good_customers", "branch_performance",
     "executive_recovery", "executive_rankings", "executive_strike_rankings",
 ]
@@ -57,9 +58,16 @@ def run_report(
     skip_ai: bool = False,
 ) -> ReportState:
     run_id = str(_uuid.uuid4())
+
+    # Stash the large objects OUTSIDE the traced ReportState (see
+    # report_agent/state.py's _stash_large docstring) -- initial only ever
+    # gets a placeholder for these, regardless of how large the real file is.
+    _stash_large("df_curr", df_curr)
+    _stash_large("df_prev", df_prev if df_prev is not None else pd.DataFrame())
+
     initial: ReportState = {
-        "df_curr":          df_curr,
-        "df_prev":          df_prev,
+        "df_curr":          None,
+        "df_prev":          None,
         "curr_month":       curr_month,
         "prev_month":       prev_month,
         "enabled_sections": enabled_sections or ALL_SECTIONS,

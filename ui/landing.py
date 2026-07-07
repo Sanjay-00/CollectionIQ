@@ -3,6 +3,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+from ui.components import _bump_data_version
+
 
 @st.cache_data(show_spinner=False)
 def _fetch_sample_from_github():
@@ -85,6 +87,7 @@ def render_landing() -> None:
                 st.session_state["df_prev_raw"]       = _dp
                 st.session_state["_sample_loaded"]    = True
                 st.session_state["_set_sample_dates"] = True
+                _bump_data_version()
                 st.rerun()
             except Exception as e:
                 st.error(f"Could not fetch sample data: {e}")

@@ -14,7 +14,14 @@ def compute_branch_quadrant_section(df_curr: pd.DataFrame, df_prev: pd.DataFrame
             return None
 
         image = fig_to_base64(fig, width=1100, height=470)
-        top_concern = df.head(5)[["Rank", "Branch", "Concern Score", "Collection%", "NPA%", "SOH (Cr)"]].to_dict("records")
+        # Ranking is still by Concern Score (df is already sorted that way, and
+        # Rank reflects it) -- the score itself just isn't shown as a column,
+        # per business request: it's an internal composite, not something a
+        # report reader needs to interpret on its own.
+        top_concern = df.head(5)[[
+            "Rank", "Branch", "Region", "Accounts", "SMA-2%", "NPA%",
+            "Collection%", "Strike%", "Roll Fwd%", "Chronic (3M+)", "SOH (Cr)",
+        ]].to_dict("records")
         return {"image": image, "top_concern": top_concern, "total_branches": len(df)}
     except Exception:
         return None

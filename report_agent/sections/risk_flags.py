@@ -21,6 +21,7 @@ def compute_risk_flags(df_curr: pd.DataFrame, df_prev: pd.DataFrame = None) -> d
                     "severity": a["severity"],
                     "count":    a["count"],
                     "pos":      a["pos"],
+                    "closing_arrears": a["closing_arrears"],
                     "action":   a["action"],
                     "icon":     a["icon"],
                 }

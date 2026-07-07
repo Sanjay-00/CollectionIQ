@@ -14,6 +14,7 @@ Prompt structure:
 import os
 import json
 import re
+from functools import lru_cache
 
 from google import genai
 from langsmith import traceable
@@ -21,7 +22,7 @@ from langsmith import traceable
 from config import GEMINI_MODEL
 from registry.ontology import CONCEPTS, METRICS
 from registry.semantic_model import DIMENSIONS
-from registry.views import VIEWS
+from registry.views import VIEWS, _METRIC_DIRECTION
 from agents.domain_expert import (
     _call_gemini_with_retry,
     _add_token_usage,
@@ -29,8 +30,14 @@ from agents.domain_expert import (
 )
 
 
+@lru_cache(maxsize=1)
 def build_catalog() -> str:
-    """Generate the catalog section from the registry (injected whole  -  no RAG)."""
+    """Generate the catalog section from the registry (injected whole  -  no RAG).
+
+    Cached: this is a zero-argument function depending only on registry/ module
+    contents, which are static for the process lifetime -- _build_full_system_prompt
+    rebuilt this from scratch on EVERY query (including a second time on any
+    compile/validate repair retry) despite it never actually varying per-query."""
     lines = [
         "CONCEPTS (use the name in filters; the compiler expands to the full definition):",
     ]
@@ -45,9 +52,12 @@ def build_catalog() -> str:
     return "\n".join(lines)
 
 
+@lru_cache(maxsize=1)
 def build_views_catalog() -> str:
     """Generate the VIEWS catalog section  -  pre-computed analyses to prefer over
-    building filters/dimensions/measures from scratch when one matches exactly."""
+    building filters/dimensions/measures from scratch when one matches exactly.
+
+    Cached -- same rationale as build_catalog() above."""
     lines = ["VIEWS (pre-computed analyses -- try to match one of these FIRST):"]
     for name, v in VIEWS.items():
         lines.append(f"  {name}: {v['description']}")
@@ -58,6 +68,16 @@ def build_views_catalog() -> str:
             lines.append(f"    params: {param_bits}")
         if not v.get("filterable", True):
             lines.append("    (not filterable -- never attach \"filters\" to this view)")
+        if v.get("metrics"):
+            # Annotate each metric with its direction (higher=worse / higher=better) so
+            # the model can resolve qualitative phrases like "best/worst performing
+            # first" or "who is falling behind" for ANY metric via one general rule,
+            # instead of needing a one-off worked example per metric name.
+            annotated = ", ".join(
+                f"{m} ({'higher=worse' if _METRIC_DIRECTION.get(m) == 'high_bad' else 'higher=better'})"
+                for m in v["metrics"]
+            )
+            lines.append(f"    highlightable metrics: {annotated}")
     return "\n".join(lines)
 
 
@@ -132,6 +152,53 @@ VIEW MATCHING (try this FIRST, before building filters/dimensions/measures from 
     "fleet operators with more than 5 loans, sorted by SOH"
     -> "view": null, and build via entity_filters/order_by in the usual way below.
 
+  Each highlightable metric above is annotated "(higher=worse)" or "(higher=better)" -- use
+  that annotation, not the metric's name, to resolve ANY qualitative direction phrase
+  ("performing bad", "best executive", "falling behind", "who is winning") into a concrete
+  agg/dir, for every metric, without needing a memorized example per metric name:
+    "bad"/"worst"/"falling behind" on a (higher=worse) metric  -> max     e.g. NPA% "max"
+    "bad"/"worst"/"falling behind" on a (higher=better) metric -> min     e.g. Collection% "min"
+    "good"/"best"/"winning"        on a (higher=worse) metric  -> min     e.g. NPA% "min"
+    "good"/"best"/"winning"        on a (higher=better) metric -> max     e.g. Collection% "max"
+
+  HIGHLIGHT METRICS (optional, only for views listing "highlightable metrics" above):
+  When the question asks to identify a standout entity for specific metrics (e.g. "which
+  regions are performing bad and where should I focus", "who is the best executive"), add:
+    "highlight_metrics": [{{"column": "<one of that view's highlightable metrics>", "agg": "max"|"min"}}, ...]
+  (max 4 items). Apply the direction rule above per metric -- e.g. "performing bad" on
+  region_scorecard means the region with the HIGHEST NPA% (higher=worse) and the region with
+  the LOWEST Collection% (higher=better) are both bad signals, so they use different aggs
+  even though the question is about the same "badness".
+  ONLY use column names from that specific view's own "highlightable metrics" list above --
+  never a column from a different view, and never a raw column not listed there.
+  Leave "highlight_metrics": [] when the question is a plain "show me the table" ask with no
+  standout-entity framing.
+  Example -- "which regions are performing bad, where should I focus first" matching region_scorecard:
+    "highlight_metrics": [{{"column": "NPA%", "agg": "max"}}, {{"column": "Collection%", "agg": "min"}}]
+
+  SORT_BY (optional, view path only): when the user explicitly asks to rank/sort/order the
+  matched view -- by a NAMED metric ("rank regions by Collection%") OR by a QUALITATIVE
+  direction with no metric named ("rank executives best to worst", "who is falling behind",
+  "order branches from worst to best performing") -- add:
+    "sort_by": {{"column": "<any column in that view's own output -- prefer one of its
+    highlightable metrics above, but any real output column is fine>", "dir": "asc"|"desc"}}
+  For a NAMED metric: pick "dir" using the SAME direction rule as HIGHLIGHT METRICS above
+  (a literal "highest/lowest X first" always wins if stated -- "lowest Collection% first" ->
+  asc regardless of the metric's own good/bad direction).
+  For a QUALITATIVE phrase with no named metric: pick the single metric that best represents
+  overall performance for that view (region_scorecard/branch_quadrant -> NPA% or Collection%;
+  executive_scorecard/executive_recovery -> Collection% or Net Recovery), then apply the
+  direction rule: "best/top performing first" -> the (higher=better) direction on that metric;
+  "worst/falling behind first" -> the (higher=worse) direction.
+  If the question has no ranking intent at all (a plain "show me the table" ask), leave
+  "sort_by" null and let the view's own default ordering stand.
+  Example (named metric, explicit direction) -- "rank executives by Strike Rate %":
+    "sort_by": {{"column": "Strike Rate %", "dir": "desc"}}
+  Example (qualitative, no named metric) -- "rank regions best performing first":
+    "sort_by": {{"column": "Collection%", "dir": "desc"}}   // Collection% is (higher=better)
+  Example (qualitative, worst-first) -- "show branches worst performing first":
+    "sort_by": {{"column": "NPA%", "dir": "desc"}}          // NPA% is (higher=worse)
+
 {catalog}
 
 KEY COLUMNS FOR FILTERS (exact names; prefer catalog concepts when they fit):
@@ -142,6 +209,12 @@ KEY COLUMNS FOR FILTERS (exact names; prefer catalog concepts when they fit):
   Numeric: SOH | POS | Closing Arrears | Arrears / EMI | LCC%
            Month Collection (Excluding Reserve Collection) | Net Collection Demand Inst+Exp+BC
            ARREARS AGAINST INST | ARREARS AGAINST EXP
+           Overdue | MonthDemandExclPC | Overdue Collection % | Month Demand Collection %
+             -- per-loan waterfall: a payment clears carried-over overdue (Arrear Opening)
+             FIRST, only the remainder counts against this month's own EMI demand
+             (Inst+Exp+BC, PC excluded). Use these exact column names in display_columns
+             when a user asks to see overdue/month-demand collection % "case wise" /
+             "loan wise" / per account -- do NOT invent a different name for them.
   Dates (YYYY-MM-DD for filter values): Ag_Date | Last Receipt Date
   Identity: Loan No | Cust Name | Cust Mob No | RegionName | Unit | MNT NAME | MNT CODE | SRC Name
 
@@ -195,7 +268,7 @@ OUTPUT  -  return a JSON object with EXACTLY these keys:
   "needs_clarification":  false,
   "clarification_question": "",
   "clarification_options": [],
-  "view":           null,         // {{"name","params","filters"}} if a VIEW matches (see VIEW MATCHING above), else null
+  "view":           null,         // {{"name","params","filters","highlight_metrics","sort_by"}} if a VIEW matches (see VIEW MATCHING above), else null
   "filters":        [...],        // row-level conditions applied before any aggregation
   "dimensions":     [...],        // dimension aliases (branch/region/executive/customer)
   "measures":       [...],        // what to compute per group (or in total)
@@ -205,6 +278,10 @@ OUTPUT  -  return a JSON object with EXACTLY these keys:
   "order_by":       [...],        // sort order
   "limit":          null,
   "display_columns": [],          // for loan_table: columns to show (see DISPLAY COLUMNS)
+  "show_all_columns": false,      // true = user wants EVERY column -- see DISPLAY COLUMNS. OVERRIDES
+                                   // display_columns: the compiler shows every column when this is true,
+                                   // even if display_columns is also non-empty, so don't worry about
+                                   // getting that list exactly right when this is set.
   "time":           null
 }}
 
@@ -276,10 +353,32 @@ TIME format:
   snapshot = both periods side-by-side; change = also compute the delta column (curr - prev)
 
 DISPLAY COLUMNS (for loan_table intent):
-  Leave display_columns EMPTY for all general queries  -  the system returns ALL columns by default.
-  Only populate display_columns when the user EXPLICITLY asks for specific columns
-  (e.g. "show me only Loan No, SOH and branch" or "give me just the contact details").
-  Never set display_columns just because a column is relevant to the query.
+  For "show me everything / all columns / every column / full details" requests
+  -- INCLUDING when the user also names specific columns they care about
+  alongside "all columns" (e.g. "all columns including overdue collection % and
+  month demand collection%") -- set show_all_columns: true. This OVERRIDES
+  display_columns entirely: the system shows EVERY column from the uploaded
+  file, in the standard LCC template order (never jumbled, regardless of which
+  regional file it came from), no matter what you also put in display_columns.
+  Do NOT try to enumerate all ~85 column names yourself for an "all columns"
+  request, and do NOT treat named columns inside an "all columns" request as
+  a reason to build a limited display_columns list instead -- naming a column
+  the user is especially interested in does not mean they want ONLY that
+  column plus a few others; show_all_columns: true already includes it, since
+  it includes everything.
+  Populate display_columns (leaving show_all_columns false) in two cases instead:
+    1. The user EXPLICITLY asks for a SPECIFIC, LIMITED set of columns and
+       nothing else (e.g. "show me only Loan No, SOH and branch" or "give me
+       just the contact details") -- NOT when "all"/"every" column appears
+       anywhere in the request, which is the show_all_columns case above.
+    2. The query's own filter concept depends on a column outside the columns a
+       reader would normally expect as its evidence (e.g. a co-lending query
+       should include CoLending_Loans; a legal/recovery query should include
+       LGL_FLAG and LGL_DESCRIPTION; a segment breakdown should include
+       SegmentName) - the reader needs to see WHY a row matched, not just
+       that it did. In this case, include the default-view columns you still want PLUS
+       the evidence column(s), since setting display_columns replaces the default set
+       rather than adding to it.
 
 INTENT RULES:
   loan_table:       result is individual loan/customer rows. Use filters + display_columns.
@@ -361,14 +460,46 @@ def _coerce_dim(d) -> str:
     return str(d)
 
 
+def _coerce_highlight_metrics(raw) -> list[dict]:
+    """Basic type-safety pass on the planner's highlight_metrics list -- keeps only
+    well-formed {column, agg} entries, capped at 4. Whether the column is actually
+    valid for the matched view (in its "metrics" list, has a known direction) is
+    validated later in graph.py::view_node, which has the resolved view spec."""
+    out = []
+    for item in (raw or []):
+        if not isinstance(item, dict):
+            continue
+        col, agg = item.get("column"), item.get("agg")
+        if col and agg in ("max", "min"):
+            out.append({"column": col, "agg": agg})
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _coerce_sort_by(raw) -> dict | None:
+    """Basic type-safety pass on the planner's sort_by request -- a single
+    {column, dir} or None. Whether the column actually exists in the matched
+    view's result_df is validated later in graph.py::view_node; an unknown
+    column there is silently ignored (the view keeps its own default order),
+    never an error -- a bad sort request shouldn't kill an otherwise-good
+    view match."""
+    if not isinstance(raw, dict) or not raw.get("column"):
+        return None
+    return {"column": raw["column"], "dir": raw.get("dir") if raw.get("dir") in ("asc", "desc") else "desc"}
+
+
 def _coerce_view(v) -> dict | None:
-    """Ensure a "view" entry is either None or a well-formed {name, params, filters} dict."""
+    """Ensure a "view" entry is either None or a well-formed
+    {name, params, filters, highlight_metrics, sort_by} dict."""
     if not v or not isinstance(v, dict) or not v.get("name"):
         return None
     return {
         "name": v["name"],
         "params": v.get("params") or {},
         "filters": v.get("filters") or [],
+        "highlight_metrics": _coerce_highlight_metrics(v.get("highlight_metrics")),
+        "sort_by": _coerce_sort_by(v.get("sort_by")),
     }
 
 
@@ -393,11 +524,28 @@ def _normalize_ir1(raw: dict) -> dict:
         "order_by":               raw.get("order_by") or [],
         "limit":                  raw.get("limit"),
         "display_columns":        raw.get("display_columns") or [],
+        "show_all_columns":       bool(raw.get("show_all_columns", False)),
         "time":                   raw.get("time"),
     }
 
 
 MAX_QUERY_CHARS = 1000  # guardrail: a real business question never needs more than this
+
+# Cheap, deterministic backstop for "show all/every column(s)" phrasing. The
+# Logical Planner setting show_all_columns itself is an LLM judgment call, not
+# a guarantee -- observed in practice to be inconsistent even across two calls
+# with the EXACT same query text (one call correctly set it, the next call for
+# an identical real-world query did not, and also built a display_columns list
+# missing the very columns the user named). A keyword match can't cover every
+# possible phrasing the model might otherwise parse correctly, but it reliably
+# catches the common, explicit case as a SECOND, independent layer -- same
+# two-layers-not-one philosophy this codebase already applies to the derive
+# -expression sandbox (compile-time AND execute-time) and HTML escaping.
+_ALL_COLUMNS_PATTERN = re.compile(r"\b(?:all|every)\s+(?:the\s+)?columns?\b", re.IGNORECASE)
+
+
+def _query_requests_all_columns(query: str) -> bool:
+    return bool(_ALL_COLUMNS_PATTERN.search(query))
 
 
 def _out_of_scope_ir(message: str) -> dict:
@@ -464,4 +612,7 @@ def plan_logical(
             "I couldn't understand that as a portfolio question. I can answer "
             "things like \"top 10 delinquent customers by SOH\" or \"NPA% by branch\"."
         )
-    return _normalize_ir1(parsed)
+    ir1 = _normalize_ir1(parsed)
+    if _query_requests_all_columns(query):
+        ir1["show_all_columns"] = True
+    return ir1

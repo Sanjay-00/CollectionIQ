@@ -284,6 +284,45 @@ METRICS: dict[str, dict] = {
         "grain": "loan",
         "description": "This month's collection efficiency = month collection / month demand, as a percent.",
     },
+    "overdue_collection_pct": {
+        "label": "Overdue Collection %",
+        "kind": "ratio",
+        # Overdue-first collection waterfall: a payment clears last month's
+        # carried-over overdue (Arrear Opening) BEFORE any of it counts against
+        # this month's own EMI demand. "Overdue"/"OverdueCollected" are derived
+        # columns utils.py::assign_buckets computes once per loan (same pattern
+        # as SOH) -- utils.compute_overdue_demand_pct is the dashboard/report's
+        # shared implementation of this same waterfall.
+        #
+        # Known, deliberate divergence from utils.compute_overdue_demand_pct:
+        # that function returns 100% (not 0/0) when a group's total Overdue is
+        # zero -- nothing was outstanding, treated as fully clear. This generic
+        # "ratio" measure kind has no concept of that override; a query whose
+        # group has zero total Overdue gets a plain 0/0 division here (NaN),
+        # not 100. Giving the compiler a conditional-on-zero-denominator ratio
+        # kind for one metric would be speculative infrastructure for a case
+        # that's rare in practice (a branch/region with literally zero overdue
+        # across every loan) -- documented here rather than silently accepted.
+        "numerator": ["OverdueCollected"],
+        "denominator": ["Overdue"],
+        "scale": 100,
+        "grain": "loan",
+        "description": "Overdue-first collection %: amount collected against last month's carried-over overdue / total overdue, as a percent.",
+    },
+    "month_demand_collection_pct": {
+        "label": "Month Demand Collection %",
+        "kind": "ratio",
+        # The other half of the same waterfall: whatever's left over AFTER
+        # clearing Overdue counts against this month's own EMI demand
+        # (Inst+Exp+BC -- deliberately excludes MONTH DUE PC, a penalty, not
+        # core EMI demand). Same zero-denominator caveat as overdue_collection_pct
+        # above applies here too.
+        "numerator": ["DemandCollected"],
+        "denominator": ["MonthDemandExclPC"],
+        "scale": 100,
+        "grain": "loan",
+        "description": "This month's own EMI demand collection % (after overdue is cleared first) = demand collected / month demand (Inst+Exp+BC), as a percent.",
+    },
     "hard_bucket_pct": {
         "label": "Hard Bucket %",
         "kind": "count_ratio",

@@ -103,6 +103,49 @@ def compute_roll_rate_kpis(matrix: pd.DataFrame) -> dict:
     }
 
 
+def compute_bucket_roll_summary(matrix: pd.DataFrame) -> pd.DataFrame:
+    """Per-bucket breakdown of the same forward/stable/backward split
+    compute_roll_rate_kpis already computes portfolio-wide, one row per
+    PREVIOUS-month bucket instead of summed across all of them. E.g. the STD
+    row answers "of accounts that were STD last month, what % rolled forward
+    (worsened), stayed STD, or rolled backward (impossible for STD, so 0)."
+
+    Returns columns: Bucket, Accounts, Roll Fwd%, Stable%, Roll Bwd%.
+    Roll Fwd%/Stable%/Roll Bwd% always sum to 100 (or the row is 0 accounts).
+    """
+    available_rows = [b for b in VALID_BUCKETS if b in matrix.index]
+    rows = []
+    for row in available_rows:
+        prev_score = BUCKET_SCORE.get(row, -1)
+        row_total = int(matrix.loc[row].sum()) if row in matrix.index else 0
+        fwd = stable = bwd = 0
+        for col in matrix.columns:
+            curr_score = BUCKET_SCORE.get(col, -1)
+            count = int(matrix.loc[row, col])
+            if curr_score > prev_score:
+                fwd += count
+            elif curr_score < prev_score:
+                bwd += count
+            else:
+                stable += count
+        # Round Fwd%/Bwd% independently, then derive Stable% as the remainder
+        # rather than rounding it independently too -- three independently
+        # rounded percentages can each round correctly yet sum to 99.99 or
+        # 100.01 (e.g. a 1/1/1 split of 3 accounts: 33.33+33.33+33.33=99.99),
+        # contradicting the "always sums to 100" guarantee below.
+        fwd_pct = round(fwd / row_total * 100, 2) if row_total > 0 else 0.0
+        bwd_pct = round(bwd / row_total * 100, 2) if row_total > 0 else 0.0
+        stable_pct = round(100.0 - fwd_pct - bwd_pct, 2) if row_total > 0 else 0.0
+        rows.append({
+            "Bucket":     row,
+            "Accounts":   row_total,
+            "Roll Fwd%":  fwd_pct,
+            "Stable%":    stable_pct,
+            "Roll Bwd%":  bwd_pct,
+        })
+    return pd.DataFrame(rows)
+
+
 def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
     """
     Annotated Plotly heatmap of the migration matrix.

@@ -5,7 +5,41 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
-from utils import load_and_validate
+from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
+
+
+def _bump_data_version() -> None:
+    """Call exactly once at every point df_curr_raw/df_prev_raw are freshly
+    assigned in session_state (a new "Generate Dashboard" click, the sample-data
+    button, or the deferred prev-file auto-load). Every @st.cache_data-wrapped
+    function downstream keys on this counter instead of hashing the full
+    DataFrame content -- Streamlit's default hasher walking a 50k-row x
+    85-column frame on every rerun (even on a guaranteed cache hit) is the
+    single biggest cost paid on every interaction with this app, not just
+    actual filter changes. Missing a call site here means every downstream
+    cache silently serves stale data with no error -- never skip this."""
+    st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
+
+
+def _style_main_content_selectbox(color: str = "#fff") -> None:
+    """Fix near-invisible dark-on-dark text on a main-content (non-sidebar)
+    st.selectbox -- ui/styles.py's white-text rule only targets
+    `[data-testid="stSidebar"] .stSelectbox`, so any selectbox rendered
+    outside the sidebar keeps the default dark text on the dark selectbox
+    background.
+
+    This targets EVERY `stSelectbox` on the page (Streamlit doesn't scope
+    injected `st.markdown` styles to one tab -- all tabs render into the DOM
+    simultaneously, just CSS-hidden when inactive), so every caller must use
+    the SAME color, or whichever caller renders last in a given rerun wins
+    for all of them. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py.
+    """
+    st.markdown(f"""
+<style>
+div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+div[data-testid="stSelectbox"] [data-baseweb="select"] span {{ color: {color} !important; }}
+</style>""", unsafe_allow_html=True)
 
 
 def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,14 +81,63 @@ def _excel_bytes(df: pd.DataFrame) -> bytes:
 
 
 def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
-    """Right-aligned compact Excel download button."""
+    """Right-aligned compact Excel download button.
+
+    Streamlit reruns the ENTIRE script (all 7 tabs, not just the active one --
+    tabs are only CSS-hidden when inactive, their code still executes) on
+    every single interaction anywhere in the app, e.g. clicking "Run Query" in
+    the AI Query tab. Without caching, that meant every one of this app's ~20
+    _dl_btn call sites re-ran an uncached openpyxl df.to_excel() -- cell-by-cell,
+    not vectorized -- on every rerun, regardless of whether the underlying
+    table had changed. Cache one entry per button key, keyed on `df is` the
+    exact object we cached bytes for last time (the df objects passed in are
+    themselves already st.cache_data-cached upstream, so the SAME object
+    survives across reruns whenever filters/data are unchanged). This holds a
+    strong reference to that df in the cache entry itself, which is what makes
+    the identity check safe: as long as the entry exists, Python can't garbage
+    -collect that df and hand its id to an unrelated object -- the exact
+    ABA-style collision an `id(df)`-keyed cache would otherwise be exposed to."""
+    cache = st.session_state.setdefault("_excel_bytes_cache", {})
+    cached = cache.get(key)
+    if cached is not None and cached[0] is df:
+        data = cached[1]
+    else:
+        data = _excel_bytes(df)
+        cache[key] = (df, data)
+
     _, col = st.columns([5, 1])
     with col:
         st.download_button(
-            "⬇ Excel", data=_excel_bytes(df), file_name=filename,
+            "⬇ Excel", data=data, file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key, width='stretch',
         )
+
+
+def _cached_html_export(df_curr: pd.DataFrame, build_fn, *args, **kwargs) -> str:
+    """Same identity-cache idiom _dl_btn already uses above, for a different
+    culprit: ui/tabs/dashboard.py's build_html_export call ran unconditionally
+    on every render (not gated behind the download button click -- Streamlit's
+    download_button needs its `data=` bytes ready upfront, so there's no native
+    "compute on click" for this), and it's expensive: pio.to_html() on 3 full
+    Plotly figures plus assembling a large formatted HTML string, every single
+    Streamlit rerun of the ENTIRE app, since Dashboard is tabs[0] and always
+    executes regardless of which tab is actually visible.
+
+    Keyed on `df_curr is` the exact object from last time -- df_curr is itself
+    already st.cache_data-cached upstream (via app.py's _cached_filter), so the
+    SAME object survives across reruns whenever filters/data are unchanged, and
+    every other build_html_export argument (metrics, figures, alerts,
+    scorecard_df) is derived from that same df_curr+filter combination, so an
+    unchanged df_curr identity guarantees they're unchanged too -- same
+    reasoning _dl_btn's own docstring spells out for the Excel case."""
+    cache = st.session_state.setdefault("_html_export_cache", {})
+    cached = cache.get("dashboard")
+    if cached is not None and cached[0] is df_curr:
+        return cached[1]
+    html_content = build_fn(*args, **kwargs)
+    cache["dashboard"] = (df_curr, html_content)
+    return html_content
 
 
 def _kpi_card_html(
@@ -163,11 +246,13 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
         files = [files]
 
     dfs, errors = [], []
+    dropped_dupes = 0  # per-file dupes (from load_and_validate) + any cross-file dupes below
     for f in files:
         df, errs = load_and_validate(f)
         if errs:
             errors.append(f"{getattr(f, 'name', 'file')}: {errs[0]}")
         else:
+            dropped_dupes += df.attrs.get("dropped_duplicate_loans", 0)
             dfs.append(df)
 
     if not dfs:
@@ -187,5 +272,17 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     dfs = [_normalize_dt(d) for d in dfs]
     combined = pd.concat(dfs, ignore_index=True)
     if "Loan No" in combined.columns:
+        before = len(combined)
         combined = combined.drop_duplicates(subset=["Loan No"], keep="first")
+        dropped_dupes += before - len(combined)
+    # pd.concat doesn't propagate .attrs from its inputs, so set it explicitly
+    # on the combined frame -- this is the only place callers need to check.
+    combined.attrs["dropped_duplicate_loans"] = dropped_dupes
+    # Recomputed fresh on the FINAL combined frame, not unioned from individual
+    # files' own attrs -- pd.concat already merges each file's columns (a column
+    # present in only one regional file still ends up in `combined`, NaN-filled
+    # for the others), so "missing" only means anything once evaluated here.
+    combined.attrs["missing_optional_cols"] = [
+        c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in combined.columns
+    ]
     return combined, errors

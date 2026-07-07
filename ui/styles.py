@@ -8,7 +8,13 @@ _CSS = """
 
 /* ── Global ── */
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-#MainMenu, footer, header { visibility: hidden; }
+/* Streamlit >=1.4x moved the sidebar expand/collapse control into the native
+   <header> toolbar, so blanket-hiding `header` (as older Streamlit versions
+   required) also hides the only way to reopen a collapsed sidebar. Hide just
+   the hamburger menu, footer, and Deploy button instead, and keep the header
+   itself visible (transparent) so the sidebar toggle stays reachable. */
+#MainMenu, footer, [data-testid="stAppDeployButton"] { visibility: hidden; }
+[data-testid="stHeader"] { background: transparent !important; box-shadow: none !important; height: 2.5rem !important; }
 .block-container { padding: 0 2.5rem 3rem 2.5rem !important; max-width: 100% !important; }
 .stApp { background: #f2f2f2; }
 
@@ -25,11 +31,17 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 [data-testid="stSidebarCollapseButton"] button:hover { background: #e6ac00 !important; }
 [data-testid="stSidebarCollapseButton"] svg { fill: #000 !important; }
 
-/* ── Sidebar collapsed state (expand button) ── */
-[data-testid="stSidebarCollapsed"] {
+/* ── Sidebar collapsed state (expand button) ──
+   Streamlit 1.4x+ renamed this control's testid to stExpandSidebarButton and
+   moved it into the header toolbar (see the header rule above); older builds
+   used stSidebarCollapsed as a standalone floating tab. Style both so this
+   survives a Streamlit version change either direction. */
+[data-testid="stSidebarCollapsed"],
+[data-testid="stExpandSidebarButton"] {
     background: #FFC000 !important; border-radius: 0 10px 10px 0 !important;
     width: 36px !important; min-height: 80px !important;
     display: flex !important; align-items: center !important; justify-content: center !important;
+    position: fixed !important; top: 90px !important; left: 0 !important;
     z-index: 99999 !important; box-shadow: 4px 0 16px rgba(0,0,0,0.35) !important;
     cursor: pointer !important;
     border-top: 2px solid #000 !important; border-right: 2px solid #000 !important;
@@ -40,8 +52,10 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     background: transparent !important; border: none !important; box-shadow: none !important;
     transform: none !important; width: 100% !important; height: 100% !important; min-height: 80px !important;
 }
-[data-testid="stSidebarCollapsed"] svg { fill: #000000 !important; width: 20px !important; height: 20px !important; }
-[data-testid="stSidebarCollapsed"]:hover { background: #e6ac00 !important; }
+[data-testid="stSidebarCollapsed"] svg,
+[data-testid="stExpandSidebarButton"] svg { fill: #000000 !important; width: 20px !important; height: 20px !important; }
+[data-testid="stSidebarCollapsed"]:hover,
+[data-testid="stExpandSidebarButton"]:hover { background: #e6ac00 !important; }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
@@ -487,7 +501,8 @@ div[data-testid="stAlert"][kind="error"]   { background: rgba(220,38,38,0.08) !i
 
 <script>
 function fixSidebarToggle() {
-    const el = document.querySelector('[data-testid="stSidebarCollapsed"]');
+    const el = document.querySelector('[data-testid="stSidebarCollapsed"]')
+            || document.querySelector('[data-testid="stExpandSidebarButton"]');
     if (el) {
         el.style.setProperty("background", "#FFC000", "important");
         el.style.setProperty("visibility", "visible", "important");

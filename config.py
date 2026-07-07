@@ -5,11 +5,21 @@ import os
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-# v2 shadow mode: when enabled, each query ALSO runs the new
-# LLM -> IR-1 -> compiler -> engine path and records a comparison against the
-# legacy result, WITHOUT changing what the user sees. Off by default; enable with
-# COLLECTIONIQ_SHADOW=1 to validate the v2 path against real traffic.
-SHADOW_MODE = os.environ.get("COLLECTIONIQ_SHADOW", "").strip().lower() in ("1", "true", "yes", "on")
+# Query outcome logging: every AI Query run appends one line (timestamp, raw query
+# text, outcome classification, matched view/intent, error if any) to a local
+# JSONL file. Purpose: find out what real users ask that the registry vocabulary
+# (registry/ontology.py CONCEPTS/METRICS, registry/views.py VIEWS) doesn't cover
+# yet, so it can grow from evidence instead of guesswork. Local disk only, never
+# a database, never sent anywhere -- gitignored. Query text can contain a name/
+# number a user typed into their question, so this is deliberately NOT committed
+# or shared, same spirit as .env.
+QUERY_LOG_ENABLED = os.environ.get("COLLECTIONIQ_QUERY_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
+QUERY_LOG_PATH = os.environ.get("COLLECTIONIQ_QUERY_LOG_PATH", "logs/query_log.jsonl")
+
+# Entries older than this are dropped the next time the log is pruned (query_log.py
+# checks at most once/day via a sidecar marker file, so a busy log doesn't pay a
+# full read+rewrite on every single query).
+QUERY_LOG_RETENTION_DAYS = int(os.environ.get("COLLECTIONIQ_QUERY_LOG_RETENTION_DAYS", "30"))
 
 #  Date validation ──────────────────────────────────────────────────────────
 # Plausible range for Ag_Date / Last Receipt Date / ParentLDueDate after parsing
@@ -54,11 +64,55 @@ SCORECARD_MIN_ACCOUNTS = 5
 # quadrant, executive recovery leaderboard)
 MIN_ACCOUNTS_DIMENSION_BREAKDOWN = 3
 
-# Vehicle segment / fuel type breakdowns
-MIN_ACCOUNTS_PRODUCT_SEGMENT = 5
+# Vehicle segment / fuel type breakdowns. _group_npa_table keeps a group when
+# n >= this value, so 11 enforces "more than 10 accounts" (strictly >10).
+MIN_ACCOUNTS_PRODUCT_SEGMENT = 11
 
 # Sourcing channel and disbursement-vintage cohort breakdowns
 MIN_ACCOUNTS_SOURCE_VINTAGE = 10
+
+# Overdue vs Month Demand Collection breakdown (Section 2b / report) -- executive
+# grain only. An executive with a handful of loans can swing to 0% or 100% on a
+# single account, which isn't a meaningful signal at the top/bottom of a league
+# table. n >= this value, so 11 enforces "more than 10 accounts" (strictly >10).
+# Region/Branch grains aren't filtered this way -- they don't suffer the same
+# tiny-N volatility at realistic portfolio sizes.
+MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE = 11
+
+# New Advances (Business tab) trend chart -- how many trailing months to plot
+# by default. User-adjustable in the UI (dropdown, see
+# NEW_ADVANCES_TREND_MONTH_OPTIONS); this is only the pre-selected default.
+NEW_ADVANCES_TREND_DEFAULT_MONTHS = 24
+NEW_ADVANCES_TREND_MONTH_OPTIONS = [6, 12, 24, 36, 60, "All"]
+
+# The monthly report is a static, non-interactive document (no dropdown to
+# pick a window), so its own New Advances Trend chart uses a fixed window --
+# deliberately NOT reusing NEW_ADVANCES_TREND_DEFAULT_MONTHS, since the report
+# and dashboard defaults are allowed to diverge for good reason (a printed
+# report favors a longer, more complete trend; the dashboard default favors a
+# faster first render).
+NEW_ADVANCES_REPORT_TREND_MONTHS = 36
+
+# Report top-N cap for the New Advances by Region/Branch/Executive section --
+# same "printed document, not a scrollable table" reasoning as
+# branch_performance.py's own top5/bottom5 cap.
+NEW_ADVANCES_REPORT_TOP_N = 5
+
+# SegmentName/Segment values are sometimes truncated inconsistently by the
+# source system at DIFFERENT lengths for the SAME real segment (observed in
+# real production data: "Passenger Commerc" / "Passenger Commerci" /
+# "Passenger Commercial" all the same segment, split into 3 separate rows in
+# every NPA/SOH breakdown instead of one). Two values whose first this-many
+# characters match are treated as the same segment and merged under whichever
+# variant is longest (the most complete-looking name available, since there's
+# no canonical enum to match against). 15 was verified against real data to
+# merge exactly the truncation clusters present, with zero false merges
+# against any of the ~25 other distinct real segment names -- a deliberate,
+# evidence-based choice, not an arbitrary one, but still a heuristic: two
+# genuinely different segments sharing the same first 15 characters would be
+# wrongly merged (accepted risk, given the alternative is a hardcoded alias
+# list that needs maintaining every time a new truncation length appears).
+SEGMENT_NAME_PREFIX_MATCH_CHARS = 15
 
 #  Portfolio Intelligence business-rule thresholds ────────────────────────────
 
@@ -105,3 +159,10 @@ RISK_INDICATOR_STABLE_PP = 0.2
 # indicators (e.g. "+3 accounts") use the count value
 RISK_INDICATOR_MATERIALITY_PP = 0.3
 RISK_INDICATOR_MATERIALITY_COUNT = 1
+
+# Vintage chart (NPA %/SMA-2 % by disbursement cohort): marker color and
+# "Critical"/"Watch" reference-band cutoffs. The label text in
+# build_vintage_chart reads these same constants, so a retuned threshold
+# can't silently go stale in the chart's own annotation.
+VINTAGE_CHART_CRITICAL_PCT = 10
+VINTAGE_CHART_WATCH_PCT = 5

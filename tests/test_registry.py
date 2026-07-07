@@ -19,7 +19,11 @@ from registry import (
 
 # Columns that exist only AFTER load + assign_buckets() / the prev-file merge,
 # so they are legitimately not in the raw REQUIRED_COLS list.
-_DERIVED_COLS = {"curr_bucket", "curr_score", "SOH", "prev_bucket"} | set(PREV_CARRYOVER_COLS.values())
+_DERIVED_COLS = {
+    "curr_bucket", "curr_score", "SOH", "prev_bucket",
+    "Overdue", "MonthDemandExclPC", "OverdueCollected", "DemandCollected",
+    "Overdue Collection %", "Month Demand Collection %",
+} | set(PREV_CARRYOVER_COLS.values())
 # The dynamic cutoff placeholder is resolved at execution time, not a real value.
 _DYNAMIC_VALUES = {"__CUTOFF_1Y__"}
 
@@ -204,17 +208,47 @@ class TestViewsIntegrity:
         _VALID_OUTPUTS = {"df", "df_dict_tuple", "dict_with_top_df", "matrix_tuple",
                            "tuple_df_fig", "list_of_dicts", "dict_subkey_df", "good_bad_dict"}
         _VALID_INPUTS = {"df_curr", "df_prev", "rr_meta"}
+        _VALID_GRAINS = {"loan", "customer", "region", "branch", "executive",
+                          "segment", "signal", "matrix", "portfolio"}
         for name, spec in VIEWS.items():
             assert spec.get("label"), f"view {name} missing label"
             assert spec.get("description"), f"view {name} missing description"
             assert spec.get("fn"), f"view {name} missing fn"
             assert spec.get("output") in _VALID_OUTPUTS, f"view {name}: unknown output kind '{spec.get('output')}'"
+            assert spec.get("grain") in _VALID_GRAINS, f"view {name}: missing or unknown 'grain' '{spec.get('grain')}'"
             for inp in spec.get("inputs") or []:
                 assert inp in _VALID_INPUTS, f"view {name}: unknown input '{inp}'"
             if spec.get("output") == "dict_subkey_df":
                 assert spec.get("subkey"), f"view {name}: dict_subkey_df output requires a 'subkey'"
             for req in spec.get("requires") or []:
                 assert req in _VALID_INPUTS, f"view {name}: unknown 'requires' entry '{req}'"
+
+    def test_highlightable_metrics_have_known_direction_and_label_col(self):
+        # Fix B: a view declaring "metrics" (highlight_metrics targets) must also
+        # declare "label_col" (view_node needs it to build a card caption), and
+        # every metric column must have a known good/bad direction -- otherwise
+        # view_node would silently drop it and the planner's request would go
+        # nowhere, which is safe but should never happen for a column we ourselves
+        # declared highlightable.
+        from registry.views import _METRIC_DIRECTION
+        for name, spec in VIEWS.items():
+            metrics = spec.get("metrics")
+            if not metrics:
+                continue
+            assert spec.get("label_col"), f"view {name}: has 'metrics' but no 'label_col'"
+            for col in metrics:
+                assert col in _METRIC_DIRECTION, f"view {name}: metric '{col}' has no direction in _METRIC_DIRECTION"
+
+    def test_highlightable_metrics_have_known_aggregation_kind(self):
+        # Portfolio KPI rollup: every declared metric column must know whether
+        # a portfolio-wide summary should mean() or sum() it -- otherwise
+        # _build_portfolio_kpis silently drops it (safe, but should never
+        # happen for a column we ourselves declared highlightable).
+        from registry.views import _METRIC_AGG
+        for name, spec in VIEWS.items():
+            for col in spec.get("metrics") or []:
+                assert col in _METRIC_AGG, f"view {name}: metric '{col}' has no aggregation kind in _METRIC_AGG"
+                assert _METRIC_AGG[col] in ("mean", "sum")
 
     def test_view_module_paths_resolve_without_importing_agents_or_compiler(self):
         # analysis/ must stay a leaf dependency (no import cycle risk) -- every
