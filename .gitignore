@@ -9,3 +9,7 @@ __pycache__/
 generate_sample_data.py
 
 bash.exe.stackdump
+.github
+requirements-dev.txt
+
+project_guide.md
