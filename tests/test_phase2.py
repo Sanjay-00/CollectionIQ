@@ -29,6 +29,16 @@ class TestNormalizeIR1:
         assert ir["filters"] == [{"concept": "npa"}]
         assert ir["limit"] == 5
 
+    def test_show_all_columns_defaults_to_false(self):
+        assert _normalize_ir1({})["show_all_columns"] is False
+
+    def test_show_all_columns_passthrough_true(self):
+        ir = _normalize_ir1({"show_all_columns": True, "display_columns": ["Loan No"]})
+        assert ir["show_all_columns"] is True
+        # display_columns is preserved too -- the compiler decides which wins,
+        # not the normalizer.
+        assert ir["display_columns"] == ["Loan No"]
+
     def test_view_highlight_metrics_are_coerced(self):
         ir = _normalize_ir1({"view": {
             "name": "region_scorecard",

@@ -319,6 +319,64 @@ class TestOutOfScopeGuardrails:
         assert ir1["needs_clarification"] is True
         assert ir1["view"] is None
 
+    def test_all_columns_phrasing_forces_show_all_columns_even_if_model_omits_it(self, monkeypatch):
+        # Regression: observed in practice -- two live calls with the EXACT
+        # same real-world query text ("...with all columns including overdue
+        # collection % and month collection%...") produced DIFFERENT IR-1s;
+        # one correctly set show_all_columns, the other didn't and also built
+        # a display_columns list missing the very columns the user named. The
+        # model's own judgment on this field is not a guarantee -- this keyword
+        # backstop makes the common, explicit phrasing deterministic regardless
+        # of what the model decides to set.
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": [], "display_columns": ["Loan No", "SOH"], "show_all_columns": false}'
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        ir1 = lp.plan_logical("give me all cases with all columns including overdue collection %")
+        assert ir1["show_all_columns"] is True
+
+    def test_query_without_all_columns_phrasing_leaves_model_choice_alone(self, monkeypatch):
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": [], "display_columns": ["Loan No", "SOH"], "show_all_columns": false}'
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        ir1 = lp.plan_logical("show me Loan No and SOH only")
+        assert ir1["show_all_columns"] is False
+
+
+class TestQueryRequestsAllColumns:
+    """Unit coverage for the deterministic keyword backstop itself."""
+
+    @pytest.mark.parametrize("query", [
+        "give me all columns",
+        "show every column",
+        "all the columns please",
+        "GIVE ME ALL COLUMNS",
+        "with all columns including overdue collection % and month collection% case wise",
+    ])
+    def test_matches_common_phrasings(self, query):
+        from agents.logical_planner import _query_requests_all_columns
+        assert _query_requests_all_columns(query) is True
+
+    @pytest.mark.parametrize("query", [
+        "show me all the accounts in Akola",
+        "give me every executive's collection %",
+        "show me Loan No and SOH only",
+    ])
+    def test_does_not_false_positive_on_unrelated_all_every(self, query):
+        from agents.logical_planner import _query_requests_all_columns
+        assert _query_requests_all_columns(query) is False
+
 
 # ── Priority-mode result must keep its "Priority" column ────────────────────
 # Bug: "Show those accounts that need immediate action" crashed the UI with
