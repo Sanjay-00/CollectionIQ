@@ -931,6 +931,15 @@ def run_query(
         result = _compiled.invoke(initial, config={"run_id": run_id})
     finally:
         _tls.step_callback = None
+        # Without this, _tls.large_data keeps holding THIS query's DataFrames on
+        # this thread indefinitely -- _fetch_large's fallback to state.get(...)
+        # (documented as the path a direct node call, e.g. a test, relies on)
+        # never actually triggers once anything has ever stashed data on this
+        # thread, since it only checks "was this key ever stashed here," not
+        # "was it stashed by the current call." Confirmed via direct repro:
+        # stash a small df once, then call execute_node() with a state dict
+        # carrying a DIFFERENT df, and the node silently uses the stale one.
+        _tls.large_data = {}
 
     log_query_outcome(result)
     return result
