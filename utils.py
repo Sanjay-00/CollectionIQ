@@ -25,6 +25,7 @@ COL_ALIASES = {
     "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by R":
         "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by RE",
     "Cum Coll (Inst+Exp+BC)": "Cum Coll (Inst+Exp)",
+    "MONTH DUE P":"MONTH DUE PC",
 }
 
 # All expected columns (used for reference only  -  missing ones show a warning, not error)
