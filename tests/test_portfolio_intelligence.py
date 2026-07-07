@@ -1037,6 +1037,38 @@ class TestComputeFleetExposure:
         assert row["Region"] == "AKOLA"
         assert row["Unit"] == "UNIT_1"
 
+    def test_region_mode_tie_broken_alphabetically_ascending(self):
+        # Regression: the vectorized _grouped_mode helper (replacing a
+        # per-customer Series.mode() call) must reproduce mode()'s own
+        # tie-break exactly -- pandas' mode() returns every tied value
+        # sorted ascending, and the original code took .iat[0] (the
+        # alphabetically-first). An exact 2-2 tie between two regions is
+        # the case most likely to expose a tie-break mismatch.
+        curr = make_df([
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "ZONE_B", "Unit": "UNIT_1"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "ZONE_B", "Unit": "UNIT_1"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "ZONE_A", "Unit": "UNIT_2"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "ZONE_A", "Unit": "UNIT_2"},
+        ])
+        expected = curr["RegionName"].mode().iat[0]
+        result = compute_fleet_exposure(curr)
+        row = result["top_df"].iloc[0]
+        assert row["Region"] == expected == "ZONE_A"
+
+    def test_blank_first_row_cust_name_preserved_not_overwritten(self):
+        # Regression: the vectorized customer-name lookup uses .head(1), NOT
+        # .first() (which silently skips NaN) -- must match the original
+        # .iloc[0]'s behavior of showing whatever the first row actually has,
+        # blank or not, rather than substituting a later non-blank name.
+        curr = make_df([
+            {"Cust Mob No": "999", "Cust Name": None, "RegionName": "AKOLA", "Unit": "UNIT_1"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "AKOLA", "Unit": "UNIT_1"},
+            {"Cust Mob No": "999", "Cust Name": "FLEET OP", "RegionName": "AKOLA", "Unit": "UNIT_1"},
+        ])
+        result = compute_fleet_exposure(curr)
+        row = result["top_df"].iloc[0]
+        assert row["Customer"] == "nan"  # str(float("nan")) -- matches the original str(cust_name) exactly
+
 
 # ── compute_top_accounts ──────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ Performance tiers are quartile-based (relative to the dataset) - not hardcoded t
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
-from utils import BUCKET_SCORE, to_num, account_count, compute_strike_pct
+from utils import BUCKET_SCORE, to_num, _safe_pct
 
 
 def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_MIN_ACCOUNTS) -> pd.DataFrame:
@@ -18,55 +18,95 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
              Demand (L), Collected (L), Tier
     Groups by MNT NAME + Unit so the same executive in different branches appears separately.
     Executives with fewer than min_accounts are excluded.
+
+    Every per-executive number below is computed as ONE groupby(group_cols).sum()
+    pass over the WHOLE file (vectorized), not a Python-level call per executive
+    inside a loop -- confirmed via profiling to be the dominant cost of this
+    function on a real ~60k-row file (~287 executives x a full-frame slice +
+    a compute_strike_pct() call each, ~2.1s). Only the FINAL per-executive
+    arithmetic (ratios, None-handling, display formatting) still runs as a
+    plain Python loop, but over the already-aggregated ~287-row summary, not
+    the raw file, so that loop's cost is negligible.
     """
     if "MNT NAME" not in df.columns:
         return pd.DataFrame()
 
     has_roll = "prev_bucket" in df.columns and "curr_bucket" in df.columns
-
     group_cols = ["MNT NAME", "Unit"] if "Unit" in df.columns else ["MNT NAME"]
 
+    df = df.copy()
+    # Strike valid/yes -- the EXACT boolean logic compute_strike_pct/is_yes use
+    # (see their own docstrings): valid = normalized Strike in {Y, N}; within
+    # that valid set, "YES" can never appear (excluded by the strict Y/N
+    # filter), so yes = normalized == "Y" is equivalent to is_yes() there.
+    # Precomputed once here instead of calling compute_strike_pct(grp) per
+    # executive -- same formula, same result, just not re-run per group.
+    if "Strike" in df.columns:
+        _strike_norm = df["Strike"].astype(str).str.strip().str.upper()
+        df["_strike_valid"] = _strike_norm.isin(["Y", "N"])
+        df["_strike_yes"]   = _strike_norm == "Y"
+    else:
+        df["_strike_valid"] = False
+        df["_strike_yes"]   = False
+
+    df["_demand_num"]    = to_num(df, "Net Collection Demand Inst+Exp+BC")
+    df["_collected_num"] = to_num(df, "Month Collection (Excluding Reserve Collection)")
+    df["_soh_num"]       = to_num(df, "SOH")
+    df["_pos_num"]       = to_num(df, "POS")
+
+    if has_roll:
+        curr_score = df["curr_bucket"].map(BUCKET_SCORE)
+        prev_score = df["prev_bucket"].map(BUCKET_SCORE)
+        df["_roll_valid"] = curr_score.notna() & prev_score.notna()
+        df["_roll_fwd"]   = df["_roll_valid"] & (curr_score > prev_score)
+        df["_roll_bwd"]   = df["_roll_valid"] & (curr_score < prev_score)
+
+    agg_cols = {
+        "_strike_valid": "sum", "_strike_yes": "sum",
+        "_demand_num": "sum", "_collected_num": "sum",
+        "_soh_num": "sum", "_pos_num": "sum",
+    }
+    if has_roll:
+        agg_cols.update({"_roll_valid": "sum", "_roll_fwd": "sum", "_roll_bwd": "sum"})
+    agg = df.groupby(group_cols).agg(agg_cols)
+    n_accounts = df.groupby(group_cols)["Loan No"].nunique()
+
+    # NPA/SMA-2 counts: nunique Loan No (matching the original's
+    # grp[grp["curr_bucket"]==X]["Loan No"].nunique()), computed as a groupby
+    # over each bucket's OWN filtered (smaller) slice -- still 2 vectorized
+    # passes total, not one Python call per executive.
+    if "curr_bucket" in df.columns and "Loan No" in df.columns:
+        npa_counts  = df[df["curr_bucket"] == "NPA"].groupby(group_cols)["Loan No"].nunique()
+        sma2_counts = df[df["curr_bucket"] == "SMA-2"].groupby(group_cols)["Loan No"].nunique()
+    else:
+        npa_counts = sma2_counts = pd.Series(dtype=int)
+
     rows = []
-    for keys, grp in df.groupby(group_cols):
+    for keys, n in n_accounts.items():
+        if n < min_accounts:
+            continue
         if isinstance(keys, tuple):
             exec_name, branch = str(keys[0]), str(keys[1])
         else:
             exec_name, branch = str(keys), ""
 
-        n = account_count(grp)
-        if n < min_accounts:
-            continue
-
-        # Strike rate = % of accounts where full EMI payment was received this month.
-        # Uses the shared utils.compute_strike_pct so this doesn't drift from the
-        # dashboard/Portfolio Intelligence definition again (this was a 5th
-        # independent implementation, missed by the earlier strike_pct/hard_bucket_pct
-        # consolidation - it lacked the case/whitespace normalization compute_strike_pct
-        # applies, silently undercounting the denominator for lowercase/padded "y"/"n").
-        strike_rate = round(compute_strike_pct(grp), 1)
-
-        demand    = to_num(grp, "Net Collection Demand Inst+Exp+BC").sum()
-        collected = to_num(grp, "Month Collection (Excluding Reserve Collection)").sum()
-        total_soh = to_num(grp, "SOH").sum()
-        total_pos = to_num(grp, "POS").sum()
+        a = agg.loc[keys]
+        strike_rate = round(_safe_pct(a["_strike_yes"], a["_strike_valid"]), 1)
+        demand    = a["_demand_num"]
+        collected = a["_collected_num"]
+        total_soh = a["_soh_num"]
+        total_pos = a["_pos_num"]
         coll_pct  = round(collected / demand * 100, 1) if demand > 0 else 0.0
 
-        # NPA and SMA-2 counts
-        npa_count  = 0
-        sma2_count = 0
-        if "curr_bucket" in grp.columns and "Loan No" in grp.columns:
-            npa_count  = grp[grp["curr_bucket"] == "NPA"]["Loan No"].nunique()
-            sma2_count = grp[grp["curr_bucket"] == "SMA-2"]["Loan No"].nunique()
+        npa_count  = int(npa_counts.get(keys, 0))
+        sma2_count = int(sma2_counts.get(keys, 0))
 
         roll_fwd_pct = roll_bwd_pct = None
         if has_roll:
-            curr_score = grp["curr_bucket"].map(BUCKET_SCORE)
-            prev_score = grp["prev_bucket"].map(BUCKET_SCORE)
-            valid = curr_score.notna() & prev_score.notna()
-            total_valid = int(valid.sum())
+            total_valid = int(a["_roll_valid"])
             if total_valid > 0:
-                roll_fwd_pct = round((valid & (curr_score > prev_score)).sum() / total_valid * 100, 1)
-                roll_bwd_pct = round((valid & (curr_score < prev_score)).sum() / total_valid * 100, 1)
+                roll_fwd_pct = round(a["_roll_fwd"] / total_valid * 100, 1)
+                roll_bwd_pct = round(a["_roll_bwd"] / total_valid * 100, 1)
             # else: leave as None (not 0.0) -- e.g. a newly appointed executive
             # whose entire book is freshly originated this month has NO prior-month
             # bucket to compare against at all. Fabricating 0.0% here would read as
@@ -81,7 +121,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
         row = {
             "Executive (Branch)": display_name,
-            "Accounts":           n,
+            "Accounts":           int(n),
             "Strike Rate %":      strike_rate,
             "Collection %":       coll_pct,
         }

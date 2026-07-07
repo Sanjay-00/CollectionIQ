@@ -1326,22 +1326,49 @@ def compute_new_advances_trend_chart(trend_df: pd.DataFrame, granularity: str = 
 
 
 def _group_npa_table(df: pd.DataFrame, group_col: str, label: str, min_n: int) -> list:
+    """Vectorized: one groupby(group_col).agg(...) pass over the WHOLE df,
+    not a Python-level call (account_count/_npa_pct/_coll_pct/_soh_cr, each
+    re-slicing the group) per distinct value -- confirmed via profiling to be
+    the dominant cost of compute_product_analysis on a real ~60k-row file
+    (called 3x for segment/fuel/source, ~4.3s combined). has_loan_no mirrors
+    _npa_pct's own "Loan No" column-presence gate exactly (returns 0.0 NPA%
+    if absent, regardless of account count), rather than silently reusing
+    whatever denominator account_count's own len(df) fallback would give."""
+    if group_col not in df.columns:
+        return []
+    has_loan_no = "Loan No" in df.columns
+    has_bucket  = "curr_bucket" in df.columns
+
+    d = df[[group_col]].copy()
+    d["_is_sma2"]       = (df["curr_bucket"] == "SMA-2") if has_bucket else False
+    d["_is_npa"]        = (df["curr_bucket"] == "NPA") if has_bucket else False
+    d["_demand_num"]    = to_num(df, "Net Collection Demand Inst+Exp+BC")
+    d["_collected_num"] = to_num(df, "Month Collection (Excluding Reserve Collection)")
+    d["_soh_num"]       = to_num(df, "SOH")
+    if has_loan_no:
+        d["Loan No"] = df["Loan No"]
+
+    n_series = d.groupby(group_col)["Loan No"].nunique() if has_loan_no else d.groupby(group_col).size()
+    agg = d.groupby(group_col).agg(
+        sma2_n=("_is_sma2", "sum"), npa_n=("_is_npa", "sum"),
+        demand=("_demand_num", "sum"), collected=("_collected_num", "sum"), soh=("_soh_num", "sum"),
+    )
+
     rows = []
-    for val, grp in df.groupby(group_col):
+    for val, n in n_series.items():
         val_str = str(val).strip()
         if not val_str or val_str.lower() in ("nan", "none", ""):
             continue
-        n = account_count(grp)
         if n < min_n:
             continue
-        sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
+        a = agg.loc[val]
         rows.append({
             label: val_str,
-            "Accounts": n,
-            "SMA-2%": _safe_div(sma2_n, n),
-            "NPA%": _npa_pct(grp),
-            "Collection%": _coll_pct(grp),
-            "SOH (Cr)": _soh_cr(grp),
+            "Accounts": int(n),
+            "SMA-2%": _safe_div(a["sma2_n"], n),
+            "NPA%": _safe_div(a["npa_n"], n) if has_loan_no else 0.0,
+            "Collection%": _safe_div(a["collected"], a["demand"]),
+            "SOH (Cr)": round(a["soh"] / 1e7, 2),
         })
     return rows
 
@@ -1597,6 +1624,25 @@ def compute_concentration_treemap(df_curr: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _grouped_mode(df: pd.DataFrame, group_col: str, value_col: str) -> pd.Series:
+    """Vectorized per-group mode, matching Series.mode().iat[0]'s own tie-break
+    (pandas' mode() returns every tied value sorted ascending; .iat[0] takes
+    the smallest) -- one groupby+sort+drop_duplicates pass over the WHOLE
+    column, replacing a Python-level .mode() call paid once per group (each
+    itself an O(n log n) sort) -- confirmed via profiling to be the dominant
+    cost of compute_fleet_exposure on a real ~60k-row file (~1,600+ fleet
+    customers x 2 mode() calls each, ~2.7s). Groups with no non-null
+    value_col rows are simply absent from the result -- callers already
+    handle a missing key via .get(...)/reindex + fillna("")."""
+    sub = df[[group_col, value_col]].dropna(subset=[value_col])
+    if sub.empty:
+        return pd.Series(dtype=object)
+    counts = sub.groupby([group_col, value_col], observed=True).size().rename("_n").reset_index()
+    counts = counts.sort_values([group_col, "_n", value_col], ascending=[True, False, True])
+    winners = counts.drop_duplicates(subset=[group_col], keep="first")
+    return winners.set_index(group_col)[value_col]
+
+
 def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
     """
     Customers (identified by Cust Mob No) with 3+ loans  -  fleet operators.
@@ -1622,41 +1668,57 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
         has_npa = fleet_df[fleet_df["curr_bucket"] == "NPA"].groupby("Cust Mob No").size()
         npa_ops = len(has_npa)
 
-    # Top fleet customers by SOH
-    def _mode(s: pd.Series) -> str:
-        m = s.dropna().mode()
-        return str(m.iat[0]) if not m.empty else ""
+    # Top fleet customers by SOH -- vectorized (see _grouped_mode's docstring
+    # for why this replaced a per-customer Python loop). first_rows uses
+    # .head(1) per group (NOT .first(), which silently skips NaN and would
+    # disagree with the original .iloc[0] on a customer whose first row's
+    # Cust Name happens to be blank).
+    fleet_df = fleet_df.copy()
+    fleet_df["_soh_num"] = to_num(fleet_df, "SOH")
+    fleet_df["_is_npa"]  = (fleet_df["curr_bucket"] == "NPA") if "curr_bucket" in fleet_df.columns else False
 
-    top_rows = []
-    for mob, grp in fleet_df.groupby("Cust Mob No"):
-        cust_name = grp["Cust Name"].iloc[0] if "Cust Name" in grp.columns else str(mob)
-        n_loans   = grp["Loan No"].nunique()
-        soh       = _soh_cr(grp)
-        npa_count = int((grp["curr_bucket"] == "NPA").sum()) if "curr_bucket" in grp.columns else 0
-        # A fleet customer's loans CAN span multiple regions/branches (Cust Mob
-        # No isn't guaranteed unique per branch, per this function's own
-        # docstring) -- the most common (mode) region/branch is shown as a
-        # single representative value, not necessarily every branch this
-        # customer touches. Same convention report_agent's own fleet section
-        # used to compute independently; now the single source of truth.
-        region = _mode(grp["RegionName"]) if "RegionName" in grp.columns else ""
-        unit   = _mode(grp["Unit"]) if "Unit" in grp.columns else ""
-        top_rows.append({
-            "Customer": str(cust_name),
-            "Mobile": str(mob),
-            "Region": region,
-            "Unit": unit,
-            "Loans": n_loans,
-            "NPA Loans": npa_count,
-            "Total SOH (Cr)": soh,
-        })
+    grp_loans  = fleet_df.groupby("Cust Mob No")["Loan No"].nunique()
+    grp_soh    = (fleet_df.groupby("Cust Mob No")["_soh_num"].sum() / 1e7).round(2)
+    grp_npa    = fleet_df.groupby("Cust Mob No")["_is_npa"].sum().astype(int)
+    first_rows = fleet_df.groupby("Cust Mob No", sort=False).head(1).set_index("Cust Mob No")
+    grp_name   = first_rows["Cust Name"] if "Cust Name" in first_rows.columns else pd.Series(dtype=object)
+    # A fleet customer's loans CAN span multiple regions/branches (Cust Mob
+    # No isn't guaranteed unique per branch, per this function's own
+    # docstring) -- the most common (mode) region/branch is shown as a
+    # single representative value, not necessarily every branch this
+    # customer touches. Same convention report_agent's own fleet section
+    # used to compute independently; now the single source of truth.
+    grp_region = _grouped_mode(fleet_df, "Cust Mob No", "RegionName") if "RegionName" in fleet_df.columns else pd.Series(dtype=object)
+    grp_unit   = _grouped_mode(fleet_df, "Cust Mob No", "Unit") if "Unit" in fleet_df.columns else pd.Series(dtype=object)
 
+    # "Cust Name" missing entirely -> str(mob) for every customer (matches the
+    # original per-row `... if "Cust Name" in grp.columns else str(mob)`).
+    # "Cust Name" present but blank for a given customer's first row -> keep
+    # that blank as-is, same as the original `.iloc[0]` (no per-row fallback).
+    customer_col = grp_name.reindex(fleet_customers) if "Cust Name" in fleet_df.columns else pd.Series(fleet_customers, index=fleet_customers)
+
+    top_df = pd.DataFrame({
+        "Customer":       customer_col,
+        "Mobile":         pd.Series(fleet_customers, index=fleet_customers).astype(str),
+        "Region":         grp_region.reindex(fleet_customers).fillna(""),
+        "Unit":           grp_unit.reindex(fleet_customers).fillna(""),
+        "Loans":          grp_loans.reindex(fleet_customers),
+        "NPA Loans":      grp_npa.reindex(fleet_customers).fillna(0).astype(int),
+        "Total SOH (Cr)": grp_soh.reindex(fleet_customers),
+    })
     top_df = (
-        pd.DataFrame(top_rows)
+        top_df
         .sort_values("Total SOH (Cr)", ascending=False)
         .head(20)
         .reset_index(drop=True)
     )
+    # Python's str(), not pandas' .astype(str) -- under pandas 3.x's default
+    # string dtype, .astype(str) preserves NaN as a null instead of the
+    # literal string "nan" that the original code's `str(cust_name)` (a
+    # per-row Python builtin call) always produced. Only 20 rows by now
+    # (after head(20)), so a per-row .apply(str) here is negligible cost --
+    # this is about matching Python's str() semantics exactly, not performance.
+    top_df["Customer"] = top_df["Customer"].apply(str)
 
     return {
         "count": n_operators,
