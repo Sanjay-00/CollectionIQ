@@ -1,18 +1,22 @@
 """ui/components.py::_dl_btn caching.
 
-Regression: the cache used to key on (key, id(df), len(df)). id() is a memory
-address that CPython can reuse once the original object is garbage-collected,
-so two different same-length DataFrames could in theory collide on id() and
-serve a stale download. Fixed by keying the cache on `key` alone and holding
-a strong reference to the cached df, validated with `is` - holding that
-reference is what prevents the id-reuse scenario from being possible at all.
+Regression: the cache used to key on `df is` the object cached last time,
+under the assumption that df_curr (and everything derived from it) keeps the
+same object identity across reruns when data/filters are unchanged, since it
+comes from an upstream @st.cache_data call. That assumption was wrong:
+st.cache_data returns a fresh COPY on every cache hit, never the original
+object, so the identity check was a guaranteed miss on every single rerun --
+confirmed by profiling real 60k-row data, where this cost ~53s of a ~62s warm
+rerun just for the Alerts tab's 31 _dl_btn calls. Fixed by delegating to
+_excel_bytes, an @st.cache_data function in its own right, so caching is
+content-hash-based like the rest of this app's caching, not identity-based.
 """
 import warnings
 
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _load_and_concat
+from ui.components import _dl_btn, _excel_bytes, _kpi_card_html, _load_and_concat
 from test_utils import _build_upload
 from utils import REQUIRED_COLS
 
@@ -20,45 +24,67 @@ warnings.filterwarnings("ignore", message="Session state does not function")
 
 
 class TestDlBtnCaching:
-    def setup_method(self):
-        st.session_state["_excel_bytes_cache"] = {}
-
-    def test_same_object_is_a_cache_hit(self):
-        df = pd.DataFrame({"a": [1, 2, 3]})
-        _dl_btn(df, "f.xlsx", "k1")
-        cached_after_first = st.session_state["_excel_bytes_cache"]["k1"]
-
-        _dl_btn(df, "f.xlsx", "k1")
-        cached_after_second = st.session_state["_excel_bytes_cache"]["k1"]
-
-        assert cached_after_first[0] is df
-        # Same bytes object reused, not recomputed, on the second call.
-        assert cached_after_second[1] is cached_after_first[1]
-
-    def test_different_object_same_length_is_not_served_stale(self):
+    def test_fresh_object_same_content_is_a_cache_hit(self):
+        """The scenario that actually happens on every Streamlit rerun: a
+        brand new DataFrame object with identical content to one seen before
+        (because it came from a fresh @st.cache_data copy upstream) must
+        still be served from cache, not recomputed."""
         df1 = pd.DataFrame({"a": [1, 2, 3]})
-        df2 = pd.DataFrame({"a": [9, 9, 9]})  # same length, different content
-        _dl_btn(df1, "f.xlsx", "k1")
-        bytes_for_df1 = st.session_state["_excel_bytes_cache"]["k1"][1]
+        bytes1 = _excel_bytes(df1)
 
-        _dl_btn(df2, "f.xlsx", "k1")
-        entry = st.session_state["_excel_bytes_cache"]["k1"]
+        df2 = pd.DataFrame({"a": [1, 2, 3]})  # different object, same content
+        bytes2 = _excel_bytes(df2)
 
-        assert entry[0] is df2
-        assert entry[1] != bytes_for_df1
+        assert df1 is not df2
+        assert bytes1 == bytes2
 
-    def test_one_entry_per_key_no_accumulation(self):
-        df1 = pd.DataFrame({"a": [1]})
-        df2 = pd.DataFrame({"a": [2]})
-        _dl_btn(df1, "f.xlsx", "k1")
-        _dl_btn(df2, "f.xlsx", "k1")
-        assert list(st.session_state["_excel_bytes_cache"].keys()) == ["k1"]
+    def test_different_content_is_not_served_stale(self):
+        df1 = pd.DataFrame({"a": [1, 2, 3]})
+        df2 = pd.DataFrame({"a": [9, 9, 9]})  # same shape, different content
+        assert _excel_bytes(df1) != _excel_bytes(df2)
 
-    def test_distinct_keys_cache_independently(self):
+    def test_dl_btn_renders_for_distinct_keys(self):
         df = pd.DataFrame({"a": [1, 2, 3]})
         _dl_btn(df, "f1.xlsx", "k1")
         _dl_btn(df, "f2.xlsx", "k2")
-        assert set(st.session_state["_excel_bytes_cache"].keys()) == {"k1", "k2"}
+
+
+class TestKpiCardHtmlArrowAndColor:
+    """Regression coverage for the double-sign-flip bug: a caller used to
+    pre-flip an inverse metric's delta before passing it in, and this
+    function ALSO flips color based on `inverse`, combining into arrows AND
+    colors that were both backwards. Contract now: `delta` is always the raw
+    (curr - prev) movement; arrow direction is derived only from its sign
+    and is never affected by `inverse`."""
+
+    def test_arrow_direction_always_matches_raw_delta_sign_inverse_or_not(self):
+        up_inverse = _kpi_card_html("NPA %", "10%", 5.0, inverse=True)
+        up_normal = _kpi_card_html("Collection %", "10%", 5.0, inverse=False)
+        down_inverse = _kpi_card_html("NPA %", "10%", -5.0, inverse=True)
+        down_normal = _kpi_card_html("Collection %", "10%", -5.0, inverse=False)
+        assert "▲" in up_inverse and "▼" not in up_inverse
+        assert "▲" in up_normal and "▼" not in up_normal
+        assert "▼" in down_inverse and "▲" not in down_inverse
+        assert "▼" in down_normal and "▲" not in down_normal
+
+    def test_inverse_flips_color_not_arrow(self):
+        # A positive (worsening) delta on an inverse metric must render red,
+        # even though the arrow still points up (matching the real increase).
+        worsened = _kpi_card_html("NPA %", "10%", 5.0, inverse=True)
+        improved = _kpi_card_html("NPA %", "10%", -5.0, inverse=True)
+        assert "kpi-mom-down" in worsened  # red: NPA% went up, that's bad
+        assert "kpi-mom-up" in improved    # green: NPA% went down, that's good
+
+    def test_good_override_controls_color_not_arrow(self):
+        # SOH rose (arrow must point up) but the override says it's bad
+        # (driven by arrears growth, not POS growth).
+        html = _kpi_card_html("Total SOH", "1Cr", 5.0, inverse=True, good_override=False)
+        assert "▲" in html
+        assert "kpi-mom-down" in html
+
+        html2 = _kpi_card_html("Total SOH", "1Cr", 5.0, inverse=True, good_override=True)
+        assert "▲" in html2
+        assert "kpi-mom-up" in html2
 
 
 class TestLoadAndConcatDuplicateLoanCount:

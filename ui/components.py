@@ -80,6 +80,7 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
     )
 
 
+@st.cache_data(show_spinner=False)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
     df.to_excel(buf, index=False, engine="openpyxl")
@@ -95,21 +96,21 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
     the AI Query tab. Without caching, that meant every one of this app's ~20
     _dl_btn call sites re-ran an uncached openpyxl df.to_excel() -- cell-by-cell,
     not vectorized -- on every rerun, regardless of whether the underlying
-    table had changed. Cache one entry per button key, keyed on `df is` the
-    exact object we cached bytes for last time (the df objects passed in are
-    themselves already st.cache_data-cached upstream, so the SAME object
-    survives across reruns whenever filters/data are unchanged). This holds a
-    strong reference to that df in the cache entry itself, which is what makes
-    the identity check safe: as long as the entry exists, Python can't garbage
-    -collect that df and hand its id to an unrelated object -- the exact
-    ABA-style collision an `id(df)`-keyed cache would otherwise be exposed to."""
-    cache = st.session_state.setdefault("_excel_bytes_cache", {})
-    cached = cache.get(key)
-    if cached is not None and cached[0] is df:
-        data = cached[1]
-    else:
-        data = _excel_bytes(df)
-        cache[key] = (df, data)
+    table had changed.
+
+    _excel_bytes is @st.cache_data itself rather than hand-rolling a `df is`
+    identity cache here (the previous approach): st.cache_data hashes the
+    upstream df's own upstream st.cache_data call also returns a fresh COPY on
+    every cache hit, not the original object -- proven directly: two calls to
+    a trivial @st.cache_data function with identical args gave `is` False both
+    times. So a `df is` check keyed on "the same object survives a cache hit"
+    was actually a permanent cache miss on every single rerun, for every
+    _dl_btn call site in the app (confirmed via profiling: render_alerts_tab's
+    31 _dl_btn calls alone cost ~53s of a ~62s warm rerun on real 60k-row
+    data). Content hashing fixes this correctly regardless of object
+    identity -- verified: a fresh, freshly-copied 2,000-row DataFrame with
+    identical content hits cache in ~0.025s vs a ~3.3s cold write."""
+    data = _excel_bytes(df)
 
     _, col = st.columns([5, 1])
     with col:
@@ -120,41 +121,62 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
         )
 
 
-def _cached_html_export(df_curr: pd.DataFrame, build_fn, *args, **kwargs) -> str:
-    """Same identity-cache idiom _dl_btn already uses above, for a different
-    culprit: ui/tabs/dashboard.py's build_html_export call ran unconditionally
-    on every render (not gated behind the download button click -- Streamlit's
-    download_button needs its `data=` bytes ready upfront, so there's no native
-    "compute on click" for this), and it's expensive: pio.to_html() on 3 full
-    Plotly figures plus assembling a large formatted HTML string, every single
-    Streamlit rerun of the ENTIRE app, since Dashboard is tabs[0] and always
-    executes regardless of which tab is actually visible.
+def _cached_html_export(cache_key: tuple, build_fn, *args, **kwargs) -> str:
+    """ui/tabs/dashboard.py's build_html_export call ran unconditionally on
+    every render (not gated behind the download button click -- Streamlit's
+    download_button needs its `data=` bytes ready upfront, so there's no
+    native "compute on click" for this), and it's expensive: pio.to_html() on
+    3 full Plotly figures plus assembling a large formatted HTML string, every
+    single Streamlit rerun of the ENTIRE app, since Dashboard is tabs[0] and
+    always executes regardless of which tab is actually visible.
 
-    Keyed on `df_curr is` the exact object from last time -- df_curr is itself
-    already st.cache_data-cached upstream (via app.py's _cached_filter), so the
-    SAME object survives across reruns whenever filters/data are unchanged, and
-    every other build_html_export argument (metrics, figures, alerts,
-    scorecard_df) is derived from that same df_curr+filter combination, so an
-    unchanged df_curr identity guarantees they're unchanged too -- same
-    reasoning _dl_btn's own docstring spells out for the Excel case."""
+    `cache_key` must be the same (data_version, region, branch, status,
+    segment) tuple app.py's own _cached_* functions already use as their
+    cache key -- NOT `df_curr is` the object from last time. That was the
+    original design here (mirroring _dl_btn's old approach) but it never
+    actually worked: df_curr itself comes from a @st.cache_data call
+    (_cached_filter), and st.cache_data returns a fresh COPY on every cache
+    hit, not the original object -- proven directly by calling a trivial
+    @st.cache_data function twice with identical args and getting `is` False
+    both times. So this was a guaranteed cache miss on every single rerun.
+    build_fn/its figure args aren't reliably auto-hashable by st.cache_data
+    (Plotly Figure objects, arbitrary callables), so this uses the same
+    explicit-tuple-key idiom the rest of app.py's caching already relies on,
+    rather than trying to make Streamlit hash them."""
     cache = st.session_state.setdefault("_html_export_cache", {})
     cached = cache.get("dashboard")
-    if cached is not None and cached[0] is df_curr:
+    if cached is not None and cached[0] == cache_key:
         return cached[1]
     html_content = build_fn(*args, **kwargs)
-    cache["dashboard"] = (df_curr, html_content)
+    cache["dashboard"] = (cache_key, html_content)
     return html_content
 
 
 def _kpi_card_html(
     label: str, value: str, delta, *, unit: str = "%", inverse: bool = False,
     count_delta: int | None = None, zero_delta_bad: bool = False,
+    good_override: bool | None = None,
 ) -> str:
     """Shared KPI card markup: label + big value + MoM delta arrow.
 
     `inverse=True` means a falling value is the good direction (e.g. NPA %)
     so the arrow color logic flips. `delta=None` renders "no prev data"
     instead of an arrow (used when no previous-month file was uploaded).
+    `delta` must always be the RAW (current - previous) movement -- arrow
+    direction is derived directly from its sign and is never flipped by
+    `inverse`, which only controls color. (Regression this fixes: a caller
+    used to pre-flip the delta's sign for inverse metrics before passing it
+    in here, which combined with this function's own inverse-aware color
+    logic into a double sign-flip -- both the arrow direction AND the color
+    ended up backwards for every inverse metric it fed. Fixed at the source;
+    this contract is why.)
+
+    `good_override` lets a caller supply the good/bad color directly instead
+    of deriving it from delta's sign + `inverse`, for metrics where "which
+    direction is good" isn't a fixed property of the metric but depends on
+    what's driving the change this period (e.g. SOH rising is good if POS
+    growth is driving it, bad if Closing Arrears growth is driving it).
+    Arrow direction is unaffected -- it still always reflects delta's sign.
 
     When the displayed delta rounds to 0.00%, two independent tabs in this
     app have always disagreed on the color (Dashboard: red: Portfolio
@@ -182,7 +204,7 @@ def _kpi_card_html(
             cls   = "kpi-mom-down" if inverse else "kpi-mom-up"
         else:
             arrow = "▲" if delta >= 0 else "▼"
-            good  = (delta <= 0) if inverse else (delta >= 0)
+            good  = ((delta <= 0) if inverse else (delta >= 0)) if good_override is None else good_override
             cls   = "kpi-mom-up" if good else "kpi-mom-down"
         mom_html = f'<div class="kpi-mom">MoM <span class="{cls}">{arrow} {abs(delta):.2f}{unit}</span></div>'
     return (

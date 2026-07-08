@@ -51,6 +51,8 @@ def render_dashboard_tab(
     fig_status,
     fig_branch,
     fig_closing,
+    data_version: int = 0,
+    segment: tuple = (),
 ) -> None:
     # ── KPIs ────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-label">Key Performance Indicators</div>', unsafe_allow_html=True)
@@ -107,8 +109,9 @@ def render_dashboard_tab(
             "Region": sel_region, "Branch": sel_branch,
             "Loan Status": sel_status, "Year Month": str(curr_month),
         }
+        _html_cache_key = (data_version, sel_region, sel_branch, sel_status, segment)
         html_content = _cached_html_export(
-            df_curr, build_html_export,
+            _html_cache_key, build_html_export,
             df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing,
             filters_applied, curr_month=curr_month, alerts=alerts,
             scorecard_df=scorecard_df,
