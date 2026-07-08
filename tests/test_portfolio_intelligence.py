@@ -56,22 +56,86 @@ class TestComputePulseKpis:
         assert _kpi(kpis, "Collection %")["value"] == "100.00%"
         assert _kpi(kpis, "Strike %")["value"] == "75.00%"
 
+    def test_strike_pct_rising_is_good_not_inverse(self):
+        # Strike% = % of accounts current on their installment obligation --
+        # rising is favorable, so it must NOT be treated as an inverse
+        # metric (previously was, backwards relative to its own definition
+        # and to the Dashboard tab's own Strike% card convention).
+        kpis = compute_pulse_kpis(self._curr(), make_df([]))
+        assert _kpi(kpis, "Strike %")["inverse"] is False
+
+    def test_insurance_debit_cases_matches_alert_definition(self):
+        # Same shape as smart_alerts.py's alert_insurance_delinquency:
+        # EMI-current (inst arrears <= 0) but expense arrears above the
+        # threshold, with some overall arrears -- else not counted.
+        curr = make_df([
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 1.0},  # counts
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 4_000.0, "Arrears / EMI": 1.0},  # below threshold
+            {"ARREARS AGAINST INST": 500.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 1.0},  # real inst arrears too -- excluded
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 0.0},  # no overall arrears -- excluded
+        ])
+        kpis = compute_pulse_kpis(curr, make_df([]))
+        assert _kpi(kpis, "Insurance Debit Cases")["value"] == "1"
+        assert _kpi(kpis, "Insurance Debit Cases")["inverse"] is True
+
+    def test_nov25_onward_delinquency_cohort(self):
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2025-11-01"), "Arrears / EMI": 1.0},  # exactly at cohort start, delinquent -- counts
+            {"Ag_Date": pd.Timestamp("2026-01-15"), "Arrears / EMI": 2.0},  # after cohort start, delinquent -- counts
+            {"Ag_Date": pd.Timestamp("2025-10-31"), "Arrears / EMI": 1.0},  # before cohort start -- excluded
+            {"Ag_Date": pd.Timestamp("2026-01-15"), "Arrears / EMI": 0.0},  # in cohort but not delinquent -- excluded
+        ])
+        kpis = compute_pulse_kpis(curr, make_df([]))
+        assert _kpi(kpis, "NOV'25 Onward Delinquency")["value"] == "2"
+        assert _kpi(kpis, "NOV'25 Onward Delinquency")["inverse"] is True
+
     def test_soh_converted_to_crores(self):
         # 4 accounts x default POS 1,00,000 -> 4,00,000 -> 0.04 Cr
         kpis = compute_pulse_kpis(self._curr(), make_df([]))
         assert _kpi(kpis, "Total SOH")["value"] == "₹0.04Cr"
 
+    def test_soh_good_override_none_when_no_prev(self):
+        kpis = compute_pulse_kpis(self._curr(), make_df([]))
+        assert _kpi(kpis, "Total SOH")["good_override"] is None
+
+    def test_soh_falling_is_always_good_regardless_of_driver(self):
+        # SOH falls even though arrears rose, because POS fell more --
+        # falling SOH stays "good" unconditionally, same as before.
+        curr = make_df([{"POS": 50_000.0, "Closing Arrears": 20_000.0, "SOH": 70_000.0}])
+        prev = make_df([{"POS": 100_000.0, "Closing Arrears": 10_000.0, "SOH": 110_000.0}])
+        kpis = compute_pulse_kpis(curr, prev)
+        assert _kpi(kpis, "Total SOH")["good_override"] is True
+
+    def test_soh_rising_driven_by_pos_growth_is_good(self):
+        curr = make_df([{"POS": 150_000.0, "Closing Arrears": 10_000.0, "SOH": 160_000.0}])
+        prev = make_df([{"POS": 100_000.0, "Closing Arrears": 10_000.0, "SOH": 110_000.0}])
+        kpis = compute_pulse_kpis(curr, prev)
+        assert _kpi(kpis, "Total SOH")["delta"] > 0
+        assert _kpi(kpis, "Total SOH")["good_override"] is True
+
+    def test_soh_rising_driven_by_arrears_growth_is_bad(self):
+        curr = make_df([{"POS": 100_000.0, "Closing Arrears": 60_000.0, "SOH": 160_000.0}])
+        prev = make_df([{"POS": 100_000.0, "Closing Arrears": 10_000.0, "SOH": 110_000.0}])
+        kpis = compute_pulse_kpis(curr, prev)
+        assert _kpi(kpis, "Total SOH")["delta"] > 0
+        assert _kpi(kpis, "Total SOH")["good_override"] is False
+
     def test_delta_and_inverse_direction(self):
+        # delta is always the RAW (curr - prev) movement, regardless of
+        # `inverse` -- inverse only controls how _kpi_card_html colors it,
+        # not the number itself (see analysis/portfolio_intelligence.py's
+        # _delta docstring for the double-sign-flip regression this guards).
         prev = make_df([
             {"curr_bucket": "STD", "Arrears / EMI": 0.0},
             {"curr_bucket": "NPA", "Arrears / EMI": 5.0},
         ])
         kpis = compute_pulse_kpis(self._curr(), prev)
-        # curr NPA% 25.0, prev NPA% 50.0 -> raw delta -25.0, inverse=True -> +25.0
-        assert _kpi(kpis, "NPA %")["delta"] == 25.0
-        # curr accounts 4, prev 2 -> not inverted -> +2
+        # curr NPA% 25.0, prev NPA% 50.0 -> raw delta -25.0 (NPA% improved)
+        assert _kpi(kpis, "NPA %")["delta"] == -25.0
+        assert _kpi(kpis, "NPA %")["inverse"] is True
+        # curr accounts 4, prev 2 -> +2
         assert _kpi(kpis, "Total Accounts")["delta"] == 2
-        # curr coll% 100, prev coll% 100 -> 0, not inverted
+        # curr coll% 100, prev coll% 100 -> 0
         assert _kpi(kpis, "Collection %")["delta"] == 0.0
 
 

@@ -62,7 +62,7 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
     def _kpi_row(items):
         return "".join(
-            _kpi_card_html(k["label"], k["value"], k["delta"], unit=k["unit"], inverse=k["inverse"])
+            _kpi_card_html(k["label"], k["value"], k["delta"], unit=k["unit"], inverse=k["inverse"], good_override=k.get("good_override"))
             for k in items
         )
 

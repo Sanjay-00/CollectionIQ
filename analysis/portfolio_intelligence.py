@@ -32,6 +32,8 @@ from config import (
     VINTAGE_CHART_CRITICAL_PCT,
     VINTAGE_CHART_WATCH_PCT,
     NEW_ADVANCES_TREND_DEFAULT_MONTHS,
+    INSURANCE_EXP_ARREARS_MIN,
+    RECENT_ADVANCES_COHORT_START,
 )
 
 YELLOW = "#FFC000"
@@ -247,6 +249,8 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
             return {}
         total = account_count(df)
         soh = _soh_cr(df)
+        pos_cr = round(to_num(df, "POS").sum() / 1e7, 2)
+        arrears_cr = round(to_num(df, "Closing Arrears").sum() / 1e7, 2)
         npa_pct = _npa_pct(df)
         npa_count = int((df["curr_bucket"] == "NPA").sum()) if "curr_bucket" in df.columns else 0
         sma2_count = int((df["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in df.columns else 0
@@ -255,51 +259,110 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         coll = _coll_pct(df)
         strike_pct = compute_strike_pct(df)
         overdue_demand = compute_overdue_demand_pct(df)
+
+        # Insurance Debit Cases: same definition as smart_alerts.py's
+        # "Insurance-Driven Delinquency" alert (EMI-current, but unpaid
+        # insurance charge alone is creating delinquency) -- reuses the same
+        # INSURANCE_EXP_ARREARS_MIN threshold so the KPI card and the alert
+        # can never quietly disagree on what counts.
+        arr_inst = to_num(df, "ARREARS AGAINST INST")
+        arr_exp = to_num(df, "ARREARS AGAINST EXP")
+        arrears_emi = to_num(df, "Arrears / EMI")
+        insurance_mask = (arr_inst <= 0) & (arr_exp > INSURANCE_EXP_ARREARS_MIN) & (arrears_emi > 0)
+        insurance_debit_count = account_count(df[insurance_mask])
+
+        # NOV'25 Onward Delinquency: delinquent accounts (Arrears/EMI > 0)
+        # originated on/after RECENT_ADVANCES_COHORT_START -- a FIXED cohort-start
+        # date (not a rolling window like REPOSSESSION_WINDOW_MONTHS), since
+        # this deliberately tracks originations since a specific management
+        # change, not "recent" loans in general.
+        if "Ag_Date" in df.columns:
+            cohort_mask = (df["Ag_Date"] >= pd.Timestamp(RECENT_ADVANCES_COHORT_START)) & (arrears_emi > 0)
+            nov25_delinquency_count = account_count(df[cohort_mask])
+        else:
+            nov25_delinquency_count = 0
+
         return {
-            "accounts": total, "soh": soh,
+            "accounts": total, "soh": soh, "pos_cr": pos_cr, "arrears_cr": arrears_cr,
             "npa_count": npa_count, "npa_pct": npa_pct,
             "sma2_count": sma2_count, "sma2_pct": sma2_pct,
             "hard_pct": hard_pct, "coll_pct": coll, "strike_pct": strike_pct,
             "overdue_coll_pct": overdue_demand["overdue_pct"],
             "demand_coll_pct": overdue_demand["demand_pct"],
+            "insurance_debit_count": insurance_debit_count,
+            "nov25_delinquency_count": nov25_delinquency_count,
         }
 
     c = _calc(df_curr)
     p = _calc(df_prev)
 
-    def _delta(key, inverse=False):
+    def _delta(key):
+        # Always the RAW (cv - pv) movement, regardless of `inverse` -- this
+        # used to sign-flip for inverse=True metrics under the assumption
+        # that _kpi_card_html only reads a pre-flipped number, but
+        # _kpi_card_html *also* independently applies its own inverse-aware
+        # sign logic to whatever delta it receives (that's its actual,
+        # documented contract: raw delta in, inverse flag flips the COLOR,
+        # not the delta itself). Combining both was a double sign-flip: for
+        # every inverse=True metric (SOH, SMA-2, NPA, Strike %), the
+        # rendered arrow pointed the WRONG way (opposite of the real
+        # movement) and the color was ALSO backwards (green shown for a
+        # metric that had actually worsened, red for one that had actually
+        # improved) -- confirmed against real data: NPA Accounts +431 (got
+        # worse) rendered as "▼ green" (implying an improvement).
         cv = c.get(key, 0)
         pv = p.get(key, 0)
         if not p or pv == 0:
             return None
-        d = round(cv - pv, 2)
-        return d if not inverse else -d
+        return round(cv - pv, 2)
 
-    # curr_raw/prev_raw: the literal unrounded numeric values behind "value" and
-    # the (possibly sign-flipped-for-display) "delta" -- exposed additively so a
-    # true comparison table (This Month | Previous Month | Delta | % Change) can
-    # be built without reverse-engineering a flipped delta back into a raw prior
-    # value (which would be fragile/easy to get subtly wrong). Existing consumers
-    # (e.g. the Portfolio Pulse dashboard cards) only read label/value/delta/unit/
-    # inverse and are unaffected by these extra keys.
-    def _card(label, key, value, unit, inverse):
+    # curr_raw/prev_raw: the literal unrounded numeric values behind "value"
+    # and the raw "delta" -- exposed additively so a true comparison table
+    # (This Month | Previous Month | Delta | % Change) can be built directly.
+    def _card(label, key, value, unit, inverse, good_override=None):
         return {
-            "label": label, "value": value, "delta": _delta(key, inverse=inverse),
-            "unit": unit, "inverse": inverse,
+            "label": label, "value": value, "delta": _delta(key),
+            "unit": unit, "inverse": inverse, "good_override": good_override,
             "curr_raw": c.get(key, 0), "prev_raw": p.get(key, 0) if p else None,
         }
 
+    # SOH rising isn't uniformly bad the way NPA%/SMA-2 rising is: SOH = POS +
+    # Closing Arrears, so an increase driven by POS growth (book growing,
+    # legitimate new/rolled-forward business) is a GOOD sign, while an
+    # increase driven by Closing Arrears growth (customers falling further
+    # behind) is BAD -- a flat sign-of-delta "inverse" flag can't tell those
+    # apart, it only knows SOH went up, not why. A falling/flat SOH keeps the
+    # existing "good" (inverse=True) treatment unconditionally -- less total
+    # exposure is favorable regardless of which component drove it down.
+    def _soh_good():
+        if not p:
+            return None
+        soh_delta = c.get("soh", 0) - p.get("soh", 0)
+        if soh_delta <= 0:
+            return True
+        pos_delta = c.get("pos_cr", 0) - p.get("pos_cr", 0)
+        arrears_delta = c.get("arrears_cr", 0) - p.get("arrears_cr", 0)
+        return bool(pos_delta >= arrears_delta)
+
     return [
         _card("Total Accounts", "accounts",  f"{c.get('accounts',0):,}",      "",   False),
-        _card("Total SOH",      "soh",       f"₹{c.get('soh',0):.2f}Cr",      "Cr", True),
+        _card("Total SOH",      "soh",       f"₹{c.get('soh',0):.2f}Cr",      "Cr", True, good_override=_soh_good()),
         _card("SMA-2 Accounts", "sma2_count", f"{c.get('sma2_count',0):,}",   "",   True),
         _card("SMA-2 %",        "sma2_pct",  f"{c.get('sma2_pct',0):.2f}%",  "%",  True),
         _card("NPA Accounts",   "npa_count", f"{c.get('npa_count',0):,}",    "",   True),
         _card("NPA %",          "npa_pct",   f"{c.get('npa_pct',0):.2f}%",   "%",  True),
         _card("Collection %",   "coll_pct",  f"{c.get('coll_pct',0):.2f}%",  "%",  False),
-        _card("Strike %",       "strike_pct", f"{c.get('strike_pct',0):.2f}%", "%", True),
+        # inverse=False: Strike% = % of accounts current on their installment
+        # obligation (compute_strike_pct's own docstring) -- rising is GOOD
+        # (more accounts current), matching the Dashboard tab's own Strike%
+        # card (not in its _INVERSE_MOM set). This card previously had
+        # inverse=True, backwards relative to both the metric's documented
+        # meaning and the Dashboard tab's own convention for the same metric.
+        _card("Strike %",       "strike_pct", f"{c.get('strike_pct',0):.2f}%", "%", False),
         _card("Overdue Collection %", "overdue_coll_pct", f"{c.get('overdue_coll_pct',0):.2f}%", "%", False),
         _card("Month Demand Collection %", "demand_coll_pct", f"{c.get('demand_coll_pct',0):.2f}%", "%", False),
+        _card("Insurance Debit Cases", "insurance_debit_count", f"{c.get('insurance_debit_count',0):,}", "", True),
+        _card("NOV'25 Onward Delinquency", "nov25_delinquency_count", f"{c.get('nov25_delinquency_count',0):,}", "", True),
     ]
 
 

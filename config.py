@@ -124,6 +124,17 @@ HARD_BUCKET_ARREARS_EMI_MIN = 6
 # within this many months (older loans have less collateral value left)
 REPOSSESSION_WINDOW_MONTHS = 18
 
+# Portfolio Pulse "NOV'25 Onward Delinquency" KPI: a fixed cohort-start date
+# (NOT a rolling window relative to the report month, unlike
+# REPOSSESSION_WINDOW_MONTHS above or RECENT_ADVANCES_MONTHS below -- both of
+# those are rolling windows relative to today/report month; this is a fixed
+# calendar date) -- a management change occurred on this date, and this
+# tracks delinquency quality specifically among originations since then.
+# Deliberately time-scoped: this cohort only grows over time, so its
+# usefulness as a tight "how's the new regime underwriting" signal will
+# naturally fade -- expect to eventually retire or redefine it.
+RECENT_ADVANCES_COHORT_START = "2025-11-01"
+
 # Good Customers (refinance/relationship candidates): must have completed at
 # least this % of their loan tenure...
 GOOD_CUSTOMER_MIN_TENURE_PCT = 70
