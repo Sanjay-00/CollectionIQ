@@ -545,9 +545,13 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
     if df.empty:
         return
     headers = list(df.columns)
+    # position:sticky keeps the header row visible while scrolling a long
+    # table (e.g. Sourcing Channel routinely has 1,000+ rows on a real file)
+    # -- needs its own background since sticky content scrolls underneath it.
     th = "".join(
         f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
-        f'text-align:{"left" if i == 0 else "right"};white-space:nowrap;">{h}</th>'
+        f'text-align:{"left" if i == 0 else "right"};white-space:nowrap;'
+        f'position:sticky;top:0;z-index:1;">{h}</th>'
         for i, h in enumerate(headers)
     )
     rows_html = ""
@@ -576,7 +580,8 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
         rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
 
     st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e5e7eb;">'
+        f'<div style="overflow-x:auto;overflow-y:auto;max-height:520px;'
+        f'border-radius:8px;border:1px solid #e5e7eb;">'
         f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
         f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
         f'</table></div>',
