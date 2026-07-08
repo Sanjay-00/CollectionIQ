@@ -404,10 +404,40 @@ if active_filters:
     )
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-n_alerts    = sum(1 for a in alerts if a["count"] > 0)
-alert_label = f"🚨 Alerts ({n_alerts})" if n_alerts else "✅ Alerts"
+# A manual segmented-control switcher, NOT st.tabs(). st.tabs() renders every
+# tab's UI on every rerun (only CSS-hides inactive ones), which was both a
+# real latency cost (rendering 8 tabs' worth of widgets/charts for the 1 the
+# user can see) and the root cause of a real, well-documented Streamlit
+# framework bug where the JS that hides inactive tab panels desyncs -- often
+# triggered by spinners/st.status() inside tabs (this app's AI Query and
+# Report tabs both use them) -- and every tab's content renders stacked as
+# one long scrollable page instead of switching. Gating each render_*_tab()
+# call behind the active selection (instead of `with tabs[i]:`) fixes both:
+# only the active section's UI ever gets built, and there's no st.tabs()
+# panel-hiding mechanism left to desync. The analysis/ computation above this
+# block (alerts, precomputed_views, pi_* variables, etc.) is untouched --
+# it was already unconditional/cache-driven, not gated by tab visibility.
+n_alerts = sum(1 for a in alerts if a["count"] > 0)
+# NOTE: unlike the old st.tabs() label, this stays a fixed string ("🚨
+# Alerts") rather than embedding the live count -- st.segmented_control's
+# selection is stored in st.session_state by option VALUE, so a label that
+# changes text across reruns (count going from e.g. 3 to 5) would no longer
+# match the previously-selected option string and silently deselect it.
+# The count is shown as a caption next to the selector instead.
 
-tabs = st.tabs(["🗂️ Dashboard", "👤 Scorecard", alert_label, "📈 Migration", "📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query", "📋 Report"])
+_TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query", "📋 Report"]
+
+active = st.segmented_control(
+    "Section", options=_TAB_LABELS, default=_TAB_LABELS[0], key="_active_section", label_visibility="collapsed",
+)
+if active is None:
+    # Single-select segmented_control returns None if the active pill is
+    # clicked again (deselect) -- fall back to whichever tab was active
+    # last, not all the way back to Dashboard.
+    active = st.session_state.get("_last_active_section", _TAB_LABELS[0])
+st.session_state["_last_active_section"] = active
+if active == "🚨 Alerts" and n_alerts:
+    st.caption(f"🚨 {n_alerts} alert{'s' if n_alerts > 1 else ''} active")
 
 
 def _tab_error(name: str, exc: Exception) -> None:
@@ -415,36 +445,37 @@ def _tab_error(name: str, exc: Exception) -> None:
     st.caption("Try clearing the cache from the sidebar, or check your data file.")
 
 
-with tabs[0]:
+if active == "🗂️ Dashboard":
     try:
         render_dashboard_tab(
             df_curr, df_prev, metrics, curr_month,
             sel_region, sel_branch, sel_status,
             alerts, scorecard_df, rr_meta,
             fig_status, fig_branch, fig_closing,
+            data_version=data_version, segment=_seg_t,
         )
     except Exception as _e:
         _tab_error("Dashboard", _e)
 
-with tabs[1]:
+elif active == "👤 Scorecard":
     try:
         render_scorecard_tab(df_curr, scorecard_df)
     except Exception as _e:
         _tab_error("Scorecard", _e)
 
-with tabs[2]:
+elif active == "🚨 Alerts":
     try:
         render_alerts_tab(df_curr, alerts)
     except Exception as _e:
         _tab_error("Alerts", _e)
 
-with tabs[3]:
+elif active == "📈 Migration":
     try:
         render_migration_tab(df_curr, df_prev, rr_matrix, rr_meta, data_version, _filter_key)
     except Exception as _e:
         _tab_error("Migration", _e)
 
-with tabs[4]:
+elif active == "📊 Portfolio Intelligence":
     try:
         _pi_flag_df = compute_risk_flag_comparison(alerts, alerts_prev)
         render_portfolio_intelligence_tab(
@@ -472,7 +503,7 @@ with tabs[4]:
     except Exception as _e:
         _tab_error("Portfolio Intelligence", _e)
 
-with tabs[5]:
+elif active == "💼 Business":
     try:
         render_business_tab(
             new_advances=pi_new_advances,
@@ -485,7 +516,7 @@ with tabs[5]:
     except Exception as _e:
         _tab_error("Business", _e)
 
-with tabs[6]:
+elif active == "🤖 AI Query":
     try:
         # Map uploaded files to their dated bucket columns so the AI can resolve
         # date references ("on 20th June") to curr_bucket / prev_bucket.
@@ -500,7 +531,7 @@ with tabs[6]:
     except Exception as _e:
         _tab_error("AI Query", _e)
 
-with tabs[7]:
+elif active == "📋 Report":
     try:
         render_report_tab(
             df_curr, df_prev, curr_month, prev_month,

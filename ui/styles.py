@@ -472,43 +472,46 @@ div[data-testid="stAlert"][kind="error"]   { background: rgba(220,38,38,0.08) !i
 [data-testid="stDataFrame"] { border-radius: 10px !important; overflow: hidden !important; }
 
 /* ══ TAB NAVIGATION ══════════════════════════════════════════════════════
-   Streamlit's Tabs widget dropped BaseWeb entirely as of 1.58ish -- every
-   `data-baseweb="tab*"` attribute this block used to target is gone from
-   the frontend bundle as of 1.59.0 (confirmed: zero `data-baseweb`
-   occurrences anywhere in the built JS), silently reverting every tab to
-   Streamlit's unstyled default look on any deploy that resolves a newer
-   Streamlit than whatever was last used to test this file locally --
-   requirements.txt pins `streamlit>=1.35.0` (open-ended), so that drift is
-   a real, live risk, not hypothetical (it already happened once: Cloud
-   resolved 1.59.0 while local dev was still on 1.57.0). New per-tab testid
-   is `data-testid="stTab"` (singular); the row container has no dedicated
-   testid, just the standard ARIA `role="tablist"`. Both OLD (data-baseweb)
-   and NEW (data-testid/role) selectors are kept side by side -- same
-   defensive pattern this file's own stSidebarCollapsed/stExpandSidebarButton
-   rule above already uses -- so this survives a Streamlit version change
-   in either direction instead of silently breaking again next time. */
-.stTabs [data-baseweb="tab-list"],
-.stTabs [role="tablist"] {
+   Streamlit's Tabs widget dropped BaseWeb entirely as of 1.58ish, AND (as
+   of this session) st.tabs() itself was replaced app-wide with a manual
+   st.segmented_control() switcher -- st.tabs() render every tab's content
+   on every rerun regardless of visibility (a real latency cost) and has a
+   long-documented Streamlit bug where its panel-hiding JS desyncs, making
+   every tab's content appear stacked as one long page (see app.py's tabs
+   block for the full writeup). This block now styles that replacement
+   instead. The underlying proto/component for both st.pills and
+   st.segmented_control is named "ButtonGroup" (confirmed via
+   streamlit/testing/v1/element_tree.py's own ButtonGroup wrapper class,
+   which backs both widgets), which by Streamlit's established
+   st+PascalCase(component) testid convention (already relied on elsewhere
+   in this file, e.g. stSidebarCollapseButton) implies
+   data-testid="stButtonGroup" -- NOT verified against a live browser render
+   (no browser available in this environment). Deliberately NOT paired with
+   a generic role="radiogroup" ARIA fallback here, unlike this file's other
+   dual-selector rules: st.radio() (used elsewhere in this app, e.g.
+   ui/tabs/business.py's granularity picker) renders with that same generic
+   role too, so a broad fallback would have restyled unrelated radio widgets
+   app-wide with this tab-switcher's look. If stButtonGroup turns out to be
+   wrong, the practical failure mode is an unstyled (not broken) switcher --
+   confirm the real testid with a live browser render and fix this selector
+   rather than widening it back to a generic ARIA role. */
+[data-testid="stButtonGroup"] {
     gap: 2px; background: #ffffff; padding: 5px 6px; border-radius: 12px;
     border: 1px solid #e5e7eb; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    margin-bottom: 20px; overflow-x: auto;
+    margin-bottom: 20px; overflow-x: auto; display: flex; flex-wrap: nowrap;
 }
-.stTabs [data-baseweb="tab"],
-.stTabs [data-testid="stTab"] {
-    height: 36px; padding: 0 18px; border-radius: 8px;
-    font-size: 13px; font-weight: 600; color: #6b7280;
-    background: transparent; border: none;
+[data-testid="stButtonGroup"] button {
+    height: 36px; padding: 0 18px; border-radius: 8px !important;
+    font-size: 13px; font-weight: 600; color: #6b7280 !important;
+    background: transparent !important; border: none !important;
     transition: background 0.15s, color 0.15s; white-space: nowrap;
 }
-.stTabs [data-baseweb="tab"]:hover,
-.stTabs [data-testid="stTab"]:hover { background: #f3f4f6; color: #374151; }
-.stTabs [data-baseweb="tab"][aria-selected="true"],
-.stTabs [data-testid="stTab"][aria-selected="true"] {
+[data-testid="stButtonGroup"] button:hover { background: #f3f4f6 !important; color: #374151 !important; }
+[data-testid="stButtonGroup"] button[aria-checked="true"],
+[data-testid="stButtonGroup"] button[aria-pressed="true"] {
     background: #FFC000 !important; color: #000000 !important;
     font-weight: 700 !important; box-shadow: 0 2px 8px rgba(255,192,0,0.35) !important;
 }
-.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
-.stTabs [data-baseweb="tab-border"]    { display: none !important; }
 
 /* ══ ACTIVE FILTER BAR ═══════════════════════════════════════════════════ */
 .filter-bar {
