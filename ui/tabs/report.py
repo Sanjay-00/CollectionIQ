@@ -88,6 +88,29 @@ def render_report_tab(
     with st.expander(f"➕ Additional Sections  ({len(_ADDITIONAL_KEYS)} more available)", expanded=False):
         st.caption("✍️ Deep-dive detail: check whatever this specific report needs.")
 
+        # Select All / Clear All MUST render (and write to st.session_state)
+        # before ANY of _ADDITIONAL_KEYS' checkboxes are instantiated below --
+        # Streamlit raises StreamlitAPIException ("st.session_state.X cannot
+        # be modified after the widget with key X is instantiated") if you
+        # write to a widget's session_state key after that widget has already
+        # been created in the same script run. This used to sit inside add_c1,
+        # AFTER 3 of the checkboxes it modifies (rpt_indicators, rpt_product,
+        # rpt_overdue_demand) -- clicking either button raised that exception
+        # on the very first key in the loop and silently updated nothing, for
+        # ALL 14 checkboxes, not just those 3 (real bug, reported by users).
+        # No st.rerun() needed either: since these run before the checkboxes
+        # exist yet this pass, the checkboxes below pick up the new values in
+        # this SAME script run.
+        add_bulk_c1, add_bulk_c2, _add_bulk_spacer = st.columns([1, 1, 3])
+        with add_bulk_c1:
+            if st.button("Select All", key="rpt_additional_select_all"):
+                for k in _ADDITIONAL_KEYS:
+                    st.session_state[k] = True
+        with add_bulk_c2:
+            if st.button("Clear All", key="rpt_additional_clear_all"):
+                for k in _ADDITIONAL_KEYS:
+                    st.session_state[k] = False
+
         add_c1, add_c2, add_c3, add_c4, add_c5 = st.columns(5)
         with add_c1:
             _col_caption("Risk & Segments")
@@ -95,19 +118,6 @@ def render_report_tab(
                                           help="Early-warning signals: SMA-1 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk")
             inc_product = st.checkbox("Segment NPA Breakdown", value=False, key="rpt_product")
             inc_overdue_demand = st.checkbox("Overdue vs Month Demand", value=False, key="rpt_overdue_demand")
-
-            st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
-            add_bulk_c1, add_bulk_c2 = st.columns(2)
-            with add_bulk_c1:
-                if st.button("Select All", key="rpt_additional_select_all"):
-                    for k in _ADDITIONAL_KEYS:
-                        st.session_state[k] = True
-                    st.rerun()
-            with add_bulk_c2:
-                if st.button("Clear All", key="rpt_additional_clear_all"):
-                    for k in _ADDITIONAL_KEYS:
-                        st.session_state[k] = False
-                    st.rerun()
         with add_c2:
             _col_caption("Charts")
             inc_quadrant = st.checkbox("Branch Quadrant Chart", value=False, key="rpt_quadrant",
