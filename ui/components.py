@@ -29,10 +29,13 @@ def _style_main_content_selectbox(color: str = "#fff") -> None:
     background.
 
     This targets EVERY `stSelectbox` on the page (Streamlit doesn't scope
-    injected `st.markdown` styles to one tab -- all tabs render into the DOM
-    simultaneously, just CSS-hidden when inactive), so every caller must use
-    the SAME color, or whichever caller renders last in a given rerun wins
-    for all of them. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py.
+    injected `st.markdown` styles to one call site), so every caller should
+    use the SAME color for visual consistency. Only the active tab's render
+    code runs per rerun (app.py's segmented-control switcher), so a mismatched
+    color between callers can no longer leak into a different, inactive tab --
+    it would just look inconsistent if this tab's own color ever differed from
+    the others'. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py,
+    ui/tabs/business.py.
     """
     # data-baseweb="select" is gone as of Streamlit 1.59.0 (the Selectbox
     # widget dropped BaseWeb entirely) -- role="combobox" is the new stable

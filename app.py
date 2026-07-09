@@ -42,7 +42,7 @@ from ui.tabs.report import render_report_tab
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Shriram Finance Dashboard",
+    page_title="CollectionIQ",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
