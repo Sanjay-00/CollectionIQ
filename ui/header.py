@@ -9,7 +9,7 @@ def render_header() -> None:
     logo_b64  = base64.b64encode(logo_path.read_bytes()).decode() if logo_path.exists() else ""
     logo_html = (
         f'<img src="data:image/jpeg;base64,{logo_b64}" '
-        f'style="height:52px;width:auto;object-fit:contain;display:block;" alt="CollectionIQ">'
+        f'style="height:68px;width:auto;object-fit:contain;display:block;" alt="CollectionIQ">'
         if logo_b64 else
         '<div class="dash-logo-box"><div class="dash-logo-main">COLLECTION</div>'
         '<div class="dash-logo-sub">IQ</div></div>'
