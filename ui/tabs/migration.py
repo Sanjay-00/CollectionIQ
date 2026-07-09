@@ -87,11 +87,12 @@ def render_migration_tab(
     # These selectboxes render in the main content area, not the sidebar, so they
     # don't get ui/styles.py's `[data-testid="stSidebar"] .stSelectbox` white-text
     # rule -- without this, the dark selectbox background leaves the "All"/option
-    # text nearly unreadable. MUST use the same color ui/tabs/ai_query.py's own
-    # main-content selectbox uses -- Streamlit renders every tab's markup into the
-    # DOM every rerun (inactive tabs are only CSS-hidden), so an unscoped style
-    # rule here applies page-wide; a different color per tab means whichever tab's
-    # code runs later in a given rerun silently wins for BOTH tabs' selectboxes.
+    # text nearly unreadable. MUST use the same color ui/tabs/ai_query.py's/
+    # business.py's own main-content selectboxes use, for visual consistency
+    # (this styles every stSelectbox on the page, not just this tab's -- only
+    # the active tab's render code runs per rerun, so this can no longer leak
+    # into an inactive tab, but a mismatched color would still look inconsistent
+    # if it ever differed from the other tabs' calls).
     _style_main_content_selectbox("#fff")
     f_col1, f_col2, f_col3 = st.columns(3)
 

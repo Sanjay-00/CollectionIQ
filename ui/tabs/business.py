@@ -7,7 +7,7 @@ own tab instead of living inside Portfolio Intelligence.
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _chart_card, _divider
+from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _chart_card, _divider, _style_main_content_selectbox
 from ui.tabs.portfolio_intelligence import _section, _render_product_table, _roll_vintage
 from analysis.portfolio_intelligence import (
     compute_new_advances_trend, roll_new_advances_trend, compute_new_advances_trend_chart,
@@ -107,6 +107,13 @@ def _render_new_advances_trend(
         "not just this reporting month. No previous month file needed."
     )
 
+    # This selectbox renders in the main content area, not the sidebar, so it
+    # doesn't get ui/styles.py's `[data-testid="stSidebar"] .stSelectbox`
+    # white-text rule -- without this, the dark selectbox background leaves
+    # the "Trend window" option text black-on-black. Same fix, same "#fff"
+    # color, as ui/tabs/migration.py's drill-down and ui/tabs/ai_query.py's
+    # own main-content selectbox.
+    _style_main_content_selectbox("#fff")
     col_win, col_gran = st.columns([1, 2])
     with col_win:
         window_choice = st.selectbox(

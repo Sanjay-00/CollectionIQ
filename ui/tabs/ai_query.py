@@ -426,11 +426,12 @@ function fill(text) {
         </div>
         """, unsafe_allow_html=True)
 
-        # MUST match ui/tabs/migration.py's own call to this same helper -- an
-        # unscoped style rule here applies page-wide (every tab's markup renders
-        # into the DOM every rerun, just CSS-hidden when inactive), so a different
-        # color per tab means whichever tab's code runs later in a given rerun
-        # silently wins for every selectbox on the page, not just this one.
+        # MUST match ui/tabs/migration.py's/business.py's own calls to this same
+        # helper, for visual consistency across tabs (this styles EVERY
+        # stSelectbox on the page, not just this one -- harmless now that only
+        # the active tab's render code runs per rerun, but still page-wide
+        # within that one render, so a mismatched color here would look
+        # inconsistent even though it can no longer leak into an inactive tab).
         _style_main_content_selectbox("#fff")
 
         sel_col, _ = st.columns([1, 3])
