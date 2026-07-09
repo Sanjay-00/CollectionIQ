@@ -3,7 +3,7 @@
 ### AI-Powered Portfolio Intelligence for NBFC Collection Leaders
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-FF4B4B?logo=streamlit&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.59.0-FF4B4B?logo=streamlit&logoColor=white)
 ![Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash%20Lite-4285F4?logo=google&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)
 &nbsp;
@@ -48,79 +48,138 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 **Dashboard - KPIs and portfolio health with Month-on-Month movement**
 
-![KPI Dashboard](docs/screenshots/02-kpi-dashboard.png)
+![Dashboard](docs/screenshots/02-dashboard.png)
 &nbsp;
 
-**Portfolio Analysis - DPD bucket distribution, branch collection %, arrears exposure**
+**Executive Scorecard - Every field executive ranked by collection %, strike rate, NPA count and roll rates**
 
-![Portfolio Analysis](docs/screenshots/03-portfolio-analysis.png)
+![Scorecard](docs/screenshots/03-scorecard.png)
+&nbsp;
+
+**Smart Alerts - automatic risk flags with SOH exposure and recommended actions**
+
+![Alerts](docs/screenshots/04-alerts.png)
+&nbsp;
+
+**Bucket Migration - Roll-forward / roll-backward rates and the prev-month → curr-month migration matrix**
+
+![Migration](docs/screenshots/05-migration.png)
+&nbsp;
+
+**Portfolio Intelligence - Pulse KPIs, region/branch scorecards, risk indicators, fleet exposure, and more, across 8 sections**
+
+![Portfolio Pulse - headline KPIs, bucket distribution, roll rates](docs/screenshots/06-portfolio-intelligence-1.png)
 &nbsp;
 
 <table>
 <tr>
 <td width="50%">
 
-**Executive Scorecard - Every field executive ranked by collection %, strike rate, NPA count and roll rates**
+**Who Needs Attention - NPA & SMA-2 comparison by branch**
 
-
-![Executive Scorecard](docs/screenshots/04-executive-scorecard.png)
+![Who Needs Attention](docs/screenshots/07-portfolio-intelligence-2.png)
 
 </td>
 <td width="50%">
 
-**Smart Alerts - 6 automatic risk flags with SOH exposure and recommended actions**
+**The Honest Mirror - good/bad verdict + risk flag deep dive**
 
-
-![Smart Alerts](docs/screenshots/05-smart-alerts.png)
+![Honest Mirror](docs/screenshots/08-portfolio-intelligence-3.png)
 
 </td>
 </tr>
 <tr>
 <td width="50%">
 
-**Bucket Migration - Roll-forward / roll-backward rates and the prev-month → curr-month migration matrix**
+**Sourcing & Product Analysis + is the risk profile changing?**
 
-
-![Bucket Migration](docs/screenshots/06-migration.png)
+![Sourcing and Risk Profile](docs/screenshots/09-portfolio-intelligence-4.png)
 
 </td>
 <td width="50%">
 
-**Monthly Portfolio Intelligence Report - board-ready HTML report with narrative, rankings and action plan**
+**Concentration & Exposure Map + top at-risk accounts**
 
+![Concentration Map](docs/screenshots/10-portfolio-intelligence-5.png)
 
-![Monthly Report](docs/screenshots/10-report.png)
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Repossession Priority List**
+
+![Repossession List](docs/screenshots/11-portfolio-intelligence-6.png)
+
+</td>
+<td width="50%">
+
+**Good Customers - refinance & relationship candidates**
+
+![Good Customers](docs/screenshots/12-portfolio-intelligence-7.png)
 
 </td>
 </tr>
 </table>
+&nbsp;
+
+**Business - New advances (originations), trend and by-dimension breakdowns, disbursement vintage**
+
+![New Advances This Month](docs/screenshots/13-business-1.png)
+&nbsp;
+
+<table>
+<tr>
+<td width="50%">
+
+**New Advances Trend - accounts & funded amount by period**
+
+![New Advances Trend](docs/screenshots/14-business-2.png)
+
+</td>
+<td width="50%">
+
+**New Advances by Region/Branch/Executive**
+
+![By Dimension](docs/screenshots/15-business-3.png)
+
+</td>
+</tr>
+</table>
+
+**Disbursement Vintage - NPA%/SMA-2% by disbursement cohort**
+
+![Disbursement Vintage](docs/screenshots/16-business-4.png)
 &nbsp;
 
 **AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash-Lite + LangGraph**
 
-![AI Query](docs/screenshots/07-ai-query.png)
+![Ask a question in plain English](docs/screenshots/17-ai-query-1.png)
 &nbsp;
 
 <table>
 <tr>
 <td width="50%">
 
-**AI Query summary - top regions, branches, executives and bucket distribution for the matched accounts**
+**KPI summary + region/branch/executive breakdown for the matched accounts**
 
-
-![Customer Table](docs/screenshots/09-customer-table.png)
+![Query KPI Summary](docs/screenshots/18-ai-query-2.png)
 
 </td>
 <td width="50%">
 
-**AI Queried table Observations - domain-aware narrative generated for every query result**
+**Matching accounts table + AI-generated observations**
 
-
-![AI Observations](docs/screenshots/08-ai-observations.png)
+![Matching Accounts and Observations](docs/screenshots/19-ai-query-3.png)
 
 </td>
 </tr>
 </table>
+&nbsp;
+
+**Monthly Portfolio Intelligence Report - board-ready HTML report with narrative, rankings and action plan**
+
+![Report](docs/screenshots/20-report.png)
 &nbsp;
 
 
@@ -176,6 +235,7 @@ With CollectionIQ, the same question is answered in under 30 seconds by the lead
 | Manual Excel work for breakdowns | Instant filtered results with AI observations |
 | Subjective account prioritisation | Seven-tier data-driven priority framework |
 | Month-end reports for portfolio health | Real-time bucket migration and alerts on every upload |
+| Every click on a 60k-row portfolio felt like a fresh page load (~26s) | Same interaction now returns in well under a second, measured on real data |
 &nbsp;
 
 ## Architecture
