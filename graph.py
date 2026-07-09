@@ -107,6 +107,29 @@ def _trace_metadata(fields: dict) -> None:
 # fields were present and how big they were.
 _LARGE_STATE_FIELDS = ("result_df_full", "df_prev", "result_df", "precomputed_views", "alerts_curr", "alerts_prev")
 
+# Customer-identifying columns that must never leave this machine in an AI
+# prompt or a trace payload. result_kpis["_agg_rows"] (built below, and in
+# execute_node for aggregation results) is a small sample of real row data
+# handed to the Insight Generator so it has something concrete to describe --
+# for the 4 customer/loan-grain fast-path views (top_accounts, fleet_exposure,
+# repossession, good_customers), those raw rows carry real customer name/phone
+# columns. The Insight Generator only needs the analytical columns (SOH,
+# bucket, region, branch, arrears, etc.) to write a useful observation -- it
+# never needed the customer's identity, so stripping these costs nothing in
+# insight quality. Applied at construction (below) AND independently inside
+# the LangSmith trace-stripping code (_strip_large_state_fields) as a second
+# layer, matching this codebase's existing dual-layer pattern (see
+# agents/plan_executor.py's derive-expression check at both compile and
+# execute time) -- so a future code path populating _agg_rows without going
+# through the same construction site still can't leak this to LangSmith.
+_PII_COLS_IN_AGG_ROWS = ("Cust Name", "Cust Mob No", "Guar Name", "Guar Mob No")
+
+
+def _strip_pii_from_agg_rows(rows: list) -> list:
+    if not rows:
+        return rows
+    return [{k: v for k, v in row.items() if k not in _PII_COLS_IN_AGG_ROWS} for row in rows]
+
 
 def _strip_large_state_fields(d: dict) -> dict:
     if not isinstance(d, dict):
@@ -116,6 +139,9 @@ def _strip_large_state_fields(d: dict) -> dict:
         v = out.get(k)
         if v is not None and hasattr(v, "__len__"):
             out[k] = f"<{type(v).__name__} len={len(v)}>"
+    kpis = out.get("result_kpis")
+    if isinstance(kpis, dict) and kpis.get("_agg_rows"):
+        out["result_kpis"] = {**kpis, "_agg_rows": _strip_pii_from_agg_rows(kpis["_agg_rows"])}
     return out
 
 
@@ -546,7 +572,12 @@ def view_node(state: QueryState) -> QueryState:
     # a confidently fabricated narrative built from defaulted zeros. Always give
     # it real sample rows to describe instead, regardless of which view this is.
     if "_agg_rows" not in result_kpis and result_df is not None and len(result_df):
-        result_kpis["_agg_rows"] = result_df.head(5).to_dict(orient="records")
+        # Customer/loan-grain views (top_accounts, fleet_exposure, repossession,
+        # good_customers) return real Cust Name/Cust Mob No columns here -- the
+        # Insight Generator only needs the analytical columns to describe the
+        # pattern, so strip identity columns before this ever reaches a Gemini
+        # prompt. See _PII_COLS_IN_AGG_ROWS's docstring above for the full story.
+        result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(5).to_dict(orient="records"))
 
     result_highlights = _build_highlights(
         spec, result_df, view_spec.get("highlight_metrics") or []
@@ -703,7 +734,12 @@ def execute_node(state: QueryState) -> QueryState:
                                   display_df["MNT NAME"] + " (" + display_df["Unit"] + ")")
                 display_df = display_df.drop(columns=["MNT NAME", "Unit"])
 
-            kpis     = {"Count": len(display_df), "_agg_rows": display_df.head(5).to_dict(orient="records")}
+            # Grouped results are entity-level (region/branch/executive), not
+            # customer-level, so this shouldn't carry PII in practice -- stripped
+            # anyway for consistency with the fast-path view construction site
+            # above, in case a future dimension ever groups by something
+            # customer-identifying.
+            kpis     = {"Count": len(display_df), "_agg_rows": _strip_pii_from_agg_rows(display_df.head(5).to_dict(orient="records"))}
             rankings = {}
         else:
             # Apply default curated columns when the planner didn't specify any.
