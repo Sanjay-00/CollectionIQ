@@ -26,8 +26,8 @@ def render_report_tab(
         Generates a board-ready HTML report covering nearly the full analysis toolkit:
         verdict-first AI narrative, risk signals, month-over-month NPA/SMA-2 movement,
         embedded charts, region/segment/branch breakdowns, at-risk and fleet exposure lists,
-        repossession candidates, good-customer retention targets, and executive/branch
-        leaderboards. Download as HTML or send via email.
+        repossession candidates, good-customer retention targets, new advances (originations)
+        breakdowns, and executive/branch leaderboards. Download as HTML or send via email.
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -149,7 +149,7 @@ def render_report_tab(
     if smtp_ok:
         rpt_email_to = st.text_input(
             "Send report to (email address)",
-            placeholder="manager@shriram.com, head@shriram.com",
+            placeholder="manager@company.com, head@company.com",
             key="rpt_email_to",
             help="Separate multiple addresses with a comma",
         )

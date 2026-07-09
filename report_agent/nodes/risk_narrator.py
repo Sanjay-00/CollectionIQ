@@ -161,7 +161,7 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
     return "\n".join(parts)
 
 
-NARRATIVE_PROMPT = """You are the Chief Risk Officer of Shriram Finance preparing a monthly portfolio briefing for the Regional Director.
+NARRATIVE_PROMPT = """You are the Chief Risk Officer of an NBFC preparing a monthly portfolio briefing for the Regional Director.
 Write exactly 6 to 8 bullet points in plain text. Each bullet must start with a hyphen and a space (- ).
 
 Cover these areas across the bullets (not as headers, just as content):
@@ -180,7 +180,7 @@ Rules:
 - Use single hyphen (-) at the start of each bullet only
 - Professional, direct NBFC tone"""
 
-ACTION_PROMPT = """You are a collections strategy consultant for Shriram Finance.
+ACTION_PROMPT = """You are a collections strategy consultant for an NBFC.
 Based on the portfolio data provided, generate exactly 5 numbered action items for the collection team this month.
 
 Format each item exactly as:

@@ -1335,7 +1335,7 @@ def report_builder_node(state: ReportState) -> ReportState:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Shriram Finance - Portfolio Intelligence Report {curr_month}</title>
+<title>CollectionIQ - Portfolio Intelligence Report {curr_month}</title>
 <style>{BASE_CSS}</style>
 </head>
 <body>
@@ -1347,9 +1347,9 @@ def report_builder_node(state: ReportState) -> ReportState:
        style="background:#111827;border-bottom:2px solid {YELLOW};">
   <tr>
     <td style="padding:26px 36px;" valign="middle">
-      <div style="font-size:22px;font-weight:900;color:{YELLOW};letter-spacing:3px;line-height:1;">SHRIRAM</div>
+      <div style="font-size:22px;font-weight:900;color:{YELLOW};letter-spacing:3px;line-height:1;">COLLECTIONIQ</div>
       <div style="font-size:10px;color:#6b7280;letter-spacing:1.5px;margin-top:3px;font-weight:500;">
-        FINANCE &nbsp;&bull;&nbsp; COLLECTION INTELLIGENCE
+        PORTFOLIO &nbsp;&bull;&nbsp; COLLECTION INTELLIGENCE
       </div>
     </td>
     <td style="padding:26px 36px;text-align:right;" valign="middle">
@@ -1372,7 +1372,7 @@ def report_builder_node(state: ReportState) -> ReportState:
 
 <!-- Footer -->
 <div class="footer">
-  CollectionIQ &bull; Powered by Gemini 2.5 Flash &bull; Shriram Finance Internal Use Only
+  CollectionIQ &bull; Powered by Gemini 2.5 Flash &bull; Internal Use Only
 </div>
 </body>
 </html>"""

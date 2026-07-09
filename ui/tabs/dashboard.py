@@ -120,7 +120,7 @@ def render_dashboard_tab(
         st.download_button(
             label="⬇  Download Dashboard as HTML",
             data=html_content.encode("utf-8"),
-            file_name=f"shriram_dashboard_{curr_month}.html",
+            file_name=f"collectioniq_dashboard_{curr_month}.html",
             mime="text/html",
             width='stretch',
         )

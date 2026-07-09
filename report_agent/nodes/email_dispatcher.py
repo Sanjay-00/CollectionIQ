@@ -30,7 +30,7 @@ def send_report_email(html_report: str, to_addr: str, curr_month: str) -> tuple[
 
     try:
         msg = MIMEMultipart("mixed")
-        msg["Subject"] = f"Shriram Finance - Portfolio Intelligence Report {curr_month}"
+        msg["Subject"] = f"CollectionIQ - Portfolio Intelligence Report {curr_month}"
         msg["From"]    = smtp_user
         msg["To"]      = to_addr
 

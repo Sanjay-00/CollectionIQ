@@ -9,7 +9,7 @@ A system-design overview of the AI agent pipelines that power CollectionIQ's pla
 - Reduced portfolio reporting from a multi-step analyst request cycle (hours to a day per question) to a self-serve answer in under 30 seconds.
 - Verified column normalization at 100% accuracy across all 85 expected columns from raw LCC Excel extracts, handling truncated headers, trailing spaces, casing differences, and multi-sheet workbooks automatically.
 - Generates a board-ready monthly portfolio report from up to 18 independently toggleable sections (verdict-first AI narrative, embedded charts, risk signals, region/segment breakdowns, branch and executive leaderboards) in one click, replacing a manual end-of-month compilation.
-- 463 automated tests cover every pandas/business-logic path (bucketing, KPI computation, the 7-tier priority framework, bucket migration, the compiler/registry layer, every report section) with zero live LLM calls, so the full regression suite runs in seconds.
+- 613 automated tests cover every pandas/business-logic path (bucketing, KPI computation, the 7-tier priority framework, bucket migration, the compiler/registry layer, every report section) with zero live LLM calls, so the full regression suite runs in seconds.
 - Each plain-English query resolves through 2 sequential LLM calls (occasionally a 3rd repair call on a compile error), or just 1 if the user leaves the AI Query tab's "Generate AI summary" checkbox unchecked (off by default) to skip the narrative-writing call entirely; choosing Gemini 2.5 Flash-Lite over a heavier model keeps total query latency in the single-digit-second range even under concurrent users.
 
 ---

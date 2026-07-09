@@ -6,7 +6,7 @@ Guidance for AI assistants working in this repo.
 
 - **Stack**: Streamlit (default port, no override in `.streamlit/config.toml` — a hardcoded `port` there has broken the Streamlit Cloud health check twice before by not matching the port Cloud's prober expects; if you need a custom port for local dev, set it via `streamlit run app.py --server.port XXXX` on the command line instead of committing it to config.toml) + Pandas + Plotly + Google Gemini via `google-genai` + LangGraph
 - **Run**: `streamlit run app.py`
-- **Tests**: `pytest` (463 tests, all pandas/business-logic, no live Gemini calls)
+- **Tests**: `pytest` (613 tests, all pandas/business-logic, no live Gemini calls)
 - **Model config**: `GEMINI_MODEL` is defined once in `config.py` (currently `gemini-2.5-flash-lite`) and imported everywhere; never hardcode the model string in agent files
 - **Data**: single in-memory pandas DataFrame per session, loaded from an uploaded LCC Excel extract (~85 known columns, see `utils.py::REQUIRED_COLS`)
 
@@ -29,6 +29,15 @@ Pre-computed, pure pandas, no LLM. These functions run once per upload (cached v
 **Business rules worth knowing**: SOH (Sum of Hire = POS + Closing Arrears) is the exposure metric used everywhere instead of raw POS, so MAT and S&S accounts (where POS is legitimately 0) still show their true outstanding exposure. Hard Bucket percentage means `Arrears / EMI >= HARD_BUCKET_ARREARS_EMI_MIN` (currently 6), a single config constant in `config.py` shared by both the dashboard and the AI Query registry's `hard_bucket_pct` metric, since these two previously drifted (one used 3, the other 6) before being unified. Nearly every threshold that used to be a bare magic number (`FLEET_MIN_LOANS`, `REPOSSESSION_WINDOW_MONTHS`, `GOOD_CUSTOMER_MIN_TENURE_PCT`, `CONCERN_SCORE_*`, `RISK_INDICATOR_*`, and more) now lives in `config.py`, and the matching UI label text reads from the same constants so a retuned threshold cannot silently go stale in a label.
 
 **`strike_pct` / `hard_bucket_pct`**: computed by `utils.compute_strike_pct()` / `utils.compute_hard_bucket_pct()`, the single shared source of truth called by `utils.py::compute_metrics` (dashboard) and every Portfolio Intelligence table that reports either metric (`compute_pulse_kpis`, `compute_region_scorecard`, `compute_branch_quadrant`, `analysis/executive_scorecard.py::compute_executive_scorecard`). The AI Query pipeline can't call these directly, its `registry/ontology.py` `strike_pct`/`hard_bucket_pct` METRICs are declarative definitions consumed by `compiler/measures.py`'s `count_ratio` handler, a different execution path entirely, so it's a second, independent implementation of the same business rule by necessity of the architecture. `tests/test_metric_consistency.py` runs both paths against the same data and asserts they agree, so a retuned threshold that only reaches one side fails a test instead of silently drifting.
+
+**`compute_pulse_kpis`'s `delta` contract**: always the RAW `(curr - prev)` movement, never sign-flipped for `inverse` metrics — `ui/components.py::_kpi_card_html` derives arrow direction purely from that raw sign and uses `inverse` only to pick the color. Pre-flipping the delta upstream *and* relying on `_kpi_card_html`'s own `inverse` color logic is a double sign-flip (a real bug this project shipped and fixed — see `project_guide.md` Phase 7 G4): arrow direction and color both end up backwards. `good_override` (also on `_kpi_card_html`) exists for metrics where "which direction is good" isn't fixed by sign alone (e.g. SOH — rising is good if POS growth drives it, bad if Closing Arrears growth drives it).
+
+---
+
+## Dashboard UI Layer (`app.py`, `ui/`)
+
+- **Tab switching**: `app.py` uses a manual `st.segmented_control` + `if active == "label": render_x(...)` chain, **not** `st.tabs()`. `st.tabs()` renders every tab's UI on every rerun regardless of visibility (real latency cost) and has a known Streamlit bug where its panel-hiding JS desyncs, especially with spinners inside tabs (AI Query, Report both use them) — every tab's content ends up stacked as one long page. Don't reintroduce `st.tabs()` for the main tab bar.
+- **`st.cache_data` returns a fresh object on every call, cache hit or not** — proven directly, not assumed. Never key a cache on `df is` some-earlier-object; it will silently never hit. `ui/components.py::_excel_bytes` is `@st.cache_data` itself (content-hashed) rather than a hand-rolled identity check, for this reason.
 
 ---
 
