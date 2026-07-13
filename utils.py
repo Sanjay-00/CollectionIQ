@@ -381,7 +381,11 @@ def _reorder_to_template(df: pd.DataFrame) -> pd.DataFrame:
     return df[known_order + extra_cols]
 
 
-@__import__("streamlit").cache_data(show_spinner=False)
+# max_entries=16: each entry is a FULL parsed raw frame (the heaviest single
+# object this app caches). 16 covers a multi-file regional upload (curr + prev)
+# with room to spare; older uploads' frames get LRU-evicted instead of living
+# in the server process forever.
+@__import__("streamlit").cache_data(show_spinner=False, max_entries=16)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
         fname = getattr(file, "name", "").lower()

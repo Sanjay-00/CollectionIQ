@@ -218,7 +218,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 **SOH as the True Exposure Metric** : Uses Sum of Hire (POS + Closing Arrears) instead of POS alone. For MAT and S&S accounts where POS = 0, SOH correctly reflects what is actually owed.
 
-**Monthly Portfolio Intelligence Report** : Board-ready, fully self-contained HTML report built from up to **18 independently toggleable sections**, verdict-first so a lead reads the AI narrative and five-point action plan before scrolling into supporting detail. Beyond branch and executive league tables, it includes embedded charts (bucket-distribution waterfall, region→branch concentration treemap, Collection% vs NPA% branch quadrant), month-over-month NPA/SMA-2 movement broken out by region/branch/executive, early-warning risk indicators, segment-wise NPA breakdown, top at-risk accounts, fleet exposure, repossession candidates, a good-customer retention list, and a rescued-vs-slipped executive recovery leaderboard, every number pulled from the same `analysis/` functions the dashboard tabs use, so a report figure and a dashboard figure never disagree. Email-safe layout. Generate once, send to any number of recipients without regenerating.
+**Monthly Portfolio Intelligence Report** : Board-ready, fully self-contained HTML report built from up to **22 independently toggleable sections**, verdict-first so a lead reads the AI narrative and five-point action plan before scrolling into supporting detail. Beyond branch and executive league tables, it includes embedded charts (bucket-distribution waterfall, region→branch concentration treemap, Collection% vs NPA% branch quadrant), month-over-month NPA/SMA-2 movement broken out by region/branch/executive, early-warning risk indicators, segment-wise NPA breakdown, top at-risk accounts, fleet exposure, repossession candidates, a good-customer retention list, new-advances originations and trend, overdue-vs-demand collection performance, and a rescued-vs-slipped executive recovery leaderboard, every number pulled from the same `analysis/` functions the dashboard tabs use, so a report figure and a dashboard figure never disagree. Email-safe layout. Generate once, send to any number of recipients without regenerating.
 &nbsp;
 
 
@@ -290,7 +290,7 @@ flowchart TD
 
     subgraph RP ["  Report Pipeline  (LangGraph)  "]
         direction TB
-        PA["Portfolio Analyzer\nPandas\n\nComputes up to 18 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns\nAccount lists · Branch & executive leaderboards"]
+        PA["Portfolio Analyzer\nPandas\n\nComputes up to 22 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns · New advances\nAccount lists · Branch & executive leaderboards"]
         RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
         RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
         ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
@@ -357,7 +357,7 @@ CollectionIQ/
 ├── report_agent/
 │   ├── graph.py                    # Report pipeline (LangGraph)
 │   ├── charts.py                   # Plotly figure -> embedded base64 PNG (kaleido)
-│   ├── sections/                   # 18 independently toggleable report sections,
+│   ├── sections/                   # 22 independently toggleable report sections,
 │   │                               #   each a thin wrapper around an analysis/ function
 │   └── nodes/
 │       ├── portfolio_analyzer.py   # Dispatches enabled_sections to sections/

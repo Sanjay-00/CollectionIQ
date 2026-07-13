@@ -12,7 +12,7 @@ def _filter_options(df: pd.DataFrame, col: str) -> list[str]:
     return ["All"] + sorted(df[col].dropna().unique().tolist())
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_filtered_roll_rate(_df_curr_f: pd.DataFrame, _df_prev_f: pd.DataFrame, data_version: int, drilldown_key: str):
     """Same cached-recompute pattern app.py's own `_cached_roll_rate` uses for
     the unfiltered case -- without this, a drill-down filter recomputes the

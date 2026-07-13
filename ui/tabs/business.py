@@ -7,7 +7,7 @@ own tab instead of living inside Portfolio Intelligence.
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _chart_card, _divider, _style_main_content_selectbox
+from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _chart_card, _divider, _style_main_content_selectbox, append_total_row
 from ui.tabs.portfolio_intelligence import _section, _render_product_table, _roll_vintage
 from analysis.portfolio_intelligence import (
     compute_new_advances_trend, roll_new_advances_trend, compute_new_advances_trend_chart,
@@ -32,7 +32,7 @@ _GRANULARITY_OPTIONS = ["Monthly", "Quarterly", "Half-Yearly", "Yearly", "Financ
 # curr_month + this tab's own widget values are the cheap, explicit,
 # accuracy-preserving cache key -- any one of them changing is a cache miss,
 # so a genuinely different result is never served stale.
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_new_advances_trend(
     _df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
     curr_month: str, months, granularity: str,
@@ -41,7 +41,7 @@ def _cached_new_advances_trend(
     return roll_new_advances_trend(trend_df, granularity)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_vintage_rollup(
     _vintage_df: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
     granularity: str,
@@ -91,7 +91,8 @@ def _render_new_advances(data: dict) -> None:
     if not seg_df.empty:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div style="font-size:13px;font-weight:700;color:#111;margin-bottom:6px;">By Segment</div>', unsafe_allow_html=True)
-        st.dataframe(_safe_df(seg_df), use_container_width=True, hide_index=True)
+        _seg_ratio_cols = {"Avg Ticket (L)": ("Funded (Cr)", "Accounts", 100)}
+        st.dataframe(_safe_df(append_total_row(seg_df, ratio_cols=_seg_ratio_cols)), use_container_width=True, hide_index=True)
         _dl_btn(seg_df, "new_advances_segment.xlsx", "dl_new_advances_segment")
 
 
@@ -141,7 +142,8 @@ def _render_new_advances_trend(
     # own sort key) -- reverse it for "most recent first" display rather than
     # re-sorting by the "Month" string, which breaks for non-monthly labels
     # like "Q1-2026" or "FY25-26" (alphabetical != chronological there).
-    st.dataframe(_safe_df(plot_df.iloc[::-1]), use_container_width=True, hide_index=True)
+    _trend_ratio_cols = {"Avg Ticket (L)": ("Funded (Cr)", "Accounts", 100)}
+    st.dataframe(_safe_df(append_total_row(plot_df.iloc[::-1], ratio_cols=_trend_ratio_cols)), use_container_width=True, hide_index=True)
     _dl_btn(plot_df, "new_advances_trend.xlsx", "dl_new_advances_trend")
 
 
@@ -164,7 +166,8 @@ def _render_new_advances_by_dimension(data: dict) -> None:
     for tab, (label, key) in zip(sub_tabs, dim_tabs_avail):
         with tab:
             df = data[key]
-            st.dataframe(_safe_df(df), use_container_width=True, hide_index=True)
+            _dim_ratio_cols = {"Avg Ticket (L)": ("Funded (Cr)", "Accounts This Month", 100)}
+            st.dataframe(_safe_df(append_total_row(df, ratio_cols=_dim_ratio_cols)), use_container_width=True, hide_index=True)
             _dl_btn(df, f"new_advances_{key}.xlsx", f"dl_new_advances_{key}")
 
 

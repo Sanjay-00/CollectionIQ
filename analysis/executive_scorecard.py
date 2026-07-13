@@ -194,6 +194,12 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
     }
     TIER_LABEL = {"top": "TOP", "mid": "MID", "bottom": "LOW"}
 
+    # Local import (not module-level): analysis/ is otherwise pure pandas,
+    # no UI dependency -- append_total_row lives in ui/components.py since
+    # every OTHER table's Total row goes through it too, and ui/components.py
+    # itself never imports back into analysis/, so this can't cycle.
+    from ui.components import append_total_row
+
     headers = [c for c in scorecard_df.columns if c != "Tier"]
     header_html = "".join(
         f'<th style="background:#111;color:#FFC000;padding:8px 12px;'
@@ -202,7 +208,22 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
     )
 
     rows_html = ""
-    for _, row in scorecard_df.iterrows():
+    _ratio_cols = {
+        "Collection %": ("Collected (L)", "Demand (L)", 100),
+        "NPA %":         ("NPA", "Accounts", 100),
+        "SMA-2 %":       ("SMA-2", "Accounts", 100),
+    }
+    df_display = append_total_row(scorecard_df[headers], ratio_cols=_ratio_cols)
+    n_data_rows = len(scorecard_df)
+    for i, row in df_display.iterrows():
+        if i == n_data_rows:
+            cells = "".join(
+                f'<td style="padding:8px 12px;font-size:13px;font-weight:800;'
+                f'border-top:2px solid #FFC000;">{f"{row[c]}%" if "%" in c and row[c] != "" else row[c]}</td>'
+                for c in headers
+            )
+            rows_html += f'<tr style="border-bottom:1px solid #e5e7eb;background:#fffbea;">{cells}</tr>'
+            continue
         tier = row.get("Tier", "mid")
         row_style, tier_color = TIER_STYLE.get(tier, TIER_STYLE["mid"])
         tier_badge = (

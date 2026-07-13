@@ -17,7 +17,7 @@ from ui.styles import inject_styles
 from ui.header import render_header
 from ui.landing import render_landing
 from ui.sidebar import render_sidebar
-from ui.components import _load_and_concat, _bump_data_version
+from ui.components import _load_and_concat, _bump_data_version, _file_fingerprint
 from analysis.executive_scorecard import compute_executive_scorecard
 from analysis.roll_rate import compute_roll_rate_matrix
 from ui.tabs.dashboard import render_dashboard_tab
@@ -115,7 +115,17 @@ with col_btn:
 
 # ── Load & cache data ─────────────────────────────────────────────────────────
 if generate and curr_file:
-    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region"]:
+    # Region/Branch/Status selectboxes in ui/sidebar.py persist their selected
+    # VALUE across reruns by widget key -- a value that happens to also exist
+    # in the newly-uploaded file's own Region/Branch/Status list (common
+    # across LCC extracts from the same NBFC) silently carries over and can
+    # filter the new data down to an unintended/near-empty slice, tripping
+    # "No data matches the selected filters" (looks like an error) instead of
+    # defaulting to "All". Popping the widget keys here forces every filter
+    # back to "All" on every fresh upload, not just when the old value
+    # happens to be absent from the new file.
+    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key",
+               "_sample_loaded", "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key"]:
         st.session_state.pop(_k, None)
 
     n_curr = len(curr_file) if isinstance(curr_file, list) else 1
@@ -141,7 +151,7 @@ if generate and curr_file:
 
     st.session_state["df_curr_raw"] = df_curr_raw
     st.session_state["df_prev_raw"] = df_prev_raw
-    _bump_data_version()
+    _bump_data_version(f"{_file_fingerprint(curr_file)}-{_file_fingerprint(prev_file)}")
     st.rerun()
 
 if "df_curr_raw" not in st.session_state:
@@ -208,7 +218,7 @@ if prev_file and len(df_prev_raw) == 0:
         # every downstream cached function would silently keep serving the
         # "no previous file" result forever after this point.
         st.session_state["df_prev_raw"] = df_prev_raw
-        _bump_data_version()
+        _bump_data_version(f"{_file_fingerprint(curr_file)}-{_file_fingerprint(prev_file)}")
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, curr_month)
@@ -220,7 +230,14 @@ sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, cu
 data_version = st.session_state.get("_data_version", 0)
 
 # ── Cached computation wrappers (module-level  -  registered once, not per rerun) ──
-@st.cache_data(show_spinner=False)
+# Every wrapper sets max_entries: st.cache_data's store is global to the server
+# process and unbounded by default, so without a limit each (data_version x
+# filter-combination) key accumulates its full result forever -- _cached_filter
+# alone holds two full DataFrame copies per entry, which on a shared deployment
+# grows until the process OOMs and restarts for every user. Limits are sized to
+# comfortably cover one session's realistic filter-browsing (eviction is LRU,
+# so an evicted combo just recomputes -- correctness is never affected).
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple = ()):
     df = apply_filters(_df_c.copy(), region, branch, status, segment)
     df_p = apply_filters(_df_p_raw.copy(), region, branch, status, segment)
@@ -239,11 +256,11 @@ def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: i
 # underscore-prefixed (never hashed), the filter tuple -- already in scope at
 # each call site -- is the only remaining signal that distinguishes e.g.
 # "Region=Pune" from "Region=Mumbai" in the cache key.
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_metrics(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     return compute_metrics(_df_c, _df_p)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     # These 3 chart builders used to run uncached directly inside
     # ui/tabs/dashboard.py's render function -- since Dashboard is tabs[0]
@@ -258,19 +275,19 @@ def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str
         build_closing_pc_chart(_df_c),
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str):
     return run_all_alerts(_df_c)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_scorecard(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     return compute_executive_scorecard(_df_c)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_roll_rate(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     return compute_roll_rate_matrix(_df_c, _df_p)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_portfolio_intel(
     _df_c: pd.DataFrame, _df_p: pd.DataFrame,
     data_version: int, region: str, branch: str, status: str, segment: tuple,

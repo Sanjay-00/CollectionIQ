@@ -1,5 +1,7 @@
 """Shared UI helpers used across multiple tab modules."""
 
+import hashlib
+import re
 from io import BytesIO
 
 import pandas as pd
@@ -7,18 +9,115 @@ import streamlit as st
 
 from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
 
+# Column-name tokens that mark a numeric column as non-summable: either an
+# identifier (Loan No, Cust Mob No, MNT CODE, Veh ID, DPD, Tenure, Rank) or
+# already an average/rate over its group (Avg Ticket (L), Avg Loan (L)) --
+# summing either across rows produces a meaningless number (a summed phone
+# number, or an "average of averages"), so append_total_row() leaves them
+# blank instead of guessing. Matched as whole words against the column name
+# so "NPA Count"/"Accounts" (genuinely summable) don't get caught by a loose
+# substring match.
+_NON_SUMMABLE_TOKENS = {"no", "number", "code", "id", "mob", "dpd", "tenure", "rank", "avg", "average", "mean"}
 
-def _bump_data_version() -> None:
+
+def _is_id_like_column(col: str) -> bool:
+    tokens = re.findall(r"[a-z]+", col.lower())
+    return any(t in _NON_SUMMABLE_TOKENS for t in tokens)
+
+
+def append_total_row(df: pd.DataFrame, ratio_cols: dict | None = None) -> pd.DataFrame:
+    """Append a synthetic 'Total' row to `df` for display.
+
+    - First column: literal "Total".
+    - Other text/object columns: repeat the column's own header (so a scan
+      down the Total row reads as labels, not blanks).
+    - Plain numeric columns: summed -- except id-like columns (see
+      _is_id_like_column), which are left blank rather than summed.
+    - Columns named in `ratio_cols` (e.g. {"Collection %": ("Collected",
+      "Month Demand")}) are recomputed as sum(numerator)/sum(denominator)*scale
+      rather than averaged, since averaging per-row percentages/averages is not
+      the same number as the portfolio-wide ratio. `scale` defaults to 100 (for
+      "%" columns) -- pass a 3-tuple (num_col, den_col, scale) for a non-percent
+      derived average like "Avg Ticket (L)" = Funded (Cr) / Accounts * 100 (the
+      Cr-to-L unit conversion). Both the ratio column and its numerator/
+      denominator must all be present in `df` (they don't need to be displayed
+      columns themselves, just present in the frame passed in here).
+
+    No-op (returns `df` unchanged) if `df` is empty -- there's nothing to
+    total, and an all-NaN/empty-string Total row on an empty table reads as a
+    display bug.
+    """
+    if df.empty:
+        return df
+    first_col = df.columns[0]
+    ratio_cols = ratio_cols or {}
+    total = {}
+    for col in df.columns:
+        if col == first_col:
+            total[col] = "Total"
+        elif col in ratio_cols:
+            spec = ratio_cols[col]
+            num_col, den_col = spec[0], spec[1]
+            scale = spec[2] if len(spec) > 2 else 100
+            num = pd.to_numeric(df[num_col], errors="coerce").sum() if num_col in df.columns else None
+            den = pd.to_numeric(df[den_col], errors="coerce").sum() if den_col in df.columns else None
+            total[col] = round(num / den * scale, 2) if den else 0.0
+        elif "%" in col:
+            # A %-named column with no explicit ratio_cols entry: summing (or
+            # averaging) per-row percentages doesn't produce a valid portfolio
+            # ratio, so leave it blank rather than show a misleading number.
+            total[col] = ""
+        elif pd.api.types.is_numeric_dtype(df[col]) and not _is_id_like_column(col):
+            s = pd.to_numeric(df[col], errors="coerce").sum()
+            total[col] = round(float(s), 2) if pd.api.types.is_float_dtype(df[col]) else int(s)
+        else:
+            total[col] = col
+    return pd.concat([df, pd.DataFrame([total])], ignore_index=True)
+
+
+def _file_fingerprint(files) -> str:
+    """SHA-256 fingerprint (first 16 hex chars) of one or more uploaded files'
+    raw bytes, used to build a globally-unique `_data_version` (see
+    _bump_data_version below). `.getvalue()` reads the buffer without
+    consuming it, so this is safe to call before the same file object is
+    later read by load_and_validate()."""
+    if not files:
+        return "none"
+    if not isinstance(files, list):
+        files = [files]
+    h = hashlib.sha256()
+    for f in files:
+        h.update(f.getvalue())
+    return h.hexdigest()[:16]
+
+
+def _bump_data_version(fingerprint: str | None = None) -> None:
     """Call exactly once at every point df_curr_raw/df_prev_raw are freshly
     assigned in session_state (a new "Generate Dashboard" click, the sample-data
     button, or the deferred prev-file auto-load). Every @st.cache_data-wrapped
-    function downstream keys on this counter instead of hashing the full
+    function downstream keys on this value instead of hashing the full
     DataFrame content -- Streamlit's default hasher walking a 50k-row x
     85-column frame on every rerun (even on a guaranteed cache hit) is the
     single biggest cost paid on every interaction with this app, not just
     actual filter changes. Missing a call site here means every downstream
-    cache silently serves stale data with no error -- never skip this."""
-    st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
+    cache silently serves stale data with no error -- never skip this.
+
+    `fingerprint` should be `_file_fingerprint(curr_file, prev_file)` (or
+    similar) for any real user upload. st.cache_data's cache is shared across
+    ALL sessions on the server process, not private per browser tab -- a bare
+    per-session incrementing counter lets two independent users' sessions
+    each start at the same count (e.g. both at 1 on their first upload) and
+    collide on an identical cache key despite completely different
+    underlying data, silently serving one user's results to another. Hashing
+    the actual uploaded bytes makes the key deterministic on content, so this
+    collision becomes structurally impossible instead of merely unlikely.
+    Falls back to a per-session counter only for the sample-data path, where
+    every session loads the exact same public GitHub file anyway, so sharing
+    that cache entry across sessions is correct behavior, not a privacy risk."""
+    if fingerprint is not None:
+        st.session_state["_data_version"] = fingerprint
+    else:
+        st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
 
 
 def _style_main_content_selectbox(color: str = "#fff") -> None:
@@ -83,7 +182,11 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
     )
 
 
-@st.cache_data(show_spinner=False)
+# max_entries=64: one entry per distinct table rendered behind a download
+# button (~20+ per full tab walk, x filter combinations). Excel bytes are
+# smaller than the DataFrames upstream, so the limit is looser -- but still
+# bounded, since by default st.cache_data keeps every entry forever.
+@st.cache_data(show_spinner=False, max_entries=64)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
     df.to_excel(buf, index=False, engine="openpyxl")

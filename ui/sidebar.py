@@ -15,7 +15,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         """, unsafe_allow_html=True)
 
         regions = ["All"] + sorted(df_curr_raw["RegionName"].dropna().unique().tolist())
-        sel_region = st.selectbox("Region", regions)
+        sel_region = st.selectbox("Region", regions, key="sel_region_key")
 
         # Reset branch when region changes
         if st.session_state.get("_prev_region") != sel_region:
@@ -30,7 +30,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         st.session_state["_sel_branch"] = sel_branch
 
         statuses = ["All"] + sorted(df_curr_raw["Loan Status"].dropna().unique().tolist())
-        sel_status = st.selectbox("Loan Status", statuses)
+        sel_status = st.selectbox("Loan Status", statuses, key="sel_status_key")
 
         _seg_col = next((c for c in ["SegmentName", "Segment"] if c in df_curr_raw.columns), None)
         if _seg_col:
@@ -84,7 +84,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
             # ("clear cache & reload") not actually being honored for this cache.
             for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result",
                        "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region",
-                       "_ai_query_cache"]:
+                       "_ai_query_cache", "sel_region_key", "sel_status_key"]:
                 st.session_state.pop(_k, None)
             st.rerun()
 

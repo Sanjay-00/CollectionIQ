@@ -13,3 +13,8 @@ bash.exe.stackdump
 requirements-dev.txt
 
 project_guide.md
+CLAUDE.md
+AGENTS.md
+
+sample_data/Dummy_Current_Month_15k.xlsx
+sample_data/Dummy_Previous_Month_13k.xlsx
