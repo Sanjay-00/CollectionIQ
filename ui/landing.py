@@ -93,6 +93,13 @@ def render_landing() -> None:
             try:
                 with st.spinner("Fetching sample data from GitHub..."):
                     _dc, _dp = _fetch_sample_from_github()
+                # Same reset app.py's Generate-click handler does -- a stale
+                # Region/Branch/Status selection left over from a real upload
+                # earlier in this session could otherwise silently carry over
+                # onto the sample data.
+                for _k in ["ai_result", "report_result", "_last_filter_key",
+                           "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key"]:
+                    st.session_state.pop(_k, None)
                 st.session_state["df_curr_raw"]       = _dc
                 st.session_state["df_prev_raw"]       = _dp
                 st.session_state["_sample_loaded"]    = True

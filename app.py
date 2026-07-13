@@ -115,7 +115,17 @@ with col_btn:
 
 # ── Load & cache data ─────────────────────────────────────────────────────────
 if generate and curr_file:
-    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region"]:
+    # Region/Branch/Status selectboxes in ui/sidebar.py persist their selected
+    # VALUE across reruns by widget key -- a value that happens to also exist
+    # in the newly-uploaded file's own Region/Branch/Status list (common
+    # across LCC extracts from the same NBFC) silently carries over and can
+    # filter the new data down to an unintended/near-empty slice, tripping
+    # "No data matches the selected filters" (looks like an error) instead of
+    # defaulting to "All". Popping the widget keys here forces every filter
+    # back to "All" on every fresh upload, not just when the old value
+    # happens to be absent from the new file.
+    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key",
+               "_sample_loaded", "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key"]:
         st.session_state.pop(_k, None)
 
     n_curr = len(curr_file) if isinstance(curr_file, list) else 1
