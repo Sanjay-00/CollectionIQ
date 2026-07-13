@@ -557,7 +557,21 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
     ir = ir or {}
 
     conditions = _expand_filters(ir.get("filters") or [], errs)
-    dims_raw = ir.get("dimensions") or []
+    # The Logical Planner's own prompt says "loan_table: ... No dimensions or
+    # measures needed" -- but an LLM doesn't always follow its own rules on an
+    # ambiguous query (e.g. "...regionwise and branchwise... give all cases
+    # individually and give all columns" pattern-matches BOTH the aggregation
+    # routing rule -- "by/per/across branch|region" -- AND the loan_table one
+    # -- "give all cases individually"). Without this guard, a stray
+    # dimensions list on a loan_table intent silently forces the
+    # SINGLE-PASS/group_aggregate branch below, collapsing the per-loan frame
+    # into one row per group -- then a later order_by/select referencing a raw
+    # per-loan column (e.g. "sort by Closing Arrears") fails to compile,
+    # since that column no longer exists post-aggregation. loan_table intent
+    # means "individual rows," full stop, so dimensions/measures are ignored
+    # for it here rather than trusted at face value.
+    ir_dims = [] if ir.get("intent") == "loan_table" else (ir.get("dimensions") or [])
+    dims_raw = ir_dims
     group_by: list[str] = []
     for d in dims_raw:
         if d in DIMENSIONS:

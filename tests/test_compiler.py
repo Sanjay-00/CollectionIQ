@@ -75,6 +75,53 @@ class TestShowAllColumns:
         assert any(step.get("op") == "select" and step["columns"] == ["Loan No"] for step in plan)
 
 
+class TestLoanTableIgnoresDimensions:
+    """Regression: a real query ("...regionwise and branchwise... give all
+    cases individually and give all columns") pattern-matched BOTH the
+    Logical Planner's aggregation routing rule ("by/per/across branch|
+    region") and its loan_table one ("give all cases individually"). The
+    model kept intent="loan_table" but still populated dimensions/measures --
+    contradicting its own prompt, which says loan_table needs neither.
+    Without this guard, the stray dimensions list forced the SINGLE-PASS/
+    group_aggregate branch, collapsing the per-loan frame to one row per
+    region/branch; a later order_by on a raw per-loan column ("Closing
+    Arrears") then failed to compile because that column no longer existed
+    post-aggregation. loan_table must mean individual rows regardless of
+    what dimensions/measures the model also attached."""
+
+    def test_dimensions_and_measures_ignored_when_intent_is_loan_table(self):
+        ir1 = {
+            "intent": "loan_table",
+            "filters": [{"column": "RegionName", "op": "==", "value": "PUNE"}],
+            "dimensions": ["region", "branch"],
+            "measures": [{"column": "SOH", "agg": "sum", "alias": "total_soh"}],
+            "order_by": [{"by": "SOH", "dir": "desc"}],
+            "show_all_columns": True,
+        }
+        plan, errs = compile_logical(ir1, list(_df().columns))
+        assert errs == []
+        assert not any(step.get("op") == "group_aggregate" for step in plan)
+        assert any(step.get("op") == "sort" and step["by"] == "SOH" for step in plan)
+
+        out, exec_err = execute_plan(_df(), plan)
+        assert exec_err == ""
+        # Per-loan rows survive (not collapsed to one row per region/branch).
+        assert len(out) == len(_df()[_df()["RegionName"] == "PUNE"])
+        assert "SOH" in out.columns
+
+    def test_dimensions_still_drive_group_by_for_aggregation_intent(self):
+        # Guard is intent-specific -- a genuine aggregation query must keep
+        # working exactly as before.
+        ir1 = {
+            "intent": "aggregation",
+            "dimensions": ["region"],
+            "measures": [{"column": "SOH", "agg": "sum", "alias": "total_soh"}],
+        }
+        plan, errs = compile_logical(ir1, list(_df().columns))
+        assert errs == []
+        assert any(step.get("op") == "group_aggregate" for step in plan)
+
+
 class TestConceptExpansion:
     def test_colending_at_risk_expands_to_both_conditions(self):
         plan, errs = compile_logical(
