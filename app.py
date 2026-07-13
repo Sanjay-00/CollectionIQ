@@ -230,7 +230,14 @@ sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, cu
 data_version = st.session_state.get("_data_version", 0)
 
 # ── Cached computation wrappers (module-level  -  registered once, not per rerun) ──
-@st.cache_data(show_spinner=False)
+# Every wrapper sets max_entries: st.cache_data's store is global to the server
+# process and unbounded by default, so without a limit each (data_version x
+# filter-combination) key accumulates its full result forever -- _cached_filter
+# alone holds two full DataFrame copies per entry, which on a shared deployment
+# grows until the process OOMs and restarts for every user. Limits are sized to
+# comfortably cover one session's realistic filter-browsing (eviction is LRU,
+# so an evicted combo just recomputes -- correctness is never affected).
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple = ()):
     df = apply_filters(_df_c.copy(), region, branch, status, segment)
     df_p = apply_filters(_df_p_raw.copy(), region, branch, status, segment)
@@ -249,11 +256,11 @@ def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: i
 # underscore-prefixed (never hashed), the filter tuple -- already in scope at
 # each call site -- is the only remaining signal that distinguishes e.g.
 # "Region=Pune" from "Region=Mumbai" in the cache key.
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_metrics(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     return compute_metrics(_df_c, _df_p)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     # These 3 chart builders used to run uncached directly inside
     # ui/tabs/dashboard.py's render function -- since Dashboard is tabs[0]
@@ -268,19 +275,19 @@ def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str
         build_closing_pc_chart(_df_c),
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str):
     return run_all_alerts(_df_c)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_scorecard(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     return compute_executive_scorecard(_df_c)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_roll_rate(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
     return compute_roll_rate_matrix(_df_c, _df_p)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_portfolio_intel(
     _df_c: pd.DataFrame, _df_p: pd.DataFrame,
     data_version: int, region: str, branch: str, status: str, segment: tuple,

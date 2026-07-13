@@ -32,7 +32,7 @@ _GRANULARITY_OPTIONS = ["Monthly", "Quarterly", "Half-Yearly", "Yearly", "Financ
 # curr_month + this tab's own widget values are the cheap, explicit,
 # accuracy-preserving cache key -- any one of them changing is a cache miss,
 # so a genuinely different result is never served stale.
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_new_advances_trend(
     _df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
     curr_month: str, months, granularity: str,
@@ -41,7 +41,7 @@ def _cached_new_advances_trend(
     return roll_new_advances_trend(trend_df, granularity)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_vintage_rollup(
     _vintage_df: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
     granularity: str,

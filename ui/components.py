@@ -182,7 +182,11 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
     )
 
 
-@st.cache_data(show_spinner=False)
+# max_entries=64: one entry per distinct table rendered behind a download
+# button (~20+ per full tab walk, x filter combinations). Excel bytes are
+# smaller than the DataFrames upstream, so the limit is looser -- but still
+# bounded, since by default st.cache_data keeps every entry forever.
+@st.cache_data(show_spinner=False, max_entries=64)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
     df.to_excel(buf, index=False, engine="openpyxl")

@@ -6,7 +6,7 @@ import streamlit as st
 from ui.components import _bump_data_version
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1)
 def _fetch_sample_from_github():
     import urllib.request
     from utils import load_and_validate
