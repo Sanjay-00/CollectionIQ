@@ -7,7 +7,7 @@ import streamlit as st
 
 from ui.components import (
     _dl_btn, _safe_df, _kpi_card_html, _static_kpi_card_html,
-    _npa_pct_color, _sma2_pct_color, _chart_card, _divider,
+    _npa_pct_color, _sma2_pct_color, _chart_card, _divider, append_total_row,
 )
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS,
@@ -115,7 +115,16 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
     )
 
     rows_html = ""
-    for _, row in df.iterrows():
+    df_display = append_total_row(df[display_cols])
+    n_data_rows = len(df)
+    for i, row in df_display.iterrows():
+        if i == n_data_rows:
+            cells = "".join(
+                f'<td style="padding:7px 12px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;">{row[c]}</td>'
+                for c in display_cols
+            )
+            rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
+            continue
         status = str(row.get("Status", "-"))
         row_bg = "#fff5f5" if status == "Worsening" else ("#f0fdf4" if status == "Improving" else "#fff")
         cells = ""
@@ -218,7 +227,22 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
                 for c in show_cols
             )
             rows_html = ""
-            for _, row in df.iterrows():
+            _ratio_cols = {
+                "Overdue Collection %": ("Overdue Collection (Cr)", "Overdue (Cr)"),
+                "Month Demand Collection %": ("Month Demand Collection (Cr)", "Month Demand (Cr)"),
+            }
+            df_display = append_total_row(df[show_cols], ratio_cols=_ratio_cols)
+            n_data_rows = len(df)
+            for i, row in df_display.iterrows():
+                if i == n_data_rows:
+                    cells = "".join(
+                        f'<td style="padding:6px 10px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;'
+                        f'text-align:{"left" if c in (col, *identity_cols) else "center"};">'
+                        f'{f"{row[c]:.2f}%" if c in _PCT_COLS and row[c] != "" else row[c]}</td>'
+                        for c in show_cols
+                    )
+                    rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
+                    continue
                 cells = ""
                 for c in show_cols:
                     val = row[c]
@@ -303,7 +327,7 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
                     "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)", "Concern Score",
                 ] if c in branch_df.columns]
                 _branch_display_df = branch_df[_branch_display_cols]
-                st.dataframe(_safe_df(_branch_display_df), use_container_width=True, hide_index=True)
+                st.dataframe(_safe_df(append_total_row(_branch_display_df)), use_container_width=True, hide_index=True)
                 _dl_btn(_branch_display_df, "branch_quadrant.xlsx", "dl_branch_quad")
         else:
             st.info("No branch data (Unit column not found).")
@@ -398,9 +422,20 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                 for c in show_cols if c in df.columns
             )
             rows_html = ""
-            for _, row in df.iterrows():
+            _show_cols_present = [c for c in show_cols if c in df.columns]
+            df_display = append_total_row(df[_show_cols_present])
+            n_data_rows = len(df)
+            for i, row in df_display.iterrows():
+                if i == n_data_rows:
+                    cells = "".join(
+                        f'<td style="padding:6px 10px;font-size:12px;text-align:{"left" if c in (col, *identity_cols) else "center"};'
+                        f'font-weight:800;border-top:2px solid #FFC000;">{row[c]}</td>'
+                        for c in _show_cols_present
+                    )
+                    rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
+                    continue
                 cells = ""
-                for c in [c for c in show_cols if c in df.columns]:
+                for c in _show_cols_present:
                     val = row[c]
                     align = "left" if c in (col, *identity_cols) else "center"
                     style = f"padding:6px 10px;font-size:12px;text-align:{align};"
@@ -555,11 +590,22 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
         for i, h in enumerate(headers)
     )
     rows_html = ""
-    for _, row in df.iterrows():
+    df_display = append_total_row(df)
+    n_data_rows = len(df)
+    for i, row in df_display.iterrows():
+        if i == n_data_rows:
+            cells = "".join(
+                f'<td style="padding:6px 10px;font-size:12px;text-align:{"left" if j == 0 else "right"};'
+                f'font-weight:800;border-top:2px solid #FFC000;">'
+                f'{f"{row[c]:,}" if isinstance(row[c], (int, float)) and row[c] != "" else row[c]}</td>'
+                for j, c in enumerate(headers)
+            )
+            rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
+            continue
         cells = ""
-        for i, col in enumerate(headers):
+        for i2, col in enumerate(headers):
             val = row[col]
-            align = "left" if i == 0 else "right"
+            align = "left" if i2 == 0 else "right"
             style = f"padding:6px 10px;font-size:12px;text-align:{align};"
             if col == npa_col:
                 c = _npa_pct_color(val)
@@ -669,7 +715,17 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
         for h in headers
     )
     rows_html = ""
-    for _, row in df.iterrows():
+    df_display = append_total_row(df)
+    n_data_rows = len(df)
+    for i, row in df_display.iterrows():
+        if i == n_data_rows:
+            cells = "".join(
+                f'<td style="padding:7px 10px;font-size:12px;text-align:{"left" if h == "Executive" else "center"};'
+                f'font-weight:800;border-top:2px solid #FFC000;">{row[h]}</td>'
+                for h in headers
+            )
+            rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
+            continue
         net = row.get("Net Recovery", 0)
         row_bg = "#f0fdf4" if net > 0 else ("#fff5f5" if net < 0 else "#fff")
         cells = ""

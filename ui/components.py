@@ -1,5 +1,7 @@
 """Shared UI helpers used across multiple tab modules."""
 
+import hashlib
+import re
 from io import BytesIO
 
 import pandas as pd
@@ -7,6 +9,70 @@ import streamlit as st
 
 from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
 
+# Column-name tokens that mark a numeric column as non-summable: either an
+# identifier (Loan No, Cust Mob No, MNT CODE, Veh ID, DPD, Tenure, Rank) or
+# already an average/rate over its group (Avg Ticket (L), Avg Loan (L)) --
+# summing either across rows produces a meaningless number (a summed phone
+# number, or an "average of averages"), so append_total_row() leaves them
+# blank instead of guessing. Matched as whole words against the column name
+# so "NPA Count"/"Accounts" (genuinely summable) don't get caught by a loose
+# substring match.
+_NON_SUMMABLE_TOKENS = {"no", "number", "code", "id", "mob", "dpd", "tenure", "rank", "avg", "average", "mean"}
+
+
+def _is_id_like_column(col: str) -> bool:
+    tokens = re.findall(r"[a-z]+", col.lower())
+    return any(t in _NON_SUMMABLE_TOKENS for t in tokens)
+
+
+def append_total_row(df: pd.DataFrame, ratio_cols: dict | None = None) -> pd.DataFrame:
+    """Append a synthetic 'Total' row to `df` for display.
+
+    - First column: literal "Total".
+    - Other text/object columns: repeat the column's own header (so a scan
+      down the Total row reads as labels, not blanks).
+    - Plain numeric columns: summed -- except id-like columns (see
+      _is_id_like_column), which are left blank rather than summed.
+    - Columns named in `ratio_cols` (e.g. {"Collection %": ("Collected",
+      "Month Demand")}) are recomputed as sum(numerator)/sum(denominator)*scale
+      rather than averaged, since averaging per-row percentages/averages is not
+      the same number as the portfolio-wide ratio. `scale` defaults to 100 (for
+      "%" columns) -- pass a 3-tuple (num_col, den_col, scale) for a non-percent
+      derived average like "Avg Ticket (L)" = Funded (Cr) / Accounts * 100 (the
+      Cr-to-L unit conversion). Both the ratio column and its numerator/
+      denominator must all be present in `df` (they don't need to be displayed
+      columns themselves, just present in the frame passed in here).
+
+    No-op (returns `df` unchanged) if `df` is empty -- there's nothing to
+    total, and an all-NaN/empty-string Total row on an empty table reads as a
+    display bug.
+    """
+    if df.empty:
+        return df
+    first_col = df.columns[0]
+    ratio_cols = ratio_cols or {}
+    total = {}
+    for col in df.columns:
+        if col == first_col:
+            total[col] = "Total"
+        elif col in ratio_cols:
+            spec = ratio_cols[col]
+            num_col, den_col = spec[0], spec[1]
+            scale = spec[2] if len(spec) > 2 else 100
+            num = pd.to_numeric(df[num_col], errors="coerce").sum() if num_col in df.columns else None
+            den = pd.to_numeric(df[den_col], errors="coerce").sum() if den_col in df.columns else None
+            total[col] = round(num / den * scale, 2) if den else 0.0
+        elif "%" in col:
+            # A %-named column with no explicit ratio_cols entry: summing (or
+            # averaging) per-row percentages doesn't produce a valid portfolio
+            # ratio, so leave it blank rather than show a misleading number.
+            total[col] = ""
+        elif pd.api.types.is_numeric_dtype(df[col]) and not _is_id_like_column(col):
+            s = pd.to_numeric(df[col], errors="coerce").sum()
+            total[col] = round(float(s), 2) if pd.api.types.is_float_dtype(df[col]) else int(s)
+        else:
+            total[col] = col
+    return pd.concat([df, pd.DataFrame([total])], ignore_index=True)
 
 def _bump_data_version() -> None:
     """Call exactly once at every point df_curr_raw/df_prev_raw are freshly
