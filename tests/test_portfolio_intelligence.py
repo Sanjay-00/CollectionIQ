@@ -375,14 +375,20 @@ class TestComputeNewAdvances:
         assert out["accounts_mom_pct"] is None
 
     def test_segment_breakdown_gated_by_min_accounts(self):
+        # Threshold-relative: builds one segment at the threshold and one just
+        # below it, so retuning MIN_ACCOUNTS_PRODUCT_SEGMENT doesn't break this.
+        from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
         curr = make_df(
-            [{"Ag_Date": pd.Timestamp("2026-06-01"), "Loan Amount": 100_000.0, "SegmentName": "CV"}] * 11
-            + [{"Ag_Date": pd.Timestamp("2026-06-02"), "Loan Amount": 100_000.0, "SegmentName": "TINY"}] * 3
+            [{"Ag_Date": pd.Timestamp("2026-06-01"), "Loan Amount": 100_000.0, "SegmentName": "CV"}]
+            * MIN_ACCOUNTS_PRODUCT_SEGMENT
+            + [{"Ag_Date": pd.Timestamp("2026-06-02"), "Loan Amount": 100_000.0, "SegmentName": "TINY"}]
+            * (MIN_ACCOUNTS_PRODUCT_SEGMENT - 1)
         )
         out = compute_new_advances(curr, as_of="2026-06-30")
         segs = out["segment"]["Segment"].tolist()
         assert "CV" in segs
-        assert "TINY" not in segs
+        if MIN_ACCOUNTS_PRODUCT_SEGMENT > 1:
+            assert "TINY" not in segs
 
     def test_empty_df_returns_zeroed_result(self):
         out = compute_new_advances(make_df([]), as_of="2026-06-30")
@@ -921,14 +927,29 @@ class TestComputeRiskFlagComparison:
 # ── compute_product_analysis ─────────────────────────────────────────────────
 
 class TestComputeProductAnalysis:
+    # Threshold-relative (reads MIN_ACCOUNTS_PRODUCT_SEGMENT from config)
+    # rather than hardcoding the value, so retuning the constant doesn't
+    # break these tests -- only the behavior they assert.
+
     def test_segment_below_min_n_excluded(self):
-        curr = make_df([{"SegmentName": "TINY", "curr_bucket": "STD"} for _ in range(4)])
+        from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
+        if MIN_ACCOUNTS_PRODUCT_SEGMENT <= 1:
+            pytest.skip("threshold is 1 -- no below-threshold group can exist")
+        curr = make_df([{"SegmentName": "TINY", "curr_bucket": "STD"}
+                        for _ in range(MIN_ACCOUNTS_PRODUCT_SEGMENT - 1)])
         out = compute_product_analysis(curr)
         assert "segment" not in out or "TINY" not in out.get("segment", pd.DataFrame()).get("Segment", [])
 
+    def test_segment_at_threshold_included(self):
+        from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
+        curr = make_df([{"SegmentName": "TINY", "curr_bucket": "STD"}
+                        for _ in range(MIN_ACCOUNTS_PRODUCT_SEGMENT)])
+        out = compute_product_analysis(curr)
+        assert "TINY" in out["segment"]["Segment"].tolist()
+
     def test_segment_metrics_when_above_threshold(self):
-        # MIN_ACCOUNTS_PRODUCT_SEGMENT = 11 (strictly more than 10 accounts) --
-        # 12 total (4 NPA + 8 STD) clears it while keeping the same 33.33% ratio.
+        # 12 total (4 NPA + 8 STD) clears any historical threshold value
+        # (was 11, now 1) while keeping the same 33.33% ratio.
         curr = make_df([
             *[{"SegmentName": "RETAIL", "curr_bucket": b} for b in ["NPA"] * 4 + ["STD"] * 8],
         ])

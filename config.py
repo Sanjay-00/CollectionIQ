@@ -65,8 +65,11 @@ SCORECARD_MIN_ACCOUNTS = 5
 MIN_ACCOUNTS_DIMENSION_BREAKDOWN = 3
 
 # Vehicle segment / fuel type breakdowns. _group_npa_table keeps a group when
-# n >= this value, so 11 enforces "more than 10 accounts" (strictly >10).
-MIN_ACCOUNTS_PRODUCT_SEGMENT = 11
+# n >= this value. 1 means every segment shows, however small -- chosen so a
+# newly-launched business line (e.g. a segment with 2 loans) is visible from
+# its first month instead of hidden until it crosses a materiality floor.
+# (Was 11, i.e. "strictly more than 10 accounts", before that call.)
+MIN_ACCOUNTS_PRODUCT_SEGMENT = 1
 
 # Sourcing channel and disbursement-vintage cohort breakdowns
 MIN_ACCOUNTS_SOURCE_VINTAGE = 10

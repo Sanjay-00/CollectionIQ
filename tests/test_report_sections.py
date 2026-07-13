@@ -312,7 +312,7 @@ class TestComputeProductAnalysisSection:
         assert compute_product_analysis_section(curr) is None
 
     def test_returns_segment_rows_only(self):
-        # MIN_ACCOUNTS_PRODUCT_SEGMENT = 11 -- needs strictly more than 10 accounts.
+        # 12 accounts clears MIN_ACCOUNTS_PRODUCT_SEGMENT at any historical value (was 11, now 1).
         rows = [{"SegmentName": "AUTO", "curr_bucket": "NPA"}] * 6 + [{"SegmentName": "AUTO", "curr_bucket": "STD"}] * 6
         curr = make_df(rows)
         result = compute_product_analysis_section(curr)
