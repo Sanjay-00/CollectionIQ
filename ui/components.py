@@ -74,17 +74,50 @@ def append_total_row(df: pd.DataFrame, ratio_cols: dict | None = None) -> pd.Dat
             total[col] = col
     return pd.concat([df, pd.DataFrame([total])], ignore_index=True)
 
-def _bump_data_version() -> None:
+
+def _file_fingerprint(files) -> str:
+    """SHA-256 fingerprint (first 16 hex chars) of one or more uploaded files'
+    raw bytes, used to build a globally-unique `_data_version` (see
+    _bump_data_version below). `.getvalue()` reads the buffer without
+    consuming it, so this is safe to call before the same file object is
+    later read by load_and_validate()."""
+    if not files:
+        return "none"
+    if not isinstance(files, list):
+        files = [files]
+    h = hashlib.sha256()
+    for f in files:
+        h.update(f.getvalue())
+    return h.hexdigest()[:16]
+
+
+def _bump_data_version(fingerprint: str | None = None) -> None:
     """Call exactly once at every point df_curr_raw/df_prev_raw are freshly
     assigned in session_state (a new "Generate Dashboard" click, the sample-data
     button, or the deferred prev-file auto-load). Every @st.cache_data-wrapped
-    function downstream keys on this counter instead of hashing the full
+    function downstream keys on this value instead of hashing the full
     DataFrame content -- Streamlit's default hasher walking a 50k-row x
     85-column frame on every rerun (even on a guaranteed cache hit) is the
     single biggest cost paid on every interaction with this app, not just
     actual filter changes. Missing a call site here means every downstream
-    cache silently serves stale data with no error -- never skip this."""
-    st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
+    cache silently serves stale data with no error -- never skip this.
+
+    `fingerprint` should be `_file_fingerprint(curr_file, prev_file)` (or
+    similar) for any real user upload. st.cache_data's cache is shared across
+    ALL sessions on the server process, not private per browser tab -- a bare
+    per-session incrementing counter lets two independent users' sessions
+    each start at the same count (e.g. both at 1 on their first upload) and
+    collide on an identical cache key despite completely different
+    underlying data, silently serving one user's results to another. Hashing
+    the actual uploaded bytes makes the key deterministic on content, so this
+    collision becomes structurally impossible instead of merely unlikely.
+    Falls back to a per-session counter only for the sample-data path, where
+    every session loads the exact same public GitHub file anyway, so sharing
+    that cache entry across sessions is correct behavior, not a privacy risk."""
+    if fingerprint is not None:
+        st.session_state["_data_version"] = fingerprint
+    else:
+        st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
 
 
 def _style_main_content_selectbox(color: str = "#fff") -> None:

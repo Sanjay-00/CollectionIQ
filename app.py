@@ -17,7 +17,7 @@ from ui.styles import inject_styles
 from ui.header import render_header
 from ui.landing import render_landing
 from ui.sidebar import render_sidebar
-from ui.components import _load_and_concat, _bump_data_version
+from ui.components import _load_and_concat, _bump_data_version, _file_fingerprint
 from analysis.executive_scorecard import compute_executive_scorecard
 from analysis.roll_rate import compute_roll_rate_matrix
 from ui.tabs.dashboard import render_dashboard_tab
@@ -141,7 +141,7 @@ if generate and curr_file:
 
     st.session_state["df_curr_raw"] = df_curr_raw
     st.session_state["df_prev_raw"] = df_prev_raw
-    _bump_data_version()
+    _bump_data_version(f"{_file_fingerprint(curr_file)}-{_file_fingerprint(prev_file)}")
     st.rerun()
 
 if "df_curr_raw" not in st.session_state:
@@ -208,7 +208,7 @@ if prev_file and len(df_prev_raw) == 0:
         # every downstream cached function would silently keep serving the
         # "no previous file" result forever after this point.
         st.session_state["df_prev_raw"] = df_prev_raw
-        _bump_data_version()
+        _bump_data_version(f"{_file_fingerprint(curr_file)}-{_file_fingerprint(prev_file)}")
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, curr_month)
