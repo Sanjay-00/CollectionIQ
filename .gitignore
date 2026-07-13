@@ -13,3 +13,5 @@ bash.exe.stackdump
 requirements-dev.txt
 
 project_guide.md
+CLAUDE.md
+AGENTS.md
