@@ -65,7 +65,7 @@ def _parse_date_column(col: pd.Series) -> tuple[pd.Series, int, int]:
 
     raw_blank = col.isna() | col.astype(str).str.strip().str.lower().isin(["", "nan", "none", "nat"])
 
-    is_dt_obj = col.map(lambda v: isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date)))
+    is_dt_obj = col.map(lambda v: isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date))) #various date formats
     # bool is a subclass of int, so pd.to_numeric() silently accepts a stray
     # True/False in a date column and converts it into a (wrong) serial date
     # instead of failing -- exclude it so it falls through to the string

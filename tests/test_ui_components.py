@@ -16,7 +16,7 @@ import warnings
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _excel_bytes, _kpi_card_html, _load_and_concat
+from ui.components import _dl_btn, _esc, _excel_bytes, _kpi_card_html, _load_and_concat
 from test_utils import _build_upload
 from utils import REQUIRED_COLS
 
@@ -42,6 +42,44 @@ class TestDlBtnCaching:
         df1 = pd.DataFrame({"a": [1, 2, 3]})
         df2 = pd.DataFrame({"a": [9, 9, 9]})  # same shape, different content
         assert _excel_bytes(df1) != _excel_bytes(df2)
+
+
+class TestEsc:
+    """_esc guards every data-originated value interpolated into
+    unsafe_allow_html f-strings across ui/ -- manually-typed LCC fields
+    (Unit, MNT NAME, SegmentName...) and Gemini/planner output can contain
+    &, <, > that would otherwise break table markup or inject markup."""
+
+    def test_escapes_html_metacharacters_in_strings(self):
+        assert _esc("R&B MOTORS") == "R&amp;B MOTORS"
+        assert _esc("<script>alert(1)</script>") == "&lt;script&gt;alert(1)&lt;/script&gt;"
+
+    def test_escapes_quotes_for_attribute_safety(self):
+        # Used inside title="..." attributes (_top5_breakdown), so quotes
+        # must be escaped too (html.escape quote=True).
+        assert '"' not in _esc('BRANCH "MAIN"')
+
+    def test_non_strings_pass_through_unchanged(self):
+        # Numbers routinely continue into format specs (f"{_esc(v):.1f}");
+        # None is handled by callers' own "- " fallbacks.
+        assert _esc(42) == 42
+        assert _esc(3.14) == 3.14
+        assert _esc(None) is None
+
+    def test_scorecard_table_escapes_executive_names(self):
+        # End-to-end: a malicious/awkward MNT NAME must not survive into the
+        # rendered scorecard HTML as live markup.
+        from analysis.executive_scorecard import build_scorecard_table_html
+
+        df = pd.DataFrame([{
+            "Rank": 1,
+            "Executive (Branch)": 'EVIL <img src=x onerror=alert(1)> & CO (PUNE)',
+            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
+            "NPA": 0, "SMA-2": 1, "Tier": "top",
+        }])
+        out = build_scorecard_table_html(df)
+        assert "<img" not in out
+        assert "&lt;img" in out
 
     def test_dl_btn_renders_for_distinct_keys(self):
         df = pd.DataFrame({"a": [1, 2, 3]})

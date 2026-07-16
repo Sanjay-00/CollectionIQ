@@ -1,6 +1,7 @@
 """Shared UI helpers used across multiple tab modules."""
 
 import hashlib
+import html
 import re
 from io import BytesIO
 
@@ -8,6 +9,28 @@ import pandas as pd
 import streamlit as st
 
 from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
+
+
+def _esc(val):
+    """html.escape for DATA-ORIGINATED values interpolated into
+    unsafe_allow_html f-string HTML across the ui/ layer.
+
+    LCC fields like Unit/RegionName/MNT NAME/SegmentName are manually typed
+    at origination and can legitimately contain &, <, > (e.g. "R&B MOTORS",
+    "AUTO <PUNE>") -- unescaped, those break the surrounding table markup,
+    and since uploads are user-supplied they're also a stored-XSS vector on
+    a shared deployment. Gemini/planner output (query titles, insight
+    bullets, plan descriptions) is the same risk class and must go through
+    here too. report_agent/nodes/report_builder.py has its own _esc for the
+    same reason; this is the dashboard-side twin.
+
+    Strings are escaped (quote=True so it's also safe inside attribute
+    values like title="..."); everything else (numbers headed into a format
+    spec, None) passes through unchanged. Code-defined literals (static
+    labels, bucket names) don't need this -- apply it at the point where a
+    value from the uploaded frame or an LLM reaches an f-string.
+    """
+    return html.escape(val, quote=True) if isinstance(val, str) else val
 
 # Column-name tokens that mark a numeric column as non-summable: either an
 # identifier (Loan No, Cust Mob No, MNT CODE, Veh ID, DPD, Tenure, Rank) or

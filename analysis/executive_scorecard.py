@@ -3,6 +3,8 @@ Field Executive Performance Scorecard
 Groups by MNT NAME and computes per-executive collection metrics.
 Performance tiers are quartile-based (relative to the dataset) - not hardcoded thresholds.
 """
+import html
+
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
@@ -235,9 +237,12 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
         for col in headers:
             val = row[col]
             if col == "Executive (Branch)":
+                # MNT NAME/Unit are manually-typed LCC fields -- escape so an
+                # &, <, > in a real name can't break the table markup (same
+                # rule as report_builder.py's _esc and ui/components.py's).
                 cells += (
                     f'<td style="padding:8px 12px;font-size:13px;font-weight:600;">'
-                    f'{val} &nbsp;{tier_badge}</td>'
+                    f'{html.escape(str(val))} &nbsp;{tier_badge}</td>'
                 )
             elif col == "Collection %":
                 coll_color = "#16a34a" if val > 100 else "#d97706" if val >= 90 else "#dc2626"
@@ -268,7 +273,7 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
                 color = "#d97706" if val > 0 else "#16a34a"
                 cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{val}</td>'
             else:
-                cells += f'<td style="padding:8px 12px;font-size:13px;">{val}</td>'
+                cells += f'<td style="padding:8px 12px;font-size:13px;">{html.escape(val) if isinstance(val, str) else val}</td>'
         rows_html += (
             f'<tr style="{row_style}border-bottom:1px solid #e5e7eb;">{cells}</tr>'
         )
