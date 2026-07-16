@@ -652,7 +652,7 @@ def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
 
 def _mom_pct(curr, prev):
     if prev == 0:
-        return 0.0
+        return None  # no prior-period base to compare against, not "no change"
     return round((curr - prev) / abs(prev) * 100, 2)
 
 
@@ -899,14 +899,18 @@ def build_html_export(
     INVERSE = {"NPA %", "Hard Bucket %"}
 
     def _card(label, value, mom, unit="", inverse=False):
-        arrow = "&#9650;" if mom >= 0 else "&#9660;"
-        color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
+        if mom is None:
+            mom_html = '<span style="color:#9ca3af;font-weight:700;">no prev data</span>'
+        else:
+            arrow = "&#9650;" if mom >= 0 else "&#9660;"
+            color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
+            mom_html = f'<span style="color:{color};font-weight:700;">{arrow} {abs(mom):.2f}%</span>'
         return (
             f'<div style="background:#fff;border:1px solid #e5e7eb;border-bottom:3px solid {YELLOW};'
             f'border-radius:10px;padding:16px 14px;min-width:120px;flex:1;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
             f'<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">{label}</div>'
             f'<div style="font-size:26px;font-weight:800;color:#111827;line-height:1;letter-spacing:-0.5px;">{value}{unit}</div>'
-            f'<div style="font-size:11px;margin-top:8px;color:#9ca3af;">MoM <span style="color:{color};font-weight:700;">{arrow} {abs(mom):.2f}%</span></div>'
+            f'<div style="font-size:11px;margin-top:8px;color:#9ca3af;">MoM {mom_html}</div>'
             f'</div>'
         )
 

@@ -96,19 +96,24 @@ def _sec_label(title, color="#111827"):
 
 
 def _kpi_card(k, v, prev_lbl):
-    mom      = v.get("mom", 0)
-    inverse  = k in _INVERSE_KPIS
-    if inverse:
-        mom_bg  = "rgba(220,38,38,0.10)"  if mom >= 0 else "rgba(22,163,74,0.10)"
-        mom_col = "#dc2626"               if mom >= 0 else "#16a34a"
-    else:
-        mom_bg  = "rgba(22,163,74,0.10)"  if mom >= 0 else "rgba(220,38,38,0.10)"
-        mom_col = "#16a34a"               if mom >= 0 else "#dc2626"
-
-    arrow    = "&#9650;" if mom >= 0 else "&#9660;"
+    mom      = v.get("mom")
     badge    = _tl_badge(v.get("traffic", ""))
     prev_fmt = v.get("prev_formatted", "&#8212;")
     curr_fmt = v.get("formatted", "&#8212;")
+
+    if mom is None:
+        mom_bg, mom_col = "rgba(156,163,175,0.10)", "#9ca3af"
+        mom_badge = "no prev data"
+    else:
+        inverse = k in _INVERSE_KPIS
+        if inverse:
+            mom_bg  = "rgba(220,38,38,0.10)"  if mom >= 0 else "rgba(22,163,74,0.10)"
+            mom_col = "#dc2626"               if mom >= 0 else "#16a34a"
+        else:
+            mom_bg  = "rgba(22,163,74,0.10)"  if mom >= 0 else "rgba(220,38,38,0.10)"
+            mom_col = "#16a34a"               if mom >= 0 else "#dc2626"
+        arrow = "&#9650;" if mom >= 0 else "&#9660;"
+        mom_badge = f"{arrow} {abs(mom):.1f}%"
 
     return (
         f'<div style="background:#fff;border:1px solid #e5e7eb;border-bottom:3px solid {YELLOW};'
@@ -130,7 +135,7 @@ def _kpi_card(k, v, prev_lbl):
         f'</td>'
         f'<td align="right" valign="middle">'
         f'<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;'
-        f'background:{mom_bg};color:{mom_col};">{arrow} {abs(mom):.1f}%</span>'
+        f'background:{mom_bg};color:{mom_col};">{mom_badge}</span>'
         f'</td>'
         f'</tr></table>'
         f'</div>'

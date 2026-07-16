@@ -487,10 +487,15 @@ class TestComputeMetrics:
         metrics = compute_metrics(curr, prev)
         assert check(metrics["Collection %"][1])
 
-    def test_empty_prev_gives_zero_mom(self):
+    def test_empty_prev_gives_none_mom(self):
+        # No previous-month file uploaded (or a prior-period value of exactly
+        # 0) is "no prior data to compare against", not "0% change" -- a
+        # metric that goes from 0 to something must not read as flat/no-move.
+        # ui/components.py::_kpi_card_html renders delta=None as "no prev
+        # data" instead of a misleading 0.00% arrow.
         df = make_df([{"Month Collection (Excluding Reserve Collection)": 5_000.0}])
         metrics = compute_metrics(df, make_df([]))
-        assert metrics["Collection %"][1] == 0.0
+        assert metrics["Collection %"][1] is None
 
     def test_result_shape_is_stable(self):
         # Every consumer (dashboard cards, report portfolio_health section)
