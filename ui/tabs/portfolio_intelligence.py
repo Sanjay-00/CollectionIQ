@@ -769,9 +769,10 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
 
     with col_fleet:
         st.markdown(f'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure ({FLEET_MIN_LOANS}+ Loans per Customer)</div>', unsafe_allow_html=True)
-        cnt     = fleet.get("count", 0)
-        soh     = fleet.get("total_soh_cr", 0.0)
-        npa_ops = fleet.get("npa_operators", 0)
+        cnt      = fleet.get("count", 0)
+        soh      = fleet.get("total_soh_cr", 0.0)
+        npa_ops  = fleet.get("npa_operators", 0)
+        excluded = fleet.get("excluded_blank_mobile_loans", 0)
         if cnt == 0:
             st.info(f"No fleet operators found (no customer with {FLEET_MIN_LOANS}+ loans). Uses Cust Mob No as customer identifier.")
         else:
@@ -789,6 +790,8 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
                 with st.expander("Top 20 Fleet Operators by SOH", expanded=False):
                     st.dataframe(_safe_df(top_fleet), use_container_width=True, hide_index=True)
                     _dl_btn(top_fleet, "fleet_operators.xlsx", "dl_fleet")
+        if excluded > 0:
+            st.caption(f"ℹ️ {excluded:,} loan(s) with no mobile number on file were excluded from fleet detection (can't be grouped by customer).")
 
     with col_top:
         st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Top 20 At-Risk Accounts by SOH</div>', unsafe_allow_html=True)

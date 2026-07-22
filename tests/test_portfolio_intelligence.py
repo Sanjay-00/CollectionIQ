@@ -1083,6 +1083,32 @@ class TestComputeFleetExposure:
         assert result["top_df"].iloc[0]["Customer"] == "FLEET OP"
         assert result["top_df"].iloc[0]["Loans"] == 3
 
+    def test_blank_mobile_loans_excluded_not_merged_into_phantom_fleet(self):
+        # Regression: utils.py::clean_mobile normalizes a missing Cust Mob No
+        # to "" (not NaN). Grouping by Cust Mob No without excluding "" used to
+        # merge every loan with no mobile number on file into one fictitious
+        # "fleet operator" combining unrelated customers' exposure -- on a real
+        # production file, 175 such loans collapsed into a single phantom
+        # operator with ~47.9 Cr combined SOH, the largest entry in the table.
+        curr = make_df([
+            *[{"Cust Mob No": "", "Cust Name": f"UNRELATED {i}", "SOH": 100.0} for i in range(5)],
+            *[{"Cust Mob No": "9990001111", "Cust Name": "REAL FLEET OP", "SOH": 50.0} for _ in range(3)],
+        ])
+        result = compute_fleet_exposure(curr)
+        # Only the real 3-loan customer counts as a fleet operator -- the 5
+        # blank-mobile loans (each belonging to a different, unrelated
+        # customer) must not be merged into a second "operator".
+        assert result["count"] == 1
+        assert result["top_df"].iloc[0]["Customer"] == "REAL FLEET OP"
+        assert "" not in result["top_df"]["Mobile"].values
+        assert result["excluded_blank_mobile_loans"] == 5
+
+    def test_excluded_blank_mobile_loans_key_present_even_with_no_fleet(self):
+        curr = make_df([{"Cust Mob No": "", "Cust Name": "A"}, {"Cust Mob No": "111", "Cust Name": "B"}])
+        result = compute_fleet_exposure(curr)
+        assert result["count"] == 0
+        assert result["excluded_blank_mobile_loans"] == 1
+
     def test_npa_operator_counted_with_single_npa_loan(self):
         curr = make_df([
             {"Cust Mob No": "111", "curr_bucket": "NPA"},

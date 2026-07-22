@@ -1793,16 +1793,35 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
     Customers (identified by Cust Mob No) with 3+ loans  -  fleet operators.
     Returns summary dict + top_df (fleet customers ranked by total SOH).
     NOTE: Cust Mob No may not be unique across branches  -  treat counts as approximate.
+
+    Loans with a blank/missing Cust Mob No are excluded before grouping (see
+    excluded_blank_mobile_loans below) -- utils.py::clean_mobile normalizes a
+    missing mobile number to "" (not NaN), and without this exclusion every
+    such loan groups under the single key "" and gets reported as one
+    fictitious "fleet operator" combining unrelated customers' exposure.
+    Confirmed on real production data: 175 loans with no mobile number on
+    file collapsed into a single phantom "fleet operator" with ~47.9 Cr of
+    combined SOH -- by far the largest entry in the table, and pure noise.
     """
+    empty_dict = {
+        "count": 0, "total_soh_cr": 0.0, "npa_operators": 0, "top_df": pd.DataFrame(),
+        "excluded_blank_mobile_loans": 0,
+    }
     if "Cust Mob No" not in df_curr.columns or "Loan No" not in df_curr.columns:
-        return {"count": 0, "total_soh_cr": 0.0, "npa_operators": 0, "top_df": pd.DataFrame()}
+        return empty_dict
+
+    has_mobile = df_curr["Cust Mob No"].astype(str).str.strip() != ""
+    excluded_blank_mobile_loans = int((~has_mobile).sum())
+    df_curr = df_curr[has_mobile]
+    if df_curr.empty:
+        return {**empty_dict, "excluded_blank_mobile_loans": excluded_blank_mobile_loans}
 
     cust_loan_counts = df_curr.groupby("Cust Mob No")["Loan No"].nunique()
     fleet_customers  = cust_loan_counts[cust_loan_counts >= FLEET_MIN_LOANS].index
 
     fleet_df = df_curr[df_curr["Cust Mob No"].isin(fleet_customers)]
     if fleet_df.empty:
-        return {"count": 0, "total_soh_cr": 0.0, "npa_operators": 0, "top_df": pd.DataFrame()}
+        return {**empty_dict, "excluded_blank_mobile_loans": excluded_blank_mobile_loans}
 
     n_operators = fleet_customers.nunique()
     total_soh   = _soh_cr(fleet_df)
@@ -1870,6 +1889,7 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
         "total_soh_cr": total_soh,
         "npa_operators": npa_ops,
         "top_df": top_df,
+        "excluded_blank_mobile_loans": excluded_blank_mobile_loans,
     }
 
 
