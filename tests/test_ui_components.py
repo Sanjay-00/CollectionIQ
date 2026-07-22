@@ -16,7 +16,7 @@ import warnings
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _esc, _excel_bytes, _kpi_card_html, _load_and_concat
+from ui.components import _dl_btn, _esc, _excel_bytes, _kpi_card_html, _load_and_concat, query_confidence_tier, _confidence_badge_html
 from test_utils import _build_upload
 from utils import REQUIRED_COLS
 
@@ -85,6 +85,43 @@ class TestEsc:
         df = pd.DataFrame({"a": [1, 2, 3]})
         _dl_btn(df, "f1.xlsx", "k1")
         _dl_btn(df, "f2.xlsx", "k2")
+
+
+class TestQueryConfidenceTier:
+    """query_confidence_tier reads signals already present in graph.py's final
+    QueryState (view_render/priority_mode/repair_attempts) to classify how
+    much validation an AI Query answer received -- fast-path view (same code
+    as the dashboard) ranks above a compiler plan that needed a repair pass.
+    Precedence matters: a view match or priority mode short-circuits before
+    repair_attempts is even considered, since neither of those paths compiles
+    an IR-1 in the first place."""
+
+    def test_view_match_is_verified_regardless_of_other_fields(self):
+        label, _, _ = query_confidence_tier({"view_render": "kpi_cards", "repair_attempts": 3})
+        assert label == "Verified"
+
+    def test_priority_mode_ranks_below_view_but_above_compiler_signals(self):
+        label, _, _ = query_confidence_tier({"priority_mode": True, "repair_attempts": 2})
+        assert label == "Priority Rules"
+
+    def test_clean_compile_is_validated(self):
+        label, _, _ = query_confidence_tier({"repair_attempts": 0})
+        assert label == "Validated"
+
+    def test_repaired_compile_is_self_corrected(self):
+        label, _, _ = query_confidence_tier({"repair_attempts": 1})
+        assert label == "Self-corrected"
+
+    def test_missing_repair_attempts_key_defaults_to_validated(self):
+        # A direct/legacy caller that never set repair_attempts must not be
+        # misread as "needed a repair" -- absence means "no repair recorded",
+        # same as the explicit 0 case.
+        label, _, _ = query_confidence_tier({})
+        assert label == "Validated"
+
+    def test_badge_html_escapes_nothing_user_controlled_but_renders_label(self):
+        html_out = _confidence_badge_html({"view_render": "kpi_cards"})
+        assert "Verified" in html_out
 
 
 class TestKpiCardHtmlArrowAndColor:

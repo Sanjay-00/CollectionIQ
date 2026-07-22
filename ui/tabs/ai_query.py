@@ -5,7 +5,7 @@ import streamlit as st
 from langsmith import traceable
 
 from utils import fmt_value
-from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox, _esc
+from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox, _esc, _confidence_badge_html
 
 # result_grain -> (singular, plural) display noun, used wherever the UI used to
 # hardcode "accounts"/"Customer Records" regardless of the result's actual row
@@ -268,7 +268,10 @@ function fill(text) {
                        padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:1px;">{category}</span>
           <span style="font-size:14px;font-weight:700;color:#f1f5f9;">{_esc(query_title)}</span>
         </div>
-        <span style="font-size:11px;font-weight:700;color:{risk_color};">{risk_label}</span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          {_confidence_badge_html(result)}
+          <span style="font-size:11px;font-weight:700;color:{risk_color};">{risk_label}</span>
+        </div>
       </div>
       <div style="font-size:12px;color:#94a3b8;font-style:italic;line-height:1.6;border-top:1px solid #1e293b;padding-top:10px;">
         <span style="color:#FFC000;font-weight:600;font-style:normal;">🧠 Domain Expert:</span> &nbsp;{_esc(enriched)}

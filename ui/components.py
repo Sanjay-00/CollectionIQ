@@ -32,6 +32,70 @@ def _esc(val):
     """
     return html.escape(val, quote=True) if isinstance(val, str) else val
 
+
+def query_confidence_tier(result: dict) -> tuple[str, str, str]:
+    """Classify how much validation an AI Query answer received, purely from
+    signals already present in the final QueryState (graph.py) -- no new
+    computation, just naming a distinction the pipeline already makes.
+
+    Returns (label, color, explanation), in descending confidence order:
+    - Verified: served by a fast-path view (registry/views.py) -- the exact
+      same analysis/ function the dashboard tabs call, so this number IS the
+      dashboard number, not a re-derivation of it.
+    - Priority Rules: served by the fixed seven-tier business-priority
+      framework (agents/data_executor.py), a deterministic rule set, not an
+      LLM-authored query plan.
+    - Validated: the Logical Planner's IR-1 compiled and passed validation
+      against the file's actual columns on the first attempt.
+    - Self-corrected: the first attempt failed compile/validation and needed
+      one repair pass (graph.py's one-shot repair loop) before it validated.
+    """
+    # Verified: the query matched a pre-built view (registry/views.py) -- the
+    # answer was computed by the EXACT SAME function a dashboard tab calls,
+    # not re-derived by the LLM's own query plan. Checked first: a view match
+    # wins even if repair_attempts is nonzero below, since the view/priority
+    # paths never go through the compiler (repair_attempts is meaningless there).
+    if result.get("view_render"):
+        return (
+            "Verified", "#16a34a",
+            "Served by the same pre-built analysis used on the dashboard tabs -- this number matches what you'd see there.",
+        )
+    # Priority Rules: routed to the fixed seven-tier business-priority
+    # framework (agents/data_executor.py::execute_priority_mode) instead of
+    # the general LLM-authored query path -- a deterministic rule set written
+    # once, not the LLM improvising a plan for this specific query.
+    if result.get("priority_mode"):
+        return (
+            "Priority Rules", "#2563eb",
+            "Served by the fixed seven-tier business-priority framework, not an LLM-authored query plan.",
+        )
+    # Self-corrected: the LLM's first IR-1 plan failed compiler validation
+    # (e.g. referenced a column/filter that didn't check out against the
+    # file), and graph.py's one-shot repair loop fed the error back and got a
+    # plan that passed on the retry. Still a validated answer, just weaker
+    # evidence than passing validation on the first attempt.
+    if result.get("repair_attempts", 0) > 0:
+        return (
+            "Self-corrected", "#d97706",
+            "The query plan failed validation on the first attempt and needed one automatic correction before it ran.",
+        )
+    # Validated: the LLM's first IR-1 plan compiled and passed validation
+    # against the file's actual columns on the very first attempt -- no
+    # repair needed. The default/best outcome on the general compiler path.
+    return (
+        "Validated", "#0891b2",
+        "The query plan was checked against your data's actual columns and validated on the first attempt.",
+    )
+
+
+def _confidence_badge_html(result: dict) -> str:
+    label, color, tooltip = query_confidence_tier(result)
+    return (
+        f'<span title="{_esc(tooltip)}" style="font-size:11px;font-weight:700;color:{color};'
+        f'border:1px solid {color};padding:2px 9px;border-radius:20px;white-space:nowrap;">{label}</span>'
+    )
+
+
 # Column-name tokens that mark a numeric column as non-summable: either an
 # identifier (Loan No, Cust Mob No, MNT CODE, Veh ID, DPD, Tenure, Rank) or
 # already an average/rate over its group (Avg Ticket (L), Avg Loan (L)) --

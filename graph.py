@@ -203,6 +203,7 @@ class QueryState(TypedDict):
     result_type: str
     result_grain: str  # row grain of result_df: "loan" (default), "region", "branch", "executive", "customer", "segment", "signal"
     view_render: str  # UI hint from a fast-path view (e.g. "kpi_cards"); "" for the normal compiler path
+    repair_attempts: int  # 0 = compiler validated the planner's IR-1 on the first try; >0 = needed a repair pass. Compiler path only -- unset (0) on the view/priority paths, which don't compile.
 
     # Clarification
     allow_clarification: bool
@@ -553,13 +554,13 @@ def view_node(state: QueryState) -> QueryState:
                     input_df_prev = input_df_prev[_build_mask(input_df_prev, conditions)]
 
             raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
-    except Exception:
-        return _fallthrough("analysis_fn_raised")
+    except Exception as e:
+        return _fallthrough(f"analysis_fn_raised: {e}")
 
     try:
         result_df, result_kpis, result_rankings = normalize_view_output(spec, raw)
-    except Exception:
-        return _fallthrough("output_normalization_failed")
+    except Exception as e:
+        return _fallthrough(f"output_normalization_failed: {e}")
 
     result_df = _apply_sort_by(result_df, view_spec.get("sort_by"))
 
@@ -667,7 +668,7 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
             # (e.g. this session's highlight_metrics/sort_by additions) is
             # increasing how often the planner needs correcting.
             _trace_metadata({"repair_attempts": attempt, "compiled_ok": True})
-            return {**state, "ir1": ir1, "plan": plan}
+            return {**state, "ir1": ir1, "plan": plan, "repair_attempts": attempt}
 
         err_msg = "; ".join(errs)
         if attempt == _MAX_REPAIRS:
@@ -930,6 +931,7 @@ def run_query(
         "result_type":      "loan_table",
         "result_grain":     "loan",
         "view_render":      "",
+        "repair_attempts":  0,
         "allow_clarification":    allow_clarification,
         "needs_clarification":    False,
         "clarification_question": "",
