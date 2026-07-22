@@ -344,13 +344,15 @@ METRICS: dict[str, dict] = {
         "label": "Strike %",
         "kind": "count_ratio",
         # % of accounts current on their installment obligation this month, among
-        # accounts with a valid (Y/N) Strike value. Must match utils.compute_strike_pct
-        # (the shared helper used everywhere else -- dashboard + Portfolio Intelligence).
-        # This declarative definition is consumed by the general compiler rather than
-        # calling that function directly, so the two can't share code, but
-        # tests/test_metric_consistency.py checks they stay numerically identical.
-        "numerator_where": [{"column": "Strike", "op": "==", "value": "Y"}],
-        "denominator_where": [{"column": "Strike", "op": "in", "value": ["Y", "N"]}],
+        # accounts with a valid (Y/N, or spelled-out Yes/No -- some monthly LCC
+        # extracts spell the flag out instead of abbreviating it) Strike value.
+        # Must match utils.compute_strike_pct (the shared helper used everywhere
+        # else -- dashboard + Portfolio Intelligence). This declarative definition
+        # is consumed by the general compiler rather than calling that function
+        # directly, so the two can't share code, but tests/test_metric_consistency.py
+        # checks they stay numerically identical.
+        "numerator_where": [{"column": "Strike", "op": "in", "value": ["Y", "YES"]}],
+        "denominator_where": [{"column": "Strike", "op": "in", "value": ["Y", "N", "YES", "NO"]}],
         "scale": 100,
         "grain": "loan",
         "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",

@@ -38,15 +38,16 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
     df = df.copy()
     # Strike valid/yes -- the EXACT boolean logic compute_strike_pct/is_yes use
-    # (see their own docstrings): valid = normalized Strike in {Y, N}; within
-    # that valid set, "YES" can never appear (excluded by the strict Y/N
-    # filter), so yes = normalized == "Y" is equivalent to is_yes() there.
+    # (see their own docstrings): valid = normalized Strike in {Y, N, YES, NO}
+    # (some monthly LCC extracts spell the flag out instead of abbreviating it
+    # -- same reason is_yes() itself accepts both spellings), and within that
+    # valid set, yes = normalized in {Y, YES}, matching is_yes() exactly.
     # Precomputed once here instead of calling compute_strike_pct(grp) per
     # executive -- same formula, same result, just not re-run per group.
     if "Strike" in df.columns:
         _strike_norm = df["Strike"].astype(str).str.strip().str.upper()
-        df["_strike_valid"] = _strike_norm.isin(["Y", "N"])
-        df["_strike_yes"]   = _strike_norm == "Y"
+        df["_strike_valid"] = _strike_norm.isin(["Y", "N", "YES", "NO"])
+        df["_strike_yes"]   = _strike_norm.isin(["Y", "YES"])
     else:
         df["_strike_valid"] = False
         df["_strike_yes"]   = False

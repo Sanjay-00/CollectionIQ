@@ -631,7 +631,11 @@ def compute_strike_pct(df: pd.DataFrame) -> float:
     """
     if df.empty or "Strike" not in df.columns:
         return 0.0
-    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])]
+    # "N"/"NO" must count as valid-but-not-yes here even though is_yes() itself
+    # only recognizes the yes spellings -- excluding them from the denominator
+    # (matching only Y/YES) would inflate the % by dropping every "no" account
+    # from the base instead of counting it against the rate.
+    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N", "YES", "NO"])]
     if strike_valid.empty:
         return 0.0
     return _safe_pct(is_yes(strike_valid, "Strike").sum(), len(strike_valid))
@@ -704,6 +708,12 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         # lcc_pct METRIC (registry/ontology.py, cap=100). A customer who has paid
         # ahead of cumulative dues can otherwise push this over 100%.
         lcc_avg = min(lcc_avg, 100.0)
+        # CMD% = Total Cum Collection / Cum Coll (Inst+Exp) -- deliberately a
+        # collection-vs-collection ratio, NOT collection-vs-demand despite the
+        # name. It measures what fraction of the broader Total Cum Collection
+        # figure (includes BC/other components -- see the LCC% note above)
+        # came in through the Inst+Exp channel specifically. Confirmed
+        # intentional; only the label is confusing, not the formula.
         cmd_pct = _safe_pct(cum_coll_total, cum_coll_inst_exp)
 
         return {
