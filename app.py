@@ -357,53 +357,6 @@ rr_matrix, rr_meta = None, None
 if len(df_prev_raw) > 0:
     rr_matrix, rr_meta = _cached_roll_rate(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t)
 
-alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev") if len(df_prev) > 0 else []
-
-_rr = rr_meta or {}
-(
-    pi_pulse_kpis, pi_fig_wf,
-    pi_region, pi_branch, pi_fig_quad,
-    pi_exec, pi_product, pi_risk, pi_good_bad,
-    pi_fig_treemap, pi_fleet, pi_top_accounts, pi_top_accounts_summary, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
-    pi_overdue_demand, pi_new_advances, pi_new_advances_by_dim,
-) = _cached_portfolio_intel(
-    df_curr, df_prev,
-    data_version, sel_region, sel_branch, sel_status, _seg_t,
-    int(_rr.get("matched_count", 0)),
-    float(_rr.get("roll_forward_rate", 0.0)),
-    float(_rr.get("roll_backward_rate", 0.0)),
-    float(_rr.get("npa_formation_rate", 0.0)),
-    tuple((a["count"], a["title"]) for a in alerts),
-    tuple((a["count"], a["title"]) for a in alerts_prev),
-    curr_month,
-)
-
-# Precomputed analysis/ results, keyed for the AI Query tab's fast-path view
-# layer (registry/views.py) to reuse directly -- guarantees AI Query answers are
-# numerically identical to what these same tabs already show, no recomputation.
-precomputed_views = {
-    "pi_top_accounts":    (pi_top_accounts, pi_top_accounts_summary),
-    "pi_fleet":           pi_fleet,
-    "scorecard_df":       scorecard_df,
-    # Wrapped as tuples to match what a FRESH call to compute_roll_rate_matrix /
-    # compute_branch_quadrant returns -- registry/views.py normalizers handle
-    # the cached and freshly-computed cases identically this way.
-    "rr_matrix":          (rr_matrix, rr_meta),
-    "pi_region":          pi_region,
-    "pi_branch":          (pi_branch, pi_fig_quad),
-    "pi_exec":            pi_exec,
-    "pi_risk":            pi_risk,
-    "pi_repo_df":         pi_repo_df,
-    "pi_good_customers":  pi_good_customers,
-    "pi_npa_sma2_cmp":    pi_npa_sma2_cmp,
-    "pi_product":         pi_product,
-    "pi_pulse_kpis":      pi_pulse_kpis,
-    "pi_good_bad":        pi_good_bad,
-    "pi_overdue_demand":  pi_overdue_demand,
-    "pi_new_advances":    pi_new_advances,
-    "pi_new_advances_by_dim": pi_new_advances_by_dim,
-}
-
 # ── Active filter bar ─────────────────────────────────────────────────────────
 active_filters = {k: v for k, v in {
     "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
@@ -432,8 +385,11 @@ if active_filters:
 # call behind the active selection (instead of `with tabs[i]:`) fixes both:
 # only the active section's UI ever gets built, and there's no st.tabs()
 # panel-hiding mechanism left to desync. The analysis/ computation above this
-# block (alerts, precomputed_views, pi_* variables, etc.) is untouched --
-# it was already unconditional/cache-driven, not gated by tab visibility.
+# block (metrics, alerts, dashboard charts, scorecard, roll-rate) stays
+# unconditional/cache-driven, since Dashboard (the default landing tab)
+# needs all of it -- but the heavier Portfolio Intelligence block below
+# (~15 analysis/ functions incl. 3 Plotly chart builders) IS gated by tab
+# visibility now; see its own comment further down for why.
 n_alerts = sum(1 for a in alerts if a["count"] > 0)
 # NOTE: unlike the old st.tabs() label, this stays a fixed string ("🚨
 # Alerts") rather than embedding the live count -- st.segmented_control's
@@ -455,6 +411,74 @@ if active is None:
 st.session_state["_last_active_section"] = active
 if active == "🚨 Alerts" and n_alerts:
     st.caption(f"🚨 {n_alerts} alert{'s' if n_alerts > 1 else ''} active")
+
+# ── Portfolio Intelligence pre-compute (lazy, tab-gated) ────────────────────
+# _cached_portfolio_intel runs ~15 analysis/ functions incl. 3 Plotly chart
+# builders (bucket waterfall, branch quadrant, concentration treemap) over the
+# WHOLE current-filter DataFrame -- the single most expensive block in this
+# app. It used to run unconditionally, above the tab switch, on every single
+# rerun regardless of which tab was visible -- so Dashboard (the default
+# landing tab, and every user's first paint after upload) paid this cost even
+# though it reads none of the output. st.cache_data still caches the result
+# under the same key as before, so switching INTO one of the 3 tabs that
+# actually need it pays the cost once, exactly as before -- it just no longer
+# blocks the other 5 tabs (Dashboard, Scorecard, Alerts, Migration, Report).
+# Safe to skip precomputed_views entirely on those other tabs: the AI Query
+# fast-path view layer (registry/views.py / graph.py::view_node) already
+# falls back to calling the analysis/ function fresh whenever a view's
+# cache_key isn't present in precomputed_views (e.g. a filtered/non-default
+# query), so an empty dict here is a correctness no-op, not a missing case.
+_needs_pi = active in ("📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query")
+
+alerts_prev = []
+precomputed_views = {}
+if _needs_pi:
+    alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev") if len(df_prev) > 0 else []
+
+    _rr = rr_meta or {}
+    (
+        pi_pulse_kpis, pi_fig_wf,
+        pi_region, pi_branch, pi_fig_quad,
+        pi_exec, pi_product, pi_risk, pi_good_bad,
+        pi_fig_treemap, pi_fleet, pi_top_accounts, pi_top_accounts_summary, pi_repo_df, pi_npa_sma2_cmp, pi_good_customers,
+        pi_overdue_demand, pi_new_advances, pi_new_advances_by_dim,
+    ) = _cached_portfolio_intel(
+        df_curr, df_prev,
+        data_version, sel_region, sel_branch, sel_status, _seg_t,
+        int(_rr.get("matched_count", 0)),
+        float(_rr.get("roll_forward_rate", 0.0)),
+        float(_rr.get("roll_backward_rate", 0.0)),
+        float(_rr.get("npa_formation_rate", 0.0)),
+        tuple((a["count"], a["title"]) for a in alerts),
+        tuple((a["count"], a["title"]) for a in alerts_prev),
+        curr_month,
+    )
+
+    # Precomputed analysis/ results, keyed for the AI Query tab's fast-path view
+    # layer (registry/views.py) to reuse directly -- guarantees AI Query answers are
+    # numerically identical to what these same tabs already show, no recomputation.
+    precomputed_views = {
+        "pi_top_accounts":    (pi_top_accounts, pi_top_accounts_summary),
+        "pi_fleet":           pi_fleet,
+        "scorecard_df":       scorecard_df,
+        # Wrapped as tuples to match what a FRESH call to compute_roll_rate_matrix /
+        # compute_branch_quadrant returns -- registry/views.py normalizers handle
+        # the cached and freshly-computed cases identically this way.
+        "rr_matrix":          (rr_matrix, rr_meta),
+        "pi_region":          pi_region,
+        "pi_branch":          (pi_branch, pi_fig_quad),
+        "pi_exec":            pi_exec,
+        "pi_risk":            pi_risk,
+        "pi_repo_df":         pi_repo_df,
+        "pi_good_customers":  pi_good_customers,
+        "pi_npa_sma2_cmp":    pi_npa_sma2_cmp,
+        "pi_product":         pi_product,
+        "pi_pulse_kpis":      pi_pulse_kpis,
+        "pi_good_bad":        pi_good_bad,
+        "pi_overdue_demand":  pi_overdue_demand,
+        "pi_new_advances":    pi_new_advances,
+        "pi_new_advances_by_dim": pi_new_advances_by_dim,
+    }
 
 
 def _tab_error(name: str, exc: Exception) -> None:
