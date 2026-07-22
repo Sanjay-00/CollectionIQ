@@ -220,6 +220,34 @@ if prev_file and len(df_prev_raw) == 0:
         st.session_state["df_prev_raw"] = df_prev_raw
         _bump_data_version(f"{_file_fingerprint(curr_file)}-{_file_fingerprint(prev_file)}")
 
+# ── Guard against rendering a stale dashboard after a file swap ─────────────
+# Streamlit reruns the WHOLE script on every interaction, including simply
+# picking a different file in the uploader widgets -- with no Generate click
+# involved. Session state (df_curr_raw/df_prev_raw) only changes on an actual
+# Generate click (or the deliberate prev-auto-load exception just above), so
+# unguarded, swapping in a brand-new file (or removing one) rendered the FULL
+# dashboard straight from the OLD session data with zero indication anything
+# was stale. Confirmed: generate on Region 1 curr+prev, then swap in a
+# completely different Zone 1 curr-only file without clicking Generate again
+# -- the Region 1 dashboard kept rendering as if nothing had changed. NOT a
+# cross-user issue (st.session_state is isolated per browser session; the
+# shared st.cache_data layer is keyed on file-content SHA-256 via
+# _file_fingerprint, so two users' different files can never collide) -- but
+# within one session it's a real risk of acting on stale numbers believing
+# they're the just-uploaded file. Skipped for the sample-data path, which
+# never touches curr_file/prev_file at all (its own _bump_data_version() call
+# uses the per-session-counter fallback, not a file fingerprint).
+if not st.session_state.get("_sample_loaded"):
+    _live_fingerprint = f"{_file_fingerprint(curr_file)}-{_file_fingerprint(prev_file)}"
+    if _live_fingerprint != st.session_state.get("_data_version"):
+        st.markdown(
+            '<div style="text-align:center;padding:20px 0;color:#aaa;font-size:13px;">'
+            'New file(s) selected - click <strong>Generate Dashboard</strong> to load them.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, curr_month)
 
