@@ -22,18 +22,23 @@ def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].dt.date
     return df
 
-# Fixed columns shown in every alert drilldown table
+# Fixed columns shown in every alert drilldown table. One shared list across
+# all 6 alerts (not per-alert) -- deliberately includes each alert's own
+# trigger-formula column so a flagged row carries its own visible proof (e.g.
+# CoLending_Loans/ARREARS AGAINST BC below were added because Co-lending Loans
+# at Risk / High Arrears at Risk's own boolean conditions read them, and
+# without them a flagged row showed no visible evidence of why it qualified).
 ALERT_DISPLAY_COLS = [
     "Loan No", "Zone", "RegionName", "Unit", "Ag_Date", "MNT NAME", "curr_bucket",
     "Due Dt", "Tenure", "Loan Status", "Loan Amount", "Veh ID", "Cust Name",
     "Guar Name", "Cust Mob No", "Guar Mob No", "Vehicle Description",
     "Month Due-Inst", "Month Due-Exp", "MONTH DUE (BC)", "MONTH DUE PC",
     "Month Receipt Amount", "Closing Arrears", "Arrears against Inst+Exp",
-    "ARREARS AGAINST INST", "ARREARS AGAINST EXP",
+    "ARREARS AGAINST INST", "ARREARS AGAINST EXP", "ARREARS AGAINST BC",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
     "POS", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
     "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
-    "TyreFlag", "FUEL_TYPE",
+    "TyreFlag", "FUEL_TYPE", "CoLending_Loans",
 ]
 
 
@@ -63,6 +68,7 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": _fmt_dates(subset),
         "icon": "🚨",
         "action": "Immediate field visit required. Check if disbursement reached customer.",
     }
@@ -84,6 +90,7 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": _fmt_dates(subset),
         "icon": "⚠️",
         "action": "Settle insurance by cash or convert to child loan (EMI). Do not mark as willful default.",
     }
@@ -102,6 +109,7 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": _fmt_dates(subset),
         "icon": "💡",
         "action": "One call / one visit can clear these. Assign to executives for same-day closure.",
     }
@@ -122,6 +130,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": _fmt_dates(subset),
         "icon": "📉",
         "action": "Review sourcing quality. Engage field executive and check NACH status immediately.",
     }
@@ -140,6 +149,7 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": _fmt_dates(subset),
         "icon": "🏦",
         "action": "Escalate immediately to Regional Manager. Partner bank SLA may be breached.",
     }
@@ -175,6 +185,10 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
         "df": _fmt_dates(subset[[c for c in display_cols if c in subset.columns]]),
+        # subset already carries the computed "Arrears Ratio %" column (added
+        # above) -- included here deliberately, since it's the exact figure
+        # that made each row qualify, not just a raw Excel column.
+        "df_full": _fmt_dates(subset),
         "icon": "🔥",
         "action": "Prioritise >100% cases for legal/recovery, these may be unrecoverable without immediate escalation.",
     }

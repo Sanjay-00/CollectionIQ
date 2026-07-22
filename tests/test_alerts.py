@@ -108,7 +108,7 @@ class TestRunAllAlerts:
             "High Arrears: Loan at Risk": "critical",
         }
         df = make_df([{"Loan No": "L001"}])
-        required = {"title", "subtitle", "severity", "count", "pos", "closing_arrears", "df", "icon", "action"}
+        required = {"title", "subtitle", "severity", "count", "pos", "closing_arrears", "df", "df_full", "icon", "action"}
         seen_titles = set()
         for alert in run_all_alerts(df):
             assert required.issubset(alert.keys()), f"Alert '{alert.get('title')}' missing keys"
@@ -117,3 +117,30 @@ class TestRunAllAlerts:
             if title in expected_severity:
                 assert alert["severity"] == expected_severity[title], title
         assert expected_severity.keys() <= seen_titles
+
+    def test_df_full_carries_every_column_df_only_carries_curated_subset(self):
+        # Regression: the on-screen table (alert["df"]) is deliberately limited
+        # to ALERT_DISPLAY_COLS for a fast scan, but the download must carry
+        # every column (raw Excel + derived, e.g. SOH/curr_bucket) for the SAME
+        # filtered rows -- df_full must never be column-limited like df is.
+        df = make_df([{
+            "Loan No": "L001", "Non Starter": "Y",
+            # A column deliberately NOT in ALERT_DISPLAY_COLS.
+            "StateName": "MAHARASHTRA",
+        }])
+        result = alert_non_starters(df)
+        assert "StateName" not in result["df"].columns
+        assert "StateName" in result["df_full"].columns
+        assert len(result["df_full"]) == len(result["df"])  # same rows, more columns
+
+    def test_high_arrears_df_full_includes_computed_ratio_column(self):
+        # Arrears Ratio % is computed (not a raw Excel column) but is the exact
+        # figure that made the row qualify -- deliberately included in the full
+        # download, not just the curated on-screen table.
+        df = make_df([{
+            "Loan No": "L001", "Loan Amount": 100_000.0,
+            "ARREARS AGAINST INST": 60_000.0, "ARREARS AGAINST EXP": 0.0, "ARREARS AGAINST BC": 0.0,
+        }])
+        result = alert_high_arrears_ratio(df)
+        assert "Arrears Ratio %" in result["df"].columns
+        assert "Arrears Ratio %" in result["df_full"].columns
