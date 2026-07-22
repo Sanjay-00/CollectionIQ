@@ -20,7 +20,7 @@ from google import genai
 from langsmith import traceable
 
 from config import GEMINI_MODEL
-from registry.ontology import CONCEPTS, METRICS
+from registry.ontology import CONCEPTS, METRICS, AMBIGUOUS_TERMS
 from registry.semantic_model import DIMENSIONS
 from registry.views import VIEWS, _METRIC_DIRECTION
 from agents.domain_expert import (
@@ -98,13 +98,24 @@ def _build_full_system_prompt(snapshot_dates: dict | None = None, allow_clarific
             "Do NOT reference prev_* columns or bucket movement (bucket_worse_than / bucket_better_than)."
         )
 
-    clarification_rule = (
-        'Set needs_clarification=true ONLY for genuine material ambiguity where two '
-        'interpretations give materially different numbers (e.g. user says "big accounts" '
-        'without a threshold). For clear queries, ALWAYS proceed (needs_clarification=false).'
-    ) if allow_clarification else (
-        'needs_clarification MUST be false  -  the user has already clarified. Proceed with best interpretation.'
-    )
+    if allow_clarification:
+        ambiguous_terms_block = "\n".join(
+            f'  - "{t["term"]}": {t["note"]}' for t in AMBIGUOUS_TERMS
+        )
+        clarification_rule = (
+            'Set needs_clarification=true ONLY for genuine material ambiguity where two '
+            'interpretations give materially different numbers (e.g. user says "big accounts" '
+            'without a threshold). For clear queries, ALWAYS proceed (needs_clarification=false).\n'
+            "  KNOWN DOMAIN-AMBIGUOUS TERMS -- if the query uses one of these WITHOUT already "
+            "specifying which reading is meant elsewhere in the wording, you MUST set "
+            "needs_clarification=true with 2-4 concrete options; do NOT silently pick a default "
+            "interpretation for these specifically, even if one reading seems more likely:\n"
+            f"{ambiguous_terms_block}"
+        )
+    else:
+        clarification_rule = (
+            'needs_clarification MUST be false  -  the user has already clarified. Proceed with best interpretation.'
+        )
 
     return f"""You are the semantic layer of CollectionIQ, an NBFC loan-collection analytics engine.
 Convert a natural language portfolio query into a flat logical IR (JSON).
@@ -198,6 +209,20 @@ VIEW MATCHING (try this FIRST, before building filters/dimensions/measures from 
     "sort_by": {{"column": "Collection%", "dir": "desc"}}   // Collection% is (higher=better)
   Example (qualitative, worst-first) -- "show branches worst performing first":
     "sort_by": {{"column": "NPA%", "dir": "desc"}}          // NPA% is (higher=worse)
+
+  LIMIT (optional, view path only): when the user explicitly asks for a specific top-N count
+  on a matched view ("top 5 branches", "show me 10 regions") AND that view has NO dedicated
+  own count parameter of its own (check "params" in the view catalog above -- e.g.
+  top_delinquent_accounts already has its own "n" param; use THAT instead via "view.params",
+  never the top-level "limit" field, for a view that already has one -- setting both would
+  double-truncate). For a view with no such param (region_scorecard, branch_quadrant,
+  executive_recovery, new_advances_by_region/branch/executive, etc.), set the top-level:
+    "limit": <integer>
+  Leave "limit" null when the user names no specific count -- never invent a default N just
+  because the question has a ranking/best/worst framing; an unqualified "best branches" should
+  return every entity (ranked via sort_by above), not a guessed-at top 5/10.
+  Example -- "top 5 branches by NPA%" (branch_quadrant has no own count param):
+    "view": {{"name": "branch_quadrant", "params": {{}}, ...}}, "sort_by": {{"column": "NPA%", "dir": "desc"}}, "limit": 5
 
 {catalog}
 
@@ -591,9 +616,31 @@ def plan_logical(
     system_prompt = _build_full_system_prompt(snapshot_dates, allow_clarification)
     repair_context = f"[REPAIR  -  {repair_feedback}] " if repair_feedback else ""
 
+    # A clarification follow-up query carries its own resolved interpretation
+    # IN THE TEXT ITSELF -- ui/tabs/ai_query.py appends "(interpretation: X)"
+    # when a user clicks a clarification option. Detected here via the query
+    # TEXT, deliberately NOT via allow_clarification: that flag is ALSO set
+    # False by the unrelated compiler repair loop above (graph.py's one-shot
+    # retry on a validation error), which must never receive this -- there is
+    # no interpretation to act on there, and injecting this instruction into
+    # a repair retry would confuse an already-tested, working mechanism.
+    # Query-text detection naturally does the right thing on a clarification
+    # follow-up's OWN repair retry too (state["query"] still carries the
+    # marker then), without needing a third flag threaded through the graph.
+    clarification_followup_context = (
+        "[CLARIFICATION RESOLVED -- the \"(interpretation: ...)\" text above names the "
+        "metric/reading the user just chose in response to a clarifying question. You "
+        "MUST act on it: if it names one of the matched view's own highlightable metrics, "
+        "set BOTH sort_by (rank on that metric, applying the existing good/bad-direction "
+        "rule based on whether the ORIGINAL wording said best/top/winning vs worst/falling "
+        "behind) AND highlight_metrics for that SAME metric+direction. Do not leave "
+        "sort_by/highlight_metrics empty just because a view already matched -- the whole "
+        "point of asking was to determine exactly this.] "
+    ) if "(interpretation:" in query else ""
+
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, GEMINI_MODEL, repair_context + query,
+        client, GEMINI_MODEL, repair_context + clarification_followup_context + query,
         {"system_instruction": system_prompt},
     )
     _add_token_usage(response)

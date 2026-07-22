@@ -256,6 +256,24 @@ class TestViewNodeFallback:
         assert "_agg_rows" in out["result_kpis"]
         assert len(out["result_kpis"]["_agg_rows"]) > 0
 
+    def test_limit_shrinks_result_df_and_count_reflects_it_not_the_full_set(self):
+        # Regression: caught live, not by a unit test -- {"Count": len(result_df),
+        # **result_kpis} let the NORMALIZER's own pre-limit "Count" (every
+        # normalizer sets one) silently overwrite the post-limit count back to
+        # the full, un-capped size. "top 2 regions" was correctly capped to 2
+        # rows in result_df, but result_kpis["Count"] still read 3 (all regions)
+        # until the merge order was fixed to spread result_kpis FIRST.
+        state = self._state(ir1={
+            "view": {"name": "region_scorecard", "params": {}, "filters": [], "sort_by": None},
+            "limit": 2,
+        })
+        from graph import view_node
+        out = view_node(state)
+        assert out["ir1"]["view"] is not None
+        assert out["error"] == ""
+        assert len(out["result_df"]) == 2
+        assert out["result_kpis"]["Count"] == 2
+
     def test_filter_applies_consistently_to_both_curr_and_prev(self):
         # Regression guard for the confirmed df_prev-not-filtered bug: a view
         # that consumes both df_curr and df_prev must compare like-for-like,
@@ -280,6 +298,78 @@ class TestViewNodeFallback:
         rdf = out["result_df"]
         assert len(rdf) == 1
         assert rdf.iloc[0]["Δ NPA%"] == -50.0
+
+
+# ── Clarification follow-up context (query-text-scoped, not flag-scoped) ────
+
+class TestClarificationFollowupContext:
+    """Regression guard for a real conflict caught before it shipped: the
+    "use the clarified metric for sort_by/highlight_metrics" instruction is
+    keyed off the query TEXT containing "(interpretation:" (the marker
+    ui/tabs/ai_query.py appends when a clarification option is clicked), NOT
+    off allow_clarification=False -- that flag is ALSO set False by the
+    unrelated compiler repair loop (graph.py's one-shot retry on a validation
+    error), which must never receive clarification-specific instructions
+    since no interpretation exists there. These tests capture the literal
+    text sent to Gemini (never a live call) and check the marker only
+    appears exactly when the query text itself contains it."""
+
+    def _capture_prompt_text(self, monkeypatch):
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+        sent = {}
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": []}'
+
+        def _capture(client, model, contents, config):
+            sent["contents"] = contents
+            return _FakeResponse()
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+        return lp, sent
+
+    def test_plain_query_gets_no_clarification_followup_context(self, monkeypatch):
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical("show me the top branches")
+        assert "(interpretation:" not in sent["contents"]
+        assert "CLARIFICATION RESOLVED" not in sent["contents"]
+
+    def test_clarification_followup_query_gets_the_context(self, monkeypatch):
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical(
+            "give me my best branches (interpretation: Collection Efficiency)",
+            allow_clarification=False,
+        )
+        assert "CLARIFICATION RESOLVED" in sent["contents"]
+
+    def test_unrelated_compiler_repair_retry_does_not_get_the_context(self, monkeypatch):
+        # allow_clarification=False here for the SAME reason the real repair
+        # loop sets it (graph.py:691) -- but the query itself has no
+        # interpretation marker, so this must NOT get clarification-specific
+        # instructions injected into an unrelated repair retry.
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical(
+            "show me the top branches",
+            repair_feedback="unknown column 'Foo'",
+            allow_clarification=False,
+        )
+        assert "CLARIFICATION RESOLVED" not in sent["contents"]
+        assert "[REPAIR" in sent["contents"]
+
+    def test_clarification_followups_own_repair_retry_still_gets_the_context(self, monkeypatch):
+        # A clarification follow-up that ALSO needs a repair pass (query text
+        # still carries the marker on retry) should still get both directives
+        # -- this is a real, valid combination, not a case to suppress.
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical(
+            "give me my best branches (interpretation: Collection Efficiency)",
+            repair_feedback="unknown column 'Foo'",
+            allow_clarification=False,
+        )
+        assert "CLARIFICATION RESOLVED" in sent["contents"]
+        assert "[REPAIR" in sent["contents"]
 
 
 # ── Out-of-scope / guardrail contract ───────────────────────────────────────

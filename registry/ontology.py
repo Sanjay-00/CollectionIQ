@@ -358,3 +358,58 @@ METRICS: dict[str, dict] = {
         "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",
     },
 }
+
+# Domain-specific terms confirmed (live, on real data) to have more than one
+# materially different reading in THIS business -- unlike CONCEPTS/METRICS/VIEWS
+# above (a fixed vocabulary the planner picks FROM), this is a fixed list of
+# vocabulary the planner must actively watch OUT for in the user's own wording
+# and ask about, rather than silently pick a default reading. Seeded from two
+# real gaps observed live: "which branch had best business" and "show me the
+# risky accounts" both resolved to ONE interpretation without asking, despite
+# each having a second, equally plausible, materially different reading that a
+# generic "is this ambiguous" LLM judgment call didn't catch on its own --
+# these terms are ambiguous because of NBFC-domain meaning specifically (e.g.
+# "business" meaning new originations, not portfolio health), not because of
+# generic sentence-level vagueness the model already handles well (it correctly
+# asks for "best branch" alone, since ranking-by-what is a generic ambiguity).
+# Extend this list the same way CLAUDE.md describes growing the rest of the
+# registry vocabulary: from real query-log evidence, not speculation.
+AMBIGUOUS_TERMS = [
+    {
+        "term": "business",
+        "note": (
+            '"business" is ambiguous in this NBFC domain, between TWO REAL, '
+            "SEPARATELY-ANSWERABLE views -- not just two ways of describing the same "
+            "answer:\n"
+            "    (1) NEW LOANS ORIGINATED this period -- the new_advances_by_region / "
+            "new_advances_by_branch / new_advances_by_executive views (disbursement "
+            "volume, accounts funded this month).\n"
+            "    (2) PORTFOLIO/COLLECTION PERFORMANCE -- region_scorecard / "
+            "branch_quadrant / executive_recovery views (Collection%, NPA%, Strike%, "
+            "Concern Score, etc).\n"
+            "  These are computed from DIFFERENT rows (Ag_Date-filtered originations vs. "
+            "the whole current book) and give completely different rankings -- a branch "
+            "can lead on one and trail on the other. If the query does not already "
+            'specify which reading (e.g. "new business", "new advances", "originated", '
+            '"disbursed", "funded" clearly means (1); "collection performance", "NPA%", '
+            '"concern score", "delinquency" clearly means (2)), clarification_options '
+            "MUST include AT LEAST ONE option from EACH reading -- never 2-4 options that "
+            "are all flavors of the same one (e.g. offering only Collection Efficiency / "
+            "Strike Rate / NPA% is WRONG here, since all three are reading (2) only, "
+            "reading (1) is completely missing). Minimum valid example:\n"
+            '    ["New advances (loans originated this period)", '
+            '"Portfolio/collection performance (Collection%, NPA%, Concern Score)"]'
+        ),
+    },
+    {
+        "term": "risk / risky",
+        "note": (
+            '"risk"/"risky" is ambiguous: could mean NPA% (90+ DPD), SMA-2% '
+            "(early-stage delinquency), Hard Bucket% (deep arrears), Co-lending "
+            "exposure (partner-bank risk), or a composite Concern Score -- each is a "
+            "different metric with a different ranking. If the query does not "
+            "already name one of these specifically, ask for clarification listing "
+            "these as options rather than defaulting to one."
+        ),
+    },
+]

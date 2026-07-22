@@ -273,6 +273,79 @@ VIEWS: dict[str, dict] = {
         "cache_key": "pi_npa_sma2_cmp",
         "grain": "executive",
     },
+    # "business" is a genuinely ambiguous NBFC term (see registry/ontology.py's
+    # AMBIGUOUS_TERMS): NEW LOANS ORIGINATED (these 3 views) vs. portfolio/
+    # collection performance (region_scorecard/branch_quadrant/executive_recovery
+    # above). Before these existed, the AI Query pipeline had NO vocabulary at
+    # all for the "new business" reading -- confirmed live: asking "which region
+    # had best business" got a clarification question whose 3 offered options
+    # were all collection-performance flavors (Collection Efficiency/Strike
+    # Rate/NPA-SMA-2%), because there was nothing else in the catalog to draw
+    # a genuine "new advances" option from. Registering these gives the planner
+    # a real, correctly-answerable target for that reading, not just a name to
+    # gesture at in a clarification question it can't actually serve.
+    "new_advances_by_region": {
+        "label": "New Advances (Loans Originated) by Region",
+        "description": (
+            "New loans originated (funded) THIS reporting month, by region -- "
+            "accounts, funded amount, month-over-month change vs last month's "
+            "originations. Use for 'new business by region', 'new advances by "
+            "region', 'which region originated the most loans this month', "
+            "'disbursement volume by region'."
+        ),
+        "fn": "analysis.portfolio_intelligence.compute_new_advances_by_dimension",
+        "inputs": ["df_curr"],
+        "params": {},
+        "requires": [],
+        "filterable": False,
+        "output": "dict_subkey_df",
+        "subkey": "region",
+        "cache_key": "pi_new_advances_by_dim",
+        "grain": "region",
+        "label_col": "Region",
+        "metrics": ["Accounts This Month", "Funded (Cr)", "Accounts MoM %", "Funded MoM %"],
+    },
+    "new_advances_by_branch": {
+        "label": "New Advances (Loans Originated) by Branch",
+        "description": (
+            "New loans originated (funded) THIS reporting month, by branch -- "
+            "accounts, funded amount, month-over-month change vs last month's "
+            "originations. Use for 'new business by branch', 'new advances by "
+            "branch', 'which branch originated the most loans this month', "
+            "'disbursement volume by branch'."
+        ),
+        "fn": "analysis.portfolio_intelligence.compute_new_advances_by_dimension",
+        "inputs": ["df_curr"],
+        "params": {},
+        "requires": [],
+        "filterable": False,
+        "output": "dict_subkey_df",
+        "subkey": "branch",
+        "cache_key": "pi_new_advances_by_dim",
+        "grain": "branch",
+        "label_col": "Branch",
+        "metrics": ["Accounts This Month", "Funded (Cr)", "Accounts MoM %", "Funded MoM %"],
+    },
+    "new_advances_by_executive": {
+        "label": "New Advances (Loans Originated) by Executive",
+        "description": (
+            "New loans originated (funded) THIS reporting month, by field executive -- "
+            "accounts, funded amount, month-over-month change vs last month's "
+            "originations. Use for 'new business by executive', 'new advances by "
+            "executive', 'which executive sourced the most loans this month'."
+        ),
+        "fn": "analysis.portfolio_intelligence.compute_new_advances_by_dimension",
+        "inputs": ["df_curr"],
+        "params": {},
+        "requires": [],
+        "filterable": False,
+        "output": "dict_subkey_df",
+        "subkey": "executive",
+        "cache_key": "pi_new_advances_by_dim",
+        "grain": "executive",
+        "label_col": "Executive",
+        "metrics": ["Accounts This Month", "Funded (Cr)", "Accounts MoM %", "Funded MoM %"],
+    },
     "segment_analysis": {
         "label": "Delinquency by Vehicle Segment",
         "description": (
@@ -404,6 +477,12 @@ _METRIC_DIRECTION: dict[str, str] = {
     "Strike%": "low_bad", "Strike Rate %": "low_bad",
     "Roll Bwd%": "low_bad", "Roll Bwd %": "low_bad",
     "Net Recovery": "low_bad", "Rescued": "low_bad",
+    # New-business/origination metrics -- more new loans/funded amount/MoM
+    # growth is always the good direction here (unlike a delinquency %, there's
+    # no "too much new business" reading in this catalog), so a LOW value is
+    # the "bad" (attention-worthy) one for all four.
+    "Accounts This Month": "low_bad", "Funded (Cr)": "low_bad",
+    "Accounts MoM %": "low_bad", "Funded MoM %": "low_bad",
 }
 
 
@@ -429,6 +508,10 @@ _METRIC_AGG: dict[str, str] = {
     "Collection%": "mean", "Collection %": "mean",
     "Strike%": "mean", "Strike Rate %": "mean",
     "Net Recovery": "sum", "Rescued": "sum", "Slipped": "sum",
+    # Accounts/Funded are count-like (totaled across entities for a portfolio
+    # total); MoM% is a rate (averaged, summing a % across branches is meaningless).
+    "Accounts This Month": "sum", "Funded (Cr)": "sum",
+    "Accounts MoM %": "mean", "Funded MoM %": "mean",
 }
 
 

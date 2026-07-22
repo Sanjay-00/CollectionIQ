@@ -392,6 +392,27 @@ def _apply_sort_by(result_df: pd.DataFrame, sort_by: dict | None) -> pd.DataFram
     return result_df
 
 
+def _apply_limit(result_df: pd.DataFrame, limit, spec: dict) -> pd.DataFrame:
+    """Cap an already-sorted view result to the planner's requested top-N
+    ("top 5 branches"). Only fires when the matched view has NO dedicated own
+    count parameter (e.g. top_delinquent_accounts.n) -- a view that already
+    has one truncates inside its own analysis/ function before this ever
+    runs, and applying a SECOND, independent truncation here on top of that
+    would double-cap it against the planner's actual intent. Any other
+    non-positive/non-numeric/absent limit is a no-op, same fail-safe
+    convention as _apply_sort_by above -- never worth failing the whole
+    query over a limit that doesn't quite resolve."""
+    if not limit or "n" in (spec.get("params") or {}) or result_df is None:
+        return result_df
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return result_df
+    if n <= 0:
+        return result_df
+    return result_df.head(n)
+
+
 def _format_metric_value(col: str, value) -> str:
     """Shared display formatting for a metric value, used by both highlight
     cards and the portfolio KPI rollup -- a percent-named column always shows
@@ -564,7 +585,30 @@ def view_node(state: QueryState) -> QueryState:
 
     result_df = _apply_sort_by(result_df, view_spec.get("sort_by"))
 
-    result_kpis = {"Count": len(result_df), **result_kpis}
+    # Highlights and the portfolio-wide rollup are computed against the FULL
+    # sorted result -- BEFORE any top-N limit below -- deliberately: they're
+    # meant to be a true baseline for "how does the ranked/highlighted entity
+    # compare to the whole portfolio" (see _build_portfolio_kpis's own
+    # docstring). Computing them AFTER capping to e.g. the top 5 would quietly
+    # change "Avg NPA%" to mean "average of just the 5 shown branches" instead
+    # of the real portfolio average -- same number label, different and wrong
+    # meaning, so the ordering here is deliberate, not incidental.
+    result_highlights = _build_highlights(
+        spec, result_df, view_spec.get("highlight_metrics") or []
+    )
+    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
+
+    result_df = _apply_limit(result_df, ir1.get("limit"), spec)
+
+    # "Count" must come AFTER spreading result_kpis, not before: some
+    # normalizers (e.g. _normalize_dict_subkey_df) already put their OWN
+    # "Count" in result_kpis, computed against the full pre-limit df -- {**a,
+    # **b} lets the LATER key win on a collision, so putting our post-limit
+    # count first (the old {"Count": ..., **result_kpis} order) let that stale
+    # value silently overwrite it back to the full, un-limited count. Caught
+    # live: "top 5 branches" was correctly capped to 5 rows in result_df, but
+    # Count still read 13 until this order was fixed.
+    result_kpis = {**result_kpis, "Count": len(result_df)}
     # analyze_node's insight generator only understands two kpis shapes: an
     # "aggregation result" (has "_agg_rows") or a "loan-level filter result"
     # (expects Total POS/Avg Arrears/EMI/etc, defaulting missing keys to 0).
@@ -580,11 +624,6 @@ def view_node(state: QueryState) -> QueryState:
         # prompt. See _PII_COLS_IN_AGG_ROWS's docstring above for the full story.
         result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(5).to_dict(orient="records"))
 
-    result_highlights = _build_highlights(
-        spec, result_df, view_spec.get("highlight_metrics") or []
-    )
-    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
-
     _trace_metadata({
         "view_name": name,
         "view_served": True,
@@ -593,6 +632,7 @@ def view_node(state: QueryState) -> QueryState:
         "view_row_count": len(result_df),
         "highlight_metrics_count": len(result_highlights),
         "sort_by_requested": bool(view_spec.get("sort_by")),
+        "limit_requested": ir1.get("limit"),
     })
 
     return {
