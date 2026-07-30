@@ -379,26 +379,30 @@ AMBIGUOUS_TERMS = [
         "term": "business",
         "note": (
             '"business" is ambiguous in this NBFC domain, between TWO REAL, '
-            "SEPARATELY-ANSWERABLE views -- not just two ways of describing the same "
+            "SEPARATELY-ANSWERABLE readings for whatever entity grain (region/branch/"
+            "executive) the query names -- not just two ways of describing the same "
             "answer:\n"
-            "    (1) NEW LOANS ORIGINATED this period -- the new_advances_by_region / "
-            "new_advances_by_branch / new_advances_by_executive views (disbursement "
-            "volume, accounts funded this month).\n"
-            "    (2) PORTFOLIO/COLLECTION PERFORMANCE -- region_scorecard / "
-            "branch_quadrant / executive_recovery views (Collection%, NPA%, Strike%, "
-            "Concern Score, etc).\n"
+            "    (1) NEW LOANS ORIGINATED this period -- the new_advances_by_<grain> view.\n"
+            "    (2) PORTFOLIO/COLLECTION PERFORMANCE -- whichever performance view "
+            "exists for that SAME grain (region_scorecard / branch_quadrant / "
+            "executive_recovery).\n"
             "  These are computed from DIFFERENT rows (Ag_Date-filtered originations vs. "
             "the whole current book) and give completely different rankings -- a branch "
             "can lead on one and trail on the other. If the query does not already "
             'specify which reading (e.g. "new business", "new advances", "originated", '
             '"disbursed", "funded" clearly means (1); "collection performance", "NPA%", '
-            '"concern score", "delinquency" clearly means (2)), clarification_options '
-            "MUST include AT LEAST ONE option from EACH reading -- never 2-4 options that "
-            "are all flavors of the same one (e.g. offering only Collection Efficiency / "
-            "Strike Rate / NPA% is WRONG here, since all three are reading (2) only, "
-            "reading (1) is completely missing). Minimum valid example:\n"
-            '    ["New advances (loans originated this period)", '
-            '"Portfolio/collection performance (Collection%, NPA%, Concern Score)"]'
+            '"delinquency" clearly means (2)), clarification_options MUST include exactly '
+            "one option per reading. DO NOT copy a fixed/generic phrase for the option "
+            "text -- look up the ACTUAL matching view for the query's grain in the VIEWS "
+            "catalog above and build each option from THAT view's own real "
+            '"highlightable metrics" list, e.g. "New advances (accounts/funded this '
+            'period)" for reading (1), and for reading (2) name 1-2 of the SPECIFIC '
+            "metrics actually listed for that grain's performance view (executive_recovery "
+            "lists Collection%/Strike%/Net Recovery -- NOT NPA% or Concern Score, those "
+            "belong to region_scorecard/branch_quadrant only). Naming a metric that isn't "
+            "in the matched view's own metrics list is a real error, not a stylistic "
+            "choice -- it describes an answer the system cannot actually produce for that "
+            "grain."
         ),
     },
     {
@@ -406,10 +410,14 @@ AMBIGUOUS_TERMS = [
         "note": (
             '"risk"/"risky" is ambiguous: could mean NPA% (90+ DPD), SMA-2% '
             "(early-stage delinquency), Hard Bucket% (deep arrears), Co-lending "
-            "exposure (partner-bank risk), or a composite Concern Score -- each is a "
-            "different metric with a different ranking. If the query does not "
-            "already name one of these specifically, ask for clarification listing "
-            "these as options rather than defaulting to one."
+            "exposure (partner-bank risk), or -- ONLY when the query's grain is branch, "
+            "since branch_quadrant is the only view carrying it -- a composite Concern "
+            "Score. Each is a different metric with a different ranking. If the query "
+            "does not already name one of these specifically, ask for clarification "
+            "listing options -- but check the VIEWS catalog above first and offer ONLY "
+            "the ones that are actually valid for the entity grain in question (e.g. "
+            "never offer Concern Score for a region or executive question -- "
+            "region_scorecard/executive_recovery don't have that metric)."
         ),
     },
 ]

@@ -212,23 +212,32 @@ function fill(text) {
         </div>
         """, unsafe_allow_html=True)
 
+        # Out-of-scope's own options are standalone EXAMPLE queries (a safety
+        # net offered when the input couldn't be understood at all), not
+        # clarifying details about the SAME original query -- unlike a genuine
+        # ambiguity's options (e.g. "Collection Efficiency" for "best
+        # branches"), appending one of these to the original nonsense text as
+        # "(interpretation: ...)" would hand the planner a confusing hybrid
+        # string instead of the clean example it's supposed to be. Run it as
+        # a fresh query instead, exactly as if the user had typed it in themselves.
+        is_out_of_scope = result.get("query_title") == "Out of Scope"
+
         for i, opt in enumerate(q_options):
             if st.button(opt, key=f"clarify_opt_{i}", width='stretch'):
-                augmented = f"{orig_query} (interpretation: {opt})"
-                # A different query string (the interpretation is appended), so
-                # this naturally gets its own cache key -- no collision with the
-                # original ambiguous query's entry.
-                _cache_key = (augmented, data_version, filter_key, skip_insights)
+                next_query = opt if is_out_of_scope else f"{orig_query} (interpretation: {opt})"
+                # A different query string, so this naturally gets its own
+                # cache key -- no collision with the original query's entry.
+                _cache_key = (next_query, data_version, filter_key, skip_insights)
                 _cached = _ai_cache_get(_ai_cache, _cache_key)
                 if _cached is not None:
-                    _log_ai_cache_hit(augmented, data_version, filter_key)
+                    _log_ai_cache_hit(next_query, data_version, filter_key)
                     _res = _cached
                 else:
                     with st.status("Running AI pipeline...", expanded=True) as _status:
                         def _on_step(label: str) -> None:
                             _status.write(label)
-                        _res = run_query(augmented, df_curr, on_step=_on_step,
-                                         snapshot_dates=snapshot_dates, allow_clarification=False,
+                        _res = run_query(next_query, df_curr, on_step=_on_step,
+                                         snapshot_dates=snapshot_dates, allow_clarification=not is_out_of_scope,
                                          df_prev=df_prev, precomputed_views=precomputed_views,
                                          alerts_curr=alerts_curr, alerts_prev=alerts_prev,
                                          rr_meta=rr_meta, skip_insights=skip_insights)
@@ -238,7 +247,15 @@ function fill(text) {
                 st.session_state["ai_result"] = _res
                 st.rerun()
 
-        st.caption("None of these? Rephrase your question above with the detail you meant, and run again.")
+        st.markdown(
+            '<div style="background:#161b22;border:1px dashed #3d444d;border-radius:10px;'
+            'padding:10px 16px;margin-top:8px;font-size:12px;color:#9ca3af;">'
+            '💬 <strong style="color:#c9d1d9;">None of these?</strong> Your question is still in the '
+            "box above — edit it with the exact detail you meant (e.g. name the metric or "
+            'branch/executive/region directly), then click <strong style="color:#c9d1d9;">Run Query</strong> again.'
+            "</div>",
+            unsafe_allow_html=True,
+        )
         return
 
     filtered_df = result["result_df"]
