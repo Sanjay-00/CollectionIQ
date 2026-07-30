@@ -1287,24 +1287,40 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
     prev_adv = df_curr[cohort == prev_ym]
 
     def _grouped_totals(adv: pd.DataFrame, col: str, extra_cols: list[tuple[str, str]]):
-        """One groupby().agg() pass over `adv` -> {name: (n, amt)} plus a
-        parallel {name: {src: first_value}} for extra_cols. Replaces both
-        curr_adv's per-group Python loop AND (the real cost) prev_adv's
+        """One groupby().agg() pass over `adv` -> {name: (n, amt, uniq_cust)}
+        plus a parallel {name: {src: first_value}} for extra_cols. Replaces
+        both curr_adv's per-group Python loop AND (the real cost) prev_adv's
         per-group boolean-mask re-filter (`prev_adv[prev_adv[col] == name]`,
         once per group) that used to re-scan the whole prev_adv frame from
         scratch for every single region/branch/executive -- profiled at
         ~1.4s for the 254-executive case alone on a real ~60k-row file,
         almost entirely pandas' own per-filter take/reindex machinery, not
         any real per-group computation. Verified byte-for-byte identical to
-        the old implementation via pd.testing.assert_frame_equal."""
+        the old implementation via pd.testing.assert_frame_equal.
+
+        uniq_cust is Cust Mob No nunique -- Loan No/Accounts counts loans,
+        which overstates how many distinct customers actually took a new
+        advance whenever one customer originates more than one loan this
+        month. Same customer-identity proxy already used by
+        compute_fleet_exposure (Cust Mob No may not be unique across
+        branches -- treat as approximate, same caveat as that function)."""
         if col not in adv.columns or adv.empty:
             return {}, {}
         has_loan_no = "Loan No" in adv.columns
+        has_cust_mob = "Cust Mob No" in adv.columns
         amt_col = to_num(adv, "Loan Amount") if "Loan Amount" in adv.columns else pd.Series(0.0, index=adv.index)
         agg_df = adv.assign(_amt=amt_col)
+        if has_cust_mob:
+            # Blank/missing mobile numbers must not collapse into one fake
+            # "customer" via nunique -- exclude them from the count the same
+            # way compute_fleet_exposure does before its own groupby.
+            mob = agg_df["Cust Mob No"].astype(str).str.strip()
+            agg_df["_cust_mob"] = mob.where(mob != "", pd.NA)
         spec = {"_amt": "sum"}
         if has_loan_no:
             spec["Loan No"] = "nunique"
+        if has_cust_mob:
+            spec["_cust_mob"] = "nunique"
         extra_srcs = [src for src, _ in extra_cols if src in agg_df.columns]
         for src in extra_srcs:
             spec[src] = "first"
@@ -1314,7 +1330,10 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
         else:
             grouped["_n"] = agg_df.groupby(col).size()
             n_col = "_n"
-        totals = {name: (int(r[n_col]), float(r["_amt"])) for name, r in grouped.iterrows()}
+        totals = {
+            name: (int(r[n_col]), float(r["_amt"]), int(r["_cust_mob"]) if has_cust_mob else int(r[n_col]))
+            for name, r in grouped.iterrows()
+        }
         extras = {name: {src: r[src] for src in extra_srcs} for name, r in grouped.iterrows()}
         return totals, extras
 
@@ -1332,16 +1351,17 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
         curr_totals, curr_extras = _grouped_totals(curr_adv, col, extra_cols)
         prev_totals, _ = _grouped_totals(prev_adv, col, [])
         rows = []
-        for name, (n, amt) in curr_totals.items():
+        for name, (n, amt, uniq_cust) in curr_totals.items():
             if n < min_accounts:
                 continue
-            prev_n, prev_amt = prev_totals.get(name, (0, 0.0))
+            prev_n, prev_amt, _ = prev_totals.get(name, (0, 0.0, 0))
             row = {label: name}
             for src, out_label in extra_cols:
                 row[out_label] = curr_extras.get(name, {}).get(src)
             row.update({
                 "Total Accounts": int(total_counts.get(name, n)),
                 "Accounts This Month": n,
+                "Unique Customers": uniq_cust,
                 "Funded (Cr)": round(amt / 1e7, 2),
                 "Avg Ticket (L)": round((amt / n) / 1e5, 2) if n else 0.0,
                 "Prev Accounts": prev_n,

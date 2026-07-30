@@ -474,6 +474,51 @@ class TestComputeNewAdvancesByDimension:
         assert exec_df.iloc[0]["Executive"] == "BIG_EXEC"
         assert exec_df["Accounts This Month"].tolist() == sorted(exec_df["Accounts This Month"].tolist(), reverse=True)
 
+    def test_unique_customers_counts_distinct_cust_mob_no_not_loans(self):
+        # Same customer (by Cust Mob No) takes 2 fresh loans this month, plus
+        # a second, different customer takes 1 -- Accounts This Month must
+        # count all 3 loans, but Unique Customers must count only 2 people,
+        # the exact gap this column exists to surface (see compute_fleet_exposure
+        # for the same Cust Mob No customer-identity convention).
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1", "Cust Mob No": "9000000001"},
+            {"Ag_Date": pd.Timestamp("2026-06-10"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1", "Cust Mob No": "9000000001"},
+            {"Ag_Date": pd.Timestamp("2026-06-15"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1", "Cust Mob No": "9000000002"},
+        ])
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        row = out["executive"].set_index("Executive").loc["EXEC1"]
+        assert row["Accounts This Month"] == 3
+        assert row["Unique Customers"] == 2
+
+    def test_unique_customers_excludes_blank_mobile_numbers(self):
+        # Two loans with no Cust Mob No must not collapse into "1 customer"
+        # via a naive nunique on blank strings.
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1", "Cust Mob No": ""},
+            {"Ag_Date": pd.Timestamp("2026-06-10"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1", "Cust Mob No": ""},
+        ])
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        row = out["executive"].set_index("Executive").loc["EXEC1"]
+        assert row["Accounts This Month"] == 2
+        assert row["Unique Customers"] == 0
+
+    def test_unique_customers_falls_back_to_account_count_without_cust_mob_col(self):
+        # Cust Mob No isn't in this test file at all -- must degrade to the
+        # account count rather than raising or silently returning 0/None.
+        curr = make_df([
+            {"Ag_Date": pd.Timestamp("2026-06-05"), "Loan Amount": 100_000.0,
+             "RegionName": "WEST", "Unit": "MAHAD", "MNT NAME": "EXEC1"},
+        ])
+        assert "Cust Mob No" not in curr.columns
+        out = compute_new_advances_by_dimension(curr, as_of="2026-06-30")
+        row = out["executive"].set_index("Executive").loc["EXEC1"]
+        assert row["Unique Customers"] == row["Accounts This Month"] == 1
+
 
 # ── compute_new_advances_trend / roll_new_advances_trend ──────────────────────
 
