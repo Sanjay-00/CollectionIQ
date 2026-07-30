@@ -86,8 +86,15 @@ def render_alerts_tab(df_curr: pd.DataFrame, alerts: list) -> None:
                             hide_index=True,
                             height=min(300, 40 + alert["count"] * 35),
                         )
+                        # Download carries every column (raw Excel + derived),
+                        # not just the on-screen curated subset above -- same
+                        # filtered rows, just not column-limited, so an analyst
+                        # exporting for offline review never loses a column
+                        # they'd have to come back to the app for.
+                        full_df = alert.get("df_full", alert["df"])
+                        full_df = full_df.loc[:, ~full_df.columns.duplicated()]
                         _dl_btn(
-                            display_df.reset_index(drop=True),
+                            full_df.reset_index(drop=True),
                             f"alert_{alert['title'].replace(' ', '_')}.xlsx",
                             f"dl_alert_{alert['title']}",
                         )

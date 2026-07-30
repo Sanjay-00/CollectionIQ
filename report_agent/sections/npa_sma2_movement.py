@@ -38,12 +38,22 @@ def _portfolio_row(df_curr: pd.DataFrame, df_prev: pd.DataFrame, has_prev: bool)
     }
 
 
-def _top_movers(df: pd.DataFrame, n: int = 5) -> tuple[list, list]:
+def _top_movers(df: pd.DataFrame, id_col: str, n: int = 5) -> tuple[list, list]:
+    """id_col is the row-identity column for this dimension -- "Unit" for
+    branch rows, "MNT NAME" for executive rows (compute_npa_sma2_comparison's
+    own column names for each). Fewer than 2n total valid rows means "worst"
+    and "best" (two independent, unrelated .head(n) sorts) can overlap --
+    drop duplicates (by identity) so the same entity never appears in both
+    lists. Same fix as overdue_demand.py/branch_performance.py's own
+    top5/bottom5 sections."""
     if df.empty or "NPA Δ" not in df.columns:
         return [], []
     valid = df.dropna(subset=["NPA Δ"])
     worst = valid.sort_values("NPA Δ", ascending=False).head(n).to_dict("records")
-    best  = valid.sort_values("NPA Δ", ascending=True).head(n).to_dict("records")
+    if id_col in valid.columns:
+        worst_ids = {r[id_col] for r in worst}
+        valid = valid[~valid[id_col].isin(worst_ids)]
+    best = valid.sort_values("NPA Δ", ascending=True).head(n).to_dict("records")
     return worst, best
 
 
@@ -66,8 +76,8 @@ def compute_npa_sma2_movement(df_curr: pd.DataFrame, df_prev: pd.DataFrame = Non
         comparison = compute_npa_sma2_comparison(df_curr, df_prev if has_prev else empty_prev)
 
         region_rows = comparison.get("region", pd.DataFrame()).to_dict("records")
-        branch_worst, branch_best = _top_movers(comparison.get("branch", pd.DataFrame()))
-        exec_worst, exec_best     = _top_movers(comparison.get("executive", pd.DataFrame()))
+        branch_worst, branch_best = _top_movers(comparison.get("branch", pd.DataFrame()), "Unit")
+        exec_worst, exec_best     = _top_movers(comparison.get("executive", pd.DataFrame()), "MNT NAME")
 
         if (
             portfolio is None and not region_rows

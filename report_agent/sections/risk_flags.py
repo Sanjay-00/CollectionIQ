@@ -4,9 +4,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from smart_alerts import run_all_alerts
 
 
-def compute_risk_flags(df_curr: pd.DataFrame, df_prev: pd.DataFrame = None) -> dict | None:
+def compute_risk_flags(df_curr: pd.DataFrame, df_prev: pd.DataFrame = None, curr_month=None) -> dict | None:
     try:
-        alerts = run_all_alerts(df_curr)
+        # curr_month anchors alert_recent_advances_at_risk's "last N months"
+        # window to the report's own reporting month, not wall-clock today --
+        # see smart_alerts.py::alert_recent_advances_at_risk's own docstring.
+        alerts = run_all_alerts(df_curr, as_of=curr_month)
         SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2}
         # Sort by severity then count; take top 3 non-clear alerts
         active = sorted(

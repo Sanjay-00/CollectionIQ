@@ -19,8 +19,8 @@ from functools import lru_cache
 from google import genai
 from langsmith import traceable
 
-from config import GEMINI_MODEL
-from registry.ontology import CONCEPTS, METRICS
+from config import GEMINI_MODEL, PLANNER_TEMPERATURE
+from registry.ontology import CONCEPTS, METRICS, AMBIGUOUS_TERMS
 from registry.semantic_model import DIMENSIONS
 from registry.views import VIEWS, _METRIC_DIRECTION
 from agents.domain_expert import (
@@ -98,13 +98,43 @@ def _build_full_system_prompt(snapshot_dates: dict | None = None, allow_clarific
             "Do NOT reference prev_* columns or bucket movement (bucket_worse_than / bucket_better_than)."
         )
 
-    clarification_rule = (
-        'Set needs_clarification=true ONLY for genuine material ambiguity where two '
-        'interpretations give materially different numbers (e.g. user says "big accounts" '
-        'without a threshold). For clear queries, ALWAYS proceed (needs_clarification=false).'
-    ) if allow_clarification else (
-        'needs_clarification MUST be false  -  the user has already clarified. Proceed with best interpretation.'
-    )
+    if allow_clarification:
+        ambiguous_terms_block = "\n".join(
+            f'  - "{t["term"]}": {t["note"]}' for t in AMBIGUOUS_TERMS
+        )
+        clarification_rule = (
+            'Set needs_clarification=true ONLY for genuine material ambiguity where two '
+            'interpretations give materially different numbers (e.g. user says "big accounts" '
+            'without a threshold). For clear queries, ALWAYS proceed (needs_clarification=false).\n'
+            "  KNOWN DOMAIN-AMBIGUOUS TERMS -- if the query uses one of these WITHOUT already "
+            "specifying which reading is meant elsewhere in the wording, you MUST set "
+            "needs_clarification=true with 2-4 concrete options; do NOT silently pick a default "
+            "interpretation for these specifically, even if one reading seems more likely. THIS "
+            "CHECK TAKES PRIORITY OVER THE OUT OF SCOPE RULE BELOW: a query naming one of these "
+            "terms (e.g. \"branch business details\", \"which region has best business\") is a "
+            "real, on-topic portfolio question that needs disambiguating -- it is NEVER out of "
+            "scope just because it's vague or uses an ambiguous word. Only classify as out of "
+            "scope when the query has NO recognizable portfolio intent at all (small talk, "
+            "general knowledge, gibberish), not merely because a term in it is ambiguous:\n"
+            f"{ambiguous_terms_block}"
+        )
+        out_of_scope_precedence_note = (
+            "\n  DO NOT use this path for a vaguely-worded but clearly portfolio-related question "
+            "(branches, regions, executives, accounts, business, risk, performance, etc.) -- that "
+            "is the KNOWN DOMAIN-AMBIGUOUS TERMS case above, or ordinary underspecified phrasing "
+            "the CLARIFICATION RULE already covers, never \"out of scope\". Reserve this ONLY for "
+            "input with no recognizable portfolio intent whatsoever."
+        )
+    else:
+        clarification_rule = (
+            'needs_clarification MUST be false  -  the user has already clarified. Proceed with best interpretation.'
+        )
+        # No AMBIGUOUS_TERMS block exists in this branch (see clarification_rule
+        # above) -- referencing it here would be a dangling pointer to a
+        # section that isn't in the prompt this call, and would also break the
+        # "ambiguous-terms text never appears in a post-clarification retry"
+        # contract that keeps this path from re-triggering the same clarification loop.
+        out_of_scope_precedence_note = ""
 
     return f"""You are the semantic layer of CollectionIQ, an NBFC loan-collection analytics engine.
 Convert a natural language portfolio query into a flat logical IR (JSON).
@@ -198,6 +228,20 @@ VIEW MATCHING (try this FIRST, before building filters/dimensions/measures from 
     "sort_by": {{"column": "Collection%", "dir": "desc"}}   // Collection% is (higher=better)
   Example (qualitative, worst-first) -- "show branches worst performing first":
     "sort_by": {{"column": "NPA%", "dir": "desc"}}          // NPA% is (higher=worse)
+
+  LIMIT (optional, view path only): when the user explicitly asks for a specific top-N count
+  on a matched view ("top 5 branches", "show me 10 regions") AND that view has NO dedicated
+  own count parameter of its own (check "params" in the view catalog above -- e.g.
+  top_delinquent_accounts already has its own "n" param; use THAT instead via "view.params",
+  never the top-level "limit" field, for a view that already has one -- setting both would
+  double-truncate). For a view with no such param (region_scorecard, branch_quadrant,
+  executive_recovery, new_advances_by_region/branch/executive, etc.), set the top-level:
+    "limit": <integer>
+  Leave "limit" null when the user names no specific count -- never invent a default N just
+  because the question has a ranking/best/worst framing; an unqualified "best branches" should
+  return every entity (ranked via sort_by above), not a guessed-at top 5/10.
+  Example -- "top 5 branches by NPA%" (branch_quadrant has no own count param):
+    "view": {{"name": "branch_quadrant", "params": {{}}, ...}}, "sort_by": {{"column": "NPA%", "dir": "desc"}}, "limit": 5
 
 {catalog}
 
@@ -433,7 +477,7 @@ OUT OF SCOPE / OFF-TOPIC INPUT: this system answers questions about THIS loan/co
   set needs_clarification=true, clarification_options=[], and clarification_question to one
   short, friendly sentence explaining you only answer portfolio questions, followed by 2
   example questions (e.g. "top 10 delinquent customers by SOH", "NPA% by branch"). Leave
-  filters/dimensions/measures/view empty; intent="loan_table".
+  filters/dimensions/measures/view empty; intent="loan_table".{out_of_scope_precedence_note}
 
 RISK FLAG:
   high = NPA/SMA/CoLending/NonStarter/Legal/Strike queries; medium = general delinquency;
@@ -548,18 +592,113 @@ def _query_requests_all_columns(query: str) -> bool:
     return bool(_ALL_COLUMNS_PATTERN.search(query))
 
 
-def _out_of_scope_ir(message: str) -> dict:
+# Deterministic fast-path for the "business" AMBIGUOUS_TERMS case, same
+# two-layers-not-one philosophy as _query_requests_all_columns above. Unlike a
+# generic ambiguity ("big accounts" -- needs real judgment about what "big"
+# means), THIS specific case is fully specifiable: it only depends on (a) is
+# the term present without an already-disambiguating word, and (b) which
+# entity grain (a plain dictionary lookup against real registry.views.VIEWS
+# data, never a copied/hardcoded sentence) -- exactly the kind of decision
+# this codebase's "vocabulary, not logic, in the LLM" pattern says should be a
+# lookup, not an LLM judgment call. Scoped ONLY to "business", not "risk": risk
+# is a within-view metric choice (no clean two-competing-views split to look
+# up), a genuinely different shape of ambiguity that a keyword lookup can't
+# resolve as cleanly -- kept on the existing (temperature-lowered) LLM path.
+# Deliberately narrow and easy to remove wholesale if it ever causes more
+# trouble than the rare case it fixes is worth: everything below is additive
+# and short-circuits BEFORE any Gemini call -- delete this block and
+# plan_logical falls back to exactly the behavior it had before it existed.
+_BUSINESS_TERM_RE = re.compile(r"\bbusiness\b", re.IGNORECASE)
+_NEW_ADVANCES_HINT_RE = re.compile(
+    r"\b(new\s+advance|new\s+loan|originat|disburs|\bfund(?:ed|ing)?\b)", re.IGNORECASE
+)
+_PERFORMANCE_HINT_RE = re.compile(
+    r"\b(collection|npa|delinquen|concern\s+score|strike|recovery|sma-?2)\b", re.IGNORECASE
+)
+_GRAIN_KEYWORDS = {
+    "branch":    (r"\bbranch(?:es)?\b", r"\bunit(?:s)?\b"),
+    "executive": (r"\bexecutive(?:s)?\b", r"\bexec(?:s)?\b", r"\bfield\s+officer\b", r"\bagent(?:s)?\b"),
+    "region":    (r"\bregion(?:s)?\b", r"\bzone(?:s)?\b"),
+}
+_GRAIN_DISPLAY = {"branch": "branches", "executive": "executives", "region": "regions"}
+_GRAIN_TO_VIEWS = {
+    "branch":    ("new_advances_by_branch", "branch_quadrant"),
+    "executive": ("new_advances_by_executive", "executive_recovery"),
+    "region":    ("new_advances_by_region", "region_scorecard"),
+}
+
+
+def _resolve_business_ambiguity_deterministically(query: str) -> dict | None:
+    """Returns a ready-to-use IR-1 clarification dict for the fully-specifiable
+    "business" case, or None to fall through to the normal LLM-driven path
+    unchanged (same graceful-fallthrough convention view_node already uses).
+    Every word in the returned option text comes straight from registry.views.
+    VIEWS ("label"/"metrics"), never a copied/hardcoded sentence -- correct by
+    construction for whatever grain was actually detected, and automatically
+    stays correct if those views are ever renamed or re-metriced."""
+    if not _BUSINESS_TERM_RE.search(query):
+        return None
+    if _NEW_ADVANCES_HINT_RE.search(query) or _PERFORMANCE_HINT_RE.search(query):
+        return None  # already disambiguated by other wording -- let the LLM proceed normally
+    grain = next(
+        (g for g, patterns in _GRAIN_KEYWORDS.items()
+         if any(re.search(p, query, re.IGNORECASE) for p in patterns)),
+        None,
+    )
+    if grain is None:
+        return None  # can't confidently tell WHO the question is about -- fall through
+
+    adv_name, perf_name = _GRAIN_TO_VIEWS[grain]
+    if adv_name not in VIEWS or perf_name not in VIEWS:
+        return None  # registry changed under us -- fail safe, never crash on a stale mapping
+    perf_spec = VIEWS[perf_name]
+    perf_metrics = ", ".join((perf_spec.get("metrics") or [])[:4]) or "portfolio performance"
+
+    return _normalize_ir1({
+        "intent": "loan_table",
+        "query_title": "Business - Which Reading?",
+        "needs_clarification": True,
+        "clarification_question": (
+            f"When you say 'business' for {_GRAIN_DISPLAY[grain]}, do you mean new loans "
+            "originated this period, or portfolio/collection performance?"
+        ),
+        "clarification_options": [
+            "New advances (accounts/funded this period)",
+            f"{perf_spec['label']} ({perf_metrics})",
+        ],
+    })
+
+
+# Standalone example queries offered whenever the input couldn't be
+# understood at all -- without these, the out-of-scope path was a dead end:
+# empty clarification_options renders NO buttons (unlike a genuine ambiguity,
+# which always gives the user something clickable), leaving "go retype your
+# question from scratch" as the only way forward. Kept in sync with the 2
+# examples already named in the OUT OF SCOPE prompt section below by hand --
+# both describe the same fixed pair, just for the two different code paths
+# (LLM-classified vs. the Python-side guardrails that never call the model).
+_OUT_OF_SCOPE_EXAMPLE_OPTIONS = [
+    "Top 10 delinquent customers by SOH",
+    "NPA% by branch",
+]
+
+
+def _out_of_scope_ir(message: str, options: list[str] | None = None) -> dict:
     """A safe, structured "can't help with that" response -- reuses the SAME
     needs_clarification path the UI already renders (no new UI code needed),
     for both genuinely off-topic input and input we couldn't safely process
     (oversized, or the model broke JSON format under adversarial/gibberish
-    input). Never invents a fabricated query or leaks a raw exception."""
+    input). Never invents a fabricated query or leaks a raw exception.
+    `options` defaults to a fixed, safe example pair -- ui/tabs/ai_query.py
+    runs a clicked option as a FRESH query (never appended to the original
+    nonsense text as an "interpretation"), since these are standalone
+    examples, not clarifying details about the same original query."""
     return _normalize_ir1({
         "intent": "loan_table",
         "query_title": "Out of Scope",
         "needs_clarification": True,
         "clarification_question": message,
-        "clarification_options": [],
+        "clarification_options": options if options is not None else _OUT_OF_SCOPE_EXAMPLE_OPTIONS,
     })
 
 
@@ -588,13 +727,65 @@ def plan_logical(
             "\"top 10 delinquent customers by SOH\" or \"NPA% by branch\"."
         )
 
+    # Deterministic fast-path for the fully-specifiable "business" ambiguity --
+    # zero Gemini calls when it resolves (cheaper AND faster, not just more
+    # reliable than the LLM-judgment path it replaces for this one case). Gated
+    # on allow_clarification=True the same way the AMBIGUOUS_TERMS prompt
+    # section is: False means either a clarification follow-up (already
+    # resolved -- must not re-trigger) or the unrelated compiler repair loop
+    # (graph.py's one-shot retry), neither of which this should ever touch.
+    if allow_clarification:
+        resolved = _resolve_business_ambiguity_deterministically(query)
+        if resolved is not None:
+            return resolved
+
     system_prompt = _build_full_system_prompt(snapshot_dates, allow_clarification)
     repair_context = f"[REPAIR  -  {repair_feedback}] " if repair_feedback else ""
 
+    # A clarification follow-up query carries its own resolved interpretation
+    # IN THE TEXT ITSELF -- ui/tabs/ai_query.py appends "(interpretation: X)"
+    # when a user clicks a clarification option. Detected here via the query
+    # TEXT, deliberately NOT via allow_clarification: that flag is ALSO set
+    # False by the unrelated compiler repair loop above (graph.py's one-shot
+    # retry on a validation error), which must never receive this -- there is
+    # no interpretation to act on there, and injecting this instruction into
+    # a repair retry would confuse an already-tested, working mechanism.
+    # Query-text detection naturally does the right thing on a clarification
+    # follow-up's OWN repair retry too (state["query"] still carries the
+    # marker then), without needing a third flag threaded through the graph.
+    clarification_followup_context = (
+        "[CLARIFICATION RESOLVED -- the \"(interpretation: ...)\" text above names the "
+        "metric/reading the user just chose in response to a clarifying question. You "
+        "MUST act on it: if it names one of the matched view's own highlightable metrics, "
+        "set BOTH sort_by (rank on that metric, applying the existing good/bad-direction "
+        "rule based on whether the ORIGINAL wording said best/top/winning vs worst/falling "
+        "behind) AND highlight_metrics for that SAME metric+direction. Do not leave "
+        "sort_by/highlight_metrics empty just because a view already matched -- the whole "
+        "point of asking was to determine exactly this.] "
+    ) if "(interpretation:" in query else ""
+
     client = genai.Client(api_key=api_key)
     response = _call_gemini_with_retry(
-        client, GEMINI_MODEL, repair_context + query,
-        {"system_instruction": system_prompt},
+        client, GEMINI_MODEL, repair_context + clarification_followup_context + query,
+        {
+            "system_instruction": system_prompt,
+            # This is structured classification/extraction (pick an intent, pick
+            # filters/views from a fixed vocabulary, decide needs_clarification),
+            # not creative writing -- the default temperature (~1.0) is tuned for
+            # open-ended generation and was the direct cause of confirmed,
+            # reproducible run-to-run inconsistency observed live this session
+            # (the identical query sometimes asking for clarification with
+            # correct grain-aware options, sometimes silently guessing, sometimes
+            # misrouting to the out-of-scope fallback). Lowered, not zeroed: 0.0
+            # (fully greedy) risks the model getting stuck repeating a wrong
+            # answer with zero chance to recover on a retry; a low-but-nonzero
+            # value keeps the model strongly favoring its single best-judged
+            # interpretation while still allowing the compiler's own repair loop
+            # (plan_logical's OWN retry path above) a real chance to differ if
+            # the first attempt was actually wrong, not just re-confirm the same
+            # mistake deterministically forever.
+            "temperature": PLANNER_TEMPERATURE,
+        },
     )
     _add_token_usage(response)
 
@@ -615,4 +806,14 @@ def plan_logical(
     ir1 = _normalize_ir1(parsed)
     if _query_requests_all_columns(query):
         ir1["show_all_columns"] = True
+    # The model's OWN live out-of-scope classification (per the OUT OF SCOPE
+    # prompt section) explicitly sets clarification_options=[] -- same dead-end
+    # UI state _out_of_scope_ir's own default now avoids for the Python-side
+    # guardrail paths. Applied as a blanket fallback (any needs_clarification
+    # with empty options, not just this specific case): a genuine ambiguity is
+    # always instructed to give concrete options of its own, so empty options
+    # reaching here means the model didn't, and offering these safe examples
+    # is strictly better than a clickable-nothing dead end either way.
+    if ir1.get("needs_clarification") and not ir1.get("clarification_options"):
+        ir1["clarification_options"] = list(_OUT_OF_SCOPE_EXAMPLE_OPTIONS)
     return ir1

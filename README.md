@@ -245,32 +245,50 @@ CollectionIQ runs two independent AI pipelines orchestrated with LangGraph, one 
 
 ### AI Query Pipeline
 
-Every question typed in plain English flows through a LangGraph state machine built on a "plan, then compile" design. A Logical Planner agent never writes execution logic itself, it emits a declarative intent (which filters, which metrics, which dimensions) chosen from a fixed registry vocabulary, and a deterministic pandas compiler turns that into an executable step-plan. A clear query goes through the fast-path view lookup or the compiler; an ambiguous query gets a clarifying question first.
+Every question typed in plain English flows through a LangGraph state machine built on a "plan, then compile" design. A Logical Planner agent never writes execution logic itself, it emits a declarative intent (which filters, which metrics, which dimensions) chosen from a fixed registry vocabulary, and a deterministic pandas compiler turns that into an executable step-plan.
+
+Four routes leave the Planner, not two: a clear query goes through the fast-path view lookup or the compiler, a priority-action query (*"what should my team work today"*) skips both and runs straight against the seven-tier priority framework, and a materially ambiguous query gets a clarifying question instead of a guess. That clarifying question is not a loop inside the graph, it is a hard stop — the graph run ends, the UI shows the options, and picking one starts a brand-new run with the chosen interpretation folded into the question text.
+
+<sup>🟠 Gemini call &nbsp;·&nbsp; 🟢 deterministic pandas, no LLM &nbsp;·&nbsp; ⚪ routing / terminal</sup>
 
 ```mermaid
 flowchart TD
-    User(["Plain English Query\ne.g. customers per branch with more than 3 loans"])
+    User(["🧑 Plain English Query\ne.g. customers per branch with more than 3 loans"]) --> LP
 
-    User --> LP
-
-    subgraph QP ["  AI Query Pipeline  (LangGraph)  "]
+    subgraph QP ["  AI Query Pipeline · LangGraph  "]
         direction TB
-        LP["Logical Planner Agent\nGemini 2.5 Flash-Lite\n\nReads the registry vocabulary: concepts, metrics,\nentities, dimensions, pre-built views\nEmits a declarative intent, never raw execution code\nAsks to clarify when materially ambiguous"]
-        CL["Clarify\n\nAmbiguous query becomes a question plus\n3 to 5 options, user picks, query re-runs"]
-        VW["Fast-Path View\nPandas, no LLM\n\nServes a pre-computed analysis/ result when the\nplanner matched one, reusing the dashboard's own cache\nFalls through to the compiler on any failure"]
-        CV["Compiler and Validator\nDeterministic, one LLM repair on failure\n\nLowers the intent into an ordered pandas step-plan\nChecks every column and name against the real schema"]
-        EX["Data Executor\nPandas\n\nStep-plan engine, aggregation, priority framework\nComputes KPIs and rankings"]
-        IG["Insight Generator Agent\nGemini 2.5 Flash-Lite\n\nReads computed KPIs, rankings and rows\nGenerates domain-aware observations"]
+        LP["🟠 Logical Planner\nGemini 2.5 Flash-Lite\n\nReads the registry vocabulary: concepts, metrics,\nentities, dimensions, pre-built views\nEmits a declarative intent, never raw execution code\n(zero-LLM fast path for the 'business' ambiguity)"]
+        VW["🟢 Fast-Path View\nPandas, no LLM\n\nServes a pre-computed analysis/ result when the\nplanner matched one, reusing the dashboard's own cache\nFalls through to the compiler on any failure"]
+        CV["🟢 Compiler and Validator\nDeterministic\n\nLowers the intent into an ordered pandas step-plan\nChecks every column/name against the real schema\nOne repair round-trip to the Planner on failure"]
+        EX["🟢 Data Executor\nPandas\n\nRuns the step-plan, or the seven-tier\npriority framework for action queries\nComputes KPIs and rankings"]
+        IG["🟠 Insight Generator\nGemini 2.5 Flash-Lite\n\nReads computed KPIs, rankings and rows\nWrites domain-aware observations\nSkippable at zero cost"]
+        CL["⚪ Clarify → END\nQuestion + 3–5 options"]
+        ERR["⚪ Error → END\nClear message, no silent guess"]
+
+        LP -->|priority action| EX
+        LP -->|view matched| VW
         LP -->|ambiguous| CL
-        LP -->|view matched| VW --> IG
-        LP -->|else| CV --> EX --> IG
-        VW -.falls through on failure.-> CV
+        LP -->|else| CV
+        VW -->|served| IG
+        VW -.fallthrough on failure.-> CV
+        CV -->|"repair: exact error\n+ valid columns"| LP
+        CV -->|valid| EX
+        CV -->|unrepairable| ERR
+        EX -->|ok| IG
+        EX -->|failed| ERR
     end
 
-    CL --> RQ["Clarifying question\nuser answers, query re-runs"]
-    IG --> R1["Loan Table\nFiltered customer records"]
-    IG --> R2["Ranked / Aggregated Table\nOne row per group, including nested plans"]
-    IG --> R3["Single Stat\nDirect answer with supporting context"]
+    CL -.->|"user picks an option → UI appends\n'(interpretation: …)' → a NEW run starts"| User
+    IG --> R1["📋 Loan Table\nFiltered customer records"]
+    IG --> R2["📊 Ranked / Aggregated Table\nOne row per group, including nested plans"]
+    IG --> R3["🔢 Single Stat\nDirect answer with supporting context"]
+
+    classDef llm fill:#FDEBD3,stroke:#C1611D,color:#7A3D0F,stroke-width:1.4px;
+    classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
+    classDef neutral fill:#E7EAF0,stroke:#5B6B7F,color:#37414F,stroke-width:1.4px;
+    class LP,IG llm;
+    class VW,CV,EX det;
+    class User,CL,ERR,R1,R2,R3 neutral;
 ```
 
 The step-plan engine (`agents/plan_executor.py`) exists because a single GROUP BY counts rows per group and cannot express nested analytics. A plan is an ordered list of steps (group_aggregate with an optional conditional `where`, filter, derive, sort, limit); each step transforms the previous step's table, so arbitrary depth composes without special-casing. Only whitelisted operations run, never arbitrary code, and every `derive` expression is checked against a disallowed-pattern list before it reaches pandas.
@@ -280,41 +298,53 @@ The vocabulary the Logical Planner picks from lives in `registry/`: `ontology.py
 &nbsp;
 ### Report Pipeline
 
-Triggered on demand. Runs fully autonomously - no user input needed after clicking Generate.
+Triggered on demand. Runs fully autonomously - no user input needed after clicking Generate. Only **one** Gemini call in the entire pipeline — everything else, including the 22 report sections, is pandas reusing the same `analysis/` functions the dashboard already trusts.
+
+<sup>🟠 Gemini call &nbsp;·&nbsp; 🟢 deterministic, no LLM &nbsp;·&nbsp; ⚪ entry / delivery</sup>
 
 ```mermaid
 flowchart TD
-    Trigger(["Generate Monthly Report"])
+    Trigger(["🖱 Generate Monthly Report"]) --> PA
 
-    Trigger --> PA
-
-    subgraph RP ["  Report Pipeline  (LangGraph)  "]
+    subgraph RP ["  Report Pipeline · LangGraph  "]
         direction TB
-        PA["Portfolio Analyzer\nPandas\n\nComputes up to 22 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns · New advances\nAccount lists · Branch & executive leaderboards"]
-        RN["Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
-        RB["Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
-        ED["Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
+        PA["🟢 Portfolio Analyzer\nPandas\n\nComputes up to 22 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns · New advances\nAccount lists · Branch & executive leaderboards"]
+        RN["🟠 Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
+        RB["🟢 Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
+        ED["⚪ Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
         PA --> RN --> RB --> ED
     end
 
-    RB --> DL["Download HTML Report"]
-    ED --> EM["Email to Configured Recipients"]
+    RB --> DL["⬇ Download HTML Report"]
+    ED --> EM["📧 Email to Configured Recipients"]
+
+    classDef llm fill:#FDEBD3,stroke:#C1611D,color:#7A3D0F,stroke-width:1.4px;
+    classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
+    classDef neutral fill:#E7EAF0,stroke:#5B6B7F,color:#37414F,stroke-width:1.4px;
+    class RN llm;
+    class PA,RB det;
+    class Trigger,ED,DL,EM neutral;
 ```
 
 &nbsp;
 ### Data Layer
 
-Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine.
+Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine — and because the dashboard, the query pipeline, and the report all read this one cached DataFrame through the same `analysis/` functions, a number shown in one place is the same number shown everywhere else.
 
 ```mermaid
 flowchart LR
-    XL["LCC Excel File\n.xlsx / .xls / .xlsb\nSingle or multiple regional files"] --> VAL["Validation\nSchema check · Column normalisation\nMulti-sheet detection · Date parsing"]
+    XL["📄 LCC Excel File\n.xlsx / .xls / .xlsb\nSingle or multiple regional files"] --> VAL["Validation\nSchema check · Column normalisation\nMulti-sheet detection · Date parsing"]
     VAL --> BK["Bucketing\nDPD bucket assignment\nSTD · 1-30 · SMA-1 · SMA-2 · NPA\nSOH = POS + Closing Arrears"]
     BK --> KPI["KPI Computation\nCollection % · SOH · Arrears · MoM delta"]
-    KPI --> DF[("In-Memory\nDataFrame")]
+    KPI --> DF[("💾 In-Memory\nDataFrame")]
     DF --> QP2["Query Pipeline"]
     DF --> RP2["Report Pipeline"]
     DF --> DB["Dashboard\nKPIs · Charts · Alerts · Scorecard"]
+
+    classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
+    classDef neutral fill:#E7EAF0,stroke:#5B6B7F,color:#37414F,stroke-width:1.4px;
+    class VAL,BK,KPI det;
+    class XL,DF,QP2,RP2,DB neutral;
 ```
 
 &nbsp;

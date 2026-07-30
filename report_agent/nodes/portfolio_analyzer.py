@@ -36,7 +36,7 @@ from report_agent.sections import (
 _SECTION_FN = {
     "portfolio_health":    lambda c, p, m: portfolio_health.compute_portfolio_health(c, p),
     "verdict":             lambda c, p, m: verdict.compute_verdict(c, p),
-    "risk_flags":          lambda c, p, m: risk_flags.compute_risk_flags(c, p),
+    "risk_flags":          lambda c, p, m: risk_flags.compute_risk_flags(c, p, curr_month=m),
     "risk_indicators":     lambda c, p, m: risk_indicators.compute_risk_indicators_section(c, p),
     "bucket_migration":    lambda c, p, m: bucket_migration.compute_bucket_migration_section(c, p),
     "npa_sma2_movement":   lambda c, p, m: npa_sma2_movement.compute_npa_sma2_movement(c, p),

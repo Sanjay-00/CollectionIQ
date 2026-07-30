@@ -16,7 +16,7 @@ import warnings
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _excel_bytes, _kpi_card_html, _load_and_concat
+from ui.components import _dl_btn, _esc, _excel_bytes, _kpi_card_html, _load_and_concat, query_confidence_tier, _confidence_badge_html
 from test_utils import _build_upload
 from utils import REQUIRED_COLS
 
@@ -43,10 +43,85 @@ class TestDlBtnCaching:
         df2 = pd.DataFrame({"a": [9, 9, 9]})  # same shape, different content
         assert _excel_bytes(df1) != _excel_bytes(df2)
 
+
+class TestEsc:
+    """_esc guards every data-originated value interpolated into
+    unsafe_allow_html f-strings across ui/ -- manually-typed LCC fields
+    (Unit, MNT NAME, SegmentName...) and Gemini/planner output can contain
+    &, <, > that would otherwise break table markup or inject markup."""
+
+    def test_escapes_html_metacharacters_in_strings(self):
+        assert _esc("R&B MOTORS") == "R&amp;B MOTORS"
+        assert _esc("<script>alert(1)</script>") == "&lt;script&gt;alert(1)&lt;/script&gt;"
+
+    def test_escapes_quotes_for_attribute_safety(self):
+        # Used inside title="..." attributes (_top5_breakdown), so quotes
+        # must be escaped too (html.escape quote=True).
+        assert '"' not in _esc('BRANCH "MAIN"')
+
+    def test_non_strings_pass_through_unchanged(self):
+        # Numbers routinely continue into format specs (f"{_esc(v):.1f}");
+        # None is handled by callers' own "- " fallbacks.
+        assert _esc(42) == 42
+        assert _esc(3.14) == 3.14
+        assert _esc(None) is None
+
+    def test_scorecard_table_escapes_executive_names(self):
+        # End-to-end: a malicious/awkward MNT NAME must not survive into the
+        # rendered scorecard HTML as live markup.
+        from analysis.executive_scorecard import build_scorecard_table_html
+
+        df = pd.DataFrame([{
+            "Rank": 1,
+            "Executive (Branch)": 'EVIL <img src=x onerror=alert(1)> & CO (PUNE)',
+            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
+            "NPA": 0, "SMA-2": 1, "Tier": "top",
+        }])
+        out = build_scorecard_table_html(df)
+        assert "<img" not in out
+        assert "&lt;img" in out
+
     def test_dl_btn_renders_for_distinct_keys(self):
         df = pd.DataFrame({"a": [1, 2, 3]})
         _dl_btn(df, "f1.xlsx", "k1")
         _dl_btn(df, "f2.xlsx", "k2")
+
+
+class TestQueryConfidenceTier:
+    """query_confidence_tier reads signals already present in graph.py's final
+    QueryState (view_render/priority_mode/repair_attempts) to classify how
+    much validation an AI Query answer received -- fast-path view (same code
+    as the dashboard) ranks above a compiler plan that needed a repair pass.
+    Precedence matters: a view match or priority mode short-circuits before
+    repair_attempts is even considered, since neither of those paths compiles
+    an IR-1 in the first place."""
+
+    def test_view_match_is_verified_regardless_of_other_fields(self):
+        label, _, _ = query_confidence_tier({"view_render": "kpi_cards", "repair_attempts": 3})
+        assert label == "Verified"
+
+    def test_priority_mode_ranks_below_view_but_above_compiler_signals(self):
+        label, _, _ = query_confidence_tier({"priority_mode": True, "repair_attempts": 2})
+        assert label == "Priority Rules"
+
+    def test_clean_compile_is_validated(self):
+        label, _, _ = query_confidence_tier({"repair_attempts": 0})
+        assert label == "Validated"
+
+    def test_repaired_compile_is_self_corrected(self):
+        label, _, _ = query_confidence_tier({"repair_attempts": 1})
+        assert label == "Self-corrected"
+
+    def test_missing_repair_attempts_key_defaults_to_validated(self):
+        # A direct/legacy caller that never set repair_attempts must not be
+        # misread as "needed a repair" -- absence means "no repair recorded",
+        # same as the explicit 0 case.
+        label, _, _ = query_confidence_tier({})
+        assert label == "Validated"
+
+    def test_badge_html_escapes_nothing_user_controlled_but_renders_label(self):
+        html_out = _confidence_badge_html({"view_render": "kpi_cards"})
+        assert "Verified" in html_out
 
 
 class TestKpiCardHtmlArrowAndColor:
@@ -195,3 +270,54 @@ class TestLoadAndConcatMissingOptionalCols:
         assert errs == []
         assert "CoLending_Loans" not in result_df.columns
         assert "CoLending_Loans" in result_df.attrs["missing_optional_cols"]
+
+
+class TestMomCellColoring:
+    """Regression: append_total_row leaves a %-named column with no
+    ratio_cols entry (e.g. Accounts MoM %/Funded MoM % on Section 3's Total
+    row -- see ui/tabs/business.py::_render_new_advances_by_dimension) as the
+    string "" rather than a number, since it has no numerator/denominator to
+    recompute a portfolio-wide ratio from. _color_mom_cell's `val >= 0`
+    crashed the whole Business tab the moment that Total row reached it
+    (str vs int comparison), caught live via a real screenshot of the error."""
+
+    def test_blank_string_from_total_row_does_not_raise(self):
+        from ui.tabs.business import _color_mom_cell
+        assert _color_mom_cell("") == ""
+
+    def test_nan_is_still_blank(self):
+        from ui.tabs.business import _color_mom_cell
+        assert _color_mom_cell(float("nan")) == ""
+
+    def test_positive_value_is_green_negative_is_red(self):
+        from ui.tabs.business import _color_mom_cell
+        assert "059669" in _color_mom_cell(12.5)
+        assert "dc2626" in _color_mom_cell(-3.2)
+
+    def test_style_mom_columns_renders_without_raising_on_a_total_row(self):
+        from ui.components import append_total_row
+        from ui.tabs.business import _style_mom_columns
+        df = pd.DataFrame([
+            {"Branch": "BR1", "Accounts This Month": 5, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
+            {"Branch": "BR2", "Accounts This Month": 3, "Accounts MoM %": None, "Funded MoM %": 20.0},
+        ])
+        totaled = append_total_row(df)
+        assert totaled.iloc[-1]["Accounts MoM %"] == ""  # the exact shape that used to crash
+        styled = _style_mom_columns(totaled, ["Accounts MoM %", "Funded MoM %"])
+        styled.to_html()  # must not raise
+
+    def test_float_columns_display_at_two_decimals_not_pandas_default_six(self):
+        # Regression: wrapping a frame in a pandas Styler (needed for the
+        # per-cell MoM coloring above) hands rendering over to pandas, whose
+        # Styler defaults every float column to 6 decimal places regardless
+        # of the value's own already-rounded precision -- e.g. a Funded (Cr)
+        # value of 0.11 rendered as "0.110000". Caught live via a real
+        # screenshot of Section 3's table on real data. precision=2 in
+        # _style_mom_columns must keep this from regressing.
+        from ui.tabs.business import _style_mom_columns
+        df = pd.DataFrame([
+            {"Branch": "BR1", "Funded (Cr)": 0.11, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
+        ])
+        html = _style_mom_columns(df, ["Accounts MoM %", "Funded MoM %"]).to_html()
+        assert "0.110000" not in html
+        assert "0.11" in html

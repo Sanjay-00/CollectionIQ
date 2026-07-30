@@ -8,6 +8,7 @@ import streamlit as st
 from ui.components import (
     _dl_btn, _safe_df, _kpi_card_html, _static_kpi_card_html,
     _npa_pct_color, _sma2_pct_color, _chart_card, _divider, append_total_row,
+    _esc,
 )
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS,
@@ -120,7 +121,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
     for i, row in df_display.iterrows():
         if i == n_data_rows:
             cells = "".join(
-                f'<td style="padding:7px 12px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;">{row[c]}</td>'
+                f'<td style="padding:7px 12px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;">{_esc(row[c])}</td>'
                 for c in display_cols
             )
             rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
@@ -134,7 +135,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
             style = f"padding:7px 12px;font-size:12px;text-align:{align};"
 
             if col == "Region":
-                cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
             elif col == "Status":
                 cells += f'<td style="{style}">{_badge(str(val))}</td>'
             elif col in ("Δ NPA%", "Δ SMA-2%"):
@@ -164,7 +165,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
             elif isinstance(val, (int, float)) and not pd.isna(val):
                 cells += f'<td style="{style}">{int(val):,}</td>'
             else:
-                cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
+                cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
 
         rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #f0f0f0;">{cells}</tr>'
 
@@ -238,7 +239,7 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
                     cells = "".join(
                         f'<td style="padding:6px 10px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;'
                         f'text-align:{"left" if c in (col, *identity_cols) else "center"};">'
-                        f'{f"{row[c]:.2f}%" if c in _PCT_COLS and row[c] != "" else row[c]}</td>'
+                        f'{f"{row[c]:.2f}%" if c in _PCT_COLS and row[c] != "" else _esc(row[c])}</td>'
                         for c in show_cols
                     )
                     rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
@@ -249,9 +250,9 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
                     align = "left" if c in (col, *identity_cols) else "center"
                     style = f"padding:6px 10px;font-size:12px;text-align:{align};"
                     if c == col:
-                        cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                        cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
                     elif c in identity_cols:
-                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
+                        cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
                     elif c in _PCT_COLS:
                         color = "#16a34a" if val >= 90 else ("#d97706" if val >= 60 else "#dc2626")
                         cells += f'<td style="{style}color:{color};font-weight:700;">{val:.2f}%</td>'
@@ -429,7 +430,7 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                 if i == n_data_rows:
                     cells = "".join(
                         f'<td style="padding:6px 10px;font-size:12px;text-align:{"left" if c in (col, *identity_cols) else "center"};'
-                        f'font-weight:800;border-top:2px solid #FFC000;">{row[c]}</td>'
+                        f'font-weight:800;border-top:2px solid #FFC000;">{_esc(row[c])}</td>'
                         for c in _show_cols_present
                     )
                     rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
@@ -441,9 +442,9 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                     style = f"padding:6px 10px;font-size:12px;text-align:{align};"
 
                     if c == col:
-                        cells += f'<td style="{style}font-weight:700;">{val}</td>'
+                        cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
                     elif c in ("Region", "Unit"):
-                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
+                        cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
                     elif c in ("NPA Δ", "SMA-2 Δ"):
                         if val is None or (isinstance(val, float) and pd.isna(val)):
                             cells += f'<td style="{style}color:#9ca3af;"> - </td>'
@@ -473,7 +474,7 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                     elif isinstance(val, (int, float)) and not pd.isna(val):
                         cells += f'<td style="{style}">{int(val):,}</td>'
                     else:
-                        cells += f'<td style="{style}">{val if val is not None else " - "}</td>'
+                        cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
                 rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
 
             st.markdown(
@@ -503,7 +504,7 @@ def _render_good_bad(good_bad: dict, has_prev: bool) -> None:
     col_g, col_b = st.columns(2)
     with col_g:
         items = "".join(
-            f'<li style="padding:6px 0;font-size:13px;border-bottom:1px solid #dcfce7;">{item}</li>'
+            f'<li style="padding:6px 0;font-size:13px;border-bottom:1px solid #dcfce7;">{_esc(item)}</li>'
             for item in good
         ) or '<li style="color:#9ca3af;font-style:italic;">No notable improvements detected.</li>'
         st.markdown(
@@ -514,7 +515,7 @@ def _render_good_bad(good_bad: dict, has_prev: bool) -> None:
         )
     with col_b:
         items = "".join(
-            f'<li style="padding:6px 0;font-size:13px;border-bottom:1px solid #fee2e2;">{item}</li>'
+            f'<li style="padding:6px 0;font-size:13px;border-bottom:1px solid #fee2e2;">{_esc(item)}</li>'
             for item in bad
         ) or '<li style="color:#9ca3af;font-style:italic;">No notable concerns detected.</li>'
         st.markdown(
@@ -597,7 +598,7 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
             cells = "".join(
                 f'<td style="padding:6px 10px;font-size:12px;text-align:{"left" if j == 0 else "right"};'
                 f'font-weight:800;border-top:2px solid #FFC000;">'
-                f'{f"{row[c]:,}" if isinstance(row[c], (int, float)) and row[c] != "" else row[c]}</td>'
+                f'{f"{row[c]:,}" if isinstance(row[c], (int, float)) and row[c] != "" else _esc(row[c])}</td>'
                 for j, c in enumerate(headers)
             )
             rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
@@ -622,7 +623,7 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
             elif isinstance(val, int):
                 cells += f'<td style="{style}">{val:,}</td>'
             else:
-                cells += f'<td style="{style}">{val}</td>'
+                cells += f'<td style="{style}">{_esc(val)}</td>'
         rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
 
     st.markdown(
@@ -721,7 +722,7 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
         if i == n_data_rows:
             cells = "".join(
                 f'<td style="padding:7px 10px;font-size:12px;text-align:{"left" if h == "Executive" else "center"};'
-                f'font-weight:800;border-top:2px solid #FFC000;">{row[h]}</td>'
+                f'font-weight:800;border-top:2px solid #FFC000;">{_esc(row[h])}</td>'
                 for h in headers
             )
             rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
@@ -745,7 +746,7 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
             elif isinstance(val, int):
                 cells += f'<td style="{style}">{val:,}</td>'
             else:
-                cells += f'<td style="{style}">{val}</td>'
+                cells += f'<td style="{style}">{_esc(val)}</td>'
         rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #f0f0f0;">{cells}</tr>'
 
     st.markdown(
@@ -768,9 +769,10 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
 
     with col_fleet:
         st.markdown(f'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure ({FLEET_MIN_LOANS}+ Loans per Customer)</div>', unsafe_allow_html=True)
-        cnt     = fleet.get("count", 0)
-        soh     = fleet.get("total_soh_cr", 0.0)
-        npa_ops = fleet.get("npa_operators", 0)
+        cnt      = fleet.get("count", 0)
+        soh      = fleet.get("total_soh_cr", 0.0)
+        npa_ops  = fleet.get("npa_operators", 0)
+        excluded = fleet.get("excluded_blank_mobile_loans", 0)
         if cnt == 0:
             st.info(f"No fleet operators found (no customer with {FLEET_MIN_LOANS}+ loans). Uses Cust Mob No as customer identifier.")
         else:
@@ -788,6 +790,8 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
                 with st.expander("Top 20 Fleet Operators by SOH", expanded=False):
                     st.dataframe(_safe_df(top_fleet), use_container_width=True, hide_index=True)
                     _dl_btn(top_fleet, "fleet_operators.xlsx", "dl_fleet")
+        if excluded > 0:
+            st.caption(f"ℹ️ {excluded:,} loan(s) with no mobile number on file were excluded from fleet detection (can't be grouped by customer).")
 
     with col_top:
         st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Top 20 At-Risk Accounts by SOH</div>', unsafe_allow_html=True)
@@ -876,7 +880,7 @@ def _top5_breakdown(df: pd.DataFrame, accent: str = "#ef4444") -> None:
                 f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
                 f'<span style="min-width:16px;font-size:11px;color:#9ca3af;font-weight:700;">#{rank}</span>'
                 f'<span style="flex:1;font-size:12px;color:#111;white-space:nowrap;overflow:hidden;'
-                f'text-overflow:ellipsis;" title="{name}">{name}</span>'
+                f'text-overflow:ellipsis;" title="{_esc(name)}">{_esc(name)}</span>'
                 f'<div style="width:{bar_w}px;height:6px;background:{accent};border-radius:3px;flex-shrink:0;"></div>'
                 f'<span style="min-width:28px;font-size:12px;font-weight:700;color:{accent};text-align:right;">{cnt}</span>'
                 f'</div>'

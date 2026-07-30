@@ -57,11 +57,24 @@ class TestStrikePctConsistency:
 
     def test_still_matches_with_invalid_strike_values_present(self):
         # compute_strike_pct excludes rows where Strike isn't Y/N from the denominator;
-        # the compiler's denominator_where (Strike in [Y, N]) must do the same.
+        # the compiler's denominator_where (Strike in [Y, N, YES, NO]) must do the same.
         df = _df()
         df.loc[0, "Strike"] = ""
         df.loc[1, "Strike"] = "MAYBE"
         assert _via_compiler("strike_pct", df) == compute_strike_pct(df)
+
+    def test_still_matches_when_strike_is_spelled_out_yes_no(self):
+        # Regression: a real production file had every Strike value spelled out
+        # as "YES"/"NO" (zero exact "Y"/"N"). Both the shared helper's denominator
+        # and the compiler's denominator_where/numerator_where used to gate
+        # strictly on {"Y", "N"} only, so both independently zeroed out on such a
+        # file -- a same-wrong-answer bug that this test wouldn't have caught
+        # before, since it only guarded that they *agree*, not that they're
+        # *correct*. Now both accept the spelled-out form and must still agree.
+        df = _df()
+        df["Strike"] = ["YES", "YES", "YES", "NO", "NO", "YES", "NO", "NO", "NO", "NO"]
+        result = _via_compiler("strike_pct", df)
+        assert result == compute_strike_pct(df) == 40.0
 
 
 class TestLccPctConsistency:

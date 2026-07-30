@@ -6,6 +6,7 @@ from smart_alerts import (
     alert_colending_at_risk,
     alert_insurance_delinquency,
     alert_high_arrears_ratio,
+    alert_recent_advances_at_risk,
     run_all_alerts,
 )
 from helpers import make_df
@@ -108,7 +109,7 @@ class TestRunAllAlerts:
             "High Arrears: Loan at Risk": "critical",
         }
         df = make_df([{"Loan No": "L001"}])
-        required = {"title", "subtitle", "severity", "count", "pos", "closing_arrears", "df", "icon", "action"}
+        required = {"title", "subtitle", "severity", "count", "pos", "closing_arrears", "df", "df_full", "icon", "action"}
         seen_titles = set()
         for alert in run_all_alerts(df):
             assert required.issubset(alert.keys()), f"Alert '{alert.get('title')}' missing keys"
@@ -117,3 +118,74 @@ class TestRunAllAlerts:
             if title in expected_severity:
                 assert alert["severity"] == expected_severity[title], title
         assert expected_severity.keys() <= seen_titles
+
+    def test_df_full_carries_every_column_df_only_carries_curated_subset(self):
+        # Regression: the on-screen table (alert["df"]) is deliberately limited
+        # to ALERT_DISPLAY_COLS for a fast scan, but the download must carry
+        # every column (raw Excel + derived, e.g. SOH/curr_bucket) for the SAME
+        # filtered rows -- df_full must never be column-limited like df is.
+        df = make_df([{
+            "Loan No": "L001", "Non Starter": "Y",
+            # A column deliberately NOT in ALERT_DISPLAY_COLS.
+            "StateName": "MAHARASHTRA",
+        }])
+        result = alert_non_starters(df)
+        assert "StateName" not in result["df"].columns
+        assert "StateName" in result["df_full"].columns
+        assert len(result["df_full"]) == len(result["df"])  # same rows, more columns
+
+    def test_high_arrears_df_full_includes_computed_ratio_column(self):
+        # Arrears Ratio % is computed (not a raw Excel column) but is the exact
+        # figure that made the row qualify -- deliberately included in the full
+        # download, not just the curated on-screen table.
+        df = make_df([{
+            "Loan No": "L001", "Loan Amount": 100_000.0,
+            "ARREARS AGAINST INST": 60_000.0, "ARREARS AGAINST EXP": 0.0, "ARREARS AGAINST BC": 0.0,
+        }])
+        result = alert_high_arrears_ratio(df)
+        assert "Arrears Ratio %" in result["df"].columns
+        assert "Arrears Ratio %" in result["df_full"].columns
+
+
+class TestAlertRecentAdvancesAsOf:
+    """Regression: this alert used to anchor "last N months" to wall-clock
+    date.today() instead of the report's own reporting month -- the one
+    date-anchored function in this codebase that didn't follow its own
+    established as_of convention (every sibling new-advances function in
+    analysis/portfolio_intelligence.py already does). Re-analyzing an old
+    file used to silently compute the window from TODAY, not the file's own
+    month, with no error and no indication anything was off."""
+
+    def test_as_of_anchors_the_window_not_wall_clock_today(self):
+        import pandas as pd
+        # A loan sanctioned "6 months before" an OLD reporting month (Jan
+        # 2024) is long outside any real "last 12 months" window measured
+        # from wall-clock today (2026+), but well within it when correctly
+        # anchored to as_of=2024-01.
+        df = make_df([{
+            "Loan No": "L1", "Ag_Date": pd.Timestamp("2023-07-01"), "Arrears / EMI": 1.0,
+        }])
+        result_wrong_anchor = alert_recent_advances_at_risk(df, months=12, as_of=None)
+        result_correct_anchor = alert_recent_advances_at_risk(df, months=12, as_of="2024-01-01")
+        assert result_wrong_anchor["count"] == 0     # wall-clock today: window doesn't reach 2023
+        assert result_correct_anchor["count"] == 1   # anchored to the file's own month: it does
+
+    def test_as_of_none_falls_back_to_todays_date_unchanged(self):
+        # Backward compatibility: existing callers that don't pass as_of must
+        # keep exactly their prior behavior (wall-clock today), not suddenly
+        # exclude everything.
+        import pandas as pd
+        df = make_df([{
+            "Loan No": "L1", "Ag_Date": pd.Timestamp.today(), "Arrears / EMI": 1.0,
+        }])
+        result = alert_recent_advances_at_risk(df, months=12, as_of=None)
+        assert result["count"] == 1
+
+    def test_run_all_alerts_threads_as_of_through(self):
+        import pandas as pd
+        df = make_df([{
+            "Loan No": "L1", "Ag_Date": pd.Timestamp("2023-07-01"), "Arrears / EMI": 1.0,
+        }])
+        alerts = run_all_alerts(df, as_of="2024-01-01")
+        recent = next(a for a in alerts if a["title"] == "Recent Advances at Risk")
+        assert recent["count"] == 1

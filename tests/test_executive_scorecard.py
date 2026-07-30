@@ -48,6 +48,20 @@ class TestStrikeRateNormalization:
         # 3 of 5 valid (normalized) rows are Y -> 60.0%, not excluded to 0/0.
         assert sc.iloc[0]["Strike Rate %"] == 60.0
 
+    def test_spelled_out_yes_no_strike_values_are_still_counted(self):
+        # Regression: on a real production file, Strike was spelled out as
+        # "YES"/"NO" for every row (zero exact "Y"/"N" values). _strike_valid
+        # used to gate strictly on {"Y", "N"}, so the denominator came back
+        # empty and Strike Rate % reported 0.0 for every executive instead of
+        # the real rate. See also utils.py::compute_strike_pct's own fix.
+        rows = (
+            [{"MNT NAME": "RAJ", "Unit": "MAHAD", "Strike": "Yes"}] * 3
+            + [{"MNT NAME": "RAJ", "Unit": "MAHAD", "Strike": "No"}] * 2
+        )
+        sc = compute_executive_scorecard(make_df(rows), min_accounts=5)
+        assert len(sc) == 1
+        assert sc.iloc[0]["Strike Rate %"] == 60.0
+
 
 class TestRollRateNoPriorMatchIsNoneNotZero:
     """Regression: a newly appointed executive (or one whose whole book is freshly

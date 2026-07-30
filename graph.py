@@ -203,6 +203,7 @@ class QueryState(TypedDict):
     result_type: str
     result_grain: str  # row grain of result_df: "loan" (default), "region", "branch", "executive", "customer", "segment", "signal"
     view_render: str  # UI hint from a fast-path view (e.g. "kpi_cards"); "" for the normal compiler path
+    repair_attempts: int  # 0 = compiler validated the planner's IR-1 on the first try; >0 = needed a repair pass. Compiler path only -- unset (0) on the view/priority paths, which don't compile.
 
     # Clarification
     allow_clarification: bool
@@ -391,6 +392,27 @@ def _apply_sort_by(result_df: pd.DataFrame, sort_by: dict | None) -> pd.DataFram
     return result_df
 
 
+def _apply_limit(result_df: pd.DataFrame, limit, spec: dict) -> pd.DataFrame:
+    """Cap an already-sorted view result to the planner's requested top-N
+    ("top 5 branches"). Only fires when the matched view has NO dedicated own
+    count parameter (e.g. top_delinquent_accounts.n) -- a view that already
+    has one truncates inside its own analysis/ function before this ever
+    runs, and applying a SECOND, independent truncation here on top of that
+    would double-cap it against the planner's actual intent. Any other
+    non-positive/non-numeric/absent limit is a no-op, same fail-safe
+    convention as _apply_sort_by above -- never worth failing the whole
+    query over a limit that doesn't quite resolve."""
+    if not limit or "n" in (spec.get("params") or {}) or result_df is None:
+        return result_df
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return result_df
+    if n <= 0:
+        return result_df
+    return result_df.head(n)
+
+
 def _format_metric_value(col: str, value) -> str:
     """Shared display formatting for a metric value, used by both highlight
     cards and the portfolio KPI rollup -- a percent-named column always shows
@@ -490,6 +512,26 @@ def view_node(state: QueryState) -> QueryState:
         # matched at all" from outside view_node.
         _trace_metadata({"view_name": name, "view_served": False, "view_fallthrough_reason": reason})
         s = new_state if new_state is not None else state
+        # Some views (see registry/views.py's compiler_fallback docstring) have
+        # NO general-compiler equivalent -- falling through to compile with the
+        # SAME ir1 doesn't recover a correct answer for these, it either crashes
+        # on view-scoped measure names the planner attached despite its own
+        # prompt saying not to (they were never real registry METRICS to begin
+        # with, so the compiler can't resolve them -- confirmed live, this
+        # happens on every single "new advances ... business wise" style query),
+        # or silently defaults to a bare per-group row COUNT that answers a
+        # different question with no error at all. Neither is acceptable, so
+        # these route straight to a clear, honest error instead.
+        if spec is not None and not spec.get("compiler_fallback", True):
+            return {
+                **s,
+                "ir1": {**ir1, "view": None},
+                "error": (
+                    f"Couldn't compute \"{spec.get('label', name)}\" ({reason}), and this "
+                    "question can't be answered a different way -- try rephrasing, or ask "
+                    "for a different metric."
+                ),
+            }
         return {**s, "ir1": {**ir1, "view": None}}
 
     if spec is None:
@@ -553,17 +595,40 @@ def view_node(state: QueryState) -> QueryState:
                     input_df_prev = input_df_prev[_build_mask(input_df_prev, conditions)]
 
             raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
-    except Exception:
-        return _fallthrough("analysis_fn_raised")
+    except Exception as e:
+        return _fallthrough(f"analysis_fn_raised: {e}")
 
     try:
         result_df, result_kpis, result_rankings = normalize_view_output(spec, raw)
-    except Exception:
-        return _fallthrough("output_normalization_failed")
+    except Exception as e:
+        return _fallthrough(f"output_normalization_failed: {e}")
 
     result_df = _apply_sort_by(result_df, view_spec.get("sort_by"))
 
-    result_kpis = {"Count": len(result_df), **result_kpis}
+    # Highlights and the portfolio-wide rollup are computed against the FULL
+    # sorted result -- BEFORE any top-N limit below -- deliberately: they're
+    # meant to be a true baseline for "how does the ranked/highlighted entity
+    # compare to the whole portfolio" (see _build_portfolio_kpis's own
+    # docstring). Computing them AFTER capping to e.g. the top 5 would quietly
+    # change "Avg NPA%" to mean "average of just the 5 shown branches" instead
+    # of the real portfolio average -- same number label, different and wrong
+    # meaning, so the ordering here is deliberate, not incidental.
+    result_highlights = _build_highlights(
+        spec, result_df, view_spec.get("highlight_metrics") or []
+    )
+    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
+
+    result_df = _apply_limit(result_df, ir1.get("limit"), spec)
+
+    # "Count" must come AFTER spreading result_kpis, not before: some
+    # normalizers (e.g. _normalize_dict_subkey_df) already put their OWN
+    # "Count" in result_kpis, computed against the full pre-limit df -- {**a,
+    # **b} lets the LATER key win on a collision, so putting our post-limit
+    # count first (the old {"Count": ..., **result_kpis} order) let that stale
+    # value silently overwrite it back to the full, un-limited count. Caught
+    # live: "top 5 branches" was correctly capped to 5 rows in result_df, but
+    # Count still read 13 until this order was fixed.
+    result_kpis = {**result_kpis, "Count": len(result_df)}
     # analyze_node's insight generator only understands two kpis shapes: an
     # "aggregation result" (has "_agg_rows") or a "loan-level filter result"
     # (expects Total POS/Avg Arrears/EMI/etc, defaulting missing keys to 0).
@@ -579,11 +644,6 @@ def view_node(state: QueryState) -> QueryState:
         # prompt. See _PII_COLS_IN_AGG_ROWS's docstring above for the full story.
         result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(5).to_dict(orient="records"))
 
-    result_highlights = _build_highlights(
-        spec, result_df, view_spec.get("highlight_metrics") or []
-    )
-    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
-
     _trace_metadata({
         "view_name": name,
         "view_served": True,
@@ -592,6 +652,7 @@ def view_node(state: QueryState) -> QueryState:
         "view_row_count": len(result_df),
         "highlight_metrics_count": len(result_highlights),
         "sort_by_requested": bool(view_spec.get("sort_by")),
+        "limit_requested": ir1.get("limit"),
     })
 
     return {
@@ -667,7 +728,7 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
             # (e.g. this session's highlight_metrics/sort_by additions) is
             # increasing how often the planner needs correcting.
             _trace_metadata({"repair_attempts": attempt, "compiled_ok": True})
-            return {**state, "ir1": ir1, "plan": plan}
+            return {**state, "ir1": ir1, "plan": plan, "repair_attempts": attempt}
 
         err_msg = "; ".join(errs)
         if attempt == _MAX_REPAIRS:
@@ -930,6 +991,7 @@ def run_query(
         "result_type":      "loan_table",
         "result_grain":     "loan",
         "view_render":      "",
+        "repair_attempts":  0,
         "allow_clarification":    allow_clarification,
         "needs_clarification":    False,
         "clarification_question": "",

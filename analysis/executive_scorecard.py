@@ -3,6 +3,8 @@ Field Executive Performance Scorecard
 Groups by MNT NAME and computes per-executive collection metrics.
 Performance tiers are quartile-based (relative to the dataset) - not hardcoded thresholds.
 """
+import html
+
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
@@ -36,15 +38,16 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
     df = df.copy()
     # Strike valid/yes -- the EXACT boolean logic compute_strike_pct/is_yes use
-    # (see their own docstrings): valid = normalized Strike in {Y, N}; within
-    # that valid set, "YES" can never appear (excluded by the strict Y/N
-    # filter), so yes = normalized == "Y" is equivalent to is_yes() there.
+    # (see their own docstrings): valid = normalized Strike in {Y, N, YES, NO}
+    # (some monthly LCC extracts spell the flag out instead of abbreviating it
+    # -- same reason is_yes() itself accepts both spellings), and within that
+    # valid set, yes = normalized in {Y, YES}, matching is_yes() exactly.
     # Precomputed once here instead of calling compute_strike_pct(grp) per
     # executive -- same formula, same result, just not re-run per group.
     if "Strike" in df.columns:
         _strike_norm = df["Strike"].astype(str).str.strip().str.upper()
-        df["_strike_valid"] = _strike_norm.isin(["Y", "N"])
-        df["_strike_yes"]   = _strike_norm == "Y"
+        df["_strike_valid"] = _strike_norm.isin(["Y", "N", "YES", "NO"])
+        df["_strike_yes"]   = _strike_norm.isin(["Y", "YES"])
     else:
         df["_strike_valid"] = False
         df["_strike_yes"]   = False
@@ -235,9 +238,12 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
         for col in headers:
             val = row[col]
             if col == "Executive (Branch)":
+                # MNT NAME/Unit are manually-typed LCC fields -- escape so an
+                # &, <, > in a real name can't break the table markup (same
+                # rule as report_builder.py's _esc and ui/components.py's).
                 cells += (
                     f'<td style="padding:8px 12px;font-size:13px;font-weight:600;">'
-                    f'{val} &nbsp;{tier_badge}</td>'
+                    f'{html.escape(str(val))} &nbsp;{tier_badge}</td>'
                 )
             elif col == "Collection %":
                 coll_color = "#16a34a" if val > 100 else "#d97706" if val >= 90 else "#dc2626"
@@ -268,7 +274,7 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
                 color = "#d97706" if val > 0 else "#16a34a"
                 cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{val}</td>'
             else:
-                cells += f'<td style="padding:8px 12px;font-size:13px;">{val}</td>'
+                cells += f'<td style="padding:8px 12px;font-size:13px;">{html.escape(val) if isinstance(val, str) else val}</td>'
         rows_html += (
             f'<tr style="{row_style}border-bottom:1px solid #e5e7eb;">{cells}</tr>'
         )

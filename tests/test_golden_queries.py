@@ -256,6 +256,24 @@ class TestViewNodeFallback:
         assert "_agg_rows" in out["result_kpis"]
         assert len(out["result_kpis"]["_agg_rows"]) > 0
 
+    def test_limit_shrinks_result_df_and_count_reflects_it_not_the_full_set(self):
+        # Regression: caught live, not by a unit test -- {"Count": len(result_df),
+        # **result_kpis} let the NORMALIZER's own pre-limit "Count" (every
+        # normalizer sets one) silently overwrite the post-limit count back to
+        # the full, un-capped size. "top 2 regions" was correctly capped to 2
+        # rows in result_df, but result_kpis["Count"] still read 3 (all regions)
+        # until the merge order was fixed to spread result_kpis FIRST.
+        state = self._state(ir1={
+            "view": {"name": "region_scorecard", "params": {}, "filters": [], "sort_by": None},
+            "limit": 2,
+        })
+        from graph import view_node
+        out = view_node(state)
+        assert out["ir1"]["view"] is not None
+        assert out["error"] == ""
+        assert len(out["result_df"]) == 2
+        assert out["result_kpis"]["Count"] == 2
+
     def test_filter_applies_consistently_to_both_curr_and_prev(self):
         # Regression guard for the confirmed df_prev-not-filtered bug: a view
         # that consumes both df_curr and df_prev must compare like-for-like,
@@ -282,16 +300,363 @@ class TestViewNodeFallback:
         assert rdf.iloc[0]["Δ NPA%"] == -50.0
 
 
+class TestViewNodeNoCompilerFallback:
+    """Regression: caught live via a real screenshot -- a "worst/best
+    executive business wise" clarification click matched new_advances_by_executive
+    (a compiler_fallback=False view, see registry/views.py's schema docstring),
+    but the Logical Planner ALSO attached view-scoped "measures" (e.g.
+    "new_advances_by_executive.accounts_this_month") despite its own prompt
+    saying to leave measures empty whenever a view matches -- confirmed live,
+    the model does this on every single run for this query shape, not a rare
+    fluke. Those measure names were never real registry METRICS, so if
+    view_node ever falls through for ANY reason (a filter attached to this
+    non-filterable view, an analysis-fn exception, ...), handing the SAME
+    poisoned ir1 to the general compiler crashed with a confusing "unknown
+    metric" error instead of the old graceful "just try the compiler instead"
+    fallthrough this design relies on elsewhere. Worse alternative if measures
+    had simply been empty: the compiler defaults a dimension-only aggregation
+    with zero measures to a bare per-group row COUNT -- a different, silently
+    WRONG answer, no error at all. Neither is acceptable for a view whose
+    whole point (this month's own originations) has no general-compiler
+    equivalent, so these three views now route straight to an honest error
+    instead of ever reaching the compiler."""
+
+    def _state(self, **overrides):
+        base = {
+            "query": "test", "result_df_full": _loan_df(), "df_prev": pd.DataFrame(),
+            "precomputed_views": {}, "rr_meta": {}, "ir1": {},
+        }
+        base.update(overrides)
+        return base
+
+    def test_fallthrough_on_a_no_compiler_fallback_view_sets_a_clean_error(self):
+        from graph import view_node
+        state = self._state(ir1={
+            "view": {
+                "name": "new_advances_by_executive", "params": {},
+                # new_advances_by_executive is filterable: False -- attaching
+                # a filter is the same trigger the real bug reproduced with.
+                "filters": [{"column": "RegionName", "op": "==", "value": "PUNE"}],
+            },
+            "measures": [{"metric": "new_advances_by_executive.accounts_this_month",
+                           "alias": "Accounts This Month"}],
+        })
+        out = view_node(state)
+        assert out["ir1"]["view"] is None
+        assert out["error"] != ""
+        assert "new advances" in out["error"].lower() or "executive" in out["error"].lower()
+        # Must never leak the raw hallucinated metric name into the message --
+        # that's the exact confusing text this fix exists to replace.
+        assert "unknown metric" not in out["error"].lower()
+
+    def test_regular_compiler_fallback_view_still_falls_through_silently(self):
+        # A view with no compiler_fallback flag (default True, e.g. pulse_kpis)
+        # must be completely unaffected by this change -- same old behavior,
+        # no error set, plain fallthrough to the compiler.
+        from graph import view_node
+        state = self._state(ir1={"view": {
+            "name": "pulse_kpis", "params": {},
+            "filters": [{"column": "RegionName", "op": "==", "value": "PUNE"}],
+        }})
+        out = view_node(state)
+        assert out["ir1"]["view"] is None
+        assert out.get("error", "") == ""
+
+    def test_all_three_new_advances_views_are_flagged(self):
+        from registry.views import VIEWS
+        for name in ("new_advances_by_region", "new_advances_by_branch", "new_advances_by_executive"):
+            assert VIEWS[name]["compiler_fallback"] is False, name
+
+
+# ── Clarification follow-up context (query-text-scoped, not flag-scoped) ────
+
+class TestDeterministicBusinessAmbiguity:
+    """_resolve_business_ambiguity_deterministically is pure Python -- no
+    Gemini call, no monkeypatching needed, fully deterministic by design.
+    Replaces LLM judgment with a keyword+registry-dictionary lookup for the
+    one case that's fully specifiable (see the function's own docstring for
+    why "risk" is deliberately NOT handled here)."""
+
+    def _resolve(self, query):
+        from agents.logical_planner import _resolve_business_ambiguity_deterministically
+        return _resolve_business_ambiguity_deterministically(query)
+
+    @pytest.mark.parametrize("query,grain", [
+        ("give me my best branch top 5 wrt business", "branches"),
+        ("which region has best business", "regions"),
+        ("give me my best executive top 5 wrt business", "executives"),
+        ("show me business details for units", "branches"),
+    ])
+    def test_resolves_with_grain_aware_options(self, query, grain):
+        ir1 = self._resolve(query)
+        assert ir1 is not None
+        assert ir1["needs_clarification"] is True
+        assert len(ir1["clarification_options"]) == 2
+        assert grain in ir1["clarification_question"]
+
+    def test_branch_options_never_mention_executive_only_metrics(self):
+        ir1 = self._resolve("give me my best branch top 5 wrt business")
+        opts_text = " ".join(ir1["clarification_options"])
+        assert "Net Recovery" not in opts_text  # executive_recovery-only metric
+
+    def test_executive_options_never_mention_branch_only_metrics(self):
+        # Regression: this exact case previously hallucinated "Concern Score"
+        # for an executive query -- executive_recovery doesn't have that
+        # metric, only branch_quadrant does. A dictionary lookup can't make
+        # this mistake; this test only needs to exist to prove it never can.
+        ir1 = self._resolve("give me my best executive top 5 wrt business")
+        opts_text = " ".join(ir1["clarification_options"])
+        assert "Concern Score" not in opts_text
+
+    @pytest.mark.parametrize("query", [
+        "top 5 branches by new advances this month",       # already says "new advances"
+        "which branch originated the most loans",            # already says "originated"
+        "which branch has the best NPA%",                     # already says "NPA%"
+        "which branch has the best collection performance",   # already says "collection"
+    ])
+    def test_already_disambiguated_query_falls_through_to_llm(self, query):
+        # None means "don't resolve deterministically, let the LLM proceed
+        # normally" -- these queries already say which reading they mean, so
+        # forcing a clarification here would be a regression, not a fix.
+        assert self._resolve(query) is None
+
+    def test_no_grain_named_falls_through(self):
+        # "business" is present but WHO the question is about is unclear --
+        # can't confidently build grain-correct options, so don't guess.
+        assert self._resolve("show me the business details") is None
+
+    def test_no_business_term_at_all_is_a_no_op(self):
+        assert self._resolve("show me the top delinquent accounts") is None
+
+    def test_case_insensitive(self):
+        assert self._resolve("GIVE ME BEST BRANCH BUSINESS DETAILS") is not None
+
+    def test_does_not_false_positive_on_substring_of_another_word(self):
+        # "businesslike" should not match \bbusiness\b as a whole word -- this
+        # is a contrived case, real queries won't say this, but the word
+        # boundary regex should still behave correctly if they did.
+        assert self._resolve("show me businesslike branches") is None
+
+    def test_clicked_interpretation_text_falls_through_not_reresolved(self):
+        # The augmented query a clarification click produces (query + "
+        # (interpretation: New advances...)") still contains "business" from
+        # the original text, but ALSO now contains "new advances"/"funded" --
+        # must fall through via the same already-disambiguated check above,
+        # not re-trigger a second round of the same clarification.
+        augmented = (
+            "give me my best branch top 5 wrt business "
+            "(interpretation: New advances (accounts/funded this period))"
+        )
+        assert self._resolve(augmented) is None
+
+
+class TestPlannerTemperature:
+    """The Logical Planner does structured classification/extraction, not
+    open-ended writing -- the SDK default temperature (~1.0) was the confirmed,
+    reproducible cause of run-to-run inconsistency observed live (identical
+    query, different clarification behavior across runs). Locks in that a low,
+    non-default temperature actually reaches the Gemini call config."""
+
+    def test_temperature_is_set_low_not_left_at_sdk_default(self, monkeypatch):
+        import agents.logical_planner as lp
+        from config import PLANNER_TEMPERATURE
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+        sent = {}
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": []}'
+
+        def _capture(client, model, contents, config):
+            sent["config"] = config
+            return _FakeResponse()
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        lp.plan_logical("show me the top branches")
+        assert sent["config"]["temperature"] == PLANNER_TEMPERATURE
+        assert PLANNER_TEMPERATURE < 0.5  # meaningfully below the SDK's open-ended-writing default
+
+
+class TestClarificationFollowupContext:
+    """Regression guard for a real conflict caught before it shipped: the
+    "use the clarified metric for sort_by/highlight_metrics" instruction is
+    keyed off the query TEXT containing "(interpretation:" (the marker
+    ui/tabs/ai_query.py appends when a clarification option is clicked), NOT
+    off allow_clarification=False -- that flag is ALSO set False by the
+    unrelated compiler repair loop (graph.py's one-shot retry on a validation
+    error), which must never receive clarification-specific instructions
+    since no interpretation exists there. These tests capture the literal
+    text sent to Gemini (never a live call) and check the marker only
+    appears exactly when the query text itself contains it."""
+
+    def _capture_prompt_text(self, monkeypatch):
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+        sent = {}
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": []}'
+
+        def _capture(client, model, contents, config):
+            sent["contents"] = contents
+            return _FakeResponse()
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+        return lp, sent
+
+    def test_plain_query_gets_no_clarification_followup_context(self, monkeypatch):
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical("show me the top branches")
+        assert "(interpretation:" not in sent["contents"]
+        assert "CLARIFICATION RESOLVED" not in sent["contents"]
+
+    def test_clarification_followup_query_gets_the_context(self, monkeypatch):
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical(
+            "give me my best branches (interpretation: Collection Efficiency)",
+            allow_clarification=False,
+        )
+        assert "CLARIFICATION RESOLVED" in sent["contents"]
+
+    def test_unrelated_compiler_repair_retry_does_not_get_the_context(self, monkeypatch):
+        # allow_clarification=False here for the SAME reason the real repair
+        # loop sets it (graph.py:691) -- but the query itself has no
+        # interpretation marker, so this must NOT get clarification-specific
+        # instructions injected into an unrelated repair retry.
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical(
+            "show me the top branches",
+            repair_feedback="unknown column 'Foo'",
+            allow_clarification=False,
+        )
+        assert "CLARIFICATION RESOLVED" not in sent["contents"]
+        assert "[REPAIR" in sent["contents"]
+
+    def test_clarification_followups_own_repair_retry_still_gets_the_context(self, monkeypatch):
+        # A clarification follow-up that ALSO needs a repair pass (query text
+        # still carries the marker on retry) should still get both directives
+        # -- this is a real, valid combination, not a case to suppress.
+        lp, sent = self._capture_prompt_text(monkeypatch)
+        lp.plan_logical(
+            "give me my best branches (interpretation: Collection Efficiency)",
+            repair_feedback="unknown column 'Foo'",
+            allow_clarification=False,
+        )
+        assert "CLARIFICATION RESOLVED" in sent["contents"]
+        assert "[REPAIR" in sent["contents"]
+
+
 # ── Out-of-scope / guardrail contract ───────────────────────────────────────
 
 class TestOutOfScopeGuardrails:
     def test_out_of_scope_ir_shape(self):
-        from agents.logical_planner import _out_of_scope_ir
+        # Regression: clarification_options used to default to [] here, which
+        # renders NO clickable buttons in the UI -- a genuine dead end (unlike
+        # a real ambiguity, which always gives the user something to click).
+        # Now defaults to a fixed, safe example pair so there's always a way
+        # forward without retyping from scratch.
+        from agents.logical_planner import _out_of_scope_ir, _OUT_OF_SCOPE_EXAMPLE_OPTIONS
         ir1 = _out_of_scope_ir("I can only answer portfolio questions.")
         assert ir1["needs_clarification"] is True
-        assert ir1["clarification_options"] == []
+        assert ir1["clarification_options"] == _OUT_OF_SCOPE_EXAMPLE_OPTIONS
+        assert len(ir1["clarification_options"]) > 0
         assert ir1["view"] is None
         assert ir1["filters"] == [] and ir1["dimensions"] == [] and ir1["measures"] == []
+
+    def test_out_of_scope_ir_accepts_explicit_options_override(self):
+        from agents.logical_planner import _out_of_scope_ir
+        ir1 = _out_of_scope_ir("msg", options=["Custom option"])
+        assert ir1["clarification_options"] == ["Custom option"]
+
+
+class TestDeterministicBusinessFastPathWiring:
+    """plan_logical must actually short-circuit BEFORE any Gemini call when
+    the deterministic resolver matches -- this is the whole point (zero
+    latency/cost for this case, not just more reliable than the LLM path)."""
+
+    def test_matching_query_never_calls_gemini(self, monkeypatch):
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+
+        def _fail_if_called(*a, **k):
+            raise AssertionError("must not call Gemini when the deterministic resolver matches")
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", _fail_if_called)
+
+        ir1 = lp.plan_logical("give me my best branch top 5 wrt business")
+        assert ir1["needs_clarification"] is True
+        assert len(ir1["clarification_options"]) == 2
+
+    def test_post_clarification_retry_is_not_intercepted(self, monkeypatch):
+        # allow_clarification=False (the clarification-followup re-run) must
+        # skip the deterministic check entirely and reach the normal LLM path
+        # -- verified by confirming Gemini DOES get called here, the opposite
+        # assertion from the test above.
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+        called = {"yes": False}
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": []}'
+
+        def _capture(*a, **k):
+            called["yes"] = True
+            return _FakeResponse()
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        lp.plan_logical(
+            "give me my best branch top 5 wrt business (interpretation: New advances)",
+            allow_clarification=False,
+        )
+        assert called["yes"] is True
+
+    def test_repair_retry_is_not_intercepted(self, monkeypatch):
+        # Same gate, same reasoning as the clarification-followup case above --
+        # a repair retry (allow_clarification=False) must reach the LLM too.
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+        called = {"yes": False}
+
+        class _FakeResponse:
+            text = '{"intent": "loan_table", "filters": []}'
+
+        def _capture(*a, **k):
+            called["yes"] = True
+            return _FakeResponse()
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        lp.plan_logical(
+            "give me my best branch top 5 wrt business",
+            repair_feedback="unknown column 'Foo'",
+            allow_clarification=False,
+        )
+        assert called["yes"] is True
+
+    def test_model_classified_out_of_scope_with_empty_options_gets_the_fallback(self, monkeypatch):
+        # The model's OWN live out-of-scope classification (per the prompt's
+        # explicit "clarification_options=[]" instruction) must ALSO get the
+        # same safe fallback, not just the Python-side guardrail paths above.
+        import agents.logical_planner as lp
+        monkeypatch.setenv("GOOGLE_API_KEY", "dummy-not-a-real-key")
+
+        class _FakeResponse:
+            text = (
+                '{"intent": "loan_table", "needs_clarification": true, '
+                '"clarification_question": "I can only answer portfolio questions.", '
+                '"clarification_options": []}'
+            )
+
+        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
+
+        ir1 = lp.plan_logical("asdkjhasdkjh")
+        assert ir1["needs_clarification"] is True
+        assert len(ir1["clarification_options"]) > 0
 
     def test_oversized_query_short_circuits_before_any_api_call(self, monkeypatch):
         import agents.logical_planner as lp

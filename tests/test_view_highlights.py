@@ -7,7 +7,7 @@ tests exercise them directly with synthetic DataFrames, no LLM/Gemini call.
 """
 import pandas as pd
 
-from graph import _build_highlights, _apply_sort_by, _build_portfolio_kpis, _normalize_col
+from graph import _build_highlights, _apply_sort_by, _build_portfolio_kpis, _apply_limit, _normalize_col
 from registry.views import VIEWS
 
 
@@ -187,6 +187,96 @@ class TestNormalizeColDeltaCollision:
         })
         out = _apply_sort_by(df, {"column": "NPA %", "dir": "desc"})
         assert out["Region"].tolist() == ["B", "A", "C"]  # sorted by NPA%, not the delta
+
+
+class TestApplyLimit:
+    """"top 5 branches" support for views with no dedicated own count param
+    (e.g. top_delinquent_accounts.n). Must never double-truncate a view that
+    already has its own param, and must be a no-op fail-safe on anything that
+    doesn't resolve to a real positive int -- same convention as
+    _apply_sort_by's own no-op-on-unresolvable behavior."""
+
+    def test_caps_to_requested_n_on_a_view_with_no_own_count_param(self):
+        spec = VIEWS["region_scorecard"]  # no "n" in its params
+        out = _apply_limit(_region_df(), 2, spec)
+        assert len(out) == 2
+        assert out["Region"].tolist() == ["CS NAGAR", "AKOLA"]  # first N, in current order
+
+    def test_no_limit_is_a_no_op(self):
+        spec = VIEWS["region_scorecard"]
+        out = _apply_limit(_region_df(), None, spec)
+        assert len(out) == 3
+
+    def test_view_with_its_own_count_param_is_never_double_truncated(self):
+        # top_delinquent_accounts already truncates inside its own analysis/
+        # function via params.n -- a second, independent truncation here on
+        # top of that would silently show fewer rows than the planner asked for.
+        spec = VIEWS["top_delinquent_accounts"]
+        out = _apply_limit(_region_df(), 1, spec)
+        assert len(out) == 3  # unchanged -- this view owns its own count control
+
+    def test_zero_or_negative_limit_is_a_no_op(self):
+        spec = VIEWS["region_scorecard"]
+        assert len(_apply_limit(_region_df(), 0, spec)) == 3
+        assert len(_apply_limit(_region_df(), -5, spec)) == 3
+
+    def test_non_numeric_limit_is_a_no_op_not_an_error(self):
+        spec = VIEWS["region_scorecard"]
+        out = _apply_limit(_region_df(), "not a number", spec)
+        assert len(out) == 3
+
+    def test_limit_larger_than_result_is_a_no_op(self):
+        spec = VIEWS["region_scorecard"]
+        out = _apply_limit(_region_df(), 50, spec)
+        assert len(out) == 3
+
+    def test_none_result_df_is_a_no_op(self):
+        spec = VIEWS["region_scorecard"]
+        assert _apply_limit(None, 5, spec) is None
+
+    def test_combines_with_sort_by_to_give_a_true_top_n(self):
+        # The realistic end-to-end shape: sort first, THEN cap -- this is what
+        # view_node itself does, in this exact order.
+        spec = VIEWS["region_scorecard"]
+        sorted_df = _apply_sort_by(_region_df(), {"column": "NPA%", "dir": "desc"})
+        out = _apply_limit(sorted_df, 1, spec)
+        assert out["Region"].tolist() == ["CS NAGAR"]  # highest NPA%
+
+
+class TestPortfolioKpisReflectFullSetNotTheLimitedSlice:
+    """view_node's actual sequence is: sort -> build highlights/portfolio KPIs
+    against the FULL sorted result -> THEN apply the top-N limit for display.
+    This locks in that ordering: "Avg NPA%" alongside a "top 1 region" answer
+    must still be the true portfolio average, not the average of just the one
+    shown row -- see graph.py::view_node's own comment for why the order matters."""
+
+    def test_portfolio_kpi_uses_full_set_even_though_display_will_be_capped(self):
+        spec = VIEWS["region_scorecard"]
+        sorted_df = _apply_sort_by(_region_df(), {"column": "NPA%", "dir": "desc"})
+
+        # Mirrors view_node's real order: compute against the full sorted set...
+        portfolio_kpis = _build_portfolio_kpis(spec, sorted_df)
+        # ...THEN cap for display.
+        displayed_df = _apply_limit(sorted_df, 1, spec)
+
+        assert len(displayed_df) == 1  # only CS NAGAR shown
+        true_avg = (16.93 + 14.77 + 11.31) / 3
+        by_label = {k["label"]: k["value"] for k in portfolio_kpis}
+        assert by_label["Avg NPA%"] == f"{true_avg:.2f}%"
+        assert by_label["Avg NPA%"] != "16.93%"  # NOT just the single displayed row's value
+
+    def test_highlight_entity_can_be_outside_the_displayed_top_n(self):
+        # A highlight_metrics request for the LOWEST NPA% (LATUR) must still
+        # resolve correctly even when the display itself is capped to the
+        # top 1 HIGHEST NPA% (CS NAGAR) -- two independent asks on the same
+        # underlying full set, computed before any capping.
+        spec = VIEWS["region_scorecard"]
+        sorted_df = _apply_sort_by(_region_df(), {"column": "NPA%", "dir": "desc"})
+        highlights = _build_highlights(spec, sorted_df, [{"column": "NPA%", "agg": "min"}])
+        displayed_df = _apply_limit(sorted_df, 1, spec)
+
+        assert displayed_df["Region"].tolist() == ["CS NAGAR"]
+        assert highlights[0]["entity"] == "LATUR"  # correct even though not in the displayed slice
 
 
 class TestApplySortByRankRecompute:

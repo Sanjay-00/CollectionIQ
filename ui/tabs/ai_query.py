@@ -5,7 +5,7 @@ import streamlit as st
 from langsmith import traceable
 
 from utils import fmt_value
-from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox
+from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox, _esc, _confidence_badge_html
 
 # result_grain -> (singular, plural) display noun, used wherever the UI used to
 # hardcode "accounts"/"Customer Records" regardless of the result's actual row
@@ -212,23 +212,32 @@ function fill(text) {
         </div>
         """, unsafe_allow_html=True)
 
+        # Out-of-scope's own options are standalone EXAMPLE queries (a safety
+        # net offered when the input couldn't be understood at all), not
+        # clarifying details about the SAME original query -- unlike a genuine
+        # ambiguity's options (e.g. "Collection Efficiency" for "best
+        # branches"), appending one of these to the original nonsense text as
+        # "(interpretation: ...)" would hand the planner a confusing hybrid
+        # string instead of the clean example it's supposed to be. Run it as
+        # a fresh query instead, exactly as if the user had typed it in themselves.
+        is_out_of_scope = result.get("query_title") == "Out of Scope"
+
         for i, opt in enumerate(q_options):
             if st.button(opt, key=f"clarify_opt_{i}", width='stretch'):
-                augmented = f"{orig_query} (interpretation: {opt})"
-                # A different query string (the interpretation is appended), so
-                # this naturally gets its own cache key -- no collision with the
-                # original ambiguous query's entry.
-                _cache_key = (augmented, data_version, filter_key, skip_insights)
+                next_query = opt if is_out_of_scope else f"{orig_query} (interpretation: {opt})"
+                # A different query string, so this naturally gets its own
+                # cache key -- no collision with the original query's entry.
+                _cache_key = (next_query, data_version, filter_key, skip_insights)
                 _cached = _ai_cache_get(_ai_cache, _cache_key)
                 if _cached is not None:
-                    _log_ai_cache_hit(augmented, data_version, filter_key)
+                    _log_ai_cache_hit(next_query, data_version, filter_key)
                     _res = _cached
                 else:
                     with st.status("Running AI pipeline...", expanded=True) as _status:
                         def _on_step(label: str) -> None:
                             _status.write(label)
-                        _res = run_query(augmented, df_curr, on_step=_on_step,
-                                         snapshot_dates=snapshot_dates, allow_clarification=False,
+                        _res = run_query(next_query, df_curr, on_step=_on_step,
+                                         snapshot_dates=snapshot_dates, allow_clarification=not is_out_of_scope,
                                          df_prev=df_prev, precomputed_views=precomputed_views,
                                          alerts_curr=alerts_curr, alerts_prev=alerts_prev,
                                          rr_meta=rr_meta, skip_insights=skip_insights)
@@ -238,7 +247,15 @@ function fill(text) {
                 st.session_state["ai_result"] = _res
                 st.rerun()
 
-        st.caption("None of these? Rephrase your question above with the detail you meant, and run again.")
+        st.markdown(
+            '<div style="background:#161b22;border:1px dashed #3d444d;border-radius:10px;'
+            'padding:10px 16px;margin-top:8px;font-size:12px;color:#9ca3af;">'
+            '💬 <strong style="color:#c9d1d9;">None of these?</strong> Your question is still in the '
+            "box above — edit it with the exact detail you meant (e.g. name the metric or "
+            'branch/executive/region directly), then click <strong style="color:#c9d1d9;">Run Query</strong> again.'
+            "</div>",
+            unsafe_allow_html=True,
+        )
         return
 
     filtered_df = result["result_df"]
@@ -266,12 +283,15 @@ function fill(text) {
         <div style="display:flex;align-items:center;gap:10px;">
           <span style="font-size:11px;font-weight:700;background:#1e293b;color:#94a3b8;
                        padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:1px;">{category}</span>
-          <span style="font-size:14px;font-weight:700;color:#f1f5f9;">{query_title}</span>
+          <span style="font-size:14px;font-weight:700;color:#f1f5f9;">{_esc(query_title)}</span>
         </div>
-        <span style="font-size:11px;font-weight:700;color:{risk_color};">{risk_label}</span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          {_confidence_badge_html(result)}
+          <span style="font-size:11px;font-weight:700;color:{risk_color};">{risk_label}</span>
+        </div>
       </div>
       <div style="font-size:12px;color:#94a3b8;font-style:italic;line-height:1.6;border-top:1px solid #1e293b;padding-top:10px;">
-        <span style="color:#FFC000;font-weight:600;font-style:normal;">🧠 Domain Expert:</span> &nbsp;{enriched}
+        <span style="color:#FFC000;font-weight:600;font-style:normal;">🧠 Domain Expert:</span> &nbsp;{_esc(enriched)}
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -298,7 +318,7 @@ function fill(text) {
     if highlights:
         cards_html = "".join(
             _static_kpi_card_html(
-                h["label"], h["value"], h["entity"],
+                h["label"], h["value"], _esc(h["entity"]),
                 color="#dc2626" if h["bad"] else "#16a34a",
             )
             for h in highlights
@@ -494,7 +514,7 @@ function fill(text) {
         steps_html = "".join(
             f'<div style="display:flex;gap:10px;margin:4px 0;font-size:12px;color:#94a3b8;">'
             f'<span style="color:#FFC000;font-weight:800;min-width:18px;">{i}.</span>'
-            f'<span>{_step_text(s)}</span></div>'
+            f'<span>{_esc(_step_text(s))}</span></div>'
             for i, s in enumerate(plan, start=1)
         )
         st.markdown(f"""
@@ -503,7 +523,7 @@ function fill(text) {
           <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
             🧩 MULTI-STEP PLAN  -  {len(filtered_df)} rows
           </div>
-          <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">{plain}</div>
+          <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">{_esc(plain)}</div>
           {steps_html}
         </div>
         """, unsafe_allow_html=True)
@@ -534,9 +554,9 @@ function fill(text) {
         <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
                     padding:32px 36px;margin:0 0 20px 0;text-align:center;">
           <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
-                      letter-spacing:2px;margin-bottom:16px;">{query_title}</div>
+                      letter-spacing:2px;margin-bottom:16px;">{_esc(query_title)}</div>
           <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">{kpi_html}</div>
-          <div style="font-size:13px;color:#4b5563;margin-top:20px;font-style:italic;">{plain}</div>
+          <div style="font-size:13px;color:#4b5563;margin-top:20px;font-style:italic;">{_esc(plain)}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -559,10 +579,10 @@ function fill(text) {
             <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
                         padding:28px 36px;margin:0 0 20px 0;text-align:center;">
               <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
-                          letter-spacing:2px;margin-bottom:12px;">{direction} {metric_label}</div>
-              <div style="font-size:36px;font-weight:900;color:#FFC000;letter-spacing:-0.5px;">{top_name}</div>
+                          letter-spacing:2px;margin-bottom:12px;">{direction} {_esc(metric_label)}</div>
+              <div style="font-size:36px;font-weight:900;color:#FFC000;letter-spacing:-0.5px;">{_esc(top_name)}</div>
               <div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:6px;">{int(top_val) if isinstance(top_val, (int, float)) and top_val == int(top_val) else round(top_val, 4)}</div>
-              <div style="font-size:12px;color:#4b5563;margin-top:12px;font-style:italic;">{plain}</div>
+              <div style="font-size:12px;color:#4b5563;margin-top:12px;font-style:italic;">{_esc(plain)}</div>
             </div>
             """, unsafe_allow_html=True)
         if len(filtered_df) > 1:
@@ -587,11 +607,11 @@ function fill(text) {
         <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
                     padding:16px 20px;margin:0 0 16px 0;">
           <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:6px;letter-spacing:1px;">
-            📊 AGGREGATION RESULT - {header_title.upper()}
+            📊 AGGREGATION RESULT - {_esc(header_title.upper())}
           </div>
           <div style="font-size:12px;color:#94a3b8;">
-            {plain}&nbsp; &nbsp;
-            <strong style="color:#fff">{len(filtered_df)} {group_col}s</strong> ranked
+            {_esc(plain)}&nbsp; &nbsp;
+            <strong style="color:#fff">{len(filtered_df)} {_esc(group_col)}s</strong> ranked
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -601,7 +621,7 @@ function fill(text) {
             th_cells = "".join(
                 f'<th style="padding:10px 14px;text-align:{"right" if c not in ("Rank", group_col) else "left"};'
                 f'font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;'
-                f'letter-spacing:1.2px;border-bottom:1px solid #21262d;">{c}</th>'
+                f'letter-spacing:1.2px;border-bottom:1px solid #21262d;">{_esc(c)}</th>'
                 for c in header_cols
             )
             rows_html = ""
@@ -614,12 +634,12 @@ function fill(text) {
                     if c == "Rank":
                         cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">#{rank_val}</td>'
                     elif c == group_col:
-                        cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{val}</td>'
+                        cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{_esc(val)}</td>'
                     elif c in metric_labels or c == metric_label:
                         _disp = int(val) if isinstance(val, (int, float)) and val == int(val) else round(val, 2)
                         cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{_disp}</td>'
                     else:
-                        cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else val}</td>'
+                        cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else _esc(val)}</td>'
                 rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #0d1117;">{cells}</tr>'
 
             st.markdown(f"""
@@ -640,7 +660,7 @@ function fill(text) {
         <div style="background:#1a2e1a;border-left:4px solid #16a34a;border-radius:8px;
                     padding:12px 16px;margin:0 0 16px 0;color:#86efac;font-weight:600;font-size:14px;">
             ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} {_grain_noun(result_grain)}</strong>
-            &nbsp; {plain}
+            &nbsp; {_esc(plain)}
         </div>
         """, unsafe_allow_html=True)
 
@@ -665,7 +685,7 @@ function fill(text) {
                 display = fmt_value(val, val_fmt) if val_fmt == "money" else f"{int(val)}"
                 rows += (
                     f'<div class="rank-row">'
-                    f'<span class="rank-name">{name}</span>'
+                    f'<span class="rank-name">{_esc(name)}</span>'
                     f'<span class="rank-value">{display}</span>'
                     f'</div>'
                 )
@@ -696,8 +716,8 @@ function fill(text) {
             if rankings.get("mnt_details"):
                 mnt_rows = "".join(
                     f'<div class="rank-row" style="gap:6px;">'
-                    f'<span class="rank-name" style="flex:1.4;font-weight:600;">{e["name"]}</span>'
-                    f'<span class="rank-name" style="flex:0.9;color:#9ca3af;font-size:11px;">{e["branch"]}</span>'
+                    f'<span class="rank-name" style="flex:1.4;font-weight:600;">{_esc(e["name"])}</span>'
+                    f'<span class="rank-name" style="flex:0.9;color:#9ca3af;font-size:11px;">{_esc(e["branch"])}</span>'
                     f'<span class="rank-value" style="min-width:36px;text-align:right;">{e["count"]}</span>'
                     f'<span class="rank-value" style="min-width:52px;text-align:right;color:#FFC000;">{fmt_value(e["pos"], "money")}</span>'
                     f'</div>'
@@ -742,7 +762,7 @@ function fill(text) {
     # don't render an empty card in that case, not just an empty-looking one.
     if insights.strip():
         obs_lines = "".join(
-            f'<div class="obs-line">{line}</div>'
+            f'<div class="obs-line">{_esc(line)}</div>'
             for line in insights.split("\n") if line.strip()
         )
         st.markdown(f"""

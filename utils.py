@@ -65,7 +65,7 @@ def _parse_date_column(col: pd.Series) -> tuple[pd.Series, int, int]:
 
     raw_blank = col.isna() | col.astype(str).str.strip().str.lower().isin(["", "nan", "none", "nat"])
 
-    is_dt_obj = col.map(lambda v: isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date)))
+    is_dt_obj = col.map(lambda v: isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date))) #various date formats
     # bool is a subclass of int, so pd.to_numeric() silently accepts a stray
     # True/False in a date column and converts it into a (wrong) serial date
     # instead of failing -- exclude it so it falls through to the string
@@ -631,7 +631,11 @@ def compute_strike_pct(df: pd.DataFrame) -> float:
     """
     if df.empty or "Strike" not in df.columns:
         return 0.0
-    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N"])]
+    # "N"/"NO" must count as valid-but-not-yes here even though is_yes() itself
+    # only recognizes the yes spellings -- excluding them from the denominator
+    # (matching only Y/YES) would inflate the % by dropping every "no" account
+    # from the base instead of counting it against the rate.
+    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N", "YES", "NO"])]
     if strike_valid.empty:
         return 0.0
     return _safe_pct(is_yes(strike_valid, "Strike").sum(), len(strike_valid))
@@ -652,7 +656,7 @@ def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
 
 def _mom_pct(curr, prev):
     if prev == 0:
-        return 0.0
+        return None  # no prior-period base to compare against, not "no change"
     return round((curr - prev) / abs(prev) * 100, 2)
 
 
@@ -704,6 +708,12 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         # lcc_pct METRIC (registry/ontology.py, cap=100). A customer who has paid
         # ahead of cumulative dues can otherwise push this over 100%.
         lcc_avg = min(lcc_avg, 100.0)
+        # CMD% = Total Cum Collection / Cum Coll (Inst+Exp) -- deliberately a
+        # collection-vs-collection ratio, NOT collection-vs-demand despite the
+        # name. It measures what fraction of the broader Total Cum Collection
+        # figure (includes BC/other components -- see the LCC% note above)
+        # came in through the Inst+Exp channel specifically. Confirmed
+        # intentional; only the label is confusing, not the formula.
         cmd_pct = _safe_pct(cum_coll_total, cum_coll_inst_exp)
 
         return {
@@ -899,14 +909,18 @@ def build_html_export(
     INVERSE = {"NPA %", "Hard Bucket %"}
 
     def _card(label, value, mom, unit="", inverse=False):
-        arrow = "&#9650;" if mom >= 0 else "&#9660;"
-        color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
+        if mom is None:
+            mom_html = '<span style="color:#9ca3af;font-weight:700;">no prev data</span>'
+        else:
+            arrow = "&#9650;" if mom >= 0 else "&#9660;"
+            color = ("#CC0000" if mom >= 0 else "#00A651") if inverse else ("#00A651" if mom >= 0 else "#CC0000")
+            mom_html = f'<span style="color:{color};font-weight:700;">{arrow} {abs(mom):.2f}%</span>'
         return (
             f'<div style="background:#fff;border:1px solid #e5e7eb;border-bottom:3px solid {YELLOW};'
             f'border-radius:10px;padding:16px 14px;min-width:120px;flex:1;box-shadow:0 2px 6px rgba(0,0,0,0.06);">'
             f'<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">{label}</div>'
             f'<div style="font-size:26px;font-weight:800;color:#111827;line-height:1;letter-spacing:-0.5px;">{value}{unit}</div>'
-            f'<div style="font-size:11px;margin-top:8px;color:#9ca3af;">MoM <span style="color:{color};font-weight:700;">{arrow} {abs(mom):.2f}%</span></div>'
+            f'<div style="font-size:11px;margin-top:8px;color:#9ca3af;">MoM {mom_html}</div>'
             f'</div>'
         )
 

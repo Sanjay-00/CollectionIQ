@@ -477,6 +477,23 @@ class TestComputeMetrics:
         metrics = compute_metrics(df, make_df([]))
         assert metrics["Strike %"][0] == 50.0
 
+    def test_strike_pct_spelled_out_yes_no(self):
+        # Some monthly LCC extracts spell the flag out as "Yes"/"No" instead of
+        # abbreviating it (real production file: 100% of a real Strike column
+        # was "YES"/"NO", zero exact "Y"/"N" values). is_yes() was patched to
+        # accept both spellings, but compute_strike_pct's own "valid" filter
+        # used to still gate strictly on {"Y", "N"} -- on such a file the
+        # denominator came back empty and Strike % silently reported 0.0
+        # everywhere (dashboard, scorecard) instead of the real rate.
+        df = make_df([
+            {"Loan No": "L001", "Strike": "Yes"},
+            {"Loan No": "L002", "Strike": "Yes"},
+            {"Loan No": "L003", "Strike": "No"},
+            {"Loan No": "L004", "Strike": "No"},
+        ])
+        metrics = compute_metrics(df, make_df([]))
+        assert metrics["Strike %"][0] == 50.0
+
     @pytest.mark.parametrize("curr_coll,prev_coll,check", [
         (10_000.0, 8_000.0,  lambda mom: mom == 25.0),   # curr 100% vs prev 80% -> +25%
         (6_000.0,  10_000.0, lambda mom: mom < 0),        # curr below prev -> negative
@@ -487,10 +504,15 @@ class TestComputeMetrics:
         metrics = compute_metrics(curr, prev)
         assert check(metrics["Collection %"][1])
 
-    def test_empty_prev_gives_zero_mom(self):
+    def test_empty_prev_gives_none_mom(self):
+        # No previous-month file uploaded (or a prior-period value of exactly
+        # 0) is "no prior data to compare against", not "0% change" -- a
+        # metric that goes from 0 to something must not read as flat/no-move.
+        # ui/components.py::_kpi_card_html renders delta=None as "no prev
+        # data" instead of a misleading 0.00% arrow.
         df = make_df([{"Month Collection (Excluding Reserve Collection)": 5_000.0}])
         metrics = compute_metrics(df, make_df([]))
-        assert metrics["Collection %"][1] == 0.0
+        assert metrics["Collection %"][1] is None
 
     def test_result_shape_is_stable(self):
         # Every consumer (dashboard cards, report portfolio_health section)

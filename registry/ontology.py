@@ -344,15 +344,80 @@ METRICS: dict[str, dict] = {
         "label": "Strike %",
         "kind": "count_ratio",
         # % of accounts current on their installment obligation this month, among
-        # accounts with a valid (Y/N) Strike value. Must match utils.compute_strike_pct
-        # (the shared helper used everywhere else -- dashboard + Portfolio Intelligence).
-        # This declarative definition is consumed by the general compiler rather than
-        # calling that function directly, so the two can't share code, but
-        # tests/test_metric_consistency.py checks they stay numerically identical.
-        "numerator_where": [{"column": "Strike", "op": "==", "value": "Y"}],
-        "denominator_where": [{"column": "Strike", "op": "in", "value": ["Y", "N"]}],
+        # accounts with a valid (Y/N, or spelled-out Yes/No -- some monthly LCC
+        # extracts spell the flag out instead of abbreviating it) Strike value.
+        # Must match utils.compute_strike_pct (the shared helper used everywhere
+        # else -- dashboard + Portfolio Intelligence). This declarative definition
+        # is consumed by the general compiler rather than calling that function
+        # directly, so the two can't share code, but tests/test_metric_consistency.py
+        # checks they stay numerically identical.
+        "numerator_where": [{"column": "Strike", "op": "in", "value": ["Y", "YES"]}],
+        "denominator_where": [{"column": "Strike", "op": "in", "value": ["Y", "N", "YES", "NO"]}],
         "scale": 100,
         "grain": "loan",
         "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",
     },
 }
+
+# Domain-specific terms confirmed (live, on real data) to have more than one
+# materially different reading in THIS business -- unlike CONCEPTS/METRICS/VIEWS
+# above (a fixed vocabulary the planner picks FROM), this is a fixed list of
+# vocabulary the planner must actively watch OUT for in the user's own wording
+# and ask about, rather than silently pick a default reading. Seeded from two
+# real gaps observed live: "which branch had best business" and "show me the
+# risky accounts" both resolved to ONE interpretation without asking, despite
+# each having a second, equally plausible, materially different reading that a
+# generic "is this ambiguous" LLM judgment call didn't catch on its own --
+# these terms are ambiguous because of NBFC-domain meaning specifically (e.g.
+# "business" meaning new originations, not portfolio health), not because of
+# generic sentence-level vagueness the model already handles well (it correctly
+# asks for "best branch" alone, since ranking-by-what is a generic ambiguity).
+# Extend this list the same way CLAUDE.md describes growing the rest of the
+# registry vocabulary: from real query-log evidence, not speculation.
+AMBIGUOUS_TERMS = [
+    {
+        "term": "business",
+        "note": (
+            '"business" is ambiguous in this NBFC domain, between TWO REAL, '
+            "SEPARATELY-ANSWERABLE readings for whatever entity grain (region/branch/"
+            "executive) the query names -- not just two ways of describing the same "
+            "answer:\n"
+            "    (1) NEW LOANS ORIGINATED this period -- the new_advances_by_<grain> view.\n"
+            "    (2) PORTFOLIO/COLLECTION PERFORMANCE -- whichever performance view "
+            "exists for that SAME grain (region_scorecard / branch_quadrant / "
+            "executive_recovery).\n"
+            "  These are computed from DIFFERENT rows (Ag_Date-filtered originations vs. "
+            "the whole current book) and give completely different rankings -- a branch "
+            "can lead on one and trail on the other. If the query does not already "
+            'specify which reading (e.g. "new business", "new advances", "originated", '
+            '"disbursed", "funded" clearly means (1); "collection performance", "NPA%", '
+            '"delinquency" clearly means (2)), clarification_options MUST include exactly '
+            "one option per reading. DO NOT copy a fixed/generic phrase for the option "
+            "text -- look up the ACTUAL matching view for the query's grain in the VIEWS "
+            "catalog above and build each option from THAT view's own real "
+            '"highlightable metrics" list, e.g. "New advances (accounts/funded this '
+            'period)" for reading (1), and for reading (2) name 1-2 of the SPECIFIC '
+            "metrics actually listed for that grain's performance view (executive_recovery "
+            "lists Collection%/Strike%/Net Recovery -- NOT NPA% or Concern Score, those "
+            "belong to region_scorecard/branch_quadrant only). Naming a metric that isn't "
+            "in the matched view's own metrics list is a real error, not a stylistic "
+            "choice -- it describes an answer the system cannot actually produce for that "
+            "grain."
+        ),
+    },
+    {
+        "term": "risk / risky",
+        "note": (
+            '"risk"/"risky" is ambiguous: could mean NPA% (90+ DPD), SMA-2% '
+            "(early-stage delinquency), Hard Bucket% (deep arrears), Co-lending "
+            "exposure (partner-bank risk), or -- ONLY when the query's grain is branch, "
+            "since branch_quadrant is the only view carrying it -- a composite Concern "
+            "Score. Each is a different metric with a different ranking. If the query "
+            "does not already name one of these specifically, ask for clarification "
+            "listing options -- but check the VIEWS catalog above first and offer ONLY "
+            "the ones that are actually valid for the entity grain in question (e.g. "
+            "never offer Concern Score for a region or executive question -- "
+            "region_scorecard/executive_recovery don't have that metric)."
+        ),
+    },
+]

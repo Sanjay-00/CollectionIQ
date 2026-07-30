@@ -3,7 +3,7 @@
 import pandas as pd
 import streamlit as st
 
-from ui.components import _send_report_email
+from ui.components import _send_report_email, _esc
 
 
 def render_report_tab(
@@ -254,7 +254,7 @@ def render_report_tab(
         narrative_html = "".join(
             f'<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #1e293b;">'
             f'<span style="color:#FFC000;font-size:14px;font-weight:900;flex-shrink:0;">&#8226;</span>'
-            f'<span style="color:#c9d1d9;font-size:13px;line-height:1.6;">{b}</span>'
+            f'<span style="color:#c9d1d9;font-size:13px;line-height:1.6;">{_esc(b)}</span>'
             f'</div>'
             for b in bullets
         )
@@ -267,7 +267,7 @@ def render_report_tab(
     if _rpt.get("action_plan"):
         lines = [l.strip() for l in _rpt["action_plan"].split("\n") if l.strip()][:5]
         action_html = "".join(
-            f'<div style="padding:8px 0;border-bottom:1px solid #21262d;font-size:13px;color:#8b949e;">{l}</div>'
+            f'<div style="padding:8px 0;border-bottom:1px solid #21262d;font-size:13px;color:#8b949e;">{_esc(l)}</div>'
             for l in lines
         )
         st.markdown(f"""

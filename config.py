@@ -5,6 +5,19 @@ import os
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
+# The Logical Planner (agents/logical_planner.py::plan_logical) does structured
+# classification/extraction against a fixed vocabulary, not open-ended writing --
+# the SDK default temperature (~1.0, tuned for creative generation) was the
+# confirmed, reproducible cause of run-to-run inconsistency observed live: the
+# IDENTICAL query sometimes correctly asked a grain-aware clarification
+# question, sometimes silently guessed an interpretation, sometimes misrouted
+# to the out-of-scope fallback. Lowered, not zeroed: 0.0 (fully greedy) risks
+# the model deterministically repeating a wrong answer with no chance to
+# recover, including on the compiler's own repair retry. Does not apply to the
+# Insight Generator (agents/insight_generator.py) -- that IS open-ended bullet-
+# point writing, where some variety is fine and arguably desirable.
+PLANNER_TEMPERATURE = 0.1
+
 # Query outcome logging: every AI Query run appends one line (timestamp, raw query
 # text, outcome classification, matched view/intent, error if any) to a local
 # JSONL file. Purpose: find out what real users ask that the registry vocabulary
