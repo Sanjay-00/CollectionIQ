@@ -270,3 +270,54 @@ class TestLoadAndConcatMissingOptionalCols:
         assert errs == []
         assert "CoLending_Loans" not in result_df.columns
         assert "CoLending_Loans" in result_df.attrs["missing_optional_cols"]
+
+
+class TestMomCellColoring:
+    """Regression: append_total_row leaves a %-named column with no
+    ratio_cols entry (e.g. Accounts MoM %/Funded MoM % on Section 3's Total
+    row -- see ui/tabs/business.py::_render_new_advances_by_dimension) as the
+    string "" rather than a number, since it has no numerator/denominator to
+    recompute a portfolio-wide ratio from. _color_mom_cell's `val >= 0`
+    crashed the whole Business tab the moment that Total row reached it
+    (str vs int comparison), caught live via a real screenshot of the error."""
+
+    def test_blank_string_from_total_row_does_not_raise(self):
+        from ui.tabs.business import _color_mom_cell
+        assert _color_mom_cell("") == ""
+
+    def test_nan_is_still_blank(self):
+        from ui.tabs.business import _color_mom_cell
+        assert _color_mom_cell(float("nan")) == ""
+
+    def test_positive_value_is_green_negative_is_red(self):
+        from ui.tabs.business import _color_mom_cell
+        assert "059669" in _color_mom_cell(12.5)
+        assert "dc2626" in _color_mom_cell(-3.2)
+
+    def test_style_mom_columns_renders_without_raising_on_a_total_row(self):
+        from ui.components import append_total_row
+        from ui.tabs.business import _style_mom_columns
+        df = pd.DataFrame([
+            {"Branch": "BR1", "Accounts This Month": 5, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
+            {"Branch": "BR2", "Accounts This Month": 3, "Accounts MoM %": None, "Funded MoM %": 20.0},
+        ])
+        totaled = append_total_row(df)
+        assert totaled.iloc[-1]["Accounts MoM %"] == ""  # the exact shape that used to crash
+        styled = _style_mom_columns(totaled, ["Accounts MoM %", "Funded MoM %"])
+        styled.to_html()  # must not raise
+
+    def test_float_columns_display_at_two_decimals_not_pandas_default_six(self):
+        # Regression: wrapping a frame in a pandas Styler (needed for the
+        # per-cell MoM coloring above) hands rendering over to pandas, whose
+        # Styler defaults every float column to 6 decimal places regardless
+        # of the value's own already-rounded precision -- e.g. a Funded (Cr)
+        # value of 0.11 rendered as "0.110000". Caught live via a real
+        # screenshot of Section 3's table on real data. precision=2 in
+        # _style_mom_columns must keep this from regressing.
+        from ui.tabs.business import _style_mom_columns
+        df = pd.DataFrame([
+            {"Branch": "BR1", "Funded (Cr)": 0.11, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
+        ])
+        html = _style_mom_columns(df, ["Accounts MoM %", "Funded MoM %"]).to_html()
+        assert "0.110000" not in html
+        assert "0.11" in html

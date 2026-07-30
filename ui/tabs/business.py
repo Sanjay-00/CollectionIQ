@@ -18,6 +18,53 @@ from config import NEW_ADVANCES_TREND_DEFAULT_MONTHS, NEW_ADVANCES_TREND_MONTH_O
 _GRANULARITY_OPTIONS = ["Monthly", "Quarterly", "Half-Yearly", "Yearly", "Financial Year"]
 
 
+def _color_mom_cell(val) -> str:
+    """CSS for a single MoM% table cell -- same green/red convention as
+    _mom_caption_html below, applied per-cell via pandas Styler since Section
+    3's table is a plain st.dataframe, not a custom HTML KPI card. Blank
+    (neutral, no color) for NaN -- an entity with no prior-month data to
+    compare against, not a 0% change. Also blank for a non-numeric value --
+    append_total_row leaves %-named columns like this one as "" on its
+    synthetic Total row (they're not in _dim_ratio_cols, so it can't compute
+    a portfolio-wide ratio for them), and that "" must not reach `>=` below."""
+    if pd.isna(val) or not isinstance(val, (int, float)):
+        return ""
+    return "color:#059669;font-weight:600;" if val >= 0 else "color:#dc2626;font-weight:600;"
+
+
+def _style_mom_columns(df: pd.DataFrame, cols: list[str]):
+    """Colors the MoM% columns AND fixes float display precision to 2dp.
+    A plain st.dataframe(df) call lets Streamlit's own Arrow-based renderer
+    show floats at their already-rounded precision, but wrapping a frame in
+    a pandas Styler (required for the per-cell coloring below) hands
+    rendering over to pandas instead -- and pandas' Styler defaults every
+    float column to 6 decimal places (its own `styler.format.precision`
+    option) regardless of how many decimals the underlying value actually
+    carries, e.g. Funded (Cr) showing "0.110000" instead of "0.11". precision=2
+    here re-applies the same 2dp the rest of the dashboard uses everywhere
+    else; non-numeric cells (the Total row's blank "" MoM% placeholders,
+    text columns) pass through this untouched."""
+    present = [c for c in cols if c in df.columns]
+    styled = df.style.format(precision=2)
+    if not present:
+        return styled
+    return styled.map(_color_mom_cell, subset=present)
+
+
+def _mom_caption_html(pct, label: str = "MoM") -> str:
+    """Colored MoM% caption -- same up/green-green/down/red convention and
+    same .kpi-mom-up/.kpi-mom-down CSS classes ui/tabs/dashboard.py's LCC%/
+    SMA-2% cards already use, so the Business tab reads consistently with the
+    rest of the app instead of the plain gray text it had before. Always
+    "up=green" here (never inverse): more new business is unambiguously good,
+    unlike NPA%/Hard Bucket% elsewhere, so no direction flag is needed."""
+    if pct is None:
+        return '<span style="color:#9ca3af;">no prev data</span>'
+    arrow = "▲" if pct >= 0 else "▼"
+    cls = "kpi-mom-up" if pct >= 0 else "kpi-mom-down"
+    return f'{label} <span class="{cls}">{arrow} {abs(pct):.2f}%</span>'
+
+
 # ── Cached recompute wrappers ─────────────────────────────────────────────────
 # Streamlit reruns EVERY tab's code on EVERY interaction anywhere on the page,
 # not just the currently-visible tab -- so a widget change on Dashboard still
@@ -76,11 +123,11 @@ def _render_new_advances(data: dict) -> None:
         mom_cards = (
             _static_kpi_card_html(
                 "Accounts vs Last Month", f"{data['prev_accounts']:,} → {data['accounts']:,}",
-                f"{data['accounts_mom_pct']:+.2f}% MoM" if data.get("accounts_mom_pct") is not None else "-",
+                _mom_caption_html(data.get("accounts_mom_pct")),
             )
             + _static_kpi_card_html(
                 "Funded vs Last Month", f"&#8377;{data['prev_funded_cr']:,.2f} Cr → &#8377;{data['funded_cr']:,.2f} Cr",
-                f"{data['funded_mom_pct']:+.2f}% MoM" if data.get("funded_mom_pct") is not None else "-",
+                _mom_caption_html(data.get("funded_mom_pct")),
             )
         )
         st.markdown(f'<div class="kpi-row">{mom_cards}</div>', unsafe_allow_html=True)
@@ -167,7 +214,9 @@ def _render_new_advances_by_dimension(data: dict) -> None:
         with tab:
             df = data[key]
             _dim_ratio_cols = {"Avg Ticket (L)": ("Funded (Cr)", "Accounts This Month", 100)}
-            st.dataframe(_safe_df(append_total_row(df, ratio_cols=_dim_ratio_cols)), use_container_width=True, hide_index=True)
+            display_df = _safe_df(append_total_row(df, ratio_cols=_dim_ratio_cols))
+            styled_df = _style_mom_columns(display_df, ["Accounts MoM %", "Funded MoM %"])
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
             _dl_btn(df, f"new_advances_{key}.xlsx", f"dl_new_advances_{key}")
 
 
