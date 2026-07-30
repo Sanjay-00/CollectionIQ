@@ -512,6 +512,26 @@ def view_node(state: QueryState) -> QueryState:
         # matched at all" from outside view_node.
         _trace_metadata({"view_name": name, "view_served": False, "view_fallthrough_reason": reason})
         s = new_state if new_state is not None else state
+        # Some views (see registry/views.py's compiler_fallback docstring) have
+        # NO general-compiler equivalent -- falling through to compile with the
+        # SAME ir1 doesn't recover a correct answer for these, it either crashes
+        # on view-scoped measure names the planner attached despite its own
+        # prompt saying not to (they were never real registry METRICS to begin
+        # with, so the compiler can't resolve them -- confirmed live, this
+        # happens on every single "new advances ... business wise" style query),
+        # or silently defaults to a bare per-group row COUNT that answers a
+        # different question with no error at all. Neither is acceptable, so
+        # these route straight to a clear, honest error instead.
+        if spec is not None and not spec.get("compiler_fallback", True):
+            return {
+                **s,
+                "ir1": {**ir1, "view": None},
+                "error": (
+                    f"Couldn't compute \"{spec.get('label', name)}\" ({reason}), and this "
+                    "question can't be answered a different way -- try rephrasing, or ask "
+                    "for a different metric."
+                ),
+            }
         return {**s, "ir1": {**ir1, "view": None}}
 
     if spec is None:

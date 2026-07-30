@@ -40,6 +40,22 @@ Schema per entry:
                  "worst/best entity by X" callout makes sense
     label_col    (required if "metrics" is set) the column holding the entity's
                  display name, e.g. "Region" -- used to build a highlight card's caption
+    compiler_fallback  (optional, default True) whether the general IR-1 compiler can
+                 correctly reconstruct this view's answer if the fast path fails to serve
+                 it. Most views CAN -- their filters/dimensions/measures map onto real
+                 registry CONCEPTS/METRICS, so view_node's fallthrough-to-compiler design
+                 (see graph.py::view_node) safely re-answers the same question a different
+                 way. Set False on a view whose whole point (e.g. "this month's own
+                 originations," a date-window the general compiler has NO matching METRIC
+                 for) simply cannot be expressed outside this one precomputed function --
+                 falling through for one of these doesn't recover a correct answer, it
+                 either crashes on the Logical Planner's own view-scoped measure names
+                 (which were never real registry METRICS to begin with, even though the
+                 planner's prompt says to leave measures empty when a view matches, it
+                 doesn't always comply) or silently answers a DIFFERENT, wrong question
+                 (a bare per-group row count, since the compiler defaults missing
+                 aggregations to `count`). view_node routes these straight to a clear
+                 error instead of a doomed fallthrough.
 """
 import importlib
 
@@ -302,6 +318,7 @@ VIEWS: dict[str, dict] = {
         "subkey": "region",
         "cache_key": "pi_new_advances_by_dim",
         "grain": "region",
+        "compiler_fallback": False,  # see schema docstring above -- "this month's own originations" has no general-compiler equivalent
         "label_col": "Region",
         "metrics": ["Accounts This Month", "Funded (Cr)", "Accounts MoM %", "Funded MoM %"],
     },
@@ -323,6 +340,7 @@ VIEWS: dict[str, dict] = {
         "subkey": "branch",
         "cache_key": "pi_new_advances_by_dim",
         "grain": "branch",
+        "compiler_fallback": False,  # see schema docstring above -- "this month's own originations" has no general-compiler equivalent
         "label_col": "Branch",
         "metrics": ["Accounts This Month", "Funded (Cr)", "Accounts MoM %", "Funded MoM %"],
     },
@@ -343,6 +361,7 @@ VIEWS: dict[str, dict] = {
         "subkey": "executive",
         "cache_key": "pi_new_advances_by_dim",
         "grain": "executive",
+        "compiler_fallback": False,  # see schema docstring above -- "this month's own originations" has no general-compiler equivalent
         "label_col": "Executive",
         "metrics": ["Accounts This Month", "Funded (Cr)", "Accounts MoM %", "Funded MoM %"],
     },
