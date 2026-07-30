@@ -26,7 +26,13 @@ def compute_branch_performance(df_curr: pd.DataFrame, df_prev: pd.DataFrame = No
             }
 
         top5 = [_row(r) for _, r in grp.head(5).iterrows()]
-        bot5 = [_row(r) for _, r in grp.tail(5).sort_values("coll_pct").iterrows()]
+        # .tail(5) then re-sort ascending so "worst first" reads top-to-bottom.
+        bot5_df = grp.tail(5).sort_values("coll_pct")
+        # Fewer than 10 total branches means top5/bottom5 overlap -- drop
+        # duplicates (by branch) so the same branch never appears in both
+        # lists. Same fix as overdue_demand.py's own compute_overdue_demand_section.
+        bot5_df = bot5_df[~bot5_df["Unit"].isin([r["branch"] for r in top5])]
+        bot5 = [_row(r) for _, r in bot5_df.iterrows()]
         return {"top5": top5, "bottom5": bot5, "total_branches": len(grp)}
     except Exception:
         return None
