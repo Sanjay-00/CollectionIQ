@@ -189,3 +189,21 @@ class TestAlertRecentAdvancesAsOf:
         alerts = run_all_alerts(df, as_of="2024-01-01")
         recent = next(a for a in alerts if a["title"] == "Recent Advances at Risk")
         assert recent["count"] == 1
+
+    def test_non_datetime_ag_date_does_not_raise(self):
+        # Regression: hit live in production (pandas 3.0.3) -- comparing a
+        # non-datetime64 Ag_Date column (object/string dtype) against a
+        # pd.Timestamp cutoff with `>=` raises TypeError under pandas 3.0's
+        # stricter rules, where pandas 2.x tolerated the same comparison
+        # silently. Every sibling as_of function in
+        # analysis/portfolio_intelligence.py already defends against this
+        # with pd.to_datetime(..., errors="coerce"); this one didn't.
+        import pandas as pd
+        df = make_df([
+            {"Loan No": "L1", "Ag_Date": "2023-07-01", "Arrears / EMI": 1.0},
+            {"Loan No": "L2", "Ag_Date": "2020-01-01", "Arrears / EMI": 1.0},
+        ])
+        df["Ag_Date"] = df["Ag_Date"].astype(object)  # force non-datetime dtype
+        assert df["Ag_Date"].dtype == object
+        result = alert_recent_advances_at_risk(df, months=12, as_of="2024-01-01")
+        assert result["count"] == 1  # only L1 is within the 12-month window

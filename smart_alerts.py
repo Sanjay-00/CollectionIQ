@@ -128,7 +128,16 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
     function already uses."""
     ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp(date.today())
     cutoff = ref - relativedelta(months=months)
-    ag = df["Ag_Date"] if "Ag_Date" in df.columns else pd.Series(pd.NaT, index=df.index)
+    # pd.to_datetime(..., errors="coerce") -- same defensive re-parse every
+    # as_of sibling in analysis/portfolio_intelligence.py already does before
+    # comparing Ag_Date to a cutoff. Ag_Date is normally already datetime64
+    # by the time it reaches here (utils.py's load_and_validate guarantees
+    # it), but trusting that unconditionally crashed in production under
+    # pandas 3.0's stricter comparison rules: a non-datetime Ag_Date (e.g.
+    # object dtype from a filtered/sliced frame) raised "TypeError: Invalid
+    # comparison between dtype=... and Timestamp" at the `ag >= cutoff` line
+    # below, where pandas 2.x had silently tolerated the same comparison.
+    ag = pd.to_datetime(df["Ag_Date"], errors="coerce") if "Ag_Date" in df.columns else pd.Series(pd.NaT, index=df.index)
     arrears = _to_num(df, "Arrears / EMI")
     mask = (ag >= cutoff) & (arrears > 0)
     subset = df[mask]
