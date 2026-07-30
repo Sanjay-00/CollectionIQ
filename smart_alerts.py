@@ -115,9 +115,19 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
     }
 
 
-def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCES_MONTHS) -> dict:
-    """Loans sanctioned in the last N months that already have delinquencies."""
-    cutoff = pd.Timestamp(date.today() - relativedelta(months=months))
+def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCES_MONTHS, as_of=None) -> dict:
+    """Loans sanctioned in the last N months that already have delinquencies.
+
+    as_of anchors "last N months" to the report's own reporting month, not
+    wall-clock today -- same convention as every other as_of-taking function
+    in this codebase (e.g. analysis/portfolio_intelligence.py's
+    compute_new_advances/compute_product_analysis), since re-analyzing an old
+    file must use the month IT reports on, not the day this code happens to
+    run. Falls back to real today only when the caller doesn't have a
+    reporting month to pass (as_of=None), same fallback every sibling
+    function already uses."""
+    ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp(date.today())
+    cutoff = ref - relativedelta(months=months)
     ag = df["Ag_Date"] if "Ag_Date" in df.columns else pd.Series(pd.NaT, index=df.index)
     arrears = _to_num(df, "Arrears / EMI")
     mask = (ag >= cutoff) & (arrears > 0)
@@ -194,13 +204,18 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     }
 
 
-def run_all_alerts(df: pd.DataFrame, recent_months: int = RECENT_ADVANCES_MONTHS) -> list:
-    """Run all 6 alerts and return list sorted by severity."""
+def run_all_alerts(df: pd.DataFrame, recent_months: int = RECENT_ADVANCES_MONTHS, as_of=None) -> list:
+    """Run all 6 alerts and return list sorted by severity.
+
+    as_of is passed straight through to alert_recent_advances_at_risk (the
+    only one of the 6 that's date-anchored) -- see that function's own
+    docstring. Optional, defaults to None (wall-clock today), so every
+    existing caller that doesn't pass it keeps its prior behavior unchanged."""
     alerts = [
         alert_non_starters(df),
         alert_colending_at_risk(df),
         alert_insurance_delinquency(df),
-        alert_recent_advances_at_risk(df, recent_months),
+        alert_recent_advances_at_risk(df, recent_months, as_of=as_of),
         alert_easy_settlements(df),
         alert_high_arrears_ratio(df),
     ]

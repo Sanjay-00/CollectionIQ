@@ -304,8 +304,13 @@ def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str
     )
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str):
-    return run_all_alerts(_df_c)
+def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str, as_of: str = None):
+    # as_of anchors alert_recent_advances_at_risk's "last N months" window to
+    # the FILE's own reporting month, not wall-clock today -- see that
+    # function's own docstring. "which" ("curr"/"prev") already distinguishes
+    # this cache entry from its counterpart; as_of naturally participates in
+    # the cache key too (a different reporting month is a genuine cache miss).
+    return run_all_alerts(_df_c, as_of=as_of)
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def _cached_scorecard(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
@@ -372,7 +377,7 @@ if len(df_curr) == 0:
 
 # ── Pre-compute shared data ───────────────────────────────────────────────────
 metrics = _cached_metrics(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t)
-alerts  = _cached_alerts(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, "curr")
+alerts  = _cached_alerts(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, "curr", curr_month)
 fig_status, fig_branch, fig_closing = _cached_dashboard_charts(
     df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t,
 )
@@ -461,7 +466,7 @@ _needs_pi = active in ("📊 Portfolio Intelligence", "💼 Business", "🤖 AI 
 alerts_prev = []
 precomputed_views = {}
 if _needs_pi:
-    alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev") if len(df_prev) > 0 else []
+    alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev", prev_month) if len(df_prev) > 0 else []
 
     _rr = rr_meta or {}
     (

@@ -8,7 +8,8 @@ from report_agent.sections.fleet_exposure import compute_fleet_exposure_section
 from report_agent.sections.region_scorecard import compute_region_scorecard_section
 from report_agent.sections.concentration import compute_concentration_section
 from report_agent.sections.bucket_migration import compute_bucket_migration_section
-from report_agent.sections.npa_sma2_movement import compute_npa_sma2_movement
+from report_agent.sections.npa_sma2_movement import compute_npa_sma2_movement, _top_movers
+from report_agent.sections.branch_performance import compute_branch_performance
 from report_agent.sections.risk_indicators import compute_risk_indicators_section
 from report_agent.sections.branch_quadrant import compute_branch_quadrant_section
 from report_agent.sections.executive_recovery import compute_executive_recovery_section
@@ -79,6 +80,24 @@ class TestComputeRiskFlags:
         df = make_df([{"Arrears / EMI": 0.0}])
         result = compute_risk_flags(df)
         assert result == {"flags": []}
+
+    def test_curr_month_is_threaded_to_recent_advances_alert(self):
+        # Regression: this wrapper used to call run_all_alerts(df_curr) with no
+        # as_of, so the report's "Recent Advances at Risk" flag was silently
+        # anchored to wall-clock today instead of the report's own reporting
+        # month -- same bug class as smart_alerts.py's own fix, but this is the
+        # call site that must actually pass curr_month through for the report
+        # to benefit from it.
+        df = make_df([{
+            "Loan No": "L1", "Ag_Date": pd.Timestamp("2023-07-01"), "Arrears / EMI": 1.0,
+        }])
+        result_no_month = compute_risk_flags(df, curr_month=None)
+        result_with_month = compute_risk_flags(df, curr_month="2024-01-01")
+        flag_no_month = next((f for f in (result_no_month or {}).get("flags", []) if f["title"] == "Recent Advances at Risk"), None)
+        flag_with_month = next((f for f in (result_with_month or {}).get("flags", []) if f["title"] == "Recent Advances at Risk"), None)
+        assert flag_no_month is None       # wall-clock fallback: window doesn't reach 2023
+        assert flag_with_month is not None  # anchored to curr_month: it does
+        assert flag_with_month["count"] == 1
 
 
 # ── compute_top_accounts_section ──────────────────────────────────────────────
@@ -236,6 +255,48 @@ class TestComputeNpaSma2Movement:
         result = compute_npa_sma2_movement(curr, prev)
         assert result["exec_worst"]
         assert result["exec_worst"][0]["Unit"] == "MAHAD"
+
+
+class TestTopMoversNoOverlap:
+    """Regression: _top_movers used to run two INDEPENDENT .sort_values().head(n)
+    calls (worst = highest NPA Δ, best = lowest NPA Δ), which overlap whenever
+    fewer than 2n rows exist -- the same entity could show up in both "worst"
+    and "best" lists in the same report. Fixed the same way overdue_demand.py's
+    sibling top5/bottom5 sections already handle it: drop worst's rows from
+    consideration before picking best."""
+
+    def _df(self, deltas: dict) -> pd.DataFrame:
+        return pd.DataFrame([{"Unit": u, "NPA Δ": d} for u, d in deltas.items()])
+
+    def test_no_overlap_when_fewer_than_double_n(self):
+        # 7 rows, n=5 -- old code: worst=top5 by delta desc, best=top5 by
+        # delta asc, computed independently over the SAME 7 rows -> 3-way
+        # overlap (B3 delta=-1, B6 delta=0 land in both). Fixed: worst takes
+        # 5, best can only draw from the remaining 2.
+        deltas = {"B0": 3, "B1": 2, "B2": 1, "B3": -1, "B4": -2, "B5": -3, "B6": 0}
+        worst, best = _top_movers(self._df(deltas), "Unit", n=5)
+        worst_units = {r["Unit"] for r in worst}
+        best_units  = {r["Unit"] for r in best}
+        assert not (worst_units & best_units)
+        assert worst_units == {"B0", "B1", "B2", "B6", "B3"}
+        assert best_units == {"B4", "B5"}
+
+    def test_more_than_double_n_unaffected(self):
+        # 12 rows, n=5 -- plenty of room, worst/best should never have needed
+        # to overlap even before the fix; confirms the fix doesn't change
+        # correct behavior in the unaffected case.
+        deltas = {f"B{i}": i - 6 for i in range(12)}  # -6..5
+        worst, best = _top_movers(self._df(deltas), "Unit", n=5)
+        worst_units = {r["Unit"] for r in worst}
+        best_units  = {r["Unit"] for r in best}
+        assert not (worst_units & best_units)
+        assert len(worst_units) == 5 and len(best_units) == 5
+
+    def test_empty_df_returns_empty_lists(self):
+        assert _top_movers(pd.DataFrame(), "Unit") == ([], [])
+
+    def test_missing_npa_delta_column_returns_empty_lists(self):
+        assert _top_movers(pd.DataFrame({"Unit": ["A"]}), "Unit") == ([], [])
 
 
 # ── compute_risk_indicators_section ───────────────────────────────────────────
@@ -443,6 +504,61 @@ class TestComputeOverdueDemandSection:
         assert row["name"] == "EXEC1"
         assert row["branch"] == "BR1"
         assert row["region"] == "EAST"
+
+
+# ── compute_branch_performance ────────────────────────────────────────────────
+# Previously had zero test coverage in this file -- the top5/bottom5 overlap
+# bug below would have been caught immediately by a test mirroring
+# TestComputeOverdueDemandSection's own overlap test, which already existed
+# as a sibling pattern in this same file.
+
+class TestComputeBranchPerformance:
+    def _row(self, unit, demand, collection):
+        return {
+            "Unit": unit, "Loan No": f"{unit}-{demand}-{collection}",
+            "Net Collection Demand Inst+Exp+BC": demand,
+            "Month Collection (Excluding Reserve Collection)": collection,
+        }
+
+    def test_returns_none_without_unit_column(self):
+        # make_df always fills a default "Unit" -- drop it explicitly to
+        # exercise the missing-column path.
+        df = make_df([{"Loan No": "L1"}]).drop(columns=["Unit"])
+        assert compute_branch_performance(df) is None
+
+    def test_ranks_by_collection_pct_descending(self):
+        curr = make_df([
+            self._row("HIGH", 100, 95), self._row("LOW", 100, 50), self._row("MID", 100, 75),
+        ])
+        result = compute_branch_performance(curr)
+        assert [r["branch"] for r in result["top5"]] == ["HIGH", "MID", "LOW"]
+
+    def test_fewer_than_ten_branches_does_not_duplicate_across_top_and_bottom(self):
+        # Regression: top5 = grp.head(5), bottom5 = grp.tail(5) used to be
+        # computed independently -- for fewer than 10 branches these overlap.
+        # Reproduced directly: 7 branches, same branch appeared in BOTH lists
+        # before this fix.
+        curr = make_df([
+            self._row(f"BR{i}", 100, i * 10) for i in range(7)  # coll_pct: 0,10,...,60
+        ])
+        result = compute_branch_performance(curr)
+        top_names = {r["branch"] for r in result["top5"]}
+        bottom_names = {r["branch"] for r in result["bottom5"]}
+        assert not (top_names & bottom_names)
+        assert len(top_names) + len(bottom_names) == 7
+
+    def test_ten_or_more_branches_capped_at_five_each(self):
+        curr = make_df([self._row(f"BR{i}", 100, i * 5) for i in range(12)])
+        result = compute_branch_performance(curr)
+        assert len(result["top5"]) == 5
+        assert len(result["bottom5"]) == 5
+        assert result["total_branches"] == 12
+
+    def test_bottom5_ascending_worst_first(self):
+        curr = make_df([self._row(f"BR{i}", 100, i * 5) for i in range(12)])
+        result = compute_branch_performance(curr)
+        pcts = [r["coll_pct"] for r in result["bottom5"]]
+        assert pcts == sorted(pcts)
 
 
 # ── compute_new_advances_section ──────────────────────────────────────────────
