@@ -237,9 +237,23 @@ div[data-testid="stSelectbox"] [role="combobox"] * {{ color: {color} !important;
 </style>""", unsafe_allow_html=True)
 
 
+def _dateonly(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the always-00:00:00 time component from datetime64 columns.
+
+    LCC date columns (Ag_Date, Last Receipt Date, etc.) carry no real time-of-day
+    signal -- they're loan-level dates, not timestamps -- but pandas' datetime64
+    dtype always renders the full "2022-11-01 00:00:00" in both st.dataframe and
+    an exported .xlsx cell. .dt.date yields plain python date objects, which
+    display and export as a bare date with no formatting/dtype trickery needed."""
+    df = df.copy()
+    for col in df.select_dtypes(include="datetime64[ns]").columns:
+        df[col] = df[col].dt.date
+    return df
+
+
 def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce mixed-type object columns to string for safe st.dataframe display."""
-    df = df.copy()
+    df = _dateonly(df)
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].astype(str).replace({"nan": "", "None": ""})
     return df
@@ -276,7 +290,7 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
 @st.cache_data(show_spinner=False, max_entries=64)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
-    df.to_excel(buf, index=False, engine="openpyxl")
+    _dateonly(df).to_excel(buf, index=False, engine="openpyxl")
     return buf.getvalue()
 
 
