@@ -603,7 +603,22 @@ def view_node(state: QueryState) -> QueryState:
     except Exception as e:
         return _fallthrough(f"output_normalization_failed: {e}")
 
-    result_df = _apply_sort_by(result_df, view_spec.get("sort_by"))
+    # The planner is instructed to mirror a ranking request into BOTH the
+    # top-level order_by (compiler path) AND view.sort_by (view path) when
+    # routing to a view, but confirmed live to sometimes drop the latter
+    # while still setting the former -- an LLM instruction-following miss,
+    # not a case of "no ranking intent" (which leaves order_by empty too).
+    # Falling back to order_by[0] here recovers the query's actual ranking
+    # intent instead of silently serving the view's unrelated default sort
+    # (e.g. branch_quadrant's own Concern Score order) under a title that
+    # claims to be ranked by the requested metric. _apply_sort_by's own
+    # fuzzy resolution still no-ops harmlessly if the column doesn't match.
+    sort_by = view_spec.get("sort_by")
+    if not sort_by:
+        order_by = ir1.get("order_by") or []
+        if order_by and order_by[0].get("by"):
+            sort_by = {"column": order_by[0]["by"], "dir": order_by[0].get("dir", "desc")}
+    result_df = _apply_sort_by(result_df, sort_by)
 
     # Highlights and the portfolio-wide rollup are computed against the FULL
     # sorted result -- BEFORE any top-N limit below -- deliberately: they're
