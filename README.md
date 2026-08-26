@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.59.0-FF4B4B?logo=streamlit&logoColor=white)
 ![Gemini](https://img.shields.io/badge/Google%20Gemini-2.5%20Flash%20Lite-4285F4?logo=google&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.2+-green)
 &nbsp;
 
 ## The Problem
