@@ -179,6 +179,22 @@ CONCEPTS: dict[str, dict] = {
         "description": "No payment for 3+ months AND arrears exceed 6 EMIs - pre-NPA signal.",
         "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
     },
+    "hard_bucket": {
+        "label": "Hard Bucket",
+        # CURRENT arrears severity snapshot -- NOT the same signal as no_collection_3m
+        # above. no_collection_3m is a behavioral/historical flag (a zero-payment
+        # streak that at some point crossed 6 EMIs of arrears); hard_bucket is today's
+        # arrears state regardless of payment history, so a customer can satisfy one
+        # without the other (e.g. 11 EMIs of arrears accumulated historically but a
+        # recent partial payment brings current Arrears/EMI down to 4 -- hits
+        # no_collection_3m, not hard_bucket). Registered here so a "hard bucket
+        # accounts" / "loans in hard bucket" query gets this row-level filter directly
+        # instead of the Planner substituting the lookalike no_collection_3m concept.
+        # Threshold and column intentionally match hard_bucket_pct's own
+        # numerator_where below -- same definition, count form vs. row-filter form.
+        "description": f"Currently in hard bucket - Arrears/EMI >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue right now.",
+        "conditions": [{"column": "Arrears / EMI", "op": ">=", "value": HARD_BUCKET_ARREARS_EMI_MIN}],
+    },
     "no_collection": {
         "label": "No Collection",
         "description": "No cash received this month - Month Receipt Amount <= 0.",
