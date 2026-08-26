@@ -734,7 +734,12 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
         return []
 
     ekey = entity_key(g)
-    inter_keys = group_by + ekey
+    # dedupe: a requested dimension can legitimately BE the entity's own key
+    # (e.g. dimensions=["customer"] + entity_filters=[fleet_operator], both
+    # keyed on "Cust Mob No") -- an undeduped group_by would list that column
+    # twice, and pandas' groupby(...).size().reset_index() then raises
+    # "cannot insert <col>, already exists" on the duplicate-named index level.
+    inter_keys = group_by + [k for k in ekey if k not in group_by]
     ctx = {"group_by": group_by, "intermediate_keys": set(inter_keys), "aggregating_over": set()}
 
     # Ambiguity: a predicate aggregating over a loan-level dimension key that is not

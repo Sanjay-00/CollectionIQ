@@ -138,3 +138,31 @@ class TestNonNestableMeasureRejected:
             "measures": [{"column": "SOH", "agg": "mean", "alias": "avg_soh"}],
         }, _df().columns)
         assert any("cannot be rolled up" in e for e in errs)
+
+
+class TestQuery6_DimensionMatchesEntityKey:
+    """"Give me all fleet owners in NPA" -> dimensions:["customer"] +
+    entity_filters:[fleet_operator], both keyed on the same column
+    (Cust Mob No). Regression for a real production bug: an undeduped
+    group_by+entity_key produced a duplicate-named group_by list, and
+    pandas' groupby(...).size().reset_index() raised
+    "cannot insert Cust Mob No, already exists"."""
+
+    def test_customer_dimension_same_as_entity_key_does_not_crash(self):
+        out = _run({
+            "dimensions": ["customer"],
+            "entity_filters": [{"concept": "fleet_operator"}],
+            "measures": [],
+        })
+        assert set(out["Cust Mob No"]) == {111, 333, 444}   # each has >= FLEET_MIN_LOANS (3) loans
+
+    def test_intermediate_group_by_has_no_duplicate_columns(self):
+        plan, errs = compile_logical({
+            "dimensions": ["customer"],
+            "entity_filters": [{"concept": "fleet_operator"}],
+            "measures": [],
+        }, _df().columns)
+        assert errs == []
+        inter = plan[0]
+        assert inter["op"] == "group_aggregate"
+        assert inter["group_by"] == ["Cust Mob No"]
