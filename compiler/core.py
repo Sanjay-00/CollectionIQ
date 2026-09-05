@@ -198,6 +198,23 @@ def _resolve_count_metric(name: str) -> dict | None:
     return None
 
 
+def _wants_cust_name(group_by: list, existing_aliases: set, columns) -> bool:
+    """True when a customer-grain result (grouped by the bare mobile number)
+    should get a human-readable 'Cust Name' column attached automatically.
+    Without this, every AI Query result grouped by "customer" shows the raw
+    mobile number and nothing else -- unlike the "executive"/"branch"/"region"
+    dimensions, whose key column IS already the display label. Cust Name isn't
+    strictly 1:1 with Cust Mob No (see analysis/portfolio_intelligence.py's
+    compute_fleet_exposure docstring), so this is a representative "first row"
+    value, the same convention that function already uses for region/branch."""
+    return (
+        "Cust Mob No" in group_by
+        and "Cust Name" in (columns if columns is not None else [])
+        and "Cust Name" not in group_by
+        and "Cust Name" not in existing_aliases
+    )
+
+
 def _default_measure_alias(m: dict) -> str:
     if m.get("concept"):
         return m["concept"]
@@ -206,6 +223,15 @@ def _default_measure_alias(m: dict) -> str:
     if m.get("column"):
         return _snake(m["column"])
     return "count"
+
+
+def _is_count_distinct_shape(m: dict) -> bool:
+    """True when a raw IR measure's shape is a count_distinct, whether or not
+    its own "agg" field says so (the Planner emits both {"agg":"nunique",...}
+    and {"agg":"count","distinct":...} for the same intent). Single source of
+    truth for this trigger, shared by _infer_kind (below) and _build_nested's
+    "Loan No is the atomic key" rewrite, so the two can never drift apart."""
+    return "distinct" in m or (m.get("agg") or "").lower() == "nunique"
 
 
 def _infer_kind(d: dict):
@@ -219,7 +245,7 @@ def _infer_kind(d: dict):
         return "ratio"
     if "numerator_where" in d or "denominator_where" in d:
         return "count_ratio"
-    if "distinct" in d or (d.get("agg") or "").lower() == "nunique":
+    if _is_count_distinct_shape(d):
         return "count_distinct"
     if (d.get("agg") or "").lower() == "count" or "concept" in d or "where" in d:
         return "count"
@@ -547,6 +573,19 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
     return extra_aggs, extra_derives
 
 
+def _is_misplaced_entity_concept(concept) -> bool:
+    """True when `concept` names a registered ENTITY_CONCEPT and nothing else
+    (never a CONCEPTS entry too -- the two namespaces are disjoint by design).
+    An entity concept like fleet_operator reads like an ordinary filter/measure
+    from the LLM's side ("give me fleet owners...", "count of fleet owners"),
+    and the Planner regularly puts it in the wrong slot -- confirmed recurring
+    in production in two independent places (a top-level filter, and a "count"
+    measure), not a one-off. Single place owning this detection so a third
+    occurrence (e.g. inside "having" or "sort") reuses the same rule instead of
+    a third bespoke check."""
+    return concept in ENTITY_CONCEPTS and concept not in CONCEPTS
+
+
 def compile_logical(ir: dict, columns) -> tuple[list, list]:
     """Lower a logical IR into a physical step-plan. Returns (plan, errors).
     A non-empty errors list means the plan must NOT be executed (route to
@@ -556,7 +595,24 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
     errs: list[str] = []
     ir = ir or {}
 
-    conditions = _expand_filters(ir.get("filters") or [], errs)
+    # Reclassifying a {"concept": X} filter whose name is only an ENTITY_CONCEPT
+    # (see _is_misplaced_entity_concept) is a deterministic correction, not a
+    # guess -- the compiler derives structure the LLM doesn't need to get
+    # exactly right, same principle as the rest of this module. Without this,
+    # the query hard-fails as "unknown concept 'fleet_operator'" even after a
+    # repair attempt, because the repair feedback doesn't tell the Planner
+    # WHICH list a concept belongs in.
+    raw_filters = ir.get("filters") or []
+    misplaced_entity_filters: list = []
+    plain_filters: list = []
+    for f in raw_filters:
+        concept = f.get("concept") if isinstance(f, dict) else None
+        if _is_misplaced_entity_concept(concept):
+            misplaced_entity_filters.append({"concept": concept})
+        else:
+            plain_filters.append(f)
+
+    conditions = _expand_filters(plain_filters, errs)
     # The Logical Planner's own prompt says "loan_table: ... No dimensions or
     # measures needed" -- but an LLM doesn't always follow its own rules on an
     # ambiguous query (e.g. "...regionwise and branchwise... give all cases
@@ -584,13 +640,24 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
                 f"{', '.join(DIMENSIONS.keys())} (or an exact existing column name)"
             )
 
-    entity_filters = ir.get("entity_filters") or []
+    entity_filters = list(ir.get("entity_filters") or []) + misplaced_entity_filters
 
     plan: list = []
     if conditions:
         plan.append({"op": "filter", "conditions": conditions})
 
-    if entity_filters:
+    if entity_filters and not group_by and ir.get("intent") == "loan_table":
+        # loan_table shape ("give me every loan for fleet owners in NPA"): keep
+        # every original row for a qualifying entity, don't collapse to one row.
+        # Gated on intent, not just "no dimensions" -- a single_value/aggregation
+        # query with entity_filters and no explicit dimension (e.g. "how many
+        # fleet owners are in NPA") must still go through _build_nested's
+        # scalar-count fallback below, not this row-level path: routing it here
+        # would silently return raw per-loan rows (and a loan_table intent, not
+        # single_value/aggregation) instead of the single count the question
+        # actually asked for.
+        plan += _build_entity_semi_join(entity_filters, errs)
+    elif entity_filters:
         # NESTED path: the compiler derives a multi-pass plan from the grain lattice.
         plan += _build_nested(ir, group_by, entity_filters, errs, columns)
     elif group_by:
@@ -613,6 +680,8 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
             plan.append({"op": "derive", **d})
         if not aggs:
             aggs = [{"alias": "count", "func": "count"}]
+        if _wants_cust_name(group_by, {a.get("alias") for a in aggs}, columns):
+            aggs.append({"alias": "Cust Name", "func": "first", "column": "Cust Name"})
         plan.append({"op": "group_aggregate", "group_by": group_by, "aggregations": aggs})
         for d in post_derives:
             plan.append({"op": "derive", **d})
@@ -702,15 +771,11 @@ def _build_having_pred(pred: dict, alias: str, errs: list) -> tuple[dict, dict]:
     return a, cond
 
 
-def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, columns=None) -> list:
-    """Derive an intermediate→filter→terminal plan from the grain lattice. The LLM
-    supplied only entity names + declarative predicates + measure names; ALL of the
-    structure below (keys, pass order, rollup decomposition) is derived here."""
-    if not group_by:
-        errs.append("nested aggregation currently requires a grouping dimension")
-        return []
-
-    # Resolve entity-concept references to concrete {entity, having} predicates.
+def _resolve_entity_filters(entity_filters: list, errs: list):
+    """Resolve entity-concept references to concrete {entity, having} predicates
+    and pin down the single entity they all share. Returns (entity_name,
+    resolved_predicates) -- entity_name is None if resolution failed (errs
+    already carries the reason) or entity_filters was empty."""
     resolved = []
     for ef in entity_filters:
         if "concept" in ef:
@@ -722,15 +787,54 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
         else:
             resolved.append(ef)
     if not resolved:
-        return []
+        return None, []
 
     entities = {ef.get("entity") for ef in resolved}
     if len(entities) > 1:
         errs.append(f"nested aggregation over multiple entities {sorted(entities)} is not supported yet")
-        return []
+        return None, []
     g = next(iter(entities))
     if g not in ENTITIES:
         errs.append(f"unknown entity '{g}' in entity_filters")
+        return None, []
+    return g, resolved
+
+
+def _build_entity_semi_join(entity_filters: list, errs: list) -> list:
+    """entity_filters with NO output dimension (loan_table intent: 'give me every
+    loan row for customers who are fleet owners') can't use _build_nested's
+    group-then-filter-then-regroup shape, since that COLLAPSES to one row per
+    entity -- exactly wrong for a request whose whole point is the individual
+    rows. Instead: compute which entity keys satisfy every having predicate,
+    then keep every original row belonging to a qualifying key (a semi-join),
+    so all original columns survive untouched."""
+    g, resolved = _resolve_entity_filters(entity_filters, errs)
+    if g is None:
+        return []
+    ekey = entity_key(g)
+
+    aggs: list = []
+    conditions: list = []
+    for i, ef in enumerate(resolved):
+        for j, pred in enumerate(ef.get("having") or []):
+            a, cond = _build_having_pred(pred, f"__ef{i}_{j}", errs)
+            aggs.append(a)
+            conditions.append(cond)
+
+    return [{"op": "entity_semi_join", "key_cols": ekey,
+             "aggregations": aggs, "having_conditions": conditions}]
+
+
+def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, columns=None) -> list:
+    """Derive an intermediate→filter→terminal plan from the grain lattice. The LLM
+    supplied only entity names + declarative predicates + measure names; ALL of the
+    structure below (keys, pass order, rollup decomposition) is derived here."""
+    if not group_by:
+        errs.append("nested aggregation currently requires a grouping dimension")
+        return []
+
+    g, resolved = _resolve_entity_filters(entity_filters, errs)
+    if g is None:
         return []
 
     ekey = entity_key(g)
@@ -767,6 +871,40 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
     term_post: list = []
     measures = ir.get("measures") or []
     for m in measures:
+        # Same misplacement _is_misplaced_entity_concept detects for the
+        # top-level filters list (see compile_logical): the Planner sometimes
+        # ALSO asks to "count" an entity concept directly as a measure (e.g.
+        # {"agg":"count","concept":"fleet_operator",...}), redundant with
+        # entity_filters already restricting to that entity. Since the entity
+        # is already fixed by entity_filters (this function's own `g`),
+        # "count of <entity concept>" unambiguously means "how many qualifying
+        # entities survived," i.e. nunique(ekey) -- exactly what the no-measure
+        # fallback below already computes.
+        if _is_misplaced_entity_concept(m.get("concept")):
+            if len(ekey) != 1:
+                errs.append(f"measure '{m.get('alias', m['concept'])}': entity '{g}' has a "
+                            "composite key; counting it directly is not supported")
+                continue
+            m = {"agg": "nunique", "distinct": ekey[0], "alias": m.get("alias") or "count"}
+        elif (_is_count_distinct_shape(m)
+              and (m.get("distinct") or m.get("column")) in entity_key("loan")):
+            # _is_count_distinct_shape is the SAME predicate _infer_kind uses
+            # (shared, not re-derived here) -- the Planner emits both
+            # {"agg":"nunique",...} and {"agg":"count","distinct":...} for the
+            # same intent, and _infer_kind classifies both as count_distinct
+            # regardless of the "agg" string, so this check can't key off
+            # "agg" alone either.
+            # e.g. "how many loans does each fleet owner have" -> nunique(Loan
+            # No). count_distinct can't generally roll up across a nested
+            # grain (see _r_count_distinct), but Loan No is the ATOMIC row key
+            # (one row = one loan) -- nunique(Loan No) over any grouping of raw
+            # loan rows is always identical to a plain row count, which DOES
+            # decompose across passes. Rewriting avoids a hard "cannot be
+            # rolled up" error for a request that's actually always answerable.
+            new_m = {"agg": "count", "alias": m.get("alias") or _default_measure_alias(m)}
+            if m.get("where"):
+                new_m["where"] = m["where"]
+            m = new_m
         mdef = _measure_def(m, errs, columns)
         if mdef is None:
             continue
@@ -786,6 +924,10 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
             term_aggs = [{"alias": "count", "func": "nunique", "column": ekey[0]}]
         else:
             errs.append(f"nested entity '{g}' has a composite key; an explicit measure is required")
+
+    if _wants_cust_name(group_by, {a.get("alias") for a in term_aggs}, columns):
+        inter_aggs.append({"alias": "Cust Name__p", "func": "first", "column": "Cust Name"})
+        term_aggs.append({"alias": "Cust Name", "func": "first", "column": "Cust Name__p"})
 
     steps: list = [
         {"op": "group_aggregate", "group_by": inter_keys, "aggregations": inter_aggs},

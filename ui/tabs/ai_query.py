@@ -602,6 +602,14 @@ function fill(text) {
         _gb           = agg_spec.get("group_by") or "Group"
         group_col     = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
         header_title  = " · ".join(metric_labels) if metric_labels else metric_label
+        # Naively appending "s" to a composite label reads badly ("Cust Name
+        # (Cust Mob No)s"); use a friendly plural for the combined labels
+        # graph.py builds (see logical_planner_node), fall back to the naive
+        # suffix for a raw column name.
+        group_plural  = {
+            "Cust Name (Cust Mob No)": "Customers",
+            "MNT NAME (Unit)": "Executives",
+        }.get(group_col, f"{group_col}s")
 
         st.markdown(f"""
         <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
@@ -611,7 +619,7 @@ function fill(text) {
           </div>
           <div style="font-size:12px;color:#94a3b8;">
             {_esc(plain)}&nbsp; &nbsp;
-            <strong style="color:#fff">{len(filtered_df)} {_esc(group_col)}s</strong> ranked
+            <strong style="color:#fff">{len(filtered_df)} {_esc(group_plural)}</strong> ranked
           </div>
         </div>
         """, unsafe_allow_html=True)

@@ -18,7 +18,7 @@ import pandas as pd
 
 from agents.data_executor import _apply_condition, _build_mask, _COL_COMPARE_OPS
 
-_AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max"}
+_AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max", "first"}
 
 # Ops whose "value" is a COLUMN NAME to compare against, not a literal -- both
 # the left ("column") and right ("value") sides must exist for these.
@@ -108,6 +108,11 @@ def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
             data[alias] = pd.Series(0, index=full_index)
         elif func == "nunique":
             data[alias] = src.groupby(group_by, sort=False)[col].nunique().reindex(full_index, fill_value=0)
+        elif func == "first":
+            # Non-numeric passthrough (e.g. attaching a display label like Cust
+            # Name to a group keyed on Cust Mob No) -- must NOT go through the
+            # pd.to_numeric coercion below, which would blank out text values.
+            data[alias] = src.groupby(group_by, sort=False)[col].first().reindex(full_index)
         else:
             numeric = pd.to_numeric(src[col], errors="coerce")
             series = numeric.groupby([src[g] for g in group_by], sort=False).agg(func)
@@ -183,8 +188,32 @@ def _op_select(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     return df[cols] if cols else df
 
 
+def _op_entity_semi_join(df: pd.DataFrame, step: dict) -> pd.DataFrame:
+    """Keep every original row belonging to an entity that satisfies the given
+    having predicates -- a loan_table-shaped counterpart to group_aggregate's
+    collapse-to-one-row-per-entity behavior. Used for queries like "list every
+    loan for fleet owners in NPA," where the answer must stay at loan grain."""
+    key_cols = [str(c) for c in _as_list(step.get("key_cols"))]
+    if not key_cols:
+        raise ValueError("entity_semi_join requires 'key_cols'")
+    missing = [c for c in key_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"entity_semi_join key columns not found: {missing}")
+
+    agg_step = {"group_by": key_cols, "aggregations": step.get("aggregations") or []}
+    qualifying = _op_group_aggregate(df, agg_step)
+    qualifying = _op_filter(qualifying, {"conditions": step.get("having_conditions") or []})
+
+    # A plain key-column merge (not a row-wise tuple/isin check) -- vectorized
+    # regardless of whether the entity key is single- or multi-column (e.g. the
+    # executive entity's ["MNT NAME", "Unit"]), and avoids Python-level
+    # per-row tuple construction on a large upload.
+    return df.merge(qualifying[key_cols].drop_duplicates(), on=key_cols, how="inner")
+
+
 _OPS = {
-    "group_aggregate": _op_group_aggregate,
+    "group_aggregate":  _op_group_aggregate,
+    "entity_semi_join": _op_entity_semi_join,
     "filter":          _op_filter,
     "derive":          _op_derive,
     "sort":            _op_sort,
@@ -273,6 +302,28 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
                 new_cols.add(alias)
             # A group_aggregate drops every column except the keys and new aliases.
             cols = new_cols
+
+        elif op == "entity_semi_join":
+            # Preserves every original column (a semi-join, not a collapse) --
+            # 'cols' is intentionally left untouched, unlike group_aggregate above.
+            key_cols = [str(c) for c in _as_list(step.get("key_cols"))]
+            if not key_cols:
+                errs.append(f"step {i}: entity_semi_join needs 'key_cols'")
+            for c in key_cols:
+                if c not in cols:
+                    errs.append(f"step {i}: entity_semi_join key column '{c}' does not exist")
+            for a in step.get("aggregations") or []:
+                func = (a.get("func") or "").lower()
+                col = a.get("column")
+                if func not in _AGG_FUNCS:
+                    errs.append(f"step {i}: unknown agg func '{func}'")
+                elif func != "count" and (not col or col not in cols):
+                    errs.append(f"step {i}: agg column '{col}' does not exist")
+                for cond in (a.get("where") or []):
+                    errs.extend(_check_condition_columns(cond, cols, f"step {i}: where"))
+            # having_conditions reference an aggregation alias defined above
+            # (e.g. "__ef0_0"), not a raw input column, so no column-existence
+            # check applies to them here.
 
         elif op == "filter":
             for cond in step.get("conditions") or []:

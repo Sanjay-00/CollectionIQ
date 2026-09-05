@@ -122,7 +122,8 @@ _LARGE_STATE_FIELDS = ("result_df_full", "df_prev", "result_df", "precomputed_vi
 # agents/plan_executor.py's derive-expression check at both compile and
 # execute time) -- so a future code path populating _agg_rows without going
 # through the same construction site still can't leak this to LangSmith.
-_PII_COLS_IN_AGG_ROWS = ("Cust Name", "Cust Mob No", "Guar Name", "Guar Mob No")
+_PII_COLS_IN_AGG_ROWS = ("Cust Name", "Cust Mob No", "Guar Name", "Guar Mob No",
+                          "Cust Name (Cust Mob No)")  # the merged customer-grain display column below
 
 
 def _strip_pii_from_agg_rows(rows: list) -> list:
@@ -268,6 +269,12 @@ def logical_planner_node(state: QueryState) -> QueryState:
             # executive dimension → show as combined "MNT NAME (Unit)" label in the UI header
             if dims[0] == "executive" and len(group_by_cols) >= 2:
                 group_col = f"{group_by_cols[0]} ({group_by_cols[1]})"
+            elif dims[0] == "customer":
+                # A branch cares who the customer IS, not their mobile number --
+                # lead with Cust Name (the compiler always attaches it for a
+                # customer-grain result) and keep the number as a parenthetical
+                # reference, same convention as "MNT NAME (Unit)" above.
+                group_col = "Cust Name (Cust Mob No)"
             else:
                 group_col = group_by_cols[0] if group_by_cols else dims[0]
         else:
@@ -810,11 +817,42 @@ def execute_node(state: QueryState) -> QueryState:
                                   display_df["MNT NAME"] + " (" + display_df["Unit"] + ")")
                 display_df = display_df.drop(columns=["MNT NAME", "Unit"])
 
-            # Grouped results are entity-level (region/branch/executive), not
-            # customer-level, so this shouldn't carry PII in practice -- stripped
-            # anyway for consistency with the fast-path view construction site
-            # above, in case a future dimension ever groups by something
-            # customer-identifying.
+            # Same treatment for customer: Cust Mob No is the correctness key
+            # (see compiler/core.py's _wants_cust_name), but a branch identifies
+            # a customer by name, not by phone number -- lead with the name,
+            # keep the number as a parenthetical reference.
+            if (
+                "customer" in dims
+                and "Cust Name" in display_df.columns
+                and "Cust Mob No" in display_df.columns
+            ):
+                display_df = display_df.copy()
+                pos = display_df.columns.get_loc("Cust Mob No")
+                # Unlike MNT NAME above (no known blank cases in practice), Cust
+                # Name is optional in REQUIRED_COLS -- utils.py only warns, never
+                # rejects, on a missing/blank value -- so a raw .astype(str) here
+                # would render the literal text "nan (9876543210)" for any
+                # customer with no name on file. Fall back to the bare number.
+                names = display_df["Cust Name"].fillna("").astype(str).str.strip()
+                mobs = display_df["Cust Mob No"].astype(str)
+                label = (names + " (" + mobs + ")").where(names != "", mobs)
+                display_df.insert(pos, "Cust Name (Cust Mob No)", label)
+                display_df = display_df.drop(columns=["Cust Name", "Cust Mob No"])
+            elif "customer" in dims:
+                # Cust Name is optional (REQUIRED_COLS, warn-only) -- this
+                # upload doesn't have it, so the merge above never ran and the
+                # raw "Cust Mob No" column survives untouched. Correct the
+                # header label logical_planner_node already committed to
+                # "Cust Name (Cust Mob No)", so the UI doesn't style/label a
+                # column that doesn't actually exist in this result.
+                spec = dict(state.get("aggregation_spec") or {})
+                spec["group_by"] = "Cust Mob No"
+                state = {**state, "aggregation_spec": spec}
+
+            # Most grouped results are entity-level (region/branch/executive), not
+            # customer-level -- but "customer" dimension results ARE customer-
+            # identifying (the merged "Cust Name (Cust Mob No)" column above), so
+            # this strip is load-bearing here, not just defensive consistency.
             kpis     = {"Count": len(display_df), "_agg_rows": _strip_pii_from_agg_rows(display_df.head(5).to_dict(orient="records"))}
             rankings = {}
         else:
