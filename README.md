@@ -41,48 +41,48 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 
 ## Screenshots
 
-**Landing Page - Upload regional files or load sample data instantly**
+**Landing Page: Upload regional files or load sample data instantly**
 
 ![Landing Page](docs/screenshots/01-landing.png)
 &nbsp;
 
-**Dashboard - KPIs and portfolio health with Month-on-Month movement**
+**Dashboard: KPIs and portfolio health with Month-on-Month movement**
 
 ![Dashboard](docs/screenshots/02-dashboard.png)
 &nbsp;
 
-**Executive Scorecard - Every field executive ranked by collection %, strike rate, NPA count and roll rates**
+**Executive Scorecard: Every field executive ranked by collection %, strike rate, NPA count and roll rates**
 
 ![Scorecard](docs/screenshots/03-scorecard.png)
 &nbsp;
 
-**Smart Alerts - automatic risk flags with SOH exposure and recommended actions**
+**Smart Alerts: automatic risk flags with SOH exposure and recommended actions**
 
 ![Alerts](docs/screenshots/04-alerts.png)
 &nbsp;
 
-**Bucket Migration - Roll-forward / roll-backward rates and the prev-month → curr-month migration matrix**
+**Bucket Migration: Roll-forward / roll-backward rates and the prev-month → curr-month migration matrix**
 
 ![Migration](docs/screenshots/05-migration.png)
 &nbsp;
 
-**Portfolio Intelligence - Pulse KPIs, region/branch scorecards, risk indicators, fleet exposure, and more, across 8 sections**
+**Portfolio Intelligence: Pulse KPIs, region/branch scorecards, risk indicators, fleet exposure, and more, across 8 sections**
 
-![Portfolio Pulse - headline KPIs, bucket distribution, roll rates](docs/screenshots/06-portfolio-intelligence-1.png)
+![Portfolio Pulse: headline KPIs, bucket distribution, roll rates](docs/screenshots/06-portfolio-intelligence-1.png)
 &nbsp;
 
 <table>
 <tr>
 <td width="50%">
 
-**Who Needs Attention - NPA & SMA-2 comparison by branch**
+**Who Needs Attention: NPA & SMA-2 comparison by branch**
 
 ![Who Needs Attention](docs/screenshots/07-portfolio-intelligence-2.png)
 
 </td>
 <td width="50%">
 
-**The Honest Mirror - good/bad verdict + risk flag deep dive**
+**The Honest Mirror: good/bad verdict + risk flag deep dive**
 
 ![Honest Mirror](docs/screenshots/08-portfolio-intelligence-3.png)
 
@@ -114,7 +114,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 </td>
 <td width="50%">
 
-**Good Customers - refinance & relationship candidates**
+**Good Customers: refinance & relationship candidates**
 
 ![Good Customers](docs/screenshots/12-portfolio-intelligence-7.png)
 
@@ -123,7 +123,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 </table>
 &nbsp;
 
-**Business - New advances (originations), trend and by-dimension breakdowns, disbursement vintage**
+**Business: New advances (originations), trend and by-dimension breakdowns, disbursement vintage**
 
 ![New Advances This Month](docs/screenshots/13-business-1.png)
 &nbsp;
@@ -132,7 +132,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 <tr>
 <td width="50%">
 
-**New Advances Trend - accounts & funded amount by period**
+**New Advances Trend: accounts & funded amount by period**
 
 ![New Advances Trend](docs/screenshots/14-business-2.png)
 
@@ -147,12 +147,12 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 </tr>
 </table>
 
-**Disbursement Vintage - NPA%/SMA-2% by disbursement cohort**
+**Disbursement Vintage: NPA%/SMA-2% by disbursement cohort**
 
 ![Disbursement Vintage](docs/screenshots/16-business-4.png)
 &nbsp;
 
-**AI Query Assistant - Plain English queries powered by Gemini 2.5 Flash-Lite + LangGraph**
+**AI Query Assistant: Plain English queries powered by Gemini 2.5 Flash-Lite + LangGraph**
 
 ![Ask a question in plain English](docs/screenshots/17-ai-query-1.png)
 &nbsp;
@@ -177,7 +177,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 </table>
 &nbsp;
 
-**Monthly Portfolio Intelligence Report - board-ready HTML report with narrative, rankings and action plan**
+**Monthly Portfolio Intelligence Report: board-ready HTML report with narrative, rankings and action plan**
 
 ![Report](docs/screenshots/20-report.png)
 &nbsp;
@@ -211,7 +211,7 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 |---|---|---|
 | Non Starters | Critical | Never paid 1st EMI |
 | Co-lending at Risk | Critical | Partner bank exposure showing delinquency |
-| High Arrears - Loan at Risk | Critical | Inst+Exp+BC arrears exceed 50% of original loan |
+| High Arrears: Loan at Risk | Critical | Inst+Exp+BC arrears exceed 50% of original loan |
 | Insurance-Driven Delinquency | High | EMI paid but insurance charge causing false delinquency |
 | Recent Advances at Risk | High | Loans under 12 months already delinquent |
 | Easy Settlements | Medium | Closing arrears under ₹1,000 |
@@ -247,7 +247,7 @@ CollectionIQ runs two independent AI pipelines orchestrated with LangGraph, one 
 
 Every question typed in plain English flows through a LangGraph state machine built on a "plan, then compile" design. A Logical Planner agent never writes execution logic itself, it emits a declarative intent (which filters, which metrics, which dimensions) chosen from a fixed registry vocabulary, and a deterministic pandas compiler turns that into an executable step-plan.
 
-Four routes leave the Planner, not two: a clear query goes through the fast-path view lookup or the compiler, a priority-action query (*"what should my team work today"*) skips both and runs straight against the seven-tier priority framework, and a materially ambiguous query gets a clarifying question instead of a guess. That clarifying question is not a loop inside the graph, it is a hard stop — the graph run ends, the UI shows the options, and picking one starts a brand-new run with the chosen interpretation folded into the question text.
+Four routes leave the Planner, not two: a clear query goes through the fast-path view lookup or the compiler, a priority-action query (*"what should my team work today"*) skips both and runs straight against the seven-tier priority framework, and a materially ambiguous query gets a clarifying question instead of a guess. That clarifying question is not a loop inside the graph, it is a hard stop: the graph run ends, the UI shows the options, and picking one starts a brand-new run with the chosen interpretation folded into the question text.
 
 <sup>🟠 Gemini call &nbsp;·&nbsp; 🟢 deterministic pandas, no LLM &nbsp;·&nbsp; ⚪ routing / terminal</sup>
 
@@ -262,7 +262,7 @@ flowchart TD
         CV["🟢 Compiler and Validator\nDeterministic\n\nLowers the intent into an ordered pandas step-plan\nChecks every column/name against the real schema\nOne repair round-trip to the Planner on failure"]
         EX["🟢 Data Executor\nPandas\n\nRuns the step-plan, or the seven-tier\npriority framework for action queries\nComputes KPIs and rankings"]
         IG["🟠 Insight Generator\nGemini 2.5 Flash-Lite\n\nReads computed KPIs, rankings and rows\nWrites domain-aware observations\nSkippable at zero cost"]
-        CL["⚪ Clarify → END\nQuestion + 3–5 options"]
+        CL["⚪ Clarify → END\nQuestion + 3-5 options"]
         ERR["⚪ Error → END\nClear message, no silent guess"]
 
         LP -->|priority action| EX
@@ -298,7 +298,7 @@ The vocabulary the Logical Planner picks from lives in `registry/`: `ontology.py
 &nbsp;
 ### Report Pipeline
 
-Triggered on demand. Runs fully autonomously - no user input needed after clicking Generate. Only **one** Gemini call in the entire pipeline — everything else, including the 22 report sections, is pandas reusing the same `analysis/` functions the dashboard already trusts.
+Triggered on demand. Runs fully autonomously, with no user input needed after clicking Generate. Only **one** Gemini call happens in the entire pipeline; everything else, including the 22 report sections, is pandas reusing the same `analysis/` functions the dashboard already trusts.
 
 <sup>🟠 Gemini call &nbsp;·&nbsp; 🟢 deterministic, no LLM &nbsp;·&nbsp; ⚪ entry / delivery</sup>
 
@@ -329,7 +329,7 @@ flowchart TD
 &nbsp;
 ### Data Layer
 
-Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine — and because the dashboard, the query pipeline, and the report all read this one cached DataFrame through the same `analysis/` functions, a number shown in one place is the same number shown everywhere else.
+Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine. Because the dashboard, the query pipeline, and the report all read this one cached DataFrame through the same `analysis/` functions, a number shown in one place is the same number shown everywhere else.
 
 ```mermaid
 flowchart LR
@@ -418,7 +418,7 @@ CollectionIQ/
 | Excel Formats | openpyxl · xlrd · pyxlsb | Handles .xlsx, .xls, and .xlsb with serial-date correction |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
-The domain knowledge layer: NBFC terminology, loan status values, strike rate definition, SOH calculation, priority framework, insurance delinquency logic - is embedded in the agent system prompts and verified against real portfolio data. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
+The domain knowledge layer, NBFC terminology, loan status values, strike rate definition, SOH calculation, priority framework, and insurance delinquency logic, is embedded in the agent system prompts and verified against real portfolio data. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.
 
 Correctness is enforced outside the model, not by model depth. The LLM only translates a question into a declarative intent picked from a fixed registry vocabulary; a deterministic compiler turns that into a pandas step-plan, and pure pandas computes every number. A validator checks the plan against the actual columns and gives the planner one repair attempt with the exact error text before giving up with a clear message. When a question is materially ambiguous, the agent asks a clarifying question instead of assuming. The aim is general, composable reasoning rather than a hardcoded answer per question.
 
