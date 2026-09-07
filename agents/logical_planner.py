@@ -372,7 +372,7 @@ COUNT-BASED PERCENTAGES (any other "% of accounts matching X" that is NOT a
   registered catalog METRIC): build from two "count" measures + a METRICS derive.
   Example  -  "% of accounts that are Non Starters, by branch":
     measures: [
-      {{"agg":"count","alias":"ns_count","where":[{{"column":"Non Starter","op":"==","value":"Y"}}]}},
+      {{"agg":"count","alias":"ns_count","where":[{{"column":"Non Starter","op":"in","value":["Y","YES"]}}]}},
       {{"agg":"count","alias":"total_count"}}
     ]
     metrics: [{{"alias":"non_starter_pct","expr":"ns_count / total_count * 100"}}]

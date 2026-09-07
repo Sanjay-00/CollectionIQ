@@ -70,7 +70,27 @@ PRIORITY_RULES = [
         "rank": 1,
         "label": "Non Starters",
         "why": "Never paid even 1st EMI - highest credit risk, possible fraud or disbursement issue",
-        "conditions": [{"column": "Non Starter", "op": "==", "value": "Y"}],
+        # "in" [Y, YES], not "==" Y -- some monthly LCC extracts spell this
+        # flag out as "Yes" instead of abbreviating it (utils.is_yes's own
+        # docstring documents this exact variance). A real bug: this was
+        # still "==" Y here (and in the non_starter CONCEPT below) even
+        # though strike_pct's own METRIC definition further down this file
+        # was already fixed for the identical Y/Yes variance on the Strike
+        # column -- silently returning zero rows for "are there any non
+        # starters" on any file using the spelled-out form, a false
+        # negative indistinguishable from "genuinely none," on a file where
+        # the aggregate KPI card (smart_alerts.py, which DOES use is_yes)
+        # would have shown a nonzero count.
+        #
+        # VehEMI Accrued == 1 -- narrows to the loan's very FIRST EMI cycle
+        # specifically. A "Non Starter"-flagged loan that's already 2+ EMIs
+        # in is a different, arguably stale/mis-flagged case, not a genuine
+        # "never paid the 1st EMI" -- this keeps the tier meaning exactly
+        # what its own "why" text above says.
+        "conditions": [
+            {"column": "Non Starter", "op": "in", "value": ["Y", "YES"]},
+            {"column": "VehEMI Accrued", "op": "==", "value": 1},
+        ],
     },
     {
         "rank": 2,
@@ -134,7 +154,16 @@ CONCEPTS: dict[str, dict] = {
     "non_starter": {
         "label": "Non Starter",
         "description": "Customer has not paid even the 1st EMI - highest credit risk.",
-        "conditions": [{"column": "Non Starter", "op": "==", "value": "Y"}],
+        # See PRIORITY_RULES's identical "Non Starters" tier above for why
+        # both conditions are what they are (Y/Yes spelling variance;
+        # VehEMI Accrued == 1 narrows to the loan's first EMI cycle). Kept
+        # identical to that tier's own conditions on purpose --
+        # tests/test_registry.py::TestZeroBehaviorChange asserts they never
+        # drift apart.
+        "conditions": [
+            {"column": "Non Starter", "op": "in", "value": ["Y", "YES"]},
+            {"column": "VehEMI Accrued", "op": "==", "value": 1},
+        ],
     },
     "npa": {
         "label": "NPA",

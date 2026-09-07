@@ -767,6 +767,7 @@ class TestPriorityModeKeepsPriorityColumn:
             "Closing Arrears": [1000.0, 2000.0, 0.0],
             "Net Collection Demand Inst+Exp+BC": [5000.0, 6000.0, 7000.0],
             "Non Starter": ["N", "N", "N"],
+            "VehEMI Accrued": [1, 1, 1],
         })
 
     def test_execute_node_priority_action_keeps_priority_column(self):
