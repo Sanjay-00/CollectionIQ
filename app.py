@@ -39,6 +39,7 @@ from analysis.portfolio_intelligence import (
 )
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.report import render_report_tab
+from ui.tabs.investigator import render_investigator_tab
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -369,6 +370,8 @@ _filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segm
 if st.session_state.get("_last_filter_key") != _filter_key:
     st.session_state.pop("ai_result", None)
     st.session_state.pop("report_result", None)
+    st.session_state.pop("investigator_threads", None)
+    st.session_state.pop("investigator_active_thread", None)
     st.session_state["_last_filter_key"] = _filter_key
 
 if len(df_curr) == 0:
@@ -431,7 +434,7 @@ n_alerts = sum(1 for a in alerts if a["count"] > 0)
 # match the previously-selected option string and silently deselect it.
 # The count is shown as a caption next to the selector instead.
 
-_TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query", "📋 Report"]
+_TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
 
 active = st.segmented_control(
     "Section", options=_TAB_LABELS, default=_TAB_LABELS[0], key="_active_section", label_visibility="collapsed",
@@ -604,6 +607,16 @@ elif active == "🤖 AI Query":
         )
     except Exception as _e:
         _tab_error("AI Query", _e)
+
+elif active == "🕵️ Investigator":
+    try:
+        render_investigator_tab(
+            df_curr, df_prev,
+            data_version=data_version, filter_key=_filter_key,
+            alerts_curr=alerts, curr_month=curr_month,
+        )
+    except Exception as _e:
+        _tab_error("Investigator", _e)
 
 elif active == "📋 Report":
     try:
