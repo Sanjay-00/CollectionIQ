@@ -26,6 +26,7 @@ import os
 import re
 from typing import Iterator
 
+import pandas as pd
 from google import genai
 
 from agents.domain_expert import _add_token_usage, _call_gemini_with_retry
@@ -777,21 +778,73 @@ Table preview:
 {result_df_preview}"""
 
 
+# Any of these present on a result table means it carries customer-
+# identifying data (name and/or mobile number) -- checked by COLUMN
+# CONTENT, not by a per-step_type allowlist, specifically so this stays
+# correct as new steps are added. The step_type-allowlist version of this
+# (only concept_filter got the aggregate-only treatment) was a real,
+# confirmed gap: every other loan/customer-level step in this module
+# (worst_loans_by_metric, non_paying_customers, customer_loan_book,
+# priority_accounts, top_closing_arrears, high_arrears_at_risk,
+# fleet_defaulters, top_accounts, fleet_exposure, repossession_list,
+# good_customers) also returns raw Cust Name/Cust Mob No (or fleet_
+# exposure's own Customer/Mobile column names) rows, and was sending up to
+# 20 of them straight into the narration prompt with no protection at all.
+# "Cust Name"/"Cust Mob No" is the raw-LCC-column convention every
+# loan-level step uses; "Customer"/"Mobile" is fleet_exposure's own
+# already-reshaped column names (compute_fleet_exposure's top_df).
+_PII_INDICATOR_COLS = ("Cust Name", "Cust Mob No", "Customer", "Mobile")
+
+# Preferred exposure/value column to total in the aggregate summary, in
+# priority order -- whichever of these a PII-bearing table happens to carry.
+_EXPOSURE_COLS = ("SOH", "Total SOH (Cr)", "Closing Arrears")
+
+
+# customer_loan_book is the one exception to the PII-protection check
+# below: the user THEMSELVES supplied the identifying mobile number as the
+# step's own input param (cust_mob_no) and is asking specifically about
+# that ONE already-named person -- narrating their name back isn't new
+# disclosure, it's echoing what the user already told this system. Every
+# other PII-bearing step returns MULTIPLE customers the user did NOT
+# individually name (e.g. "the top 10 accounts at risk") -- that's the
+# real exposure this module protects against: real names/mobile numbers
+# for people nobody asked about by identity, sent to a third-party API.
+_PII_EXEMPT_STEP_TYPES = {"customer_loan_book"}
+
+
+def _has_customer_pii(step_type: str, result_df) -> bool:
+    if step_type in _PII_EXEMPT_STEP_TYPES:
+        return False
+    return any(c in result_df.columns for c in _PII_INDICATOR_COLS)
+
+
+def _aggregate_preview(result_df) -> str:
+    """Row count + an optional total-exposure figure -- no customer names,
+    no mobile numbers, no other row-level content. A "how many/which
+    accounts" question only needs a count and an exposure total to narrate
+    well; an arbitrary head(20) slice wouldn't even represent the true
+    total if the real match count is larger anyway."""
+    count = int(len(result_df))
+    summary = f"Matching rows: {count}"
+    exposure_col = next((c for c in _EXPOSURE_COLS if c in result_df.columns), None)
+    if exposure_col is not None:
+        total = pd.to_numeric(result_df[exposure_col], errors="coerce").sum()
+        if pd.notna(total):
+            summary += f"\nTotal {exposure_col}: {float(total):,.2f}"
+    return summary
+
+
 def _build_preview(step_type: str, result_df) -> str:
     """The text handed to narrate_step's prompt -- a small ROW preview for
-    most step types, but a small AGGREGATE summary (count + total SOH) for
-    concept_filter, whose result is raw loan-level rows (customer names,
-    mobile numbers). A "how many non-starters" question only needs a count
-    and an exposure total; there's no reason to send Gemini up to 20 rows of
-    customer PII to answer it, and an arbitrary head(20) slice wouldn't even
-    represent the true total if the real match count is larger anyway."""
-    if step_type == "concept_filter":
-        count = int(len(result_df))
-        total_soh = float(result_df["SOH"].sum()) if "SOH" in result_df.columns else None
-        summary = f"Matching accounts: {count}"
-        if total_soh is not None:
-            summary += f"\nTotal SOH (exposure) across these accounts: {total_soh:,.2f}"
-        return summary
+    most step types, but a PII-free aggregate summary (count + total
+    exposure) for any MULTI-customer result carrying a customer-identifying
+    column (see _has_customer_pii) -- never customer names or mobile
+    numbers, on any step, current or future. customer_loan_book is exempt
+    (see _PII_EXEMPT_STEP_TYPES): that step is always about the ONE
+    customer the user already identified by mobile number, never a list of
+    people they didn't name."""
+    if _has_customer_pii(step_type, result_df):
+        return _aggregate_preview(result_df)
     return result_df.head(20).to_csv(index=False)
 
 

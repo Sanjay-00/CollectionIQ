@@ -276,10 +276,18 @@ class TestBuildNarrationPrompt:
 
 
 class TestBuildPreview:
-    """concept_filter results are raw loan-level rows (customer names,
-    mobile numbers) -- for a "how many/are there any" question, the
-    narration only needs a count and exposure total, not up to 20 raw rows
-    of customer PII. Every other step type keeps the existing row preview."""
+    """Any result table carrying a customer-identifying column (Cust Name/
+    Cust Mob No/Customer/Mobile) gets a PII-free aggregate summary instead
+    of raw rows sent to Gemini -- detected by COLUMN CONTENT, not a
+    per-step_type allowlist, specifically so a step added later that
+    happens to return customer-level rows is protected automatically,
+    without needing this function edited again. The real, confirmed gap
+    this closes: only concept_filter got this treatment before, while
+    worst_loans_by_metric/non_paying_customers/customer_loan_book/
+    priority_accounts/top_closing_arrears/high_arrears_at_risk/
+    fleet_defaulters/top_accounts/fleet_exposure/repossession_list/
+    good_customers all ALSO return raw customer names/mobile numbers and
+    were sending up to 20 unprotected rows into the narration prompt."""
 
     def test_concept_filter_gets_an_aggregate_summary_not_raw_rows(self):
         df = pd.DataFrame({
@@ -297,6 +305,75 @@ class TestBuildPreview:
         preview = llm._build_preview("entity_summary", df)
         assert "Collection%" in preview
         assert "60.0" in preview
+
+    def test_worst_loans_by_metric_shaped_result_is_also_protected(self):
+        # The exact gap: worst_loans_by_metric was NOT in the old
+        # step_type allowlist, so its raw Cust Name/Cust Mob No rows went
+        # straight to Gemini unprotected before this fix.
+        df = pd.DataFrame({
+            "Cust Name": ["Akshay", "Ravi"], "Cust Mob No": ["9998887776", "9998887777"],
+            "SOH": [500_000.0, 300_000.0], "Arrears / EMI": [12.0, 8.0],
+        })
+        preview = llm._build_preview("worst_loans_by_metric", df)
+        assert "Akshay" not in preview
+        assert "9998887776" not in preview
+        assert "2" in preview
+
+    def test_fleet_exposure_shaped_result_with_customer_mobile_columns_is_protected(self):
+        # fleet_exposure's own reshaped column names (Customer/Mobile, not
+        # the raw Cust Name/Cust Mob No convention) must be caught too.
+        df = pd.DataFrame({
+            "Customer": ["Akshay"], "Mobile": ["9998887776"], "Total SOH (Cr)": [1.5],
+        })
+        preview = llm._build_preview("fleet_exposure", df)
+        assert "Akshay" not in preview
+        assert "9998887776" not in preview
+        assert "1.5" in preview
+
+    def test_a_future_unlisted_step_type_with_pii_columns_is_still_protected(self):
+        # Proves this is a CONTENT check, not a step_type allowlist -- a
+        # brand-new step_type this function has never heard of still gets
+        # the PII-free treatment purely because its columns say so.
+        df = pd.DataFrame({"Cust Name": ["Akshay"], "Cust Mob No": ["9998887776"]})
+        preview = llm._build_preview("some_future_step_not_yet_invented", df)
+        assert "Akshay" not in preview
+        assert "9998887776" not in preview
+
+    def test_exposure_total_falls_back_through_column_priority(self):
+        # No "SOH" column present -- falls back to the next known exposure
+        # column (Closing Arrears), same aggregate-only guarantee either way.
+        df = pd.DataFrame({"Cust Name": ["Akshay"], "Closing Arrears": [75_000.0]})
+        preview = llm._build_preview("top_closing_arrears", df)
+        assert "Akshay" not in preview
+        assert "75" in preview or "75000" in preview or "75,000" in preview
+
+    def test_no_exposure_column_still_returns_a_clean_count_only(self):
+        df = pd.DataFrame({"Cust Name": ["Akshay", "Ravi"]})
+        preview = llm._build_preview("good_customers", df)
+        assert "Akshay" not in preview
+        assert "Ravi" not in preview
+        assert "2" in preview
+
+    def test_customer_loan_book_is_exempt_from_the_pii_check(self):
+        # The ONE deliberate exception: the user already supplied this
+        # customer's mobile number as the step's own input -- narrating
+        # their name back isn't new disclosure, it's the SAME customer
+        # they already identified, not a list of people they never named.
+        df = pd.DataFrame({
+            "Cust Name": ["Akshay Sonajirao Suryawanshi"], "Cust Mob No": ["8999769669"],
+            "Loan No": ["NADED2405220004"], "SOH": [515_253.0],
+        })
+        preview = llm._build_preview("customer_loan_book", df)
+        assert "Akshay Sonajirao Suryawanshi" in preview
+        assert "8999769669" in preview
+
+    def test_multi_customer_steps_stay_protected_even_though_customer_loan_book_is_exempt(self):
+        # The exemption is scoped to customer_loan_book specifically -- a
+        # different multi-customer step must NOT accidentally inherit it.
+        df = pd.DataFrame({"Cust Name": ["Akshay"], "Cust Mob No": ["8999769669"], "SOH": [500_000.0]})
+        preview = llm._build_preview("non_paying_customers", df)
+        assert "Akshay" not in preview
+        assert "8999769669" not in preview
 
 
 class TestNarrateStep:
