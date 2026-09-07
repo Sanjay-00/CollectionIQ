@@ -67,6 +67,8 @@ ENTITIES: dict[str, dict] = {
 DIMENSIONS: dict[str, list[str]] = {
     "branch":     ["Unit"],
     "region":     ["RegionName"],
+    "zone":       ["Zone"],
+    "bu":         ["BU"],
     "executive":  ["MNT NAME", "Unit"],
     "customer":   ["Cust Mob No"],
 }

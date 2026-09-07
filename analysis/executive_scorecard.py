@@ -7,7 +7,7 @@ import html
 
 import pandas as pd
 
-from config import SCORECARD_MIN_ACCOUNTS
+from config import HARD_BUCKET_ARREARS_EMI_MIN, SCORECARD_MIN_ACCOUNTS
 from utils import BUCKET_SCORE, to_num, _safe_pct
 
 
@@ -56,6 +56,14 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
     df["_collected_num"] = to_num(df, "Month Collection (Excluding Reserve Collection)")
     df["_soh_num"]       = to_num(df, "SOH")
     df["_pos_num"]       = to_num(df, "POS")
+    # Hard Bucket % -- same HARD_BUCKET_ARREARS_EMI_MIN threshold
+    # utils.py::compute_hard_bucket_pct uses as the single source of truth
+    # (CLAUDE.md is explicit this must never be reimplemented locally).
+    # Precomputed as a boolean column once, then groupby().sum() below --
+    # same vectorized-once-over-the-whole-file convention as every other
+    # per-executive number in this function (see this function's own
+    # docstring for why a per-executive Python loop was already ruled out).
+    df["_hard_bucket_flag"] = to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
 
     if has_roll:
         curr_score = df["curr_bucket"].map(BUCKET_SCORE)
@@ -68,6 +76,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         "_strike_valid": "sum", "_strike_yes": "sum",
         "_demand_num": "sum", "_collected_num": "sum",
         "_soh_num": "sum", "_pos_num": "sum",
+        "_hard_bucket_flag": "sum",
     }
     if has_roll:
         agg_cols.update({"_roll_valid": "sum", "_roll_fwd": "sum", "_roll_bwd": "sum"})
@@ -121,12 +130,21 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
             # drifted from it at this one edge case.
 
         display_name = f"{exec_name} ({branch})" if branch else exec_name
+        hard_bucket_pct = round(_safe_pct(a["_hard_bucket_flag"], n), 1)
 
         row = {
             "Executive (Branch)": display_name,
+            # Raw, unformatted MNT NAME/Unit -- added for the Investigator
+            # feature (investigator/steps.py) so a caller can group/filter by
+            # branch without re-parsing "Executive (Branch)"'s display
+            # string. Purely additive: existing consumers key off column
+            # names, never position, so this can't break them.
+            "MNT NAME":           exec_name,
+            "Unit":               branch,
             "Accounts":           int(n),
             "Strike Rate %":      strike_rate,
             "Collection %":       coll_pct,
+            "Hard Bucket %":      hard_bucket_pct,
         }
         if has_roll:
             row["Roll Fwd %"] = roll_fwd_pct
