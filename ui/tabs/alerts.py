@@ -17,7 +17,7 @@ def render_alerts_tab(df_curr: pd.DataFrame, alerts: list) -> None:
 
     # ── Summary bar ─────────────────────────────────────────────────────────
     if n_triggered == 0:
-        st.success("All clear - no risk flags triggered on the current portfolio.")
+        st.success("All clear: no risk flags triggered on the current portfolio.")
     else:
         critical = sum(1 for a in alerts if a["count"] > 0 and a["severity"] == "critical")
         high     = sum(1 for a in alerts if a["count"] > 0 and a["severity"] == "high")
@@ -72,7 +72,7 @@ def render_alerts_tab(df_curr: pd.DataFrame, alerts: list) -> None:
                   </div>
                   <div style="font-size:11px;color:#555;font-style:italic;border-top:1px solid rgba(0,0,0,0.08);
                               padding-top:8px;">
-                    {"✓ All clear - no accounts flagged" if is_clear else f"💬 {alert['action']}"}
+                    {"✓ All clear: no accounts flagged" if is_clear else f"💬 {alert['action']}"}
                   </div>
                 </div>
                 """, unsafe_allow_html=True)

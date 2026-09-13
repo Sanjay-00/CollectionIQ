@@ -517,7 +517,7 @@ def _render_new_advances_trend(data: dict) -> str:
         return ""
     months = data.get("months", 0)
     return (
-        _sec_label(f"New Advances Trend  -  Last {months} Months") +
+        _sec_label(f"New Advances Trend: Last {months} Months") +
         f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;background:#fff;padding:8px;">'
         f'<img src="{img}" width="100%" style="display:block;border-radius:6px;" alt="New Advances Trend"/>'
         f'</div>'
@@ -718,7 +718,7 @@ def _render_npa_sma2_movement(data: dict) -> str:
     ):
         return ""
 
-    parts = [_sec_label("NPA & SMA-2 Movement  -  This Month vs Last Month")]
+    parts = [_sec_label("NPA & SMA-2 Movement: This Month vs Last Month")]
 
     if portfolio:
         cards = [
@@ -1072,7 +1072,7 @@ def _render_risk_indicators(data: dict) -> str:
             f'</tr>'
         )
     return (
-        _sec_label("Risk Indicators  -  Early Warning Signals") +
+        _sec_label("Risk Indicators: Early Warning Signals") +
         f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
         f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
         f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
@@ -1124,7 +1124,7 @@ def _render_branch_quadrant(data: dict) -> str:
         )
 
     return (
-        _sec_label(f'Branch Quadrant  -  Collection% vs NPA%  ({data.get("total_branches", 0)} Branches)') +
+        _sec_label(f'Branch Quadrant: Collection% vs NPA%  ({data.get("total_branches", 0)} Branches)') +
         img_html + table_html
     )
 
@@ -1235,7 +1235,7 @@ def _render_good_customers(data: dict) -> str:
     if not rows_data:
         from config import GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT
         return (
-            _sec_label("Good Customers  -  Refinance / Retention Targets") +
+            _sec_label("Good Customers: Refinance / Retention Targets") +
             f'<div style="background:#f9fafb;border:1px dashed #d1d5db;border-radius:10px;padding:16px 18px;'
             f'font-size:12px;color:#6b7280;">'
             f'No accounts meet the good customer criteria ({GOOD_CUSTOMER_MIN_TENURE_PCT}%+ tenure completed '
@@ -1260,7 +1260,7 @@ def _render_good_customers(data: dict) -> str:
             f'</tr>'
         )
     return (
-        _sec_label(f'Good Customers  -  Refinance / Retention Targets ({data.get("total", 0)} Total)') +
+        _sec_label(f'Good Customers: Refinance / Retention Targets ({data.get("total", 0)} Total)') +
         f'<div style="border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">'
         f'<table class="data" width="100%" cellpadding="0" cellspacing="0" border="0">'
         f'<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>'
@@ -1340,7 +1340,7 @@ def report_builder_node(state: ReportState) -> ReportState:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CollectionIQ - Portfolio Intelligence Report {curr_month}</title>
+<title>CollectionIQ: Portfolio Intelligence Report {curr_month}</title>
 <style>{BASE_CSS}</style>
 </head>
 <body>

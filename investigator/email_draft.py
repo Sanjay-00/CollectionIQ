@@ -100,7 +100,7 @@ def draft_priority_email(
     rather than duplicating "compose subject, build html, build eml" at
     each call site. Returns (subject, eml_bytes); callers still choose
     their own file_name/key for st.download_button."""
-    subject = f"{category_label} for {branch_name} -- {window_label}"
+    subject = f"{category_label} for {branch_name}: {window_label}"
     html_body = build_priority_email_html(
         df, branch_name, window_label=window_label, category_label=category_label.lower(),
     )

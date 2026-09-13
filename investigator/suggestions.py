@@ -43,7 +43,7 @@ MECHANISM_SUGGESTIONS: dict[str, list[dict]] = {
                 "NPA% moved for the worse. Before drilling into executives, "
                 "check whether this is roll-forward driven (existing accounts "
                 "sliding into worse buckets) or roll-backward driven (fewer "
-                "accounts recovering) -- these need different fixes."
+                "accounts recovering): these need different fixes."
             ),
         },
         {
@@ -63,7 +63,7 @@ MECHANISM_SUGGESTIONS: dict[str, list[dict]] = {
             "reason": (
                 "Hard Bucket% moved for the worse. Before drilling into "
                 "executives, check whether accounts are sliding into deeper "
-                "arrears (roll-forward) or recovering (roll-backward) -- "
+                "arrears (roll-forward) or recovering (roll-backward): "
                 "these need different fixes."
             ),
         },
@@ -84,7 +84,7 @@ MECHANISM_SUGGESTIONS: dict[str, list[dict]] = {
                 "Collection% moved for the worse. Before drilling into "
                 "executives, check whether it's driven by uncollected OLD "
                 "arrears or by this month's own EMI demand not being "
-                "collected -- these need different fixes."
+                "collected: these need different fixes."
             ),
         },
     ],

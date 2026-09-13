@@ -65,7 +65,7 @@ def render_report_tab(
         with core_c2:
             _col_caption("Movement & Region")
             inc_movement = st.checkbox("NPA & SMA-2 Movement", value=True, key="rpt_movement",
-                                        help="This-month vs last-month NPA/SMA-2 counts, deltas, and %change - portfolio, region, branch, and executive")
+                                        help="This-month vs last-month NPA/SMA-2 counts, deltas, and %change: portfolio, region, branch, and executive")
             inc_migrate  = st.checkbox(
                 "Bucket Migration", value=has_prev, key="rpt_migrate",
                 disabled=not has_prev, help="Upload previous month file to enable",
@@ -74,7 +74,7 @@ def render_report_tab(
         with core_c3:
             _col_caption("Business & Leaders")
             inc_new_advances = st.checkbox("New Advances (Business)", value=True, key="rpt_new_advances",
-                                            help="New business funded this reporting month - accounts, funded amount, segment breakdown, MoM comparison")
+                                            help="New business funded this reporting month: accounts, funded amount, segment breakdown, MoM comparison")
             inc_branch = st.checkbox("Branch Performance", value=True, key="rpt_branch")
             inc_exec   = st.checkbox("Executive Rankings", value=True, key="rpt_exec")
 
@@ -138,9 +138,9 @@ def render_report_tab(
         with add_c5:
             _col_caption("Executive Extras & AI")
             inc_recovery = st.checkbox("Executive Recovery", value=False, key="rpt_recovery",
-                                        help="Rescued vs slipped accounts per executive - behavior signal, distinct from collection%")
+                                        help="Rescued vs slipped accounts per executive: behavior signal, distinct from collection%")
             inc_exec_strike = st.checkbox("Executive Rankings (Strike %)", value=False, key="rpt_exec_strike",
-                                           help="Same executives, ranked by Strike % instead of Collection % - who's actually current on installment obligation this month")
+                                           help="Same executives, ranked by Strike % instead of Collection %: who's actually current on installment obligation this month")
             inc_ai = st.checkbox("AI Summary", value=False, key="rpt_ai",
                                   help="Uncheck to skip Gemini and generate a faster, pandas-only report")
 
@@ -155,7 +155,7 @@ def render_report_tab(
         )
     else:
         rpt_email_to = ""
-        st.caption("Email not configured  -  add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
+        st.caption("Email not configured: add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
 
     # ── Buttons ──────────────────────────────────────────────────────────────
     _gc, _sc, _ = st.columns([2, 1, 3])
@@ -207,7 +207,7 @@ def render_report_tab(
         if st.session_state.get("rpt_exec_strike"):   enabled_sections.append("executive_strike_rankings")
 
         _skip_ai = not st.session_state.get("rpt_ai", True)
-        _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30 - 60 seconds)..."
+        _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30 to 60 seconds)..."
         with st.spinner(_spinner_msg):
             _rpt_result = run_report(
                 df_curr=df_curr, df_prev=df_prev,

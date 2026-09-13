@@ -103,7 +103,7 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
     subset = df[mask]
     return {
         "title": "Easy Settlements",
-        "subtitle": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,} - quick wins",
+        "subtitle": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,}: quick wins",
         "severity": "medium",
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
@@ -143,7 +143,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
     subset = df[mask]
     return {
         "title": "Recent Advances at Risk",
-        "subtitle": f"Sanctioned in last {months} months - already delinquent",
+        "subtitle": f"Sanctioned in last {months} months: already delinquent",
         "severity": "high",
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
@@ -162,7 +162,7 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
     subset = df[mask]
     return {
         "title": "Co-lending Loans at Risk",
-        "subtitle": "Partner bank exposure - must not default",
+        "subtitle": "Partner bank exposure: must not default",
         "severity": "critical",
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
@@ -198,7 +198,7 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
     display_cols = ["Arrears Ratio %"] + _safe_cols(df, ALERT_DISPLAY_COLS)
     return {
         "title": "High Arrears: Loan at Risk",
-        "subtitle": f"Inst+Exp+BC arrears exceed {HIGH_ARREARS_LOAN_RATIO:.0%} of original loan - Highly critical cases: Potential Write-off",
+        "subtitle": f"Inst+Exp+BC arrears exceed {HIGH_ARREARS_LOAN_RATIO:.0%} of original loan. Highly critical cases: Potential Write-off",
         "severity": "critical",
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),

@@ -303,7 +303,7 @@ VIEWS: dict[str, dict] = {
     "new_advances_by_region": {
         "label": "New Advances (Loans Originated) by Region",
         "description": (
-            "New loans originated (funded) THIS reporting month, by region -- "
+            "New loans originated (funded) THIS reporting month, by region: "
             "accounts, funded amount, month-over-month change vs last month's "
             "originations. Use for 'new business by region', 'new advances by "
             "region', 'which region originated the most loans this month', "
@@ -325,7 +325,7 @@ VIEWS: dict[str, dict] = {
     "new_advances_by_branch": {
         "label": "New Advances (Loans Originated) by Branch",
         "description": (
-            "New loans originated (funded) THIS reporting month, by branch -- "
+            "New loans originated (funded) THIS reporting month, by branch: "
             "accounts, funded amount, month-over-month change vs last month's "
             "originations. Use for 'new business by branch', 'new advances by "
             "branch', 'which branch originated the most loans this month', "
@@ -347,7 +347,7 @@ VIEWS: dict[str, dict] = {
     "new_advances_by_executive": {
         "label": "New Advances (Loans Originated) by Executive",
         "description": (
-            "New loans originated (funded) THIS reporting month, by field executive -- "
+            "New loans originated (funded) THIS reporting month, by field executive: "
             "accounts, funded amount, month-over-month change vs last month's "
             "originations. Use for 'new business by executive', 'new advances by "
             "executive', 'which executive sourced the most loans this month'."

@@ -99,9 +99,9 @@ def _cached_vintage_rollup(
 # ── Section 1: New Advances This Month ────────────────────────────────────────
 
 def _render_new_advances(data: dict) -> None:
-    _section("Section 1  -  New Advances This Month")
+    _section("Section 1: New Advances This Month")
     st.caption(
-        "Loans whose Agreement Date falls in this reporting month -- new business funded, "
+        "Loans whose Agreement Date falls in this reporting month: new business funded, "
         "regardless of that loan's current collection status."
     )
 
@@ -132,7 +132,7 @@ def _render_new_advances(data: dict) -> None:
         )
         st.markdown(f'<div class="kpi-row">{mom_cards}</div>', unsafe_allow_html=True)
     else:
-        st.info("No loans originated last month found in this file -- month-over-month new business trend unavailable.")
+        st.info("No loans originated last month found in this file: month-over-month new business trend unavailable.")
 
     seg_df = data.get("segment", pd.DataFrame())
     if not seg_df.empty:
@@ -149,9 +149,9 @@ def _render_new_advances_trend(
     df_curr: pd.DataFrame, curr_month: str,
     data_version: int, region: str, branch: str, status: str, segment: tuple,
 ) -> None:
-    _section("Section 2  -  New Advances Trend", margin_top="24px")
+    _section("Section 2: New Advances Trend", margin_top="24px")
     st.caption(
-        "Accounts + funded amount by disbursement month, across this file's full Ag_Date history -- "
+        "Accounts + funded amount by disbursement month, across this file's full Ag_Date history: "
         "not just this reporting month. No previous month file needed."
     )
 
@@ -197,7 +197,7 @@ def _render_new_advances_trend(
 # ── Section 3: New Advances by Region / Branch / Executive ───────────────────
 
 def _render_new_advances_by_dimension(data: dict) -> None:
-    _section("Section 3  -  New Advances by Region / Branch / Executive", margin_top="24px")
+    _section("Section 3: New Advances by Region / Branch / Executive", margin_top="24px")
     st.caption("This month's new advances at each grain, with MoM vs that same entity's own advances last month.")
 
     dim_tabs_avail = []
@@ -226,10 +226,10 @@ def _render_disbursement_vintage(
     vintage_df: pd.DataFrame,
     data_version: int, region: str, branch: str, status: str, segment: tuple,
 ) -> None:
-    _section("Section 4  -  Disbursement Vintage", margin_top="24px")
+    _section("Section 4: Disbursement Vintage", margin_top="24px")
     st.caption(
         "Rising NPA% on older cohorts = expected ageing. "
-        "Spike on a specific month = sourcing quality issue that month  -  collections can't fix it, credit can stop repeating it."
+        "Spike on a specific month = sourcing quality issue that month: collections can't fix it, credit can stop repeating it."
     )
 
     if vintage_df.empty:

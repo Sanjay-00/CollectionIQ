@@ -178,7 +178,7 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
             textposition="outside",
             cliponaxis=False,
             textfont=dict(size=10, color="#4b5563"),
-            hovertemplate="<b>%{x}</b>  -  Last Month<br>Count: %{y:,}<extra></extra>",
+            hovertemplate="<b>%{x}</b>: Last Month<br>Count: %{y:,}<extra></extra>",
         ))
 
     curr_colors = [BUCKET_COLORS[b] for b in buckets]
@@ -191,7 +191,7 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
         textposition="outside",
         cliponaxis=False,
         textfont=dict(size=10, color="#111"),
-        hovertemplate="<b>%{x}</b>  -  This Month<br>Count: %{y:,}<extra></extra>",
+        hovertemplate="<b>%{x}</b>: This Month<br>Count: %{y:,}<extra></extra>",
     ))
 
     max_val = max(
@@ -224,7 +224,7 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
                 borderpad=2,
             )
 
-    title = "Bucket Distribution  -  Last Month vs This Month" if has_prev else "Bucket Distribution (This Month)"
+    title = "Bucket Distribution: Last Month vs This Month" if has_prev else "Bucket Distribution (This Month)"
     fig.update_layout(
         title=dict(text=title, font=dict(size=13, color="#111"), x=0),
         barmode="group",
@@ -531,7 +531,7 @@ def compute_overdue_demand_chart(df: pd.DataFrame, label_col: str, title_suffix:
         hovertemplate="<b>%{x}</b><br>Month Demand Collection: %{y:.1f}%<extra></extra>",
     ))
     fig.update_layout(
-        title=dict(text=f"Overdue vs Month Demand Collection %  -  {title_suffix}", font=dict(size=13, color="#111"), x=0),
+        title=dict(text=f"Overdue vs Month Demand Collection %: {title_suffix}", font=dict(size=13, color="#111"), x=0),
         barmode="group", bargap=0.25, bargroupgap=0.08,
         plot_bgcolor="white", paper_bgcolor="white",
         xaxis=dict(tickangle=-30, showgrid=False, tickfont=dict(size=11, color="#374151")),
@@ -961,7 +961,7 @@ def _build_quadrant_chart(df: pd.DataFrame) -> go.Figure:
     ))
 
     fig.update_layout(
-        title=dict(text="Branch Quadrant  -  Collection% vs NPA%  (bubble size = SOH)", font=dict(size=13, color="#111"), x=0),
+        title=dict(text="Branch Quadrant: Collection% vs NPA%  (bubble size = SOH)", font=dict(size=13, color="#111"), x=0),
         xaxis=dict(title="Collection %", showgrid=True, gridcolor="#f0f0f0",
                    tickfont=dict(color="#374151"), range=[x0, x1]),
         yaxis=dict(title="NPA %", showgrid=True, gridcolor="#f0f0f0",
@@ -1038,17 +1038,17 @@ def compute_good_bad(
         # Python identifiers, so itertuples() silently renames them to positional
         # _N attrs and _4 does NOT reliably point at "Δ NPA%".
         for _, r in imp.head(2).iterrows():
-            good.append(f"{r['Region']}: NPA% fell {abs(r['Δ NPA%']):.1f}pp  -  delinquency improving")
+            good.append(f"{r['Region']}: NPA% fell {abs(r['Δ NPA%']):.1f}pp, delinquency improving")
         for _, r in wor.head(2).iterrows():
-            bad.append(f"{r['Region']}: NPA% rose {r['Δ NPA%']:.1f}pp  -  escalate field visits")
+            bad.append(f"{r['Region']}: NPA% rose {r['Δ NPA%']:.1f}pp, escalate field visits")
 
     if not branch_df.empty and "Concern Score" in branch_df.columns:
         worst = branch_df.iloc[0]
         best  = branch_df.iloc[-1]
         if worst["Concern Score"] >= CONCERN_SCORE_BAD_THRESHOLD:
-            bad.append(f"{worst['Branch']}: Highest concern ({worst['Concern Score']})  -  SMA-2 {worst.get('SMA-2%',0):.1f}%, NPA {worst['NPA%']:.1f}%, Coll {worst['Collection%']:.1f}%")
+            bad.append(f"{worst['Branch']}: Highest concern ({worst['Concern Score']}), SMA-2 {worst.get('SMA-2%',0):.1f}%, NPA {worst['NPA%']:.1f}%, Coll {worst['Collection%']:.1f}%")
         if best["Concern Score"] <= CONCERN_SCORE_GOOD_THRESHOLD:
-            good.append(f"{best['Branch']}: Healthiest branch  -  SMA-2 {best.get('SMA-2%',0):.1f}%, NPA {best['NPA%']:.1f}%, Coll {best['Collection%']:.1f}%")
+            good.append(f"{best['Branch']}: Healthiest branch, SMA-2 {best.get('SMA-2%',0):.1f}%, NPA {best['NPA%']:.1f}%, Coll {best['Collection%']:.1f}%")
 
     if not exec_df.empty and has_prev:
         top_exec  = exec_df[exec_df["Net Recovery"] > 0].head(1)
@@ -1058,7 +1058,7 @@ def compute_good_bad(
             good.append(f"{r['Executive']}: rescued {r['Rescued']} accounts from NPA/SMA")
         if len(bad_exec) > 0:
             r = bad_exec.iloc[0]
-            bad.append(f"{r['Executive']}: net {abs(r['Net Recovery'])} accounts slipped vs rescued  -  portfolio deteriorating")
+            bad.append(f"{r['Executive']}: net {abs(r['Net Recovery'])} accounts slipped vs rescued, portfolio deteriorating")
 
     for ind in risk_indicators:
         d = ind["_direction"]
@@ -1069,7 +1069,7 @@ def compute_good_bad(
             delta_display = str(ind["Δ"]).lstrip("+-").lstrip()
             good.append(f"{ind['Signal']}: {delta_display} improvement")
         elif d == "Worsening" and delta_abs >= threshold:
-            bad.append(f"{ind['Signal']}: {ind['Δ']}  -  {ind['Note']}")
+            bad.append(f"{ind['Signal']}: {ind['Δ']} ({ind['Note']})")
 
     return {"good": good[:6], "bad": bad[:6]}
 
@@ -1478,7 +1478,7 @@ def compute_new_advances_trend_chart(trend_df: pd.DataFrame, granularity: str = 
     if granularity == "Monthly":
         _add_quarter_end_markers(fig, x)
     fig.update_layout(
-        title=dict(text="New Advances Trend  -  Accounts &amp; Funded Amount by Period", font=dict(size=13, color="#111"), x=0),
+        title=dict(text="New Advances Trend: Accounts &amp; Funded Amount by Period", font=dict(size=13, color="#111"), x=0),
         plot_bgcolor="white", paper_bgcolor="white",
         xaxis=dict(tickangle=-45, showgrid=False, tickfont=dict(size=10, color="#374151")),
         yaxis=dict(title="Accounts", showgrid=True, gridcolor="#f3f4f6", tickfont=dict(color="#6b7280")),
@@ -1676,7 +1676,7 @@ def compute_risk_indicators(
              "%", "down", "Rising SMA-1 predicts NPA formation 1-2 months out")
         _add("SMA-2 Pool (Potential NPA)", _pct(df_curr, "SMA-2"),
              _pct(df_prev, "SMA-2") if has_prev else 0.0,
-             "%", "down", "Handle SMA-2 now to prevent NPA  -  2+ EMI overdue, last intervention window")
+             "%", "down", "Handle SMA-2 now to prevent NPA: 2+ EMI overdue, last intervention window")
         _add("NPA Pool", _pct(df_curr, "NPA"),
              _pct(df_prev, "NPA") if has_prev else 0.0,
              "%", "down", "Current NPA accounts as % of total portfolio")
@@ -1686,7 +1686,7 @@ def compute_risk_indicators(
         # require a THIRD month's data) -- pass prev_val=None so this renders as a
         # standalone reading, not a fabricated "Worsening" trend every month.
         _add("Fresh NPA Formation", rr_meta["npa_formation_rate"], None, "%", "down",
-             "Non-NPA accounts that became NPA this month  -  more important than total NPA count")
+             "Non-NPA accounts that became NPA this month: more important than total NPA count")
 
     col3m = "No Coll 3 Months and >6 EMI"
     if col3m in df_curr.columns:
@@ -1697,7 +1697,7 @@ def compute_risk_indicators(
     if "Non Starter" in df_curr.columns:
         c = int(is_yes(df_curr, "Non Starter").sum())
         p = int(is_yes(df_prev, "Non Starter").sum()) if has_prev and "Non Starter" in df_prev.columns else 0
-        _add("Non-Starters", c, p, "", "down", "Never paid first EMI  -  highest NPA risk", is_count=True)
+        _add("Non-Starters", c, p, "", "down", "Never paid first EMI: highest NPA risk", is_count=True)
 
     if "CoLending_Loans" in df_curr.columns and "Arrears / EMI" in df_curr.columns:
         c = int((is_yes(df_curr, "CoLending_Loans") & (to_num(df_curr, "Arrears / EMI") > 0)).sum())
