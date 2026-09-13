@@ -193,7 +193,9 @@ No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a 
 &nbsp;
 ## Core Capabilities
 
-**Plain English Query Engine** : Ask any question in NBFC language. Get back a filtered loan table, a ranked executive comparison, or a single stat answer. Multi-step questions (for example "customers per branch with more than 3 loans" or "fleet owners who have not paid this month") are answered by a composable step-plan engine that chains group-by, conditional counts, derive, sort and limit to any depth. When a question is genuinely ambiguous, the agent asks a short clarifying question with 3 to 5 options instead of guessing. Every result includes AI observations and an Excel download.
+**Plain English Query Engine** : Ask any question in NBFC language. Get back a filtered loan table, a ranked executive comparison, or a single stat answer. Multi-step questions (for example "customers per branch with more than 3 loans" or "fleet owners who have not paid this month") are answered by a composable step-plan engine that chains group-by, conditional counts, derive, sort and limit to any depth. When a question is genuinely ambiguous, the agent asks a short clarifying question with 3 to 5 options instead of guessing. Every result includes an Excel download and optional AI observations. Ask for "all columns" to see every raw column plus the computed ones; loan-level downloads always carry them, even when the screen shows a curated subset.
+
+**Investigator (Chat Drill-Down)** : A chat assistant for the "why" behind a number. Ask why collection % is down and drill one level at a time, Business Unit → Zone → Region → Branch → Executive → the actual loans, with customer names attached. It checks the mechanism behind a move (roll rate, vintage, overdue vs current demand), offers a 9-category priority menu, and drafts a branch email as a downloadable .eml that is never sent automatically. The AI only picks which tested calculation to run; nothing runs without a click, and multi-customer results reach Gemini only as counts and totals, never customer names.
 
 **Multi-Region File Support** : Upload multiple regional LCC files at once for a unified view. Supports `.xlsx`, `.xls`, and `.xlsb` with automatic deduplication and datetime normalisation across files.
 
@@ -357,6 +359,7 @@ CollectionIQ/
 ├── utils.py                        # Data loading, column normalisation, metrics, charts
 ├── smart_alerts.py                 # 6 rule-based risk alerts (pure pandas, no LLM)
 ├── config.py                       # Model name, thresholds, and other tuned constants
+├── gemini_client.py                # Shared Gemini client: timeout + transient-only retry
 │
 ├── agents/
 │   ├── logical_planner.py          # Query to declarative intent (IR-1), the live planner
@@ -364,6 +367,12 @@ CollectionIQ/
 │   ├── plan_executor.py            # Composable step-plan engine + plan validator
 │   ├── insight_generator.py        # AI observations on query results
 │   └── domain_expert.py            # Priority framework text and snapshot-date context
+│
+├── investigator/
+│   ├── llm.py                      # Routes each chat turn to one step (Gemini) + optional narration
+│   ├── guardrails.py               # Deterministic checks on the routed step before it runs
+│   ├── steps.py                    # Step vocabulary: every calculation the Investigator can run
+│   └── state.py                    # Per-conversation memory so "him" / "that branch" resolve
 │
 ├── compiler/
 │   ├── core.py                     # Lowers a declarative intent into a pandas step-plan
@@ -380,7 +389,7 @@ CollectionIQ/
 │   └── roll_rate.py                # Bucket migration matrix and roll-rate KPIs
 │
 ├── ui/
-│   ├── tabs/                       # One module per dashboard tab, including ai_query.py
+│   ├── tabs/                       # One module per dashboard tab, incl. ai_query.py, investigator.py
 │   ├── components.py               # Shared KPI cards, download buttons, safe table rendering
 │   └── landing.py                  # Upload page and sample-data loader
 │
@@ -412,7 +421,7 @@ CollectionIQ/
 | Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, fast-path views, and clarification |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
 | Charts | Plotly + Kaleido | Interactive dashboard charts; Kaleido renders three of them to embedded PNG for the HTML report |
-| AI SDK | google-genai | Gemini API with retry and exponential backoff |
+| AI SDK | google-genai | Gemini API via one shared client: per-request timeout, exponential-backoff retry on transient errors only (rate limits, server/network failures), fail-fast on permanent ones |
 | Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
 | Observability | LangSmith | Query tracing and result quality feedback |
 | Excel Formats | openpyxl · xlrd · pyxlsb | Handles .xlsx, .xls, and .xlsb with serial-date correction |
@@ -422,7 +431,7 @@ The domain knowledge layer, NBFC terminology, loan status values, strike rate de
 
 Correctness is enforced outside the model, not by model depth. The LLM only translates a question into a declarative intent picked from a fixed registry vocabulary; a deterministic compiler turns that into a pandas step-plan, and pure pandas computes every number. A validator checks the plan against the actual columns and gives the planner one repair attempt with the exact error text before giving up with a clear message. When a question is materially ambiguous, the agent asks a clarifying question instead of assuming. The aim is general, composable reasoning rather than a hardcoded answer per question.
 
-Both pipelines are stateless between runs. Each query or report generation starts fresh, no stale context, no memory leak, no shared state between users.
+The query and report pipelines are stateless between runs: each query or report starts fresh, with no shared state between users. The Investigator deliberately keeps per-conversation memory so follow-ups resolve, capped at a fixed number of results and conversations per browser session and never shared across users.
 
 &nbsp;
 
