@@ -249,12 +249,31 @@ class TestParseTurnWiring:
             return _FakeResponse()
 
         monkeypatch.setattr(llm, "_call_gemini_with_retry", _fake_call)
-        monkeypatch.setattr(llm.genai, "Client", lambda api_key: object())
+        monkeypatch.setattr(llm, "make_client", lambda api_key: object())
 
         result = llm.parse_turn("why is Mahad underperforming", EntityMemory())
 
         assert result["step_type"] == "entity_summary"
         assert "why is Mahad underperforming" in seen["contents"]
+
+    def test_overlong_question_rejected_without_calling_gemini(self, monkeypatch):
+        # Same MAX_QUERY_CHARS guardrail AI Query's plan_logical enforces.
+        monkeypatch.setenv("GOOGLE_API_KEY", "fake")
+        calls = []
+        monkeypatch.setattr(llm, "_call_gemini_with_retry", lambda *a, **kw: calls.append(1))
+        out = llm.parse_turn("x" * (llm.MAX_QUERY_CHARS + 1), EntityMemory())
+        assert calls == []
+        assert out["needs_clarification"] is True
+        assert out["step_type"] is None
+        assert "too long" in out["clarification_question"]
+
+    def test_guarantor_only_result_gets_aggregate_preview(self):
+        # PII list is shared with graph.py via config.PII_COLUMNS -- the
+        # Investigator's copy used to miss Guar Name/Guar Mob No.
+        df = pd.DataFrame({"Loan No": ["L1"], "Guar Name": ["Suresh"], "SOH": [100.0]})
+        preview = llm._build_preview("top_accounts", df)
+        assert "Suresh" not in preview
+        assert "Matching rows: 1" in preview
 
     def test_missing_api_key_returns_clarification_without_calling_gemini(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
@@ -400,7 +419,7 @@ class TestNarrateStep:
             return _FakeResponse()
 
         monkeypatch.setattr(llm, "_call_gemini_with_retry", _fake_call)
-        monkeypatch.setattr(llm.genai, "Client", lambda api_key: object())
+        monkeypatch.setattr(llm, "make_client", lambda api_key: object())
 
         df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
         result = llm.narrate_step("entity_summary", df)
@@ -412,7 +431,7 @@ class TestNarrateStepStream:
     def test_empty_result_yields_nothing_without_calling_gemini(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
         calls = []
-        monkeypatch.setattr(llm.genai, "Client", lambda api_key: calls.append(1) or object())
+        monkeypatch.setattr(llm, "make_client", lambda api_key: calls.append(1) or object())
 
         chunks = list(llm.narrate_step_stream("entity_summary", pd.DataFrame()))
 
@@ -435,7 +454,7 @@ class TestNarrateStepStream:
         class _FakeClient:
             models = _FakeModels()
 
-        monkeypatch.setattr(llm.genai, "Client", lambda api_key: _FakeClient())
+        monkeypatch.setattr(llm, "make_client", lambda api_key: _FakeClient())
 
         df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
         chunks = list(llm.narrate_step_stream("entity_summary", df))
@@ -444,3 +463,57 @@ class TestNarrateStepStream:
         assert chunks == ["Collection", "% is down"]
         assert "Collection%" in seen["contents"]
         assert "Collection%" in seen["contents"]
+
+
+class TestGeminiFailureHandling:
+    def test_parse_turn_api_failure_returns_friendly_clarification(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "fake")
+        monkeypatch.setattr(llm, "make_client", lambda api_key: object())
+
+        def _boom(*a, **kw):
+            raise RuntimeError("service unavailable")
+
+        monkeypatch.setattr(llm, "_call_gemini_with_retry", _boom)
+        out = llm.parse_turn("why is collection down", EntityMemory())
+        assert out["step_type"] is None
+        assert out["needs_clarification"] is True
+        assert "reach the AI service" in out["clarification_question"]
+
+    def test_stream_failure_before_any_text_falls_back_to_non_streaming(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "fake")
+
+        class _FailingModels:
+            def generate_content_stream(self, model, contents, config):
+                raise RuntimeError("stream dropped")
+
+        class _Client:
+            models = _FailingModels()
+
+        monkeypatch.setattr(llm, "make_client", lambda api_key: _Client())
+        monkeypatch.setattr(llm, "narrate_step", lambda step_type, df: "Fallback narrative.")
+        df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
+        assert list(llm.narrate_step_stream("entity_summary", df)) == ["Fallback narrative."]
+
+    def test_stream_failure_after_partial_text_keeps_partial_without_repeating(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "fake")
+
+        class _Chunk:
+            text = "Collection is"
+
+        def _stream():
+            yield _Chunk()
+            raise RuntimeError("stream dropped mid-way")
+
+        class _Models:
+            def generate_content_stream(self, model, contents, config):
+                return _stream()
+
+        class _Client:
+            models = _Models()
+
+        fallback_calls = []
+        monkeypatch.setattr(llm, "make_client", lambda api_key: _Client())
+        monkeypatch.setattr(llm, "narrate_step", lambda *a: fallback_calls.append(1) or "x")
+        df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
+        assert list(llm.narrate_step_stream("entity_summary", df)) == ["Collection is"]
+        assert fallback_calls == []

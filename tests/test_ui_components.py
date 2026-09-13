@@ -87,6 +87,71 @@ class TestEsc:
         _dl_btn(df, "f2.xlsx", "k2")
 
 
+class TestFileFingerprintMemo:
+    """app.py fingerprints the uploads on every rerun; hashing a large file
+    each click was pure latency. Memoized per Streamlit file_id + size."""
+
+    class _Upload:
+        def __init__(self, data: bytes, file_id: str):
+            self.data, self.file_id, self.size, self.reads = data, file_id, len(data), 0
+
+        def getvalue(self):
+            self.reads += 1
+            return self.data
+
+    def setup_method(self):
+        st.session_state.pop("_file_fingerprint_memo", None)
+
+    teardown_method = setup_method
+
+    def test_same_upload_is_hashed_once(self):
+        from ui.components import _file_fingerprint
+        f = self._Upload(b"lcc-bytes", "id-1")
+        assert _file_fingerprint(f) == _file_fingerprint(f)
+        assert f.reads == 1
+
+    def test_new_upload_is_hashed_and_differs(self):
+        from ui.components import _file_fingerprint
+        a, b = self._Upload(b"month-a", "id-a"), self._Upload(b"month-b", "id-b")
+        assert _file_fingerprint(a) != _file_fingerprint(b)
+        assert (a.reads, b.reads) == (1, 1)
+
+    def test_objects_without_file_id_are_always_hashed(self):
+        from io import BytesIO
+        from ui.components import _file_fingerprint
+        f = BytesIO(b"plain")
+        assert _file_fingerprint(f) == _file_fingerprint(BytesIO(b"plain"))
+
+
+class TestDlBtnFullSource:
+    """Curated on screen, full raw + computed columns in the download."""
+
+    def _capture(self, monkeypatch):
+        seen = {}
+
+        def fake_excel_bytes(df):
+            seen["df"] = df
+            return b"x"
+
+        monkeypatch.setattr("ui.components._excel_bytes", fake_excel_bytes)
+        return seen
+
+    def test_download_carries_raw_and_computed_columns(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        source = pd.DataFrame({"Loan No": ["L1", "L2"], "CHANNEL": ["A", "B"], "POS": [1.0, 2.0]})
+        curated = pd.DataFrame({"Loan No": ["L2"], "Tenure Completed %": [75.0]})
+        _dl_btn(curated, "g.xlsx", "k_full", full_source=source)
+        out = seen["df"]
+        assert list(out.columns) == ["Loan No", "CHANNEL", "POS", "Tenure Completed %"]
+        assert out.iloc[0]["CHANNEL"] == "B"
+
+    def test_without_full_source_download_is_unchanged(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        curated = pd.DataFrame({"Loan No": ["L1"], "SOH": [1.0]})
+        _dl_btn(curated, "g.xlsx", "k_plain")
+        assert list(seen["df"].columns) == ["Loan No", "SOH"]
+
+
 class TestQueryConfidenceTier:
     """query_confidence_tier reads signals already present in graph.py's final
     QueryState (view_render/priority_mode/repair_attempts) to classify how

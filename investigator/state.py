@@ -32,6 +32,8 @@ from typing import Any
 
 import pandas as pd
 
+from config import INVESTIGATOR_MAX_ENTITIES
+
 
 @dataclass
 class EntityRecord:
@@ -66,9 +68,14 @@ class EntityRecord:
 class EntityMemory:
     """dict-like store keyed by (entity_type, entity_value)."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_entities: int = INVESTIGATOR_MAX_ENTITIES) -> None:
         self._entities: dict[tuple[str, Any], EntityRecord] = {}
         self._seq_counter = itertools.count()
+        # Each record holds a full result table in st.session_state for the
+        # whole browser session -- bounded so a long conversation can't grow
+        # without limit. Least-recently-touched is evicted first; a chat turn
+        # whose result was evicted renders "no longer available", not a crash.
+        self._max_entities = max_entities
 
     def touch(
         self,
@@ -94,7 +101,11 @@ class EntityMemory:
             params=params or {},
             _seq=next(self._seq_counter),
         )
-        self._entities[self._key(entity_type, entity_value)] = record
+        key = self._key(entity_type, entity_value)
+        self._entities[key] = record
+        while len(self._entities) > self._max_entities:
+            oldest = min((k for k in self._entities if k != key), key=lambda k: self._entities[k]._seq)
+            del self._entities[oldest]
         return record
 
     def get(self, entity_type: str, entity_value: Any) -> EntityRecord | None:

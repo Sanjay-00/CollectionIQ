@@ -256,6 +256,50 @@ class TestViewNodeFallback:
         assert "_agg_rows" in out["result_kpis"]
         assert len(out["result_kpis"]["_agg_rows"]) > 0
 
+    def test_show_all_columns_is_ignored_by_default(self):
+        # Baseline: top_delinquent_accounts' curated column set (compute_
+        # top_accounts' own display cols) never includes "POS", even
+        # though the raw upload has it -- confirms the curated default
+        # BEFORE testing that show_all_columns overrides it.
+        from graph import view_node
+        state = self._state(ir1={"view": {"name": "top_delinquent_accounts", "params": {}, "filters": []}})
+        out = view_node(state)
+        assert "POS" not in out["result_df"].columns
+
+    def test_show_all_columns_true_returns_every_raw_column_on_a_view(self):
+        # The real, reported gap: show_all_columns is already enforced on
+        # the general compiler path (compiler/core.py skips its own
+        # "select" step) but the fast-path VIEW layer never checked it at
+        # all -- "show me top delinquent accounts with all columns" used
+        # to silently keep serving the view's fixed curated columns.
+        from graph import view_node
+        state = self._state(ir1={
+            "view": {"name": "top_delinquent_accounts", "params": {}, "filters": []},
+            "show_all_columns": True,
+        })
+        out = view_node(state)
+        assert out["error"] == ""
+        assert "POS" in out["result_df"].columns
+        assert "Strike" in out["result_df"].columns
+        # Same rows, same count -- only the COLUMNS changed, not the answer.
+        assert len(out["result_df"]) == len(_loan_df()[_loan_df()["curr_bucket"] != "STD"])
+        assert out["result_kpis"]["Count"] == len(out["result_df"])
+
+    def test_show_all_columns_is_a_no_op_on_an_aggregate_view(self):
+        # region_scorecard has no Loan No at all (one row per region, not
+        # per loan) -- show_all_columns must not crash or corrupt it, just
+        # leave it exactly as computed (expand_to_all_columns's own
+        # Loan-No check is the guard).
+        from graph import view_node
+        state = self._state(ir1={
+            "view": {"name": "region_scorecard", "params": {}, "filters": [], "sort_by": None},
+            "show_all_columns": True,
+        })
+        out = view_node(state)
+        assert out["error"] == ""
+        assert "Loan No" not in out["result_df"].columns
+        assert len(out["result_df"]) > 0
+
     def test_limit_shrinks_result_df_and_count_reflects_it_not_the_full_set(self):
         # Regression: caught live, not by a unit test -- {"Count": len(result_df),
         # **result_kpis} let the NORMALIZER's own pre-limit "Count" (every

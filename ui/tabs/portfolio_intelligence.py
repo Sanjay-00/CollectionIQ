@@ -59,7 +59,7 @@ def _count_delta_html(val) -> str:
 # ── Section 1: Portfolio Pulse ────────────────────────────────────────────────
 
 def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: bool) -> None:
-    _section("Section 1  -  Portfolio Pulse: State of the Book in 30 Seconds")
+    _section("Section 1: Portfolio Pulse (State of the Book in 30 Seconds)")
 
     def _kpi_row(items):
         return "".join(
@@ -184,7 +184,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
 def _render_overdue_demand(scorecard_data: dict) -> None:
     from analysis.portfolio_intelligence import compute_overdue_demand_chart, OVERDUE_DEMAND_IDENTITY_COLS
 
-    _section("Section 2b  -  Overdue vs Month Demand Collection", margin_top="24px")
+    _section("Section 2b: Overdue vs Month Demand Collection", margin_top="24px")
     st.caption(
         "A payment clears last month's carried-over overdue FIRST; only what's left over "
         "counts against this month's own EMI demand. 100% means nothing was outstanding on "
@@ -273,7 +273,7 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
 
 
 def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp):
-    _section("Section 2  -  Who Needs Attention?  (Region / Branch / Executive)", margin_top="24px")
+    _section("Section 2: Who Needs Attention?  (Region / Branch / Executive)", margin_top="24px")
 
     sub_tabs = st.tabs(["Region View", "Branch Quadrant", "Executive Recovery", "NPA & SMA-2 Comparison"])
 
@@ -395,7 +395,7 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
             fig.update_layout(
                 barmode="group",
                 bargap=0.20, bargroupgap=0.06,
-                title=dict(text=f"NPA & SMA-2 Count  -  Current vs Previous  ({label})", font=dict(size=13, color="#111"), x=0),
+                title=dict(text=f"NPA & SMA-2 Count: Current vs Previous  ({label})", font=dict(size=13, color="#111"), x=0),
                 xaxis=dict(tickangle=-30, showgrid=False, tickfont=dict(color="#374151")),
                 yaxis=dict(title="Account Count", showgrid=True, gridcolor="#f3f4f6", tickfont=dict(color="#374151")),
                 plot_bgcolor="white", paper_bgcolor="white",
@@ -493,7 +493,7 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
 # ── Section 3: Good vs Bad ────────────────────────────────────────────────────
 
 def _render_good_bad(good_bad: dict, has_prev: bool) -> None:
-    _section("Section 3  -  The Honest Mirror: What Went Right / Concerns", margin_top="24px")
+    _section("Section 3: The Honest Mirror (What Went Right / Concerns)", margin_top="24px")
     good = good_bad.get("good", [])
     bad  = good_bad.get("bad", [])
 
@@ -529,7 +529,7 @@ def _render_good_bad(good_bad: dict, has_prev: bool) -> None:
 # ── Section 4: Risk Flag Deep Dive ────────────────────────────────────────────
 
 def _render_risk_flags(flag_df: pd.DataFrame) -> None:
-    _section("Section 4  -  Risk Flag Deep Dive", margin_top="24px")
+    _section("Section 4: Risk Flag Deep Dive", margin_top="24px")
 
     if flag_df.empty:
         st.info("No risk flag data available.")
@@ -674,7 +674,7 @@ def _render_vintage_sourcing(product_data: dict) -> None:
     # it's a time-based Ag_Date-cohort view, the same axis as that tab's new
     # advances trend, not a static portfolio-composition breakdown like the
     # 3 sub-tabs remaining here.
-    _section("Section 5  -  Sourcing & Product Analysis", margin_top="24px")
+    _section("Section 5: Sourcing & Product Analysis", margin_top="24px")
 
     if not product_data:
         st.info("No segment, fuel type, or source channel data found in this file.")
@@ -696,7 +696,7 @@ def _render_vintage_sourcing(product_data: dict) -> None:
             if key == "source":
                 st.caption(
                     "DSA/sourcing channel NPA%. "
-                    "Politically sensitive but extremely valuable  -  bad sources get delisted."
+                    "Politically sensitive but extremely valuable: bad sources get delisted."
                 )
                 _render_product_table(df)
             else:
@@ -758,8 +758,8 @@ def _render_exec_recovery(df: pd.DataFrame) -> None:
     _dl_btn(df, "executive_recovery.xlsx", "dl_exec_recovery")
 
 
-def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, top_accounts_summary: dict | None = None) -> None:
-    _section("Section 6  -  Concentration & Exposure Map", margin_top="24px")
+def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, top_accounts_summary: dict | None = None, df_curr: pd.DataFrame | None = None) -> None:
+    _section("Section 6: Concentration & Exposure Map", margin_top="24px")
 
     _chart_card(fig_treemap)
     st.caption("Size = SOH (Cr). Color = NPA% (green = low risk → red = high risk). Click a region to drill into its branches.")
@@ -786,7 +786,7 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
                 st.markdown(_static_kpi_card_html("Operators with NPA", npa_ops, "≥1 NPA loan in fleet", color=npa_color), unsafe_allow_html=True)
             top_fleet = fleet.get("top_df", pd.DataFrame())
             if not top_fleet.empty:
-                st.caption("⚠️ Customer identity uses Cust Mob No  -  same person with different numbers may appear separately.")
+                st.caption("⚠️ Customer identity uses Cust Mob No: same person with different numbers may appear separately.")
                 with st.expander("Top 20 Fleet Operators by SOH", expanded=False):
                     st.dataframe(_safe_df(top_fleet), use_container_width=True, hide_index=True)
                     _dl_btn(top_fleet, "fleet_operators.xlsx", "dl_fleet")
@@ -815,10 +815,10 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
                     _static_kpi_card_html("NPA Accounts", npa_count, "Already worst-case, within top 20", color=npa_color),
                     unsafe_allow_html=True,
                 )
-            st.caption("Largest exposures among delinquent accounts only (any non-STD bucket)  -  healthy loans are excluded regardless of size.")
+            st.caption("Largest exposures among delinquent accounts only (any non-STD bucket): healthy loans are excluded regardless of size.")
             with st.expander("View Top 20 At-Risk Accounts", expanded=False):
                 st.dataframe(_safe_df(top_accounts), use_container_width=True, hide_index=True)
-                _dl_btn(top_accounts, "top_at_risk_accounts_soh.xlsx", "dl_top_accounts")
+                _dl_btn(top_accounts, "top_at_risk_accounts_soh.xlsx", "dl_top_accounts", full_source=df_curr)
         else:
             st.info("No delinquent accounts found, or SOH/curr_bucket column not available.")
 
@@ -826,7 +826,7 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
 # ── Risk Indicators table ─────────────────────────────────────────────────────
 
 def _render_risk_indicators(indicators: list[dict]) -> None:
-    _section("Section 5b  -  Is the Risk Profile Changing?", margin_top="24px")
+    _section("Section 5b: Is the Risk Profile Changing?", margin_top="24px")
     if not indicators:
         st.info("No risk indicators computed.")
         return
@@ -904,11 +904,11 @@ def _top5_breakdown(df: pd.DataFrame, accent: str = "#ef4444") -> None:
 
 # ── Repossession Analysis ─────────────────────────────────────────────────────
 
-def _render_repossession(repo_df: pd.DataFrame) -> None:
-    _section("Section 7  -  Repossession Priority List", margin_top="24px")
+def _render_repossession(repo_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
+    _section("Section 7: Repossession Priority List", margin_top="24px")
     st.caption(
         f"Accounts in SMA-2 or NPA bucket sanctioned within the last {REPOSSESSION_WINDOW_MONTHS} months. "
-        "These still have collateral value  -  act now before the asset depreciates further."
+        "These still have collateral value: act now before the asset depreciates further."
     )
 
     if repo_df.empty:
@@ -948,31 +948,31 @@ def _render_repossession(repo_df: pd.DataFrame) -> None:
     sub_tabs = st.tabs(["By Recency", "By LCC% (Worst Payers)", "By SOH (Largest Exposure)"])
 
     with sub_tabs[0]:
-        st.caption("Newest delinquent accounts first  -  recently sanctioned but already deep in arrears. Highest urgency.")
+        st.caption("Newest delinquent accounts first: recently sanctioned but already deep in arrears. Highest urgency.")
         if "Ag_Date" in repo_df.columns:
             view = repo_df.sort_values("Ag_Date", ascending=False).reset_index(drop=True)
         else:
             view = repo_df.copy()
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view, "repo_by_recency.xlsx", "dl_repo_recency")
+        _dl_btn(view, "repo_by_recency.xlsx", "dl_repo_recency", full_source=df_curr)
 
     with sub_tabs[1]:
-        st.caption("Worst payment history first (LCC% ascending). Chronically non-paying accounts  -  least likely to self-cure.")
+        st.caption("Worst payment history first (LCC% ascending). Chronically non-paying accounts: least likely to self-cure.")
         if "LCC%" in repo_df.columns:
             view = repo_df.sort_values("LCC%", ascending=True).reset_index(drop=True)
         else:
             view = repo_df.copy()
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view, "repo_by_lcc.xlsx", "dl_repo_lcc")
+        _dl_btn(view, "repo_by_lcc.xlsx", "dl_repo_lcc", full_source=df_curr)
 
     with sub_tabs[2]:
-        st.caption("Largest SOH exposure first  -  accounts where repossession recovers the most. Prioritise field resources here.")
+        st.caption("Largest SOH exposure first: accounts where repossession recovers the most. Prioritise field resources here.")
         if "SOH" in repo_df.columns:
             view = repo_df.sort_values("SOH", ascending=False).reset_index(drop=True)
         else:
             view = repo_df.copy()
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view, "repo_by_soh.xlsx", "dl_repo_soh")
+        _dl_btn(view, "repo_by_soh.xlsx", "dl_repo_soh", full_source=df_curr)
 
 
 # ── Main render entry point ───────────────────────────────────────────────────
@@ -998,6 +998,7 @@ def render_portfolio_intelligence_tab(
     good_customers: pd.DataFrame | None = None,
     top_accounts_summary: dict | None = None,
     overdue_demand_scorecard: dict | None = None,
+    df_curr: pd.DataFrame | None = None,
 ) -> None:
     if not has_prev:
         st.info(
@@ -1026,19 +1027,19 @@ def render_portfolio_intelligence_tab(
     _render_risk_indicators(risk_indicators)
     _divider()
 
-    _render_concentration(fig_treemap, fleet, top_accounts, top_accounts_summary)
+    _render_concentration(fig_treemap, fleet, top_accounts, top_accounts_summary, df_curr=df_curr)
     _divider()
 
-    _render_repossession(repo_df if repo_df is not None else pd.DataFrame())
+    _render_repossession(repo_df if repo_df is not None else pd.DataFrame(), df_curr=df_curr)
     _divider()
 
-    _render_good_customers(good_customers if good_customers is not None else pd.DataFrame())
+    _render_good_customers(good_customers if good_customers is not None else pd.DataFrame(), df_curr=df_curr)
 
 
 # ── Section 8: Good Customers ─────────────────────────────────────────────────
 
-def _render_good_customers(good_df: pd.DataFrame) -> None:
-    st.markdown('<div class="section-label">Section 8 - Good Customers: Refinance &amp; Relationship Candidates</div>', unsafe_allow_html=True)
+def _render_good_customers(good_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
+    st.markdown('<div class="section-label">Section 8: Good Customers (Refinance &amp; Relationship Candidates)</div>', unsafe_allow_html=True)
     st.caption(f"Criteria: {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ tenure completed AND LCC% >= {GOOD_CUSTOMER_MIN_LCC_PCT}%. Flag for refinance offer or relationship management.")
 
     if good_df.empty:
@@ -1064,4 +1065,4 @@ def _render_good_customers(good_df: pd.DataFrame) -> None:
     st.markdown("<br>", unsafe_allow_html=True)
 
     st.dataframe(_safe_df(good_df), use_container_width=True, hide_index=True)
-    _dl_btn(good_df, "good_customers.xlsx", "dl_good_customers")
+    _dl_btn(good_df, "good_customers.xlsx", "dl_good_customers", full_source=df_curr)

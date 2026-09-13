@@ -37,7 +37,7 @@ from compiler.core import _expand_filters
 from config import FLEET_MIN_LOANS, HARD_BUCKET_ARREARS_EMI_MIN
 from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
-from utils import BUCKET_SCORE, _mom_pct, to_num
+from utils import BUCKET_SCORE, _mom_pct, expand_to_all_columns, to_num
 
 # ── Metric direction metadata ────────────────────────────────────────────────
 # Single source of truth for "is a higher value of this metric good," shared
@@ -117,7 +117,7 @@ def _higher_is_better(metric: str, override: bool | None = None) -> bool:
     if override is not None:
         return override
     raise ValueError(
-        f"Unknown metric direction for '{metric}' -- pass higher_is_better explicitly"
+        f"Unknown metric direction for '{metric}': pass higher_is_better explicitly"
     )
 
 
@@ -621,11 +621,25 @@ def product_analysis(
     return result.get(axis, pd.DataFrame())
 
 
+def _with_all_columns(curated: pd.DataFrame, df: pd.DataFrame, all_columns: bool) -> pd.DataFrame:
+    """The all_columns lever non_paying_customers/customer_loan_book/
+    worst_loans_by_metric/priority_accounts already established, now also
+    used by top_accounts/repossession_list/good_customers below (a real,
+    reported gap: those three had no such lever at all, unlike their
+    siblings). Delegates to utils.py::expand_to_all_columns, the SAME
+    function graph.py's AI Query fast-path view layer now also uses for
+    its own show_all_columns override -- one implementation, not two."""
+    if not all_columns:
+        return curated
+    return expand_to_all_columns(curated, df)
+
+
 def top_accounts(
     df: pd.DataFrame,
     n: int = 20,
     scope_col: str | None = None,
     scope_value: str | None = None,
+    all_columns: bool = False,
 ) -> pd.DataFrame:
     """Largest single exposures among DELINQUENT accounts (any non-STD
     bucket) by SOH -- distinct from top_closing_arrears (raw Closing
@@ -640,7 +654,9 @@ def top_accounts(
     portfolio, NPA count among the top N -- is dashboard/report-narrative
     scaffolding, not something a downloadable, auditable table needs to
     carry). scope_col/scope_value optionally narrow the INPUT first, same
-    convention every other step here uses.
+    convention every other step here uses. all_columns=True (see
+    _with_all_columns) swaps the curated display columns for every raw
+    column the upload actually has, same row order.
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -653,7 +669,7 @@ def top_accounts(
         return pd.DataFrame()
 
     top_df, _summary = compute_top_accounts(df, n=n)
-    return top_df
+    return _with_all_columns(top_df, df, all_columns)
 
 
 def new_advances_trend(
@@ -747,6 +763,7 @@ def repossession_list(
     scope_col: str | None = None,
     scope_value: str | None = None,
     as_of=None,
+    all_columns: bool = False,
 ) -> pd.DataFrame:
     """Accounts eligible for repossession -- SMA-2/NPA (deep delinquent)
     AND still within the collateral-value window (Ag_Date within the last
@@ -763,7 +780,9 @@ def repossession_list(
     scope_col/scope_value optionally narrow the INPUT first. as_of anchors
     "within the collateral window" to the report's own reporting month,
     same convention every other as_of-taking step in this module uses --
-    never wall-clock today.
+    never wall-clock today. all_columns=True (see _with_all_columns) swaps
+    the curated display columns for every raw column the upload actually
+    has, same row order.
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -777,14 +796,16 @@ def repossession_list(
 
     result = compute_repossession_list(df, as_of=as_of)
     if result.empty or "SOH" not in result.columns:
-        return result
-    return result.sort_values("SOH", ascending=False).reset_index(drop=True)
+        return _with_all_columns(result, df, all_columns)
+    result = result.sort_values("SOH", ascending=False).reset_index(drop=True)
+    return _with_all_columns(result, df, all_columns)
 
 
 def good_customers(
     df: pd.DataFrame,
     scope_col: str | None = None,
     scope_value: str | None = None,
+    all_columns: bool = False,
 ) -> pd.DataFrame:
     """Loyal / high-quality customers eligible for refinance or relationship
     management -- a business-development question, distinct from every
@@ -797,7 +818,9 @@ def good_customers(
     good_customers section already uses, so this can never drift into a
     second, independently-computed definition. scope_col/scope_value
     optionally narrow the INPUT first, same convention every other step
-    here uses.
+    here uses. all_columns=True (see _with_all_columns) swaps the curated
+    display columns for every raw column the upload actually has, same
+    row order.
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -809,7 +832,8 @@ def good_customers(
     if df.empty:
         return pd.DataFrame()
 
-    return compute_good_customers(df)
+    result = compute_good_customers(df)
+    return _with_all_columns(result, df, all_columns)
 
 
 # ── entity_summary ────────────────────────────────────────────────────────────
@@ -1263,7 +1287,7 @@ def concept_filter(
     missing = _missing_condition_columns(df, conditions)
     if missing:
         raise ValueError(
-            f"Can't answer -- this upload is missing the column(s) '{concept}' needs: "
+            f"Can't answer: this upload is missing the column(s) '{concept}' needs: "
             f"{', '.join(missing)}. Not the same as a real zero-match answer."
         )
     mask = _build_mask(df, conditions)
@@ -1410,7 +1434,7 @@ def worst_loans_by_metric(
     missing = _missing_condition_columns(df, conditions)
     if missing:
         raise ValueError(
-            f"Can't answer -- this upload is missing the column(s) needed for '{metric}': "
+            f"Can't answer: this upload is missing the column(s) needed for '{metric}': "
             f"{', '.join(missing)}. Not the same as a real zero-match answer."
         )
     mask = _build_mask(df, conditions)
@@ -1597,7 +1621,7 @@ PRIORITY_MENU_CATEGORIES: list[dict] = [
     {"label": "Co-lending at Risk",             "kind": "concept", "concept": "colending_at_risk",             "default_n": 10},
     {"label": "Insurance-Only Delinquency",     "kind": "concept", "concept": "insurance_driven_delinquency",  "default_n": 10},
     {"label": "Easy Settlement",                "kind": "concept", "concept": "easy_settlement",               "default_n": 10},
-    {"label": "Recent Advances - High Bucket",  "kind": "concept", "concept": "recent_advance_high_bucket",    "default_n": 10},
+    {"label": "Recent Advances: High Bucket",  "kind": "concept", "concept": "recent_advance_high_bucket",    "default_n": 10},
     {"label": "No Collection 3 Months",         "kind": "concept", "concept": "no_collection_3m",              "default_n": 10},
 ]
 

@@ -1,18 +1,7 @@
 ﻿import os
-import time
-from google import genai
 from langsmith import traceable
 from config import GEMINI_MODEL
-
-
-def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
-    for attempt in range(max_retries + 1):
-        try:
-            return client.models.generate_content(model=model, contents=contents, config=config)
-        except Exception as e:
-            if attempt == max_retries:
-                raise
-            time.sleep(2 ** attempt)
+from gemini_client import call_gemini_with_retry as _call_gemini_with_retry, make_client
 
 
 def _add_token_usage(response) -> None:
@@ -35,9 +24,9 @@ SYSTEM_PROMPT = """You are a senior credit risk analyst at an NBFC (Non-Banking 
 Generate concise, actionable observations from loan portfolio query results.
 Write exactly 4-5 bullet points.
 Each bullet must start with "• ".
-Be specific - use the numbers provided. Focus on risk, action, and urgency.
+Be specific: use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
-Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash ( - ), or en dash ( - ).
+Use a single hyphen (-) when a dash is needed. Never use a double hyphen, an em dash, or an en dash.
 """
 
 
@@ -59,7 +48,7 @@ def generate_insights(
 ) -> str:
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
-        return "• GOOGLE_API_KEY not set - AI observations unavailable."
+        return "• GOOGLE_API_KEY not set: AI observations unavailable."
 
     agg_rows = kpis.get("_agg_rows")
 
@@ -110,7 +99,7 @@ BUCKET DISTRIBUTION (% of matched accounts):
 {chr(10).join(f"  {k}: {v}%" for k, v in bucket_dist.items()) if bucket_dist else "  No data"}
 """
 
-    client = genai.Client(api_key=api_key)
+    client = make_client(api_key)
     response = _call_gemini_with_retry(
         client, GEMINI_MODEL, context,
         {"system_instruction": SYSTEM_PROMPT},

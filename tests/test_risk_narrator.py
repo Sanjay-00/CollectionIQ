@@ -46,7 +46,7 @@ class TestRiskNarratorNode:
 
         responses = iter([_Resp("- narrative bullet"), _Resp("1. action item")])
         monkeypatch.setattr(rn, "_call_gemini_with_retry", lambda *a, **k: next(responses))
-        monkeypatch.setattr(rn.genai, "Client", lambda api_key: object())
+        monkeypatch.setattr(rn, "make_client", lambda api_key: object())
 
         out = rn.risk_narrator_node(_base_state())
         assert out["executive_narrative"] == "- narrative bullet"
@@ -72,7 +72,7 @@ class TestRiskNarratorNode:
             raise RuntimeError("Gemini quota exceeded")
 
         monkeypatch.setattr(rn, "_call_gemini_with_retry", _fake_call)
-        monkeypatch.setattr(rn.genai, "Client", lambda api_key: object())
+        monkeypatch.setattr(rn, "make_client", lambda api_key: object())
 
         with caplog.at_level(logging.WARNING):
             out = rn.risk_narrator_node(_base_state())
@@ -99,7 +99,7 @@ class TestRiskNarratorNode:
             return _Resp("1. action item")
 
         monkeypatch.setattr(rn, "_call_gemini_with_retry", _fake_call)
-        monkeypatch.setattr(rn.genai, "Client", lambda api_key: object())
+        monkeypatch.setattr(rn, "make_client", lambda api_key: object())
 
         out = rn.risk_narrator_node(_base_state())
         assert out["executive_narrative"] == ""
@@ -113,7 +113,7 @@ class TestRiskNarratorNode:
             raise RuntimeError("Gemini down")
 
         monkeypatch.setattr(rn, "_call_gemini_with_retry", _fake_call)
-        monkeypatch.setattr(rn.genai, "Client", lambda api_key: object())
+        monkeypatch.setattr(rn, "make_client", lambda api_key: object())
 
         with caplog.at_level(logging.WARNING):
             out = rn.risk_narrator_node(_base_state())

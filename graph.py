@@ -20,7 +20,9 @@ from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
 from registry.views import VIEWS, _METRIC_DIRECTION, _METRIC_AGG, normalize_view_output, resolve_view_fn
+from config import PII_COLUMNS
 from query_log import log_query_outcome
+from utils import expand_to_all_columns
 
 
 # ── Per-thread step callback ──────────────────────────────────────────────────
@@ -122,8 +124,7 @@ _LARGE_STATE_FIELDS = ("result_df_full", "df_prev", "result_df", "precomputed_vi
 # agents/plan_executor.py's derive-expression check at both compile and
 # execute time) -- so a future code path populating _agg_rows without going
 # through the same construction site still can't leak this to LangSmith.
-_PII_COLS_IN_AGG_ROWS = ("Cust Name", "Cust Mob No", "Guar Name", "Guar Mob No",
-                          "Cust Name (Cust Mob No)")  # the merged customer-grain display column below
+_PII_COLS_IN_AGG_ROWS = PII_COLUMNS + ("Cust Name (Cust Mob No)",)  # + the merged customer-grain display column below
 
 
 def _strip_pii_from_agg_rows(rows: list) -> list:
@@ -535,7 +536,7 @@ def view_node(state: QueryState) -> QueryState:
                 "ir1": {**ir1, "view": None},
                 "error": (
                     f"Couldn't compute \"{spec.get('label', name)}\" ({reason}), and this "
-                    "question can't be answered a different way -- try rephrasing, or ask "
+                    "question can't be answered a different way: try rephrasing, or ask "
                     "for a different metric."
                 ),
             }
@@ -641,6 +642,24 @@ def view_node(state: QueryState) -> QueryState:
     result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
 
     result_df = _apply_limit(result_df, ir1.get("limit"), spec)
+
+    # show_all_columns is already enforced on the general compiler path
+    # (compiler/core.py skips its own "select" step entirely when set) --
+    # but the fast-path VIEW layer here never checked it at all, a real,
+    # confirmed gap: a loan-level view (top_delinquent_accounts,
+    # repossession_eligible, good_customers -- each backed by the SAME
+    # curated-by-design analysis/ function the Investigator's own
+    # top_accounts/repossession_list/good_customers steps wrap) always
+    # served its fixed curated columns regardless of "show me all
+    # columns," with no override and no error. Fixed the same way the
+    # Investigator's own all_columns lever is: re-pull every raw column
+    # from df_curr for the SAME rows already selected, in the SAME order
+    # -- a no-op (via expand_to_all_columns's own Loan-No check) for any
+    # view whose grain has no Loan No at all (executive/branch/region
+    # scorecards, roll-rate matrix, risk indicators, portfolio pulse),
+    # since there's no additional raw column to reveal on those.
+    if ir1.get("show_all_columns"):
+        result_df = expand_to_all_columns(result_df, df_curr)
 
     # "Count" must come AFTER spreading result_kpis, not before: some
     # normalizers (e.g. _normalize_dict_subkey_df) already put their OWN
@@ -862,7 +881,11 @@ def execute_node(state: QueryState) -> QueryState:
             # curated display columns led by "Priority", which QUERY_DISPLAY_COLS
             # doesn't know about; overriding here silently dropped that column
             # and crashed the UI's later groupby("Priority", ...) with a KeyError).
-            if intent != "priority_action" and not ir1.get("display_columns") and not display_df.empty:
+            # show_all_columns must win here too: compile_logical already
+            # skips its own select step for it, but this default trim ran
+            # afterwards and cut "all columns" back down to QUERY_DISPLAY_COLS.
+            if (intent != "priority_action" and not ir1.get("display_columns")
+                    and not ir1.get("show_all_columns") and not display_df.empty):
                 from agents.data_executor import QUERY_DISPLAY_COLS
                 rank_col = ["Rank"] if "Rank" in display_df.columns else []
                 keep = rank_col + [c for c in QUERY_DISPLAY_COLS if c in display_df.columns]

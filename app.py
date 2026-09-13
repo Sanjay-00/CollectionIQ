@@ -65,7 +65,7 @@ with col_up1:
     st.markdown(
         '<div class="upload-card">'
         '<div class="upload-card-title">📂 Current Month</div>'
-        '<div class="upload-card-sub">Required - upload one or multiple regional files</div>',
+        '<div class="upload-card-sub">Required: upload one or multiple regional files</div>',
         unsafe_allow_html=True,
     )
     curr_file = st.file_uploader(
@@ -75,7 +75,7 @@ with col_up1:
     curr_month_input = st.date_input(
         "Reporting Month", value=datetime.date.today().replace(day=1),
         key="curr_month_pick",
-        help="Select any date in the reporting month - only Month & Year are used",
+        help="Select any date in the reporting month: only Month & Year are used",
         format="DD/MM/YYYY",
     )
     st.markdown("</div>", unsafe_allow_html=True)
@@ -84,7 +84,7 @@ with col_up2:
     st.markdown(
         '<div class="upload-card">'
         '<div class="upload-card-title">📂 Previous Month</div>'
-        '<div class="upload-card-sub">Optional - upload one or multiple regional files</div>',
+        '<div class="upload-card-sub">Optional: upload one or multiple regional files</div>',
         unsafe_allow_html=True,
     )
     prev_file = st.file_uploader(
@@ -95,7 +95,7 @@ with col_up2:
         "Reporting Month",
         value=(datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
         key="prev_month_pick",
-        help="Select any date in the previous month - only Month & Year are used",
+        help="Select any date in the previous month: only Month & Year are used",
         format="DD/MM/YYYY",
         disabled=(not prev_file and not st.session_state.get("_sample_loaded")),
     )
@@ -158,7 +158,7 @@ if generate and curr_file:
 if "df_curr_raw" not in st.session_state:
     st.markdown(
         '<div style="text-align:center;padding:20px 0;color:#aaa;font-size:13px;">'
-        'File ready - click <strong>Generate Dashboard</strong> to build the report.'
+        'File ready: click <strong>Generate Dashboard</strong> to build the report.'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -202,13 +202,25 @@ if _missing_cols:
 _date_warn_curr = df_curr_raw.attrs.get("date_parse_warnings", [])
 _date_warn_prev = df_prev_raw.attrs.get("date_parse_warnings", [])
 for _w in _date_warn_curr:
-    st.warning(f"⚠️ Current month file -- {_w}")
+    st.warning(f"⚠️ Current month file: {_w}")
 for _w in _date_warn_prev:
-    st.warning(f"⚠️ Previous month file -- {_w}")
+    st.warning(f"⚠️ Previous month file: {_w}")
 
-# Auto-load prev if uploaded after initial generate (cache hit  -  no cost)
+# Auto-load prev if uploaded after initial generate. _load_and_concat is NOT
+# cached, so a file that fails to parse must not be re-parsed on every rerun:
+# remember the failure per file fingerprint and just re-show its error.
+_prev_autoload_fail = st.session_state.get("_prev_autoload_failure")  # (fingerprint, message) or None
 if prev_file and len(df_prev_raw) == 0:
-    _prev_tmp, _prev_err = _load_and_concat(prev_file)
+    _prev_fp = _file_fingerprint(prev_file)
+    if _prev_autoload_fail and _prev_autoload_fail[0] == _prev_fp:
+        _prev_tmp = None
+        st.warning(f"Previous month file could not be loaded: {_prev_autoload_fail[1]}")
+    else:
+        _prev_tmp, _prev_err = _load_and_concat(prev_file)
+        if _prev_tmp is None:
+            _msg = _prev_err[0] if _prev_err else "unknown error"
+            st.session_state["_prev_autoload_failure"] = (_prev_fp, _msg)
+            st.warning(f"Previous month file could not be loaded: {_msg}")
     if _prev_tmp is not None:
         df_prev_raw = _prev_tmp
         # Previously only rebound the local variable -- session_state stayed
@@ -243,7 +255,7 @@ if not st.session_state.get("_sample_loaded"):
     if _live_fingerprint != st.session_state.get("_data_version"):
         st.markdown(
             '<div style="text-align:center;padding:20px 0;color:#aaa;font-size:13px;">'
-            'New file(s) selected - click <strong>Generate Dashboard</strong> to load them.'
+            'New file(s) selected: click <strong>Generate Dashboard</strong> to load them.'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -576,6 +588,7 @@ elif active == "📊 Portfolio Intelligence":
             npa_sma2_cmp=pi_npa_sma2_cmp,
             good_customers=pi_good_customers,
             overdue_demand_scorecard=pi_overdue_demand,
+            df_curr=df_curr,
         )
     except Exception as _e:
         _tab_error("Portfolio Intelligence", _e)

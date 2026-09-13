@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export, compute_overdue_demand_pct, normalize_truncated_names
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, expand_to_all_columns, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export, compute_overdue_demand_pct, normalize_truncated_names
 from helpers import make_df
 
 
@@ -654,6 +654,104 @@ class TestAccountCount:
     ], ids=["distinct_loans", "missing_column", "custom_column"])
     def test_account_count(self, df, kwargs, expected):
         assert account_count(df, **kwargs) == expected
+
+
+class TestParseTextDates:
+    """Text dates try known formats before pandas' per-cell dateutil
+    fallback (slow on big files, and the source of 66 "Could not infer
+    format" warnings in this suite)."""
+
+    def _parse(self, values):
+        import warnings
+        from utils import _parse_date_column
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            parsed, failures, total = _parse_date_column(pd.Series(values, dtype=object))
+        assert not any("infer format" in str(w.message) for w in caught)
+        return parsed, failures, total
+
+    def test_iso_strings(self):
+        parsed, failures, _ = self._parse(["2024-01-15", "2023-12-31 00:00:00"])
+        assert list(parsed) == [pd.Timestamp("2024-01-15"), pd.Timestamp("2023-12-31")]
+        assert failures == 0
+
+    def test_day_first_column_detected_from_a_day_over_12(self):
+        parsed, _, _ = self._parse(["25/01/2024", "03/02/2024"])
+        assert list(parsed) == [pd.Timestamp("2024-01-25"), pd.Timestamp("2024-02-03")]
+
+    def test_fully_ambiguous_column_stays_month_first(self):
+        # Same order pandas' own inference chose before -- no silent change.
+        parsed, _, _ = self._parse(["03/04/2024"])
+        assert parsed.iloc[0] == pd.Timestamp("2024-03-04")
+
+    def test_named_month(self):
+        parsed, _, _ = self._parse(["15-Jan-2024"])
+        assert parsed.iloc[0] == pd.Timestamp("2024-01-15")
+
+    def test_garbage_is_nat_and_counted_without_warning(self):
+        parsed, failures, total = self._parse(["not a date", "2024-01-15", None])
+        assert pd.isna(parsed.iloc[0])
+        assert failures == 1
+        assert total == 2
+
+
+class TestExpandToAllColumns:
+    """Shared by investigator/steps.py's own all_columns lever and
+    graph.py's show_all_columns override for the AI Query fast-path view
+    layer -- "give me every column" gets fixed once here, not separately
+    in each pipeline."""
+
+    def test_swaps_curated_columns_for_every_raw_column_same_rows_same_order(self):
+        source = pd.DataFrame({
+            "Loan No": ["L2", "L1", "L3"], "CHANNEL": ["A", "B", "C"], "SOH": [900.0, 100.0, 500.0],
+        })
+        curated = pd.DataFrame({"Loan No": ["L1", "L3"], "SOH": [100.0, 500.0]})  # curated's own row order
+        result = expand_to_all_columns(curated, source)
+        assert list(result["Loan No"]) == ["L1", "L3"]  # curated's order preserved, not source's
+        assert "CHANNEL" in result.columns
+        assert result.iloc[0]["CHANNEL"] == "B"
+
+    def test_empty_curated_returns_empty_unchanged(self):
+        curated = pd.DataFrame(columns=["Loan No", "SOH"])
+        source = pd.DataFrame({"Loan No": ["L1"], "CHANNEL": ["A"]})
+        result = expand_to_all_columns(curated, source)
+        assert result.empty
+
+    def test_missing_loan_no_on_curated_is_a_no_op(self):
+        curated = pd.DataFrame({"SOH": [100.0]})
+        source = pd.DataFrame({"Loan No": ["L1"], "CHANNEL": ["A"]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result.columns) == ["SOH"]
+
+    def test_keeps_computed_columns_the_source_lacks(self):
+        # compute_good_customers derives "Tenure Completed %" -- the very
+        # column that defines membership -- so it must survive expansion.
+        source = pd.DataFrame({"Loan No": ["L1", "L2"], "CHANNEL": ["A", "B"]})
+        curated = pd.DataFrame({"Loan No": ["L2"], "Tenure Completed %": [82.5]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result.columns) == ["Loan No", "CHANNEL", "Tenure Completed %"]
+        assert result.iloc[0]["Tenure Completed %"] == 82.5
+
+    def test_curated_values_win_for_shared_columns(self):
+        # Curated tables carry cleaned values (to_num'd SOH, date-only
+        # Ag_Date) -- the download must match what's on screen.
+        source = pd.DataFrame({"Loan No": ["L1"], "SOH": ["1,000"]})
+        curated = pd.DataFrame({"Loan No": ["L1"], "SOH": [1000.0]})
+        result = expand_to_all_columns(curated, source)
+        assert result.iloc[0]["SOH"] == 1000.0
+
+    def test_loan_missing_from_source_does_not_raise(self):
+        source = pd.DataFrame({"Loan No": ["L1"], "CHANNEL": ["A"]})
+        curated = pd.DataFrame({"Loan No": ["L1", "L9"], "SOH": [1.0, 2.0]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result["Loan No"]) == ["L1", "L9"]
+        assert pd.isna(result.iloc[1]["CHANNEL"])
+
+    def test_missing_loan_no_on_source_is_a_no_op(self):
+        curated = pd.DataFrame({"Loan No": ["L1"], "SOH": [100.0]})
+        source = pd.DataFrame({"SOH": [100.0]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result.columns) == ["Loan No", "SOH"]
 
 
 class TestIsYes:

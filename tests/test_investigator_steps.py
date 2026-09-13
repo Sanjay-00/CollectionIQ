@@ -446,6 +446,27 @@ class TestTopAccounts:
     def test_empty_df_returns_empty(self):
         assert top_accounts(pd.DataFrame()).empty
 
+    def test_all_columns_true_returns_every_raw_column(self):
+        # The real, reported gap: this step always returned a fixed
+        # curated subset with no escape hatch -- a raw column like
+        # "CHANNEL" (not in compute_top_accounts' own curated list) must
+        # be reachable via all_columns=True.
+        rows = [{"curr_bucket": "NPA", "SOH": 500_000.0, "CHANNEL": "DSA", "Cust Name": "Akshay"}]
+        curated = top_accounts(make_df(rows), n=5)
+        assert "CHANNEL" not in curated.columns
+
+        full = top_accounts(make_df(rows), n=5, all_columns=True)
+        assert "CHANNEL" in full.columns
+        assert full.iloc[0]["Cust Name"] == "Akshay"
+
+    def test_all_columns_preserves_the_curated_row_order(self):
+        rows = [
+            {"curr_bucket": "NPA", "SOH": 100_000.0, "CHANNEL": "A"},
+            {"curr_bucket": "NPA", "SOH": 900_000.0, "CHANNEL": "B"},
+        ]
+        full = top_accounts(make_df(rows), n=5, all_columns=True)
+        assert full.iloc[0]["CHANNEL"] == "B"  # highest SOH first, same order as curated
+
 
 class TestNewAdvancesTrend:
     """"Show me the last 6 months of new business" -- a DIFFERENT axis from
@@ -570,6 +591,15 @@ class TestRepossessionList:
     def test_empty_df_returns_empty(self):
         assert repossession_list(pd.DataFrame()).empty
 
+    def test_all_columns_true_returns_every_raw_column(self):
+        rows = [{**self._loan("NPA", months_old=5, soh=200_000.0), "CHANNEL": "DSA", "Cust Name": "Akshay"}]
+        curated = repossession_list(make_df(rows), as_of="2025-06-30")
+        assert "CHANNEL" not in curated.columns
+
+        full = repossession_list(make_df(rows), as_of="2025-06-30", all_columns=True)
+        assert "CHANNEL" in full.columns
+        assert full.iloc[0]["Cust Name"] == "Akshay"
+
 
 class TestGoodCustomers:
     """Loyal / high-quality customers eligible for refinance -- a business-
@@ -616,6 +646,17 @@ class TestGoodCustomers:
 
     def test_empty_df_returns_empty(self):
         assert good_customers(pd.DataFrame()).empty
+
+    def test_all_columns_true_returns_every_raw_column(self):
+        rows = [{**self._loan(tenure=100.0, emi_accrued=80.0, lcc=100.0), "CHANNEL": "DSA", "Cust Name": "Akshay"}]
+        curated = good_customers(make_df(rows))
+        assert "CHANNEL" not in curated.columns
+
+        full = good_customers(make_df(rows), all_columns=True)
+        assert "CHANNEL" in full.columns
+        assert full.iloc[0]["Cust Name"] == "Akshay"
+        # The computed column that DEFINES membership must survive expansion.
+        assert full.iloc[0]["Tenure Completed %"] == 80.0
 
 
 class TestVintageSummary:

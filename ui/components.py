@@ -8,7 +8,7 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
-from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
+from utils import load_and_validate, expand_to_all_columns, REQUIRED_COLS, CRITICAL_COLS
 
 
 def _esc(val):
@@ -58,7 +58,7 @@ def query_confidence_tier(result: dict) -> tuple[str, str, str]:
     if result.get("view_render"):
         return (
             "Verified", "#16a34a",
-            "Served by the same pre-built analysis used on the dashboard tabs -- this number matches what you'd see there.",
+            "Served by the same pre-built analysis used on the dashboard tabs: this number matches what you'd see there.",
         )
     # Priority Rules: routed to the fixed seven-tier business-priority
     # framework (agents/data_executor.py::execute_priority_mode) instead of
@@ -172,10 +172,28 @@ def _file_fingerprint(files) -> str:
         return "none"
     if not isinstance(files, list):
         files = [files]
+
+    # app.py calls this on EVERY rerun (the stale-file guard), and hashing a
+    # 200MB upload each click is real latency. Streamlit gives each upload a
+    # unique file_id, so remember the digest per (file_id, size) and only
+    # hash when a new file actually appears. Objects without a file_id
+    # (tests, non-Streamlit callers) are always hashed.
+    ident = tuple((getattr(f, "file_id", None), getattr(f, "size", None)) for f in files)
+    memo = None
+    if all(fid is not None for fid, _ in ident):
+        memo = st.session_state.setdefault("_file_fingerprint_memo", {})
+        if ident in memo:
+            return memo[ident]
+
     h = hashlib.sha256()
     for f in files:
         h.update(f.getvalue())
-    return h.hexdigest()[:16]
+    digest = h.hexdigest()[:16]
+    if memo is not None:
+        if len(memo) >= 8:  # only the current curr/prev selections matter
+            memo.clear()
+        memo[ident] = digest
+    return digest
 
 
 def _bump_data_version(fingerprint: str | None = None) -> None:
@@ -294,8 +312,14 @@ def _excel_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
-def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
+def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame | None = None) -> None:
     """Right-aligned compact Excel download button.
+
+    full_source: pass the loan-level frame the table was derived from (e.g.
+    df_curr) to make the DOWNLOAD carry every raw upload column plus the
+    table's own computed columns, while the on-screen table stays curated.
+    A no-op for tables without a Loan No column (aggregates, scorecards) --
+    see utils.expand_to_all_columns.
 
     Streamlit reruns the ENTIRE script (all 7 tabs, not just the active one --
     tabs are only CSS-hidden when inactive, their code still executes) on
@@ -317,6 +341,8 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
     data). Content hashing fixes this correctly regardless of object
     identity -- verified: a fresh, freshly-copied 2,000-row DataFrame with
     identical content hits cache in ~0.025s vs a ~3.3s cold write."""
+    if full_source is not None:
+        df = expand_to_all_columns(df, full_source)
     data = _excel_bytes(df)
 
     _, col = st.columns([5, 1])
@@ -405,7 +431,7 @@ def _kpi_card_html(
             good  = (count_delta < 0) if inverse else (count_delta > 0)
             cls   = "kpi-mom-up" if good else "kpi-mom-down"
         elif is_tied and count_delta == 0:
-            arrow, cls = "–", "kpi-mom-neutral"
+            arrow, cls = "●", "kpi-mom-neutral"
         elif is_tied and zero_delta_bad:
             arrow = "▲" if delta >= 0 else "▼"
             cls   = "kpi-mom-down" if inverse else "kpi-mom-up"

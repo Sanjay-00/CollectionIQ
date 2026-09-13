@@ -144,7 +144,7 @@ function fill(text) {
         skip_insights = not st.checkbox(
             "Generate AI summary", value=False, key="ai_gen_summary",
             help="Off by default: skips the 2nd Gemini call that writes the bullet-point "
-                 "observations below the table. The table/KPIs/highlights are unaffected -- "
+                 "observations below the table. The table/KPIs/highlights are unaffected: "
                  "check this only if you also want the written narrative, which can add "
                  "several extra seconds (sometimes the slower of the two calls).",
         )
@@ -198,7 +198,7 @@ function fill(text) {
 
     # ── Clarification: query was ambiguous  -  ask instead of guessing ───────────
     if result.get("needs_clarification"):
-        q_question = result.get("clarification_question") or "Your query could be read a few ways  -  which did you mean?"
+        q_question = result.get("clarification_question") or "Your query could be read a few ways: which did you mean?"
         q_options  = result.get("clarification_options") or []
         orig_query = result.get("query") or ""
 
@@ -251,7 +251,7 @@ function fill(text) {
             '<div style="background:#161b22;border:1px dashed #3d444d;border-radius:10px;'
             'padding:10px 16px;margin-top:8px;font-size:12px;color:#9ca3af;">'
             '💬 <strong style="color:#c9d1d9;">None of these?</strong> Your question is still in the '
-            "box above — edit it with the exact detail you meant (e.g. name the metric or "
+            "box above: edit it with the exact detail you meant (e.g. name the metric or "
             'branch/executive/region directly), then click <strong style="color:#c9d1d9;">Run Query</strong> again.'
             "</div>",
             unsafe_allow_html=True,
@@ -481,8 +481,8 @@ function fill(text) {
             st.dataframe(_safe_df(disp.head(1000)), width='stretch',
                          height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
             if len(disp) > 1000:
-                st.caption(f"Showing 1,000 of {len(disp):,} rows  -  download Excel for full list.")
-            _dl_btn(disp, f"priority_{p_num}.xlsx", f"dl_priority_{p_num}")
+                st.caption(f"Showing 1,000 of {len(disp):,} rows: download Excel for full list.")
+            _dl_btn(disp, f"priority_{p_num}.xlsx", f"dl_priority_{p_num}", full_source=df_curr)
 
     elif result.get("plan_mode"):
         # ── Multi-step plan result ────────────────────────────────────────────
@@ -521,7 +521,7 @@ function fill(text) {
         <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
                     padding:16px 20px;margin:0 0 16px 0;">
           <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
-            🧩 MULTI-STEP PLAN  -  {len(filtered_df)} rows
+            🧩 MULTI-STEP PLAN: {len(filtered_df)} rows
           </div>
           <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">{_esc(plain)}</div>
           {steps_html}
@@ -533,7 +533,7 @@ function fill(text) {
             st.dataframe(_safe_df(display_plan.head(1000)), width='stretch',
                          height=min(420, 50 + min(len(display_plan), 1000) * 36), hide_index=True)
             if len(display_plan) > 1000:
-                st.caption(f"Showing 1,000 of {len(display_plan):,} rows  -  download Excel for full list.")
+                st.caption(f"Showing 1,000 of {len(display_plan):,} rows: download Excel for full list.")
             _dl_btn(display_plan, "plan_result.xlsx", "dl_plan")
         else:
             st.warning("The plan returned no rows.")
@@ -590,7 +590,7 @@ function fill(text) {
             st.dataframe(_safe_df(filtered_df.head(1000)), width='stretch',
                          height=min(400, 50 + min(len(filtered_df), 1000) * 36), hide_index=True)
             if len(filtered_df) > 1000:
-                st.caption(f"Showing 1,000 of {len(filtered_df):,} rows - download Excel for full list.")
+                st.caption(f"Showing 1,000 of {len(filtered_df):,} rows: download Excel for full list.")
             _dl_btn(filtered_df, "ranking_result.xlsx", "dl_ranking")
 
     elif is_aggregation:
@@ -615,7 +615,7 @@ function fill(text) {
         <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
                     padding:16px 20px;margin:0 0 16px 0;">
           <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:6px;letter-spacing:1px;">
-            📊 AGGREGATION RESULT - {_esc(header_title.upper())}
+            📊 AGGREGATION RESULT: {_esc(header_title.upper())}
           </div>
           <div style="font-size:12px;color:#94a3b8;">
             {_esc(plain)}&nbsp; &nbsp;
@@ -762,8 +762,8 @@ function fill(text) {
         display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
         st.dataframe(_safe_df(display_filtered.head(1000)), width='stretch', height=320, hide_index=True)
         if len(display_filtered) > 1000:
-            st.caption(f"Showing 1,000 of {len(display_filtered):,} rows - download Excel for full list.")
-        _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table")
+            st.caption(f"Showing 1,000 of {len(display_filtered):,} rows: download Excel for full list.")
+        _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table", full_source=df_curr)
 
     # ── AI Observations ───────────────────────────────────────────────────────
     # Empty when "Generate AI summary" was left unchecked (skip_insights=True) --

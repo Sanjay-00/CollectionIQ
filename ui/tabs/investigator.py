@@ -41,6 +41,7 @@ import uuid
 import pandas as pd
 import streamlit as st
 
+from config import INVESTIGATOR_MAX_THREADS
 from investigator.branch_recipients import get_branch_recipients
 from investigator.email_draft import draft_priority_email
 from investigator.guardrails import validate_and_correct
@@ -149,8 +150,16 @@ def _get_threads() -> dict:
 
 
 def _new_thread() -> str:
+    threads = _get_threads()
+    # Bounded: every thread keeps its own EntityMemory (result tables) in
+    # session_state. At the cap, drop the oldest thread other than the one
+    # currently open.
+    active = st.session_state.get("investigator_active_thread")
+    while len(threads) >= INVESTIGATOR_MAX_THREADS:
+        candidates = [t for t in threads if t != active] or list(threads)
+        del threads[min(candidates, key=lambda t: threads[t]["created_at"])]
     thread_id = uuid.uuid4().hex[:8]
-    _get_threads()[thread_id] = {
+    threads[thread_id] = {
         "title": _NEW_CHAT_TITLE, "turns": [], "memory": EntityMemory(), "created_at": time.time(),
     }
     return thread_id
@@ -403,6 +412,7 @@ def _execute_step(
         return fn(
             df_curr, n=params.get("n", 20),
             scope_col=params.get("scope_col"), scope_value=params.get("scope_value"),
+            all_columns=bool(params.get("all_columns")),
         )
 
     if step_type == "fleet_exposure":
@@ -411,10 +421,14 @@ def _execute_step(
     if step_type == "repossession_list":
         return fn(
             df_curr, scope_col=params.get("scope_col"), scope_value=params.get("scope_value"), as_of=as_of,
+            all_columns=bool(params.get("all_columns")),
         )
 
     if step_type == "good_customers":
-        return fn(df_curr, scope_col=params.get("scope_col"), scope_value=params.get("scope_value"))
+        return fn(
+            df_curr, scope_col=params.get("scope_col"), scope_value=params.get("scope_value"),
+            all_columns=bool(params.get("all_columns")),
+        )
 
     if step_type == "entity_summary":
         entity_type = params["entity_type"]
@@ -564,7 +578,7 @@ def _render_mechanism_suggestions(
             step_type = suggestion["step_type"]
             st.caption(suggestion["reason"])
             if step_type == "roll_rate_summary" and (df_prev is None or df_prev.empty):
-                st.caption("(Needs a previous month's file uploaded -- not available right now.)")
+                st.caption("(Needs a previous month's file uploaded: not available right now.)")
                 continue
             if st.button(suggestion["label"], key=f"mech_{step_type}_{dl_key}"):
                 if step_type == "roll_rate_summary":
@@ -674,7 +688,7 @@ def _render_analyse_further(
                 if not to_list:
                     st.caption(
                         "No manager email on file for this branch yet "
-                        "(investigator/branch_recipients.py) -- the draft's To field "
+                        "(investigator/branch_recipients.py): the draft's To field "
                         "will be blank; fill it in yourself before sending."
                     )
                 st.download_button(
@@ -958,6 +972,34 @@ def _render_analyse_further(
             st.rerun()
 
 
+# Steps that structurally CANNOT compute anything at all without a
+# previous-period file -- bucket migration needs to know last month's own
+# bucket to measure movement against, unlike every other step in this
+# module (entity_summary/dimension_breakdown degrade gracefully to
+# "no Previous/Delta column," never an empty table, when df_prev is
+# missing). An empty result from one of THESE two, with no previous file
+# uploaded, is not "nothing matched" -- it's "this analysis needs a second
+# file you haven't given it," and the generic "No rows matched" message
+# used everywhere else reads as a broken/blank tool for exactly this case.
+_TWO_PERIOD_STEP_TYPES = {"roll_rate_summary", "roll_rate_by_dimension"}
+
+
+def _empty_result_message(step_type: str, df_prev: pd.DataFrame | None) -> str:
+    """What to show for an empty step result -- most of the time that IS
+    the correct, real answer ("zero non-starters this month"), so the
+    generic message stays generic. The one carve-out: roll_rate_summary/
+    roll_rate_by_dimension with no previous file uploaded, where "empty"
+    actually means "this step can't run at all yet," not "nothing
+    matched." Mirrors the exact wording _render_mechanism_suggestions
+    already uses for the SAME situation on its suggestion-button path
+    (below) -- generalized here to every path that can reach these two
+    step types, a direct typed question included, not just that button."""
+    needs_prev = df_prev is None or (hasattr(df_prev, "empty") and df_prev.empty)
+    if step_type in _TWO_PERIOD_STEP_TYPES and needs_prev:
+        return "This needs a previous month's file uploaded to compare buckets against, not available right now."
+    return "No rows matched for this step."
+
+
 def _render_result_body(
     record, df_curr: pd.DataFrame, memory: EntityMemory, show_controls: bool, dl_key: str,
     df_prev: pd.DataFrame | None = None, as_of=None,
@@ -972,13 +1014,13 @@ def _render_result_body(
     bubbles both keyed "inv_region_CS_Nagar")."""
     result_df = record.result_df
     if result_df is None or result_df.empty:
-        st.info("No rows matched for this step.")
+        st.info(_empty_result_message(record.step_type, df_prev))
         return
 
     if record.narrative:
         st.markdown(record.narrative)
     st.dataframe(result_df, width='stretch', hide_index=True)
-    _dl_btn(result_df, f"investigator_{record.step_type or 'result'}.xlsx", key=dl_key)
+    _dl_btn(result_df, f"investigator_{record.step_type or 'result'}.xlsx", key=dl_key, full_source=df_curr)
 
     if show_controls:
         _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
@@ -1080,10 +1122,10 @@ def _process_new_question(
         dl_key = _turn_dl_key(len(turns) - 1, entity_type, entity_value)
 
         if result_df is None or result_df.empty:
-            st.info("No rows matched for this step.")
+            st.info(_empty_result_message(turn["step_type"], df_prev))
         else:
             st.dataframe(result_df, width='stretch', hide_index=True)
-            _dl_btn(result_df, f"investigator_{turn['step_type']}.xlsx", key=dl_key)
+            _dl_btn(result_df, f"investigator_{turn['step_type']}.xlsx", key=dl_key, full_source=df_curr)
             _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
 
 

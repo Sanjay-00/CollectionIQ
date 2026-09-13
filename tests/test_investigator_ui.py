@@ -8,6 +8,7 @@ import streamlit as st
 
 from ui.tabs.investigator import (
     _derive_entity_key,
+    _empty_result_message,
     _get_active_thread_id,
     _get_memory,
     _get_threads,
@@ -79,6 +80,50 @@ class TestThreads:
         title = _get_threads()[active]["title"]
         assert len(title) <= 43  # 40 chars + "..."
         assert title.endswith("...")
+
+
+class TestEmptyResultMessage:
+    """The real, reported bug: uploading only ONE file (no previous month)
+    and asking a roll-rate/mechanism question ("why is NPA rising, is it
+    roll forward driven?") routes to roll_rate_summary, which structurally
+    CANNOT compute anything without a previous period -- it correctly
+    returns an empty DataFrame, but the generic "No rows matched for this
+    step." message that used to show for ANY empty result reads as "the
+    tool is broken," not "this specific analysis needs a second file."
+    Confirmed live: two such questions in one conversation produced this
+    same uninformative message twice in a row. This mirrors the message
+    _render_mechanism_suggestions already shows for the SAME situation on
+    its suggestion-button path -- generalized here to every path that can
+    reach these two step types (a direct typed question included), not
+    just the button."""
+
+    def test_roll_rate_summary_without_a_previous_file_gets_a_specific_message(self):
+        msg = _empty_result_message("roll_rate_summary", pd.DataFrame())
+        assert "previous month" in msg.lower()
+
+    def test_roll_rate_summary_with_prev_none_gets_a_specific_message(self):
+        msg = _empty_result_message("roll_rate_summary", None)
+        assert "previous month" in msg.lower()
+
+    def test_roll_rate_by_dimension_without_a_previous_file_gets_a_specific_message(self):
+        # Only reachable via a direct typed question, never the suggestion
+        # button -- must be covered too, not just roll_rate_summary.
+        msg = _empty_result_message("roll_rate_by_dimension", pd.DataFrame())
+        assert "previous month" in msg.lower()
+
+    def test_roll_rate_summary_with_a_real_previous_file_keeps_the_generic_message(self):
+        # A previous file WAS given -- an empty result here is a genuine
+        # "no migration data matched" answer, not a missing-file problem.
+        prev = pd.DataFrame({"Unit": ["MAHAD"]})
+        msg = _empty_result_message("roll_rate_summary", prev)
+        assert msg == "No rows matched for this step."
+
+    def test_other_step_types_keep_the_generic_message_even_without_a_previous_file(self):
+        # concept_filter/priority_menu/etc. never needed a previous file in
+        # the first place -- an empty result from THEM really does just
+        # mean "nothing matched," so the message must not change for them.
+        msg = _empty_result_message("concept_filter", pd.DataFrame())
+        assert msg == "No rows matched for this step."
 
 
 class TestTurnDlKey:

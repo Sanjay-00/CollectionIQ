@@ -1,10 +1,10 @@
 ﻿import os
 import json
 import re
-import time
-from google import genai
 from langsmith import traceable
 from config import GEMINI_MODEL
+# Re-exported: logical_planner / investigator.llm import _call_gemini_with_retry from here.
+from gemini_client import call_gemini_with_retry as _call_gemini_with_retry, make_client
 
 # Business Priority Framework  -  canonical definition now lives in the registry
 # (registry/ontology.py). Re-exported here so existing consumers keep working:
@@ -48,17 +48,6 @@ def _build_priority_text() -> str:
         cond_text = " AND ".join(cond_parts)
         lines.append(f"Priority {r['rank']} - {r['label']} ({cond_text}): {r['why']}")
     return "\n".join(lines)
-
-
-def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
-    """Call Gemini with exponential backoff retry on transient failures."""
-    for attempt in range(max_retries + 1):
-        try:
-            return client.models.generate_content(model=model, contents=contents, config=config)
-        except Exception as e:
-            if attempt == max_retries:
-                raise
-            time.sleep(2 ** attempt)
 
 
 def _add_token_usage(response) -> None:
@@ -574,7 +563,7 @@ def enrich_query(raw_query: str, snapshot_dates: dict | None = None, repair_feed
         "[DECISION MODE: the user has already clarified their intent in this query. "
         "Do NOT ask for clarification; make your best decision and produce a plan/spec.] "
     )
-    client = genai.Client(api_key=api_key)
+    client = make_client(api_key)
     response = _call_gemini_with_retry(
         client, GEMINI_MODEL,
         decision_context + repair_context + snapshot_context + date_context + raw_query,

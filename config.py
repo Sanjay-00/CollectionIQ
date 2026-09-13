@@ -18,6 +18,27 @@ GEMINI_MODEL = "gemini-2.5-flash-lite"
 # point writing, where some variety is fine and arguably desirable.
 PLANNER_TEMPERATURE = 0.1
 
+# Longest free-text question either chat surface (AI Query, Investigator)
+# will send to Gemini -- a cost/abuse guardrail; a real portfolio question
+# never needs more. One constant so the two surfaces can't drift apart.
+MAX_QUERY_CHARS = 1000
+
+# Per-request Gemini timeout (gemini_client.make_client). Without one, a hung
+# connection blocked a user's query indefinitely. Flash-Lite answers in a few
+# seconds; 60s leaves room for the longer report-narrative prompts.
+GEMINI_TIMEOUT_MS = 60_000
+
+# Investigator session caps -- threads and remembered result tables live in
+# st.session_state for the whole browser session, and each table can be
+# thousands of rows. Oldest (least recently used) entries are evicted first.
+INVESTIGATOR_MAX_THREADS = 10
+INVESTIGATOR_MAX_ENTITIES = 30
+
+# Raw LCC columns that identify a customer or guarantor. Must never reach a
+# Gemini prompt or a LangSmith trace in a multi-customer result. Shared by
+# graph.py (AI Query) and investigator/llm.py so the two lists can't diverge.
+PII_COLUMNS = ("Cust Name", "Cust Mob No", "Guar Name", "Guar Mob No")
+
 # Query outcome logging: every AI Query run appends one line (timestamp, raw query
 # text, outcome classification, matched view/intent, error if any) to a local
 # JSONL file. Purpose: find out what real users ask that the registry vocabulary

@@ -1,23 +1,12 @@
 import logging
 import os
 import time
-from google import genai
 from langsmith import traceable
 from config import GEMINI_MODEL
+from gemini_client import call_gemini_with_retry as _call_gemini_with_retry, make_client
 from report_agent.state import ReportState
 
 logger = logging.getLogger(__name__)
-
-
-def _call_gemini_with_retry(client, model, contents, config, max_retries=2):
-    for attempt in range(max_retries + 1):
-        try:
-            return client.models.generate_content(model=model, contents=contents, config=config)
-        except Exception as e:
-            if attempt == max_retries:
-                raise
-            logger.warning("Risk Narrator Gemini call failed (attempt %d/%d): %s", attempt + 1, max_retries + 1, e)
-            time.sleep(2 ** attempt)
 
 
 def _add_token_usage(response) -> None:
@@ -123,7 +112,7 @@ def _build_prompt(section_data: dict, curr_month: str) -> str:
     if ri:
         parts.append("\nRISK INDICATORS (early warning):")
         for ind in ri.get("indicators", []):
-            parts.append(f"  {ind['Signal']}: {ind['This Month']} ({ind['Direction']}) - {ind['Note']}")
+            parts.append(f"  {ind['Signal']}: {ind['This Month']} ({ind['Direction']}), {ind['Note']}")
 
     bq = section_data.get("branch_quadrant")
     if bq:
@@ -184,14 +173,14 @@ ACTION_PROMPT = """You are a collections strategy consultant for an NBFC.
 Based on the portfolio data provided, generate exactly 5 numbered action items for the collection team this month.
 
 Format each item exactly as:
-N. [Specific action with branch/executive name if available] - Owner: [Role] - Timeline: [When]
+N. [Specific action with branch/executive name if available] | Owner: [Role] | Timeline: [When]
 
 Rules:
 - Be specific (name the branch, bucket, or executive where data is available)
 - Owner must be one of: Branch Manager, Field Executive, Regional Manager, Collection Head
 - Timeline must be one of: Immediate (this week), By month-end, Next 48 hours
 - No markdown, no em dashes, no double dashes
-- Use ' - ' (space hyphen space) as the separator"""
+- Use ' | ' (space, pipe, space) as the separator"""
 
 
 @traceable(run_type="chain", name="RiskNarrator", tags=["gemini", "nbfc", "report-generation"])
@@ -207,7 +196,7 @@ def risk_narrator_node(state: ReportState) -> ReportState:
         return _empty
 
     prompt = _build_prompt(sd, state["curr_month"])
-    client = genai.Client(api_key=api_key)
+    client = make_client(api_key)
 
     # Two INDEPENDENT calls, two independent try/excepts -- a failure in the
     # action-plan call must not throw away a successfully-generated narrative

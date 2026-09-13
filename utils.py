@@ -1,5 +1,7 @@
 ﻿import datetime
 import html
+import re
+import warnings
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -88,10 +90,62 @@ def _parse_date_column(col: pd.Series) -> tuple[pd.Series, int, int]:
 
     remaining = ~is_dt_obj & ~is_numeric
     if remaining.any():
-        result.loc[remaining] = pd.to_datetime(col[remaining], errors="coerce")
+        result.loc[remaining] = _parse_text_dates(col[remaining])
 
     unexpected_failures = int((result.isna() & ~raw_blank).sum())
     return result, unexpected_failures, int((~raw_blank).sum())
+
+
+# Text-date formats seen in LCC extracts, tried BEFORE pandas' format-less
+# parse. That fallback parses cell-by-cell via dateutil (slow on a large
+# file, and the source of a "Could not infer format" warning per column).
+# Unambiguous formats first; numeric d/m/y vs m/d/y order is chosen per column.
+_UNAMBIGUOUS_DATE_FORMATS = (
+    "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d",
+    "%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%d-%B-%Y",
+)
+_DAY_FIRST_FORMATS = ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y")
+_MONTH_FIRST_FORMATS = ("%m/%d/%Y", "%m-%d-%Y", "%m.%d.%Y", "%m/%d/%y", "%m-%d-%y")
+_NUMERIC_DATE_RE = re.compile(r"^\s*(\d{1,2})[/.\-](\d{1,2})[/.\-]\d{2,4}")
+
+
+def _column_is_day_first(text: pd.Series) -> bool:
+    """Day-first only when the column itself proves it: some cell's FIRST
+    number is > 12 (can't be a month) and no cell's SECOND number is. A
+    column with no deciding cell (every value like 03/04/2024) stays
+    month-first -- the same order pandas' own format inference chose before
+    this parser existed, so no existing result silently changes."""
+    parts = text.str.extract(_NUMERIC_DATE_RE)
+    first = pd.to_numeric(parts[0], errors="coerce")
+    second = pd.to_numeric(parts[1], errors="coerce")
+    return bool((first > 12).any() and not (second > 12).any())
+
+
+def _parse_text_dates(col: pd.Series) -> pd.Series:
+    """Vectorized text-date parse: each known format is applied to whatever
+    is still unparsed; only cells matching none of them fall through to the
+    old per-cell parse (warning suppressed -- unparseable cells are already
+    counted and surfaced by _parse_date_column's failure count)."""
+    text = col.astype(str).str.strip()
+    day_first = _column_is_day_first(text)
+    formats = _UNAMBIGUOUS_DATE_FORMATS + (_DAY_FIRST_FORMATS if day_first else _MONTH_FIRST_FORMATS)
+
+    result = pd.Series(pd.NaT, index=col.index, dtype="datetime64[ns]")
+    todo = pd.Series(True, index=col.index)
+    for fmt in formats:
+        if not todo.any():
+            break
+        parsed = pd.to_datetime(text[todo], format=fmt, errors="coerce")
+        hit = parsed.index[parsed.notna()]
+        if len(hit):
+            result.loc[hit] = parsed.loc[hit]
+            todo.loc[hit] = False
+
+    if todo.any():
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Could not infer format")
+            result.loc[todo] = pd.to_datetime(text[todo], errors="coerce", dayfirst=day_first)
+    return result
 
 # Columns that MUST exist for calculations to work
 CRITICAL_COLS = [
@@ -574,6 +628,47 @@ def to_num(df: pd.DataFrame, col: str, fill: float | None = None) -> pd.Series:
 def account_count(df: pd.DataFrame, col: str = "Loan No") -> int:
     """Distinct-loan count, falling back to row count when `col` is absent."""
     return df[col].nunique() if col in df.columns else len(df)
+
+
+def expand_to_all_columns(curated: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
+    """Swaps a curated, column-limited result for every raw column
+    `source_df` actually has, for the SAME rows `curated` already selected,
+    in the SAME order -- matched by Loan No (present on every loan-level
+    result in this codebase). A no-op (returns `curated` unchanged) if
+    either frame lacks Loan No, or `curated` is empty -- callers use this
+    only once they already know `curated` is loan-level.
+
+    A real, confirmed gap this closes: several loan-level results (the
+    Investigator's own top_accounts/repossession_list/good_customers, and
+    the AI Query pipeline's equivalent fast-path VIEWS -- top_delinquent_
+    accounts, repossession_eligible, good_customers, all backed by the
+    SAME analysis/ functions) always returned a fixed curated column
+    subset with no way to ask for the raw ~90+ columns instead, even
+    though a sibling step/path (non_paying_customers, customer_loan_book,
+    worst_loans_by_metric, priority_accounts on the Investigator side;
+    show_all_columns on the general AI Query compiler path) already had an
+    "all columns" escape hatch. Shared here, once, so "give me every
+    column" behaves identically and gets fixed in one place, not
+    separately in each pipeline that can hit this shape of question.
+
+    Column layout: every raw source column (in source order), then any
+    curated-only COMPUTED column appended at the end (e.g. good_customers'
+    "Tenure Completed %", priority "Why") -- expansion adds columns, never
+    drops the derived ones that explain why a row is on the list. For a
+    column present in both, the curated value wins, so the download matches
+    what's on screen (curated tables carry cleaned numbers/dates).
+    """
+    if curated.empty or "Loan No" not in curated.columns or "Loan No" not in source_df.columns:
+        return curated
+    curated = curated.loc[:, ~curated.columns.duplicated()].reset_index(drop=True)
+    source = source_df.loc[:, ~source_df.columns.duplicated()].drop_duplicates(subset=["Loan No"])
+    # Left merge (not .loc) keeps curated's row order and tolerates a Loan No
+    # the source doesn't have instead of raising KeyError.
+    full = curated[["Loan No"]].merge(source, on="Loan No", how="left")
+    for col in curated.columns:
+        if col != "Loan No":
+            full[col] = curated[col].values
+    return full
 
 
 def normalize_truncated_names(series: pd.Series, prefix_chars: int = SEGMENT_NAME_PREFIX_MATCH_CHARS) -> pd.Series:
@@ -1066,7 +1161,7 @@ def build_html_export(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CollectionIQ  -  Regional Collection Dashboard {month_label}</title>
+<title>CollectionIQ: Regional Collection Dashboard {month_label}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>

@@ -33,7 +33,7 @@ _KNOWN_COLS = set(CRITICAL_COLS) | set(REQUIRED_COLS) | _DERIVED_COLS
 _PRIORITY_TO_CONCEPT = {
     "Non Starters":                  "non_starter",
     "Easy Settlements":              "easy_settlement",
-    "Recent Advances - High Bucket": "recent_advance_high_bucket",
+    "Recent Advances: High Bucket": "recent_advance_high_bucket",
     "Insurance-Driven Delinquency":  "insurance_driven_delinquency",
     "Co-lending at Risk":            "colending_at_risk",
     "No Collection 3 Months":        "no_collection_3m",
