@@ -40,6 +40,13 @@ from analysis.portfolio_intelligence import (
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.report import render_report_tab
 from ui.tabs.investigator import render_investigator_tab
+from ui.tabs.root_cause import render_root_cause_tab
+from analysis.root_cause import (
+    clean_contaminated_flags, compute_insurance_split,
+    compute_chronic_shock_split, compute_region_why_table,
+    compute_recent_advances_summary, compute_recent_advances_bucket_summary,
+    compute_recent_advances_bucket_by_group,
+)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -373,6 +380,30 @@ def _cached_portfolio_intel(
         overdue_demand_scorecard, new_advances, new_advances_by_dim,
     )
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_root_cause(
+    _df_c: pd.DataFrame, _region_df: pd.DataFrame,
+    data_version: int, region: str, branch: str, status: str, segment: tuple,
+):
+    # region_df comes from _cached_portfolio_intel (compute_region_scorecard) --
+    # reused, not recomputed, so Root Cause's NPA%/Δ NPA%/Status/Collection%
+    # figures are numerically identical to what Portfolio Intelligence already
+    # shows for the same region, never a second independent calculation.
+    df_clean, contamination = clean_contaminated_flags(_df_c)
+    insurance_split = compute_insurance_split(df_clean, group_col="Unit")
+    chronic_shock = compute_chronic_shock_split(df_clean, group_col="Unit")
+    why_df = compute_region_why_table(df_clean, _region_df)
+    recent_summary = compute_recent_advances_summary(df_clean)
+    recent_bucket = compute_recent_advances_bucket_summary(df_clean)
+    recent_by_region_count, recent_by_region_soh = compute_recent_advances_bucket_by_group(df_clean, group_col="RegionName")
+    recent_by_branch_count, recent_by_branch_soh = compute_recent_advances_bucket_by_group(df_clean, group_col="Unit")
+    return (
+        why_df, insurance_split, chronic_shock, contamination,
+        recent_summary, recent_bucket,
+        recent_by_region_count, recent_by_region_soh,
+        recent_by_branch_count, recent_by_branch_soh,
+    )
+
 # ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
 _seg_t = tuple(sel_segment)
 df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, data_version, sel_region, sel_branch, sel_status, _seg_t)
@@ -446,7 +477,7 @@ n_alerts = sum(1 for a in alerts if a["count"] > 0)
 # match the previously-selected option string and silently deselect it.
 # The count is shown as a caption next to the selector instead.
 
-_TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
+_TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence", "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
 
 active = st.segmented_control(
     "Section", options=_TAB_LABELS, default=_TAB_LABELS[0], key="_active_section", label_visibility="collapsed",
@@ -476,7 +507,7 @@ if active == "🚨 Alerts" and n_alerts:
 # falls back to calling the analysis/ function fresh whenever a view's
 # cache_key isn't present in precomputed_views (e.g. a filtered/non-default
 # query), so an empty dict here is a correctness no-op, not a missing case.
-_needs_pi = active in ("📊 Portfolio Intelligence", "💼 Business", "🤖 AI Query")
+_needs_pi = active in ("📊 Portfolio Intelligence", "🔎 Root Cause", "💼 Business", "🤖 AI Query")
 
 alerts_prev = []
 precomputed_views = {}
@@ -527,6 +558,19 @@ if _needs_pi:
         "pi_new_advances":    pi_new_advances,
         "pi_new_advances_by_dim": pi_new_advances_by_dim,
     }
+
+    # Root Cause reuses pi_region (compute_region_scorecard) rather than a
+    # second independent call -- only actually computed when that tab is the
+    # one active, not on every Business/AI Query rerun that also needs pi_region.
+    if active == "🔎 Root Cause":
+        (
+            rc_why_df, rc_insurance_split, rc_chronic_shock, rc_contamination,
+            rc_recent_summary, rc_recent_bucket,
+            rc_recent_by_region_count, rc_recent_by_region_soh,
+            rc_recent_by_branch_count, rc_recent_by_branch_soh,
+        ) = _cached_root_cause(
+            df_curr, pi_region, data_version, sel_region, sel_branch, sel_status, _seg_t,
+        )
 
 
 def _tab_error(name: str, exc: Exception) -> None:
@@ -592,6 +636,25 @@ elif active == "📊 Portfolio Intelligence":
         )
     except Exception as _e:
         _tab_error("Portfolio Intelligence", _e)
+
+elif active == "🔎 Root Cause":
+    try:
+        render_root_cause_tab(
+            why_df=rc_why_df,
+            insurance_split_df=rc_insurance_split,
+            chronic_shock_df=rc_chronic_shock,
+            contamination=rc_contamination,
+            curr_month=curr_month,
+            df_curr=df_curr,
+            recent_summary=rc_recent_summary,
+            recent_bucket_df=rc_recent_bucket,
+            recent_by_region_count=rc_recent_by_region_count,
+            recent_by_region_soh=rc_recent_by_region_soh,
+            recent_by_branch_count=rc_recent_by_branch_count,
+            recent_by_branch_soh=rc_recent_by_branch_soh,
+        )
+    except Exception as _e:
+        _tab_error("Root Cause", _e)
 
 elif active == "💼 Business":
     try:
