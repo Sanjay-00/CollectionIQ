@@ -36,7 +36,24 @@ It answers questions in plain English, surfaces risks automatically, and generat
 
 ## Try It in 30 Seconds
 
-No data? No setup? Click **Fill Sample Data** on the landing page. It fetches a real LCC extract directly from this repository and builds the full dashboard instantly. No file upload, no API key, no configuration needed.
+No data? No setup? Click **Fill Sample Data** on the landing page. It loads a demo portfolio of 8,000 loans across 10 regions (August 2026, with July 2026 as the previous month) and builds the full dashboard instantly. No file upload, no API key, no configuration needed.
+
+The demo data is fully synthetic: no real customer, loan or branch figure. Its patterns (bucket mix, ticket sizes, collection rates, fleet share) were calibrated against a real portfolio in aggregate only, and each region carries a deliberate story so every tab has something to find:
+
+| Region | Story |
+|---|---|
+| Solapur | Chronic non-payers, highest NPA |
+| Nashik | Worsening month on month, one weak branch |
+| Sangli | Deep arrears, still paying (older loans sliding into the hard bucket) |
+| Kolhapur | Insurance-driven delinquency (EMIs paid, insurance unpaid) |
+| Jalgaon | Fleet-operator concentration |
+| Nanded | New loans going bad fast, non-starters |
+| Satara | Improving, with catch-up collections |
+| Thane | Co-lending at risk, easy settlements |
+| Pune | Healthiest region; a star and a weak executive in the same branch |
+| Ratnagiri | Healthy and stable |
+
+To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_Date_Missed_List.xlsx` there. Regenerate everything with `python generate_demo_data.py`.
 &nbsp;
 
 ## Screenshots
@@ -360,6 +377,7 @@ CollectionIQ/
 ├── smart_alerts.py                 # 6 rule-based risk alerts (pure pandas, no LLM)
 ├── config.py                       # Model name, thresholds, and other tuned constants
 ├── gemini_client.py                # Shared Gemini client: timeout + transient-only retry
+├── generate_demo_data.py           # Builds the synthetic demo files in sample_data/
 │
 ├── agents/
 │   ├── logical_planner.py          # Query to declarative intent (IR-1), the live planner
@@ -405,8 +423,9 @@ CollectionIQ/
 │       └── email_dispatcher.py     # SMTP delivery
 │
 ├── sample_data/
-│   ├── Current_Month_Demo.xlsx     # Sample LCC extract, current month
-│   └── Previous_Month_Demo.xlsx    # Sample LCC extract, previous month
+│   ├── Current_Month_Demo.xlsx     # Synthetic demo LCC, Aug 2026 (8,000 loans)
+│   ├── Previous_Month_Demo.xlsx    # Synthetic demo LCC, Jul 2026
+│   └── Demo_Due_Date_Missed_List.xlsx  # Demo list for the Root Cause due-date check
 │
 └── requirements.txt
 ```
