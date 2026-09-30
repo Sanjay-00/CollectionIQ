@@ -10,6 +10,7 @@ from ui.components import (
     _npa_pct_color, _sma2_pct_color, _chart_card, _divider, append_total_row,
     _esc,
 )
+from ui.glossary import help_for, info_icon
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS,
     GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
@@ -102,6 +103,7 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
         "Region",
         "SMA-2", "SMA-2%",
         "NPA", "NPA%",
+        "Delinquent", "Delinquency%",
         *( ["Δ SMA-2%", "Δ NPA%"] if has_prev else []),
         "Collection%", "Strike%", "SOH (Cr)",
         *( ["Roll Fwd%", "Roll Bwd%"] if "Roll Fwd%" in df.columns and df["Roll Fwd%"].notna().any() else []),
@@ -152,6 +154,12 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
                 c = _npa_pct_color(val)
                 display = f"{val:.1f}%" if val is not None else " - "
                 cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
+            elif col == "Delinquent":
+                c = "#d97706" if (val or 0) > 0 else "#374151"
+                display = f"{int(val):,}" if val is not None else " - "
+                cells += f'<td style="{style}color:{c};">{display}</td>'
+            elif col == "Delinquency%":
+                cells += f'<td style="{style}font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
             elif col == "Roll Fwd%":
                 c = "#dc2626" if (val or 0) > 20 else ("#d97706" if (val or 0) > 10 else "#16a34a")
                 cells += f'<td style="{style}color:{c};font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
@@ -325,10 +333,21 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
                 # added for one consumer doesn't silently change another's.
                 _branch_display_cols = [c for c in [
                     "Rank", "Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%",
+                    "Delinquent", "Delinquency%",
                     "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)", "Concern Score",
                 ] if c in branch_df.columns]
                 _branch_display_df = branch_df[_branch_display_cols]
-                st.dataframe(_safe_df(append_total_row(_branch_display_df)), use_container_width=True, hide_index=True)
+                _col_help = {
+                    "Chronic (3M+)": help_for("Chronic (3M+)"),
+                    "Concern Score": help_for("Concern Score"),
+                    "Hard Bucket%": help_for("Hard Bucket%"),
+                    "Delinquent": help_for("Delinquent Accounts"),
+                    "Delinquency%": "% of loans with any EMI or charge overdue (Arrears/EMI above 0).",
+                }
+                st.dataframe(
+                    _safe_df(append_total_row(_branch_display_df)), use_container_width=True, hide_index=True,
+                    column_config={c: st.column_config.Column(help=h) for c, h in _col_help.items() if c in _branch_display_cols},
+                )
                 _dl_btn(_branch_display_df, "branch_quadrant.xlsx", "dl_branch_quad")
         else:
             st.info("No branch data (Unit column not found).")
@@ -768,7 +787,7 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
     col_fleet, col_top = st.columns(2)
 
     with col_fleet:
-        st.markdown(f'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure ({FLEET_MIN_LOANS}+ Loans per Customer)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure ({FLEET_MIN_LOANS}+ Loans per Customer){info_icon(help_for("Fleet operator"))}</div>', unsafe_allow_html=True)
         cnt      = fleet.get("count", 0)
         soh      = fleet.get("total_soh_cr", 0.0)
         npa_ops  = fleet.get("npa_operators", 0)

@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.components import _dl_btn, _divider, append_total_row, _esc
+from ui.glossary import DRIVER_HELP, help_for, info_icon
 from analysis.root_cause import (
     build_root_cause_workbook, load_daily_missed_feed,
     compute_recent_advances_daily_match, compute_recent_advances_status_by_grain,
@@ -102,7 +103,8 @@ def _html_table(df: pd.DataFrame, cols: list[dict], last_row_is_total: bool = Fa
     gets severity-colored -- an aggregate isn't a peer to color-rank."""
     th = "".join(
         f'<th style="background:#111;color:#FFC000;padding:7px 12px;font-size:11px;'
-        f'text-align:{c.get("align", "right")};white-space:nowrap;">{_esc(c.get("label", c["key"]))}</th>'
+        f'text-align:{c.get("align", "right")};white-space:nowrap;">{_esc(c.get("label", c["key"]))}'
+        f'{info_icon(c.get("help", help_for(c["key"])), color="#fde68a")}</th>'
         for c in cols
     )
     n = len(df)
@@ -176,8 +178,9 @@ def _render_why_table(why_df: pd.DataFrame) -> None:
             f'<div style="font-size:12px;color:#374151;">NPA% <b>{row.get("NPA%", 0):.1f}%</b> ({delta_txt})</div>'
             f'<div style="font-size:12px;color:#374151;">Collection% <b>{row.get("Collection%", 0):.1f}%</b></div>'
             f'<div style="flex:1;text-align:right;font-size:12px;">'
-            f'<span style="color:#6b7280;">Dominant driver:</span> '
-            f'<b style="color:#111827;">{_esc(row.get("Dominant Driver", "-"))}</b> '
+            f'<span style="color:#6b7280;">Dominant driver{info_icon(help_for("Dominant Driver"))}:</span> '
+            f'<b style="color:#111827;">{_esc(row.get("Dominant Driver", "-"))}</b>'
+            f'{info_icon(DRIVER_HELP.get(row.get("Dominant Driver")))} '
             f'<span style="color:#6b7280;">({row.get("Driver Share %", 0):.0f}% of delinquents)</span>'
             f'</div>'
             f'</div>',
@@ -191,7 +194,8 @@ def _render_why_table(why_df: pd.DataFrame) -> None:
             {"key": "NPA%", "fmt": _fmt_pct(1), "color": _severity_color(hi=10, mid=5)},
             {"key": "Δ NPA%", "fmt": lambda v, _r=None: "-" if _is_missing(v) else f"{v:+.2f}pp"},
             {"key": "Collection%", "fmt": _fmt_pct(1)},
-            {"key": "Dominant Driver", "align": "left"},
+            {"key": "Dominant Driver", "align": "left",
+             "fmt": lambda v, _r=None: _fmt_text(v) + info_icon(DRIVER_HELP.get(v))},
             {"key": "Driver Share %", "fmt": _fmt_pct(0)},
             {"key": "Delinquent Accounts", "fmt": _fmt_int},
         ]
@@ -366,43 +370,50 @@ def _render_recent_advances_by_group(count_df: pd.DataFrame, soh_df: pd.DataFram
 # Thresholds are tuned to the Nov'25+ cohort's own observed scale (verified on
 # real data), NOT the portfolio-wide NPA%/SMA-2% thresholds elsewhere in the
 # app: Delinquent % (any missed due date) legitimately runs high (10-50%+) on
-# a young book, while PNPA%/NPA% within that same cohort are naturally much
+# a young book, while SMA-2%/NPA% within that same cohort are naturally much
 # smaller (any NPA at all this early is already a bad sign) -- so each metric
 # gets its own hi/mid cutoffs rather than sharing one scale.
 _STATUS_SEVERITY = {
-    "Delinquent %": _severity_color(hi=25, mid=12),
-    "PNPA %": _severity_color(hi=5, mid=2),
-    "NPA %": _severity_color(hi=3, mid=1.5),
+    "Delinquent": _severity_color(hi=25, mid=12),
+    "SMA-2": _severity_color(hi=5, mid=2),
+    "NPA": _severity_color(hi=3, mid=1.5),
 }
 
 
-def _render_status_table(status_df: pd.DataFrame, grain_label: str, required_cols_hint: str) -> None:
+def _count_with_pct(key: str):
+    """'150 (7.5%)' -- the count plus its share of the row's Running Loans."""
+    def _f(v, row) -> str:
+        if _is_missing(v):
+            return "-"
+        pct = row.get(f"{key} %")
+        pct_html = "" if _is_missing(pct) else f' <span style="color:#6b7280;font-weight:400;">({float(pct):.1f}%)</span>'
+        return f"{int(v):,}{pct_html}"
+    return _f
+
+
+def _color_by_pct(key: str):
+    severity = _STATUS_SEVERITY.get(key)
+
+    def _c(_v, row):
+        return severity(row.get(f"{key} %")) if severity else None
+    return _c
+
+
+def _render_status_table(status_df: pd.DataFrame, grain_label: str) -> None:
     if status_df.empty:
-        st.warning(f"Could not build the {grain_label.lower()} table ({required_cols_hint}).")
-        return
-    total_col = next(c for c in status_df.columns if c.startswith("Total "))
-    label_cols = [c for c in ("Region", "Branch", "Executive") if c in status_df.columns]
-    primary_label = label_cols[0]
-    unmapped = status_df[status_df[total_col].isna() & (status_df[primary_label] != "Grand Total")][primary_label].tolist()
-    if unmapped:
-        shown = ", ".join(map(str, unmapped[:10])) + (f" (+{len(unmapped) - 10} more)" if len(unmapped) > 10 else "")
         st.warning(
-            f"No matching {grain_label.lower()} in the master file for: {shown} "
-            "(not in this master, or spelled differently). Their counts are shown but "
-            "their % is blank, and the Grand Total % is understated."
+            f"Could not build the {grain_label.lower()} table: the list needs LOAN NO and "
+            "ARREARS / EMI columns, and the LCC needs running loans from the cohort start onward."
         )
-    cols = []
-    for lc in label_cols:
-        cols.append({"key": lc, "align": "left", "bold": True})
-    cols.append({"key": total_col, "fmt": _fmt_int})
-    cols.append({"key": "Delinquent Cases", "fmt": _fmt_int})
-    cols.append({"key": "Delinquent %", "fmt": _fmt_pct(2), "color": _STATUS_SEVERITY["Delinquent %"]})
-    cols.append({"key": "PNPA (SMA-2) Cases", "fmt": _fmt_int})
-    cols.append({"key": "PNPA %", "fmt": _fmt_pct(2), "color": _STATUS_SEVERITY["PNPA %"]})
-    cols.append({"key": "NPA Cases", "fmt": _fmt_int})
-    cols.append({"key": "NPA %", "fmt": _fmt_pct(2), "color": _STATUS_SEVERITY["NPA %"]})
+        return
+    label_cols = [c for c in status_df.columns if c in ("Region", "Branch", "Executive")]
+    count_cols = [c for c in status_df.columns if c not in label_cols and c != "Running Loans" and not c.endswith(" %")]
+    cols = [{"key": lc, "align": "left", "bold": lc == label_cols[0]} for lc in label_cols]
+    cols.append({"key": "Running Loans", "fmt": _fmt_int, "bold": True})
+    for c in count_cols:
+        cols.append({"key": c, "fmt": _count_with_pct(c), "color": _color_by_pct(c)})
     st.markdown(_html_table(status_df, cols, last_row_is_total=True), unsafe_allow_html=True)
-    _dl_btn(status_df, f"cohort_delinquency_by_{grain_label.lower()}.xlsx", f"dl_root_cause_{grain_label.lower()}_status")
+    _dl_btn(status_df, f"recent_advances_delinquency_by_{grain_label.lower()}.xlsx", f"dl_root_cause_{grain_label.lower()}_status")
 
 
 def _render_status_by_grain(df_curr: pd.DataFrame, daily_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -412,28 +423,71 @@ def _render_status_by_grain(df_curr: pd.DataFrame, daily_df: pd.DataFrame) -> tu
 
     tab_r, tab_b, tab_e = st.tabs(["By Region", "By Branch", "By Executive"])
     with tab_r:
-        _render_status_table(region_status, "Region", "the feed needs REGIONNAME, ARREARS / EMI and LOAN NO columns")
+        _render_status_table(region_status, "Region")
     with tab_b:
-        _render_status_table(branch_status, "Branch", "the feed needs UNIT, ARREARS / EMI and LOAN NO columns")
+        _render_status_table(branch_status, "Branch")
     with tab_e:
-        _render_status_table(executive_status, "Executive", "the feed needs RE NAME, UNIT, ARREARS / EMI and LOAN NO columns")
+        _render_status_table(executive_status, "Executive")
     return region_status, branch_status, executive_status
 
 
-def _render_daily_match(df_curr: pd.DataFrame) -> dict | None:
-    """Optional: upload today's due-date-missed daily feed (a DIFFERENT file/
-    schema than the master LCC -- see analysis.root_cause module docstring) to
-    cross-check how many of the cohort are CURRENTLY missing a due date,
-    fresher than master's own snapshot. Returns the match dict (also stashed
-    in session_state) so the caller can fold it into the Excel export."""
-    _section("Cohort Delinquency Status: Today's Due-Date-Missed Feed", margin_top="24px")
+def _render_match_notes(match: dict) -> None:
+    """Explain every list loan the table does NOT count, in plain words."""
+    notes = []
+    if match["exec_changed_count"]:
+        notes.append(
+            f"**{match['exec_changed_count']:,}** delinquent loans have a different executive on the list "
+            "than in the LCC. They are shown under their LCC executive, so each executive's % "
+            "compares the same loans."
+        )
+    if match["other_scope_count"]:
+        notes.append(f"**{match['other_scope_count']:,}** list loans are from regions/zones not in this LCC: ignored.")
+    if match["hidden_by_filter_count"]:
+        notes.append(f"**{match['hidden_by_filter_count']:,}** list loans are hidden by the sidebar filters.")
+    if notes:
+        st.markdown("\n".join(f"- {n}" for n in notes))
+
+    if match["missing_from_lcc_count"]:
+        by_branch = ", ".join(f"{_esc(b)}: {n}" for b, n in match["missing_from_lcc_by_branch"].items())
+        with st.expander(
+            f"⚠ {match['missing_from_lcc_count']:,} list loans are from regions this LCC covers, "
+            "but the loans themselves are missing from it"
+        ):
+            st.caption(
+                "Not counted (no LCC row means no total to compare against). Usually a branch missing "
+                f"from this LCC extract. By branch on the list: {by_branch}"
+            )
+            st.markdown(
+                _html_table(pd.DataFrame({"Loan No": match["missing_from_lcc_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
+                unsafe_allow_html=True,
+            )
+    if match["in_view_not_counted_count"]:
+        with st.expander(
+            f"⚠ {match['in_view_not_counted_count']:,} list loans are in the LCC but not counted "
+            "as running recent loans there"
+        ):
+            st.caption(
+                "The LCC gives these an agreement date before the cohort start, or a status other "
+                "than RUN. If the list shows a later date, the LCC date may have day and month swapped."
+            )
+            st.markdown(
+                _html_table(pd.DataFrame({"Loan No": match["in_view_not_counted_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
+                unsafe_allow_html=True,
+            )
+
+
+def _render_daily_match(df_curr: pd.DataFrame, df_all: pd.DataFrame | None = None) -> dict | None:
+    """Optional: upload today's due-date-missed list to see, per region/branch/
+    executive, how many running recent loans are delinquent and in which bucket.
+    Returns the match dict (also stashed in session_state) for the Excel export."""
+    _section("Recent Advances: Delinquency Status from Today's Due-Date-Missed List", margin_top="24px")
     st.caption(
-        "Optional. Upload the Excel Automation project's daily due-date-missed extract: "
-        "totals come from the master file above, delinquent / PNPA (SMA-2) / NPA counts "
-        "from the feed's own Arrears/EMI (today's live status), each as a % of the "
-        "group's total cohort. Sorted worst first, colored red (worst) to green (best)."
+        "Running Loans = loans agreed from the cohort start onward that are still running in the LCC. "
+        "Delinquent = those same loans found on the uploaded list (matched by Loan No), split into "
+        "buckets by the list's own Arrears/EMI (today's position). Every % is of Running Loans. "
+        "Region, branch and executive come from the LCC. Sorted worst first."
     )
-    uploaded = st.file_uploader("Daily due-date-missed feed (.xlsb/.xlsx/.xls)", type=["xlsb", "xlsx", "xls"], key="rc_daily_feed_upload")
+    uploaded = st.file_uploader("Due-date-missed list (.xlsb/.xlsx/.xls)", type=["xlsb", "xlsx", "xls"], key="rc_daily_feed_upload")
     if uploaded is None:
         return st.session_state.get("rc_daily_match")
 
@@ -442,26 +496,24 @@ def _render_daily_match(df_curr: pd.DataFrame) -> dict | None:
         st.error(err)
         return None
 
-    match = compute_recent_advances_daily_match(df_curr, daily_df)
+    match = compute_recent_advances_daily_match(df_curr, daily_df, df_all=df_all)
     if not match:
-        st.warning("Could not match this file against the cohort (check Ag_Date/Loan No columns).")
+        st.warning(
+            "Could not match this list against the LCC: the list needs LOAN NO and ARREARS / EMI "
+            "columns, and the LCC needs running loans from the cohort start onward."
+        )
         return None
 
     st.session_state["rc_daily_match"] = match
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Running loans", f"{match['cohort_count']:,}", help="Running loans from the cohort start onward, in the LCC")
+    c2.metric("Delinquent", f"{match['matched_count']:,} ({match['pct_of_cohort_on_daily_list']:.1f}%)", help="Running loans found on the uploaded list")
+    c3.metric("On the list", f"{match['daily_feed_count']:,}", help="All loans in the uploaded file")
     region_status, branch_status, executive_status = _render_status_by_grain(df_curr, daily_df)
     st.session_state["rc_region_status"] = region_status
     st.session_state["rc_branch_status"] = branch_status
     st.session_state["rc_executive_status"] = executive_status
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Cohort on today's missed-due-date list", f"{match['matched_count']:,}", f"{match['pct_of_cohort_on_daily_list']:.1f}% of cohort")
-    c2.metric("Daily feed loans", f"{match['daily_feed_count']:,}", f"{match['pct_of_daily_list_in_cohort']:.1f}% found in cohort")
-    c3.metric("Not yet in master snapshot", f"{match['unmatched_daily_count']:,}", "likely disbursed after this closing", delta_color="off")
-    if match["unmatched_daily_count"]:
-        with st.expander(f"View the {match['unmatched_daily_count']} loans not found in this master snapshot"):
-            st.markdown(
-                _html_table(pd.DataFrame({"Loan No": match["unmatched_daily_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
-                unsafe_allow_html=True,
-            )
+    _render_match_notes(match)
     return match
 
 
@@ -492,6 +544,7 @@ def render_root_cause_tab(
     contamination: dict,
     curr_month: str = "",
     df_curr: pd.DataFrame | None = None,
+    df_all: pd.DataFrame | None = None,
     recent_summary: dict | None = None,
     recent_bucket_df: pd.DataFrame | None = None,
     recent_by_region_count: pd.DataFrame | None = None,
@@ -555,4 +608,4 @@ def render_root_cause_tab(
 
     if df_curr is not None:
         _divider()
-        _render_daily_match(df_curr)
+        _render_daily_match(df_curr, df_all)
