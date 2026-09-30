@@ -22,7 +22,7 @@ from registry.semantic_model import resolve_dimension
 from registry.views import VIEWS, _METRIC_DIRECTION, _METRIC_AGG, normalize_view_output, resolve_view_fn
 from config import PII_COLUMNS
 from query_log import log_query_outcome
-from utils import expand_to_all_columns
+from utils import expand_to_all_columns, resolve_dynamic_values
 
 
 # ── Per-thread step callback ──────────────────────────────────────────────────
@@ -59,6 +59,12 @@ def _fetch_large(state: dict, key: str, default=None):
     if key in stash:
         return stash[key]
     return state.get(key, default)
+
+
+def _report_month(state: dict):
+    """The uploaded file's reporting month -- the anchor for date-relative
+    rules like "recent advances". None falls back to today downstream."""
+    return (state.get("snapshot_dates") or {}).get("curr")
 
 
 _STEP_LABELS: dict[str, str] = {
@@ -588,7 +594,7 @@ def view_node(state: QueryState) -> QueryState:
             input_df, input_df_prev = df_curr, df_prev
             if filters:
                 errs: list = []
-                conditions = _expand_filters(filters, errs)
+                conditions = resolve_dynamic_values(_expand_filters(filters, errs), _report_month(state))
                 if errs:
                     return _fallthrough("filter_expansion_error")
                 input_df = df_curr[_build_mask(df_curr, conditions)]
@@ -755,7 +761,7 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
 
     for attempt in range(_MAX_REPAIRS + 1):
         try:
-            plan, errs = compile_logical(ir1, cols)
+            plan, errs = compile_logical(ir1, cols, as_of=_report_month(state))
         except Exception as e:
             _trace_metadata({"repair_attempts": attempt, "compiled_ok": False, "compiler_exception": str(e)})
             return {**state, "error": f"Compiler failed: {e}"}
@@ -814,7 +820,7 @@ def execute_node(state: QueryState) -> QueryState:
 
     try:
         if intent == "priority_action":
-            display_df, err = execute_priority_mode(df)
+            display_df, err = execute_priority_mode(df, as_of=_report_month(state))
         else:
             display_df, err = execute_plan(df, state.get("plan") or [])
 

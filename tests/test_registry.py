@@ -11,7 +11,7 @@ These lock in two things:
 import importlib
 import re
 
-from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS
+from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS, CUSTOMER_LOAN_COUNT
 from registry import (
     CONCEPTS, METRICS, PRIORITY_RULES, ENTITIES, DIMENSIONS, ENTITY_CONCEPTS, VIEWS,
     entity_key, is_coarser, resolve_dimension,
@@ -22,7 +22,7 @@ from registry import (
 _DERIVED_COLS = {
     "curr_bucket", "curr_score", "SOH", "prev_bucket",
     "Overdue", "MonthDemandExclPC", "OverdueCollected", "DemandCollected",
-    "Overdue Collection %", "Month Demand Collection %",
+    "Overdue Collection %", "Month Demand Collection %", CUSTOMER_LOAN_COUNT,
 } | set(PREV_CARRYOVER_COLS.values())
 # The dynamic cutoff placeholder is resolved at execution time, not a real value.
 _DYNAMIC_VALUES = {"__CUTOFF_1Y__"}

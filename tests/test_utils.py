@@ -883,3 +883,18 @@ class TestBuildHtmlExportEscaping:
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
         # Table structure survives - matching open/close tags around the row.
         assert html_out.count("<tr") == html_out.count("</tr>")
+
+
+class TestCountAgreedAfterMonth:
+    """Flags day/month-swapped agreement dates (a real Aug extract had 98 loans
+    dated Sep-Dec, each valid once day and month were swapped)."""
+
+    def test_counts_only_dates_after_the_reporting_month(self):
+        from utils import count_agreed_after_month
+        df = pd.DataFrame({"Ag_Date": pd.to_datetime(["2026-08-01", "2026-08-31", "2026-09-01", "2026-12-08"])})
+        assert count_agreed_after_month(df, "2026-08") == 2      # last day of the month still counts as in-month
+
+    def test_no_month_or_no_column_is_zero(self):
+        from utils import count_agreed_after_month
+        assert count_agreed_after_month(pd.DataFrame({"Ag_Date": ["2030-01-01"]}), None) == 0
+        assert count_agreed_after_month(pd.DataFrame(), "2026-08") == 0

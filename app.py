@@ -8,7 +8,7 @@ import streamlit as st
 import pandas as pd
 
 from utils import (
-    apply_filters, compute_metrics, PREV_CARRYOVER_COLS,
+    apply_filters, compute_metrics, PREV_CARRYOVER_COLS, count_agreed_after_month,
     build_status_bar_chart, build_branch_bar_chart, build_closing_pc_chart,
 )
 from smart_alerts import run_all_alerts
@@ -62,8 +62,8 @@ render_header()
 # ── File upload section ───────────────────────────────────────────────────────
 # Pre-populate date pickers for sample data
 if st.session_state.pop("_set_sample_dates", False):
-    st.session_state["curr_month_pick"] = datetime.date(2026, 3, 1)
-    st.session_state["prev_month_pick"] = datetime.date(2026, 2, 1)
+    st.session_state["curr_month_pick"] = datetime.date(2026, 8, 1)   # generate_demo_data.py's months
+    st.session_state["prev_month_pick"] = datetime.date(2026, 7, 1)
 
 st.markdown('<div class="section-label">Data Source</div>', unsafe_allow_html=True)
 col_up1, col_up2 = st.columns(2)
@@ -133,7 +133,8 @@ if generate and curr_file:
     # back to "All" on every fresh upload, not just when the old value
     # happens to be absent from the new file.
     for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key",
-               "_sample_loaded", "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key"]:
+               "_sample_loaded", "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key",
+               "sel_date_from_key"]:
         st.session_state.pop(_k, None)
 
     n_curr = len(curr_file) if isinstance(curr_file, list) else 1
@@ -213,6 +214,16 @@ for _w in _date_warn_curr:
 for _w in _date_warn_prev:
     st.warning(f"⚠️ Previous month file: {_w}")
 
+for _label, _df, _month in (("Current", df_curr_raw, curr_month), ("Previous", df_prev_raw, prev_month)):
+    _n_future = count_agreed_after_month(_df, _month)
+    if _n_future:
+        st.warning(
+            f"⚠️ {_label} month file: {_n_future:,} loan(s) have an agreement date (Ag_Date) after the "
+            f"reporting month ({pd.Timestamp(_month):%b %Y}). This is usually a day/month swap in the source "
+            "file (e.g. 6 Dec entered as 12 Jun). Kept as-is, but they may land in the wrong "
+            "new-advances/vintage month."
+        )
+
 # Auto-load prev if uploaded after initial generate. _load_and_concat is NOT
 # cached, so a file that fails to parse must not be re-parsed on every rerun:
 # remember the failure per file fingerprint and just re-show its error.
@@ -269,7 +280,7 @@ if not st.session_state.get("_sample_loaded"):
         st.stop()
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
-sel_region, sel_branch, sel_status, sel_segment = render_sidebar(df_curr_raw, curr_month)
+sel_region, sel_branch, sel_status, sel_segment, sel_date_from = render_sidebar(df_curr_raw, curr_month)
 
 # data_version is the cheap proxy for "has the underlying raw data changed" --
 # read once here, threaded explicitly into every cache-wrapped call below so
@@ -286,9 +297,9 @@ data_version = st.session_state.get("_data_version", 0)
 # comfortably cover one session's realistic filter-browsing (eviction is LRU,
 # so an evicted combo just recomputes -- correctness is never affected).
 @st.cache_data(show_spinner=False, max_entries=16)
-def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple = ()):
-    df = apply_filters(_df_c.copy(), region, branch, status, segment)
-    df_p = apply_filters(_df_p_raw.copy(), region, branch, status, segment)
+def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple = (), date_from=None):
+    df = apply_filters(_df_c.copy(), region, branch, status, segment, date_from)
+    df_p = apply_filters(_df_p_raw.copy(), region, branch, status, segment, date_from)
     if len(_df_p_raw) > 0 and "Loan No" in df.columns and "curr_bucket" in _df_p_raw.columns:
         # Carry over the prev-month bucket plus a curated set of numeric columns
         # (renamed prev_*) so the AI can compute month-over-month reductions.
@@ -305,11 +316,11 @@ def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: i
 # each call site -- is the only remaining signal that distinguishes e.g.
 # "Region=Pune" from "Region=Mumbai" in the cache key.
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_metrics(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
+def _cached_metrics(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
     return compute_metrics(_df_c, _df_p)
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
+def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
     # These 3 chart builders used to run uncached directly inside
     # ui/tabs/dashboard.py's render function -- since Dashboard is tabs[0]
     # and Streamlit executes every tab's code on every rerun regardless of
@@ -324,7 +335,7 @@ def _cached_dashboard_charts(_df_c: pd.DataFrame, data_version: int, region: str
     )
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str, as_of: str = None):
+def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, which: str, as_of: str = None, date_from=None):
     # as_of anchors alert_recent_advances_at_risk's "last N months" window to
     # the FILE's own reporting month, not wall-clock today -- see that
     # function's own docstring. "which" ("curr"/"prev") already distinguishes
@@ -333,17 +344,17 @@ def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: 
     return run_all_alerts(_df_c, as_of=as_of)
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_scorecard(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
+def _cached_scorecard(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
     return compute_executive_scorecard(_df_c)
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_roll_rate(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple):
+def _cached_roll_rate(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
     return compute_roll_rate_matrix(_df_c, _df_p)
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_portfolio_intel(
     _df_c: pd.DataFrame, _df_p: pd.DataFrame,
-    data_version: int, region: str, branch: str, status: str, segment: tuple,
+    data_version: int, region: str, branch: str, status: str, segment: tuple, date_from,
     rr_matched: int, rr_fwd: float, rr_bwd: float, rr_formation: float,
     alerts_curr_counts: tuple, alerts_prev_counts: tuple,
     curr_month: str,
@@ -383,7 +394,8 @@ def _cached_portfolio_intel(
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_root_cause(
     _df_c: pd.DataFrame, _region_df: pd.DataFrame,
-    data_version: int, region: str, branch: str, status: str, segment: tuple,
+    data_version: int, region: str, branch: str, status: str, segment: tuple, date_from,
+    curr_month: str,
 ):
     # region_df comes from _cached_portfolio_intel (compute_region_scorecard) --
     # reused, not recomputed, so Root Cause's NPA%/Δ NPA%/Status/Collection%
@@ -392,7 +404,7 @@ def _cached_root_cause(
     df_clean, contamination = clean_contaminated_flags(_df_c)
     insurance_split = compute_insurance_split(df_clean, group_col="Unit")
     chronic_shock = compute_chronic_shock_split(df_clean, group_col="Unit")
-    why_df = compute_region_why_table(df_clean, _region_df)
+    why_df = compute_region_why_table(df_clean, _region_df, as_of=curr_month)
     recent_summary = compute_recent_advances_summary(df_clean)
     recent_bucket = compute_recent_advances_bucket_summary(df_clean)
     recent_by_region_count, recent_by_region_soh = compute_recent_advances_bucket_by_group(df_clean, group_col="RegionName")
@@ -406,10 +418,10 @@ def _cached_root_cause(
 
 # ── Apply filters (cached  -  no pandas work on same filter rerun) ──────────────
 _seg_t = tuple(sel_segment)
-df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, data_version, sel_region, sel_branch, sel_status, _seg_t)
+df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from)
 
 # Clear AI/report results when filters change
-_filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}"
+_filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}|{sel_date_from}"
 if st.session_state.get("_last_filter_key") != _filter_key:
     st.session_state.pop("ai_result", None)
     st.session_state.pop("report_result", None)
@@ -422,24 +434,25 @@ if len(df_curr) == 0:
     st.stop()
 
 # ── Pre-compute shared data ───────────────────────────────────────────────────
-metrics = _cached_metrics(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t)
-alerts  = _cached_alerts(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, "curr", curr_month)
+metrics = _cached_metrics(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from)
+alerts  = _cached_alerts(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, "curr", curr_month, sel_date_from)
 fig_status, fig_branch, fig_closing = _cached_dashboard_charts(
-    df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t,
+    df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from,
 )
 
 scorecard_df = None
 if "MNT NAME" in df_curr.columns:
-    scorecard_df = _cached_scorecard(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t)
+    scorecard_df = _cached_scorecard(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from)
 
 rr_matrix, rr_meta = None, None
 if len(df_prev_raw) > 0:
-    rr_matrix, rr_meta = _cached_roll_rate(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t)
+    rr_matrix, rr_meta = _cached_roll_rate(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from)
 
 # ── Active filter bar ─────────────────────────────────────────────────────────
 active_filters = {k: v for k, v in {
     "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
     "Segment": ", ".join(sel_segment) if sel_segment else "All",
+    "Loan Date": f"On/after {sel_date_from}" if sel_date_from else "All",
 }.items() if v != "All"}
 if active_filters:
     chips = " ".join(
@@ -512,7 +525,7 @@ _needs_pi = active in ("📊 Portfolio Intelligence", "🔎 Root Cause", "💼 B
 alerts_prev = []
 precomputed_views = {}
 if _needs_pi:
-    alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev", prev_month) if len(df_prev) > 0 else []
+    alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev", prev_month, sel_date_from) if len(df_prev) > 0 else []
 
     _rr = rr_meta or {}
     (
@@ -523,7 +536,7 @@ if _needs_pi:
         pi_overdue_demand, pi_new_advances, pi_new_advances_by_dim,
     ) = _cached_portfolio_intel(
         df_curr, df_prev,
-        data_version, sel_region, sel_branch, sel_status, _seg_t,
+        data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from,
         int(_rr.get("matched_count", 0)),
         float(_rr.get("roll_forward_rate", 0.0)),
         float(_rr.get("roll_backward_rate", 0.0)),
@@ -569,7 +582,8 @@ if _needs_pi:
             rc_recent_by_region_count, rc_recent_by_region_soh,
             rc_recent_by_branch_count, rc_recent_by_branch_soh,
         ) = _cached_root_cause(
-            df_curr, pi_region, data_version, sel_region, sel_branch, sel_status, _seg_t,
+            df_curr, pi_region, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from,
+            curr_month,
         )
 
 
@@ -646,6 +660,7 @@ elif active == "🔎 Root Cause":
             contamination=rc_contamination,
             curr_month=curr_month,
             df_curr=df_curr,
+            df_all=df_curr_raw,
             recent_summary=rc_recent_summary,
             recent_bucket_df=rc_recent_bucket,
             recent_by_region_count=rc_recent_by_region_count,
@@ -665,6 +680,7 @@ elif active == "💼 Business":
             dimension_data=pi_new_advances_by_dim,
             vintage_df=pi_product.get("vintage", pd.DataFrame()),
             data_version=data_version, region=sel_region, branch=sel_branch, status=sel_status, segment=_seg_t,
+            date_from=sel_date_from,
         )
     except Exception as _e:
         _tab_error("Business", _e)

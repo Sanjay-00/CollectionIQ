@@ -34,10 +34,10 @@ from analysis.portfolio_intelligence import (
 )
 from analysis.roll_rate import VALID_BUCKETS, compute_roll_rate_matrix
 from compiler.core import _expand_filters
-from config import FLEET_MIN_LOANS, HARD_BUCKET_ARREARS_EMI_MIN
+from config import HARD_BUCKET_ARREARS_EMI_MIN
 from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
-from utils import BUCKET_SCORE, _mom_pct, expand_to_all_columns, to_num
+from utils import BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, resolve_dynamic_values, to_num
 
 # ── Metric direction metadata ────────────────────────────────────────────────
 # Single source of truth for "is a higher value of this metric good," shared
@@ -1259,6 +1259,7 @@ def concept_filter(
     concept: str,
     scope_col: str | None = None,
     scope_value: str | None = None,
+    as_of=None,
 ) -> pd.DataFrame:
     """Rows matching a registered business CONCEPT (registry/ontology.py --
     "non_starter", "easy_settlement", "colending_at_risk", etc, the SAME
@@ -1281,7 +1282,7 @@ def concept_filter(
         return pd.DataFrame()
 
     errs: list[str] = []
-    conditions = _expand_filters([{"concept": concept}], errs)
+    conditions = resolve_dynamic_values(_expand_filters([{"concept": concept}], errs), as_of)
     if errs:
         raise ValueError(f"Unknown concept '{concept}'")
     missing = _missing_condition_columns(df, conditions)
@@ -1299,12 +1300,13 @@ def concept_summary(
     concept: str,
     scope_col: str | None = None,
     scope_value: str | None = None,
+    as_of=None,
 ) -> dict:
     """Count + total SOH for a concept filter -- the SMALL aggregate handed
     to narrate_step for a "how many/are there any" question, never the raw
     filtered rows (which can carry customer names/mobile numbers with no
     reason to expose them to the LLM just to answer a count)."""
-    matched = concept_filter(df, concept, scope_col, scope_value)
+    matched = concept_filter(df, concept, scope_col, scope_value, as_of=as_of)
     if matched.empty:
         return {"count": 0, "total_soh": 0.0}
     return {
@@ -1380,6 +1382,7 @@ def worst_loans_by_metric(
     scope_col: str | None = None,
     scope_value=None,
     all_columns: bool = False,
+    as_of=None,
 ) -> pd.DataFrame:
     """The LAST hop of the region -> branch -> executive -> loan drill
     chain, made METRIC-AWARE -- "why does Rahul have so much NPA%" and "why
@@ -1428,7 +1431,7 @@ def worst_loans_by_metric(
         return pd.DataFrame()
 
     errs: list[str] = []
-    conditions = _expand_filters([filter_spec], errs)
+    conditions = resolve_dynamic_values(_expand_filters([filter_spec], errs), as_of)
     if errs:
         return pd.DataFrame()
     missing = _missing_condition_columns(df, conditions)
@@ -1521,13 +1524,10 @@ def fleet_defaulters(
     LOAN rows themselves narrowed to just the defaulting ones -- this fills
     that gap as a loan-level, downloadable, auditable table instead.
 
-    Reuses FLEET_MIN_LOANS directly (the SAME threshold
-    compute_fleet_exposure uses) and the SAME blank-mobile exclusion that
-    function's own docstring documents as a real, confirmed production bug
-    otherwise: utils.py::clean_mobile normalizes a missing mobile number to
-    "" (not NaN), and without excluding those rows first, every loan with
-    no mobile on file groups under the single key "" and gets reported as
-    one fictitious mega "fleet operator" combining unrelated customers.
+    Fleet status is utils.fleet_loan_mask -- the same rule every other
+    fleet view uses: >= FLEET_MIN_LOANS loans across the whole upload, blank
+    mobile numbers never counted (they would otherwise merge unrelated
+    customers into one fictitious mega "fleet operator").
 
     Sorted worst-first by SOH -- the exposure that makes a defaulting fleet
     operator a priority in the first place, same framing
@@ -1535,21 +1535,14 @@ def fleet_defaulters(
     """
     if df is None or df.empty or "Cust Mob No" not in df.columns or "Loan No" not in df.columns:
         return pd.DataFrame()
+    # Fleet status BEFORE scoping: scoping to one branch must not demote a
+    # customer whose other loans sit in another branch.
+    df = df[fleet_loan_mask(df)]
     if scope_col and scope_value:
         col = resolve_dimension(scope_col)[0]
         if col in df.columns:
             df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
-    if df.empty:
-        return pd.DataFrame()
-
-    has_mobile = df["Cust Mob No"].astype(str).str.strip() != ""
-    df = df[has_mobile]
-    if df.empty:
-        return pd.DataFrame()
-
-    cust_loan_counts = df.groupby("Cust Mob No")["Loan No"].nunique()
-    fleet_customers = cust_loan_counts[cust_loan_counts >= FLEET_MIN_LOANS].index
-    fleet_df = df[df["Cust Mob No"].isin(fleet_customers)]
+    fleet_df = df
     if fleet_df.empty:
         return pd.DataFrame()
 
@@ -1626,7 +1619,7 @@ PRIORITY_MENU_CATEGORIES: list[dict] = [
 ]
 
 
-def _priority_menu_category_result(df: pd.DataFrame, category: dict) -> pd.DataFrame:
+def _priority_menu_category_result(df: pd.DataFrame, category: dict, as_of=None) -> pd.DataFrame:
     """The full (uncapped) matching table for ONE menu category -- shared by
     priority_menu (which only needs the COUNT) and the UI's own per-category
     drill (which needs the actual rows, capped at that category's Shown).
@@ -1635,7 +1628,7 @@ def _priority_menu_category_result(df: pd.DataFrame, category: dict) -> pd.DataF
     kind = category["kind"]
     if kind == "concept":
         try:
-            return concept_filter(df, category["concept"])
+            return concept_filter(df, category["concept"], as_of=as_of)
         except ValueError:
             # A registered concept whose column(s) this particular upload
             # is missing -- skip this ONE category rather than failing the
@@ -1653,6 +1646,7 @@ def priority_menu(
     df: pd.DataFrame,
     scope_col: str | None = None,
     scope_value: str | None = None,
+    as_of=None,
 ) -> pd.DataFrame:
     """"Ask me which category to focus on first, don't just dump every
     priority loan at once" -- the menu-first alternative to priority_accounts'
@@ -1683,7 +1677,7 @@ def priority_menu(
 
     rows = []
     for category in PRIORITY_MENU_CATEGORIES:
-        count = len(_priority_menu_category_result(df, category))
+        count = len(_priority_menu_category_result(df, category, as_of=as_of))
         if count == 0:
             continue
         rows.append({
@@ -1701,6 +1695,7 @@ def priority_accounts(
     scope_col: str | None = None,
     scope_value: str | None = None,
     all_columns: bool = False,
+    as_of=None,
 ) -> pd.DataFrame:
     """The 7-tier business priority framework ("what should my team work on
     today"), reusing agents/data_executor.py::execute_priority_mode directly
@@ -1731,7 +1726,7 @@ def priority_accounts(
             df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
     if df.empty:
         return pd.DataFrame()
-    result, _message = execute_priority_mode(df)
+    result, _message = execute_priority_mode(df, as_of=as_of)
     if result.empty or not all_columns or "Loan No" not in result.columns or "Loan No" not in df.columns:
         return result
 

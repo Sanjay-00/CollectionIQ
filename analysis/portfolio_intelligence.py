@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 from utils import (
     BUCKET_ORDER, BUCKET_SCORE, BUCKET_COLORS, to_num, account_count, is_yes,
     compute_strike_pct, compute_hard_bucket_pct, compute_overdue_demand_pct,
+    compute_delinquency_count, fleet_loan_mask,
 )
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN,
@@ -20,7 +21,6 @@ from config import (
     REPOSSESSION_WINDOW_MONTHS,
     GOOD_CUSTOMER_MIN_TENURE_PCT,
     GOOD_CUSTOMER_MIN_LCC_PCT,
-    FLEET_MIN_LOANS,
     REGION_STATUS_DELTA_PP,
     GOOD_BAD_REGION_DELTA_PP,
     CONCERN_SCORE_BAD_THRESHOLD,
@@ -385,6 +385,8 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
         sma2_count = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
         sma2_pct   = _safe_div(sma2_count, n)
         npa_count  = int((grp["curr_bucket"] == "NPA").sum()) if "curr_bucket" in grp.columns else 0
+        delinq_count = compute_delinquency_count(grp)
+        delinq_pct   = _safe_div(delinq_count, n)
 
         prev_npa = 0.0
         prev_sma2_pct = 0.0
@@ -410,6 +412,8 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
             "SMA-2%": sma2_pct,
             "NPA": npa_count,
             "NPA%": curr_npa,
+            "Delinquent": delinq_count,
+            "Delinquency%": delinq_pct,
             "Δ SMA-2%": sma2_delta,
             "Δ NPA%": delta,
             "Collection%": curr_coll,
@@ -825,8 +829,9 @@ def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
     and percentages, no reimplementation of a shared correctness-critical
     function like compute_strike_pct).
 
-    Columns: Branch, Region, Accounts, NPA, NPA%, SMA-2, SMA-2%, Collection%,
-    Strike%, Hard Bucket%, SOH (Cr), Roll Fwd%, Roll Bwd%, Chronic (3M+).
+    Columns: Branch, Region, Accounts, NPA, NPA%, SMA-2, SMA-2%, Delinquent,
+    Delinquency%, Collection%, Strike%, Hard Bucket%, SOH (Cr), Roll Fwd%,
+    Roll Bwd%, Chronic (3M+).
     Rows below MIN_ACCOUNTS_DIMENSION_BREAKDOWN are excluded (both consumers
     already applied this exact same threshold independently).
     """
@@ -842,6 +847,7 @@ def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
         chronic = int(is_yes(grp, "No Coll 3 Months and >6 EMI").sum())
         npa_n  = int((grp["curr_bucket"] == "NPA").sum())   if "curr_bucket" in grp.columns else 0
         sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
+        delinq_n = compute_delinquency_count(grp)
         region = str(grp["RegionName"].iloc[0]) if "RegionName" in grp.columns and len(grp) else None
         rows.append({
             "Branch": str(branch),
@@ -851,6 +857,8 @@ def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
             "NPA%": _safe_div(npa_n, n),
             "SMA-2": sma2_n,
             "SMA-2%": _safe_div(sma2_n, n),
+            "Delinquent": delinq_n,
+            "Delinquency%": _safe_div(delinq_n, n),
             "Collection%": _coll_pct(grp),
             "Strike%": compute_strike_pct(grp),
             "Hard Bucket%": compute_hard_bucket_pct(grp),
@@ -871,7 +879,7 @@ def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Fig
     # NPA% here uses the SAME per-branch NPA-count/account-count ratio as
     # _branch_aggregates -- confirmed identical to the original inline
     # _npa_pct(grp) call (both are npa_count/n*100, _safe_div rounds the same way).
-    df = agg[["Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)"]].copy()
+    df = agg[["Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "Delinquent", "Delinquency%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)"]].copy()
     for col, w in CONCERN_SCORE_WEIGHTS.items():
         df[f"_r_{col}"] = df[col].rank(ascending=True, pct=True) * w
     df["Concern Score"] = df[[c for c in df.columns if c.startswith("_r_")]].sum(axis=1).mul(100).round(0).astype(int)
@@ -1836,10 +1844,12 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
     if df_curr.empty:
         return {**empty_dict, "excluded_blank_mobile_loans": excluded_blank_mobile_loans}
 
-    cust_loan_counts = df_curr.groupby("Cust Mob No")["Loan No"].nunique()
-    fleet_customers  = cust_loan_counts[cust_loan_counts >= FLEET_MIN_LOANS].index
-
-    fleet_df = df_curr[df_curr["Cust Mob No"].isin(fleet_customers)]
+    # Fleet status comes from the customer's loans across the whole upload
+    # (utils.CUSTOMER_LOAN_COUNT), so a sidebar filter can't demote a fleet
+    # operator whose other loans are filtered out; "Loans" below still counts
+    # only the loans in view, consistent with the SOH shown beside it.
+    fleet_df = df_curr[fleet_loan_mask(df_curr)]
+    fleet_customers = pd.Index(fleet_df["Cust Mob No"].unique())
     if fleet_df.empty:
         return {**empty_dict, "excluded_blank_mobile_loans": excluded_blank_mobile_loans}
 

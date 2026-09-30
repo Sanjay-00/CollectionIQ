@@ -3,8 +3,6 @@ Smart Alerts - pre-computed, rule-based flags that run on every LCC upload.
 No LLM. Pure pandas. Always accurate.
 """
 import pandas as pd
-from datetime import date
-from dateutil.relativedelta import relativedelta
 
 from config import (
     EASY_SETTLEMENT_MAX_ARREARS,
@@ -12,7 +10,7 @@ from config import (
     INSURANCE_EXP_ARREARS_MIN,
     RECENT_ADVANCES_MONTHS,
 )
-from utils import to_num, account_count, is_yes
+from utils import to_num, account_count, is_yes, recent_advances_cutoff
 
 
 def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -126,8 +124,7 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
     run. Falls back to real today only when the caller doesn't have a
     reporting month to pass (as_of=None), same fallback every sibling
     function already uses."""
-    ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp(date.today())
-    cutoff = ref - relativedelta(months=months)
+    cutoff = recent_advances_cutoff(as_of, months=months)
     # pd.to_datetime(..., errors="coerce") -- same defensive re-parse every
     # as_of sibling in analysis/portfolio_intelligence.py already does before
     # comparing Ag_Date to a cutoff. Ag_Date is normally already datetime64

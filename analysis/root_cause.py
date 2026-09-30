@@ -19,11 +19,9 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule
 
-from utils import to_num, account_count, is_yes
+from utils import to_num, account_count, is_yes, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN,
-    FLEET_MIN_LOANS,
-    RECENT_ADVANCES_MONTHS,
     RECENT_ADVANCES_COHORT_START,
 )
 
@@ -184,7 +182,7 @@ _DRIVER_LABELS = {
 }
 
 
-def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFrame) -> pd.DataFrame:
+def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFrame, as_of=None) -> pd.DataFrame:
     """One row per region: NPA%/Collection%/Δ NPA% (from the existing
     compute_region_scorecard) plus a single DOMINANT DRIVER tag, picked as
     whichever candidate driver claims the largest share of that region's
@@ -192,11 +190,13 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
       - insurance_only_share:  ARREARS AGAINST INST<=0 AND ARREARS AGAINST EXP>0
       - chronic_share:         No Coll 3 Months and >6 EMI
       - shock_share:           Arrears/EMI>=HARD_BUCKET_ARREARS_EMI_MIN AND NOT chronic
-      - fleet_share:           delinquent loan belongs to a customer with
-                                >= FLEET_MIN_LOANS loans (computed on the FULL
-                                book, not region-scoped -- a fleet owner's
-                                loans can span regions/branches)
-      - recent_vintage_share:  Ag_Date within RECENT_ADVANCES_MONTHS of today
+      - fleet_share:           delinquent loan belongs to a fleet operator
+                                (utils.fleet_loan_mask: >= FLEET_MIN_LOANS
+                                loans across the whole upload, not just this
+                                view; blank mobile numbers never count)
+      - recent_vintage_share:  Ag_Date within RECENT_ADVANCES_MONTHS of the
+                                reporting month (as_of), same window as the
+                                Alerts tab and AI Query
     This is the one-page deliverable for a manager: not a pile of charts, a
     single "here's why, specifically" table, per region.
     """
@@ -204,12 +204,11 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
     if df_curr.empty or not required.issubset(df_curr.columns) or region_scorecard.empty:
         return pd.DataFrame()
 
-    # Fleet ownership is a PORTFOLIO-WIDE rollup (customer, not region/branch --
-    # semantic_model.py's own callout: a fleet owner's loans can span branches).
-    loans_per_customer = df_curr.groupby("Cust Mob No")["Loan No"].transform("nunique")
-    is_fleet_loan = loans_per_customer >= FLEET_MIN_LOANS
+    # Fleet status from the customer's whole-upload loan count (a fleet owner's
+    # loans can span branches/regions); blank mobiles are never fleet.
+    is_fleet_loan = fleet_loan_mask(df_curr)
 
-    recent_cutoff = pd.Timestamp.today() - pd.DateOffset(months=RECENT_ADVANCES_MONTHS)
+    recent_cutoff = recent_advances_cutoff(as_of)
     ag_date = pd.to_datetime(df_curr.get("Ag_Date"), errors="coerce") if "Ag_Date" in df_curr.columns else None
 
     rows = []
@@ -234,11 +233,11 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
             recent_vintage = (ag_date.loc[delinquent.index] >= recent_cutoff).sum()
 
         shares = {
-            "insurance_only_share": _safe_div(insurance_only, n, scale=1.0),
-            "chronic_share":        _safe_div(chronic.sum(), n, scale=1.0),
-            "shock_share":          _safe_div(shock, n, scale=1.0),
-            "fleet_share":          _safe_div(fleet, n, scale=1.0),
-            "recent_vintage_share": _safe_div(recent_vintage, n, scale=1.0),
+            "insurance_only_share": _safe_div(insurance_only, n),
+            "chronic_share":        _safe_div(chronic.sum(), n),
+            "shock_share":          _safe_div(shock, n),
+            "fleet_share":          _safe_div(fleet, n),
+            "recent_vintage_share": _safe_div(recent_vintage, n),
         }
         dominant_key = max(shares, key=shares.get)
 
@@ -250,7 +249,7 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
             "Collection%": float(sc_row["Collection%"].iloc[0]) if not sc_row.empty else None,
             "Status": sc_row["Status"].iloc[0] if not sc_row.empty else "-",
             "Dominant Driver": _DRIVER_LABELS[dominant_key],
-            "Driver Share %": round(shares[dominant_key] * 100, 1),
+            "Driver Share %": round(shares[dominant_key], 1),
             "Delinquent Accounts": n,
         })
 
@@ -438,48 +437,23 @@ def load_daily_missed_feed(file) -> tuple[pd.DataFrame | None, str | None]:
     return best, None
 
 
-def compute_recent_advances_daily_match(
-    df_curr: pd.DataFrame, daily_df: pd.DataFrame, cohort_start: str = RECENT_ADVANCES_COHORT_START,
-) -> dict:
-    """Of the master's Nov'25+ cohort, how many Loan Nos also appear on
-    TODAY's live due-date-missed list -- a freshness cross-check against
-    master's own (possibly weeks/months-stale) snapshot, not a second bucket
-    computation. Also reports daily-feed loans NOT found in the cohort at
-    all, which is itself a signal: likely a loan disbursed AFTER the master's
-    closing date, not yet reflected in the snapshot being analyzed."""
-    cohort = _cohort_df(df_curr, cohort_start)
-    if cohort.empty or "Loan No" not in cohort.columns:
-        return {}
-    loan_col = next((c for c in _DAILY_FEED_LOAN_COL_CANDIDATES if c in daily_df.columns), None)
-    if loan_col is None:
-        return {}
+# ── Recent Advances delinquency status (master LCC x today's missed list) ────
+# The manager's question: of the Nov'25-onward loans still RUNNING in the
+# monthly LCC, how many are on today's due-date-missed list, and in which
+# bucket? Both sides of every % are the SAME loans:
+#   - Running Loans (denominator): the LCC's own running Nov'25+ loans.
+#   - Delinquent / buckets (numerator): those same loans, matched by Loan No,
+#     that appear on the list -- bucketed by the LIST's Arrears/EMI (today's
+#     position) with the app's one bucket rule (utils.bucket_from_arrears_emi).
+# Region/branch/executive always come from the LCC row, so both sides group
+# identically: a list loan outside this LCC (another zone, a branch missing
+# from this extract) or hidden by a sidebar filter can never inflate a %.
+# Those loans are counted separately in compute_recent_advances_daily_match.
 
-    cohort_loans = set(cohort["Loan No"].astype(str))
-    daily_loans = set(daily_df[loan_col].astype(str))
-    matched = cohort_loans & daily_loans
-    unmatched_daily = daily_loans - cohort_loans
+STATUS_BUCKETS = ["1-30 DPD", "SMA-1", "SMA-2", "NPA"]
+_OTHER_BUCKET = "Other"  # on the list but Arrears/EMI blank or <= 0
 
-    return {
-        "cohort_count": len(cohort_loans),
-        "daily_feed_count": len(daily_loans),
-        "matched_count": len(matched),
-        "pct_of_cohort_on_daily_list": _safe_div(len(matched), len(cohort_loans)),
-        "pct_of_daily_list_in_cohort": _safe_div(len(matched), len(daily_loans)),
-        "unmatched_daily_count": len(unmatched_daily),
-        "unmatched_daily_loan_nos": sorted(unmatched_daily),
-    }
-
-
-# ── Region-wise delinquency status of the cohort (the manager's table) ───────
-# Denominator (total cohort loans per region) comes from the MASTER LCC; the
-# numerators (delinquent / PNPA / NPA) come from the daily due-date-missed feed
-# itself, using the feed's own Arrears/EMI -- the feed is today's live status,
-# and has no SOH/POS, so counts only. PNPA = SMA-2 = 2 <= Arrears/EMI < 3,
-# NPA = Arrears/EMI >= 3: the same thresholds as the Bucket column the
-# Excel Automation reports use (verified: reproduces 621 PNPA / 314 NPA on the
-# 26 Sept feed). All % are of the region's TOTAL cohort, not of its delinquents.
-
-# The master LCC and the daily feed spell some regions differently.
+# The master LCC and the daily feed can spell a region differently.
 _REGION_ALIASES = {"CHHATRAPATI SAMBHAJI NAGAR": "CS NAGAR"}
 _DAILY_FEED_REGION_CANDIDATES = ["REGIONNAME", "RegionName", "REGION"]
 _DAILY_FEED_ARREARS_CANDIDATES = ["ARREARS / EMI", "Arrears / EMI"]
@@ -489,126 +463,166 @@ def _canon_region(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.upper().replace(_REGION_ALIASES)
 
 
-def _pct_or_none(num: float, den: float) -> float | None:
-    return round(float(num) / float(den) * 100, 2) if den else None
+def _loan_key(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip().str.upper()
+
+
+def _first_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    return next((c for c in candidates if c in df.columns), None)
+
+
+def _running_cohort(df_curr: pd.DataFrame, cohort_start: str) -> pd.DataFrame:
+    """Loans agreed on/after cohort_start that are still running (Loan Status
+    RUN), one row per Loan No -- the status table's denominator."""
+    cohort = _cohort_df(df_curr, cohort_start)
+    if cohort.empty or "Loan No" not in cohort.columns:
+        return pd.DataFrame()
+    if "Loan Status" in cohort.columns:
+        cohort = cohort[cohort["Loan Status"].astype(str).str.strip().str.upper() == "RUN"]
+    return cohort.drop_duplicates("Loan No")
+
+
+def _feed_by_loan(daily_df: pd.DataFrame) -> pd.DataFrame | None:
+    """The daily list keyed by normalised Loan No (arrears, region, unit,
+    executive), or None when it has no Loan No / Arrears-EMI column."""
+    loan_col = _first_col(daily_df, _DAILY_FEED_LOAN_COL_CANDIDATES)
+    arrears_col = _first_col(daily_df, _DAILY_FEED_ARREARS_CANDIDATES)
+    if loan_col is None or arrears_col is None:
+        return None
+    region_col = _first_col(daily_df, _DAILY_FEED_REGION_CANDIDATES)
+
+    def _text(col):
+        return daily_df[col].astype(str).str.strip().str.upper().to_numpy() if col in daily_df.columns else ""
+
+    out = pd.DataFrame(
+        {
+            "arrears": pd.to_numeric(daily_df[arrears_col], errors="coerce").to_numpy(),
+            "region": _canon_region(daily_df[region_col]).to_numpy() if region_col else "",
+            "unit": _text("UNIT"),
+            "exec_code": _text("RE CODE"),
+            "exec_name": _text("RE NAME"),
+        },
+        index=_loan_key(daily_df[loan_col]).to_numpy(),
+    )
+    return out[~out.index.duplicated()]
+
+
+def compute_recent_advances_daily_match(
+    df_curr: pd.DataFrame, daily_df: pd.DataFrame,
+    cohort_start: str = RECENT_ADVANCES_COHORT_START, df_all: pd.DataFrame | None = None,
+) -> dict:
+    """Headline + an explanation for EVERY list loan the status table doesn't
+    count. df_curr is the sidebar-filtered LCC; df_all is the whole upload
+    (defaults to df_curr), used only to tell "hidden by a filter" apart from
+    "not in this LCC at all". Every list loan lands in exactly one of:
+      matched            -> counted in the status table
+      in_view_not_counted-> in the LCC view but not a running Nov'25+ loan there
+                            (e.g. LCC Ag_Date before the cutoff, or not RUN)
+      hidden_by_filter   -> in the LCC, but outside the current sidebar filters
+      missing_from_lcc   -> not in the LCC, though its region IS covered by it
+      other_scope        -> not in the LCC, region not covered (another zone)"""
+    cohort = _running_cohort(df_curr, cohort_start)
+    feed = _feed_by_loan(daily_df)
+    if cohort.empty or feed is None:
+        return {}
+    df_all = df_curr if df_all is None else df_all
+
+    cohort_keys = _loan_key(cohort["Loan No"])
+    view_keys = set(_loan_key(df_curr["Loan No"]))
+    all_keys = set(_loan_key(df_all["Loan No"])) if "Loan No" in df_all.columns else view_keys
+    lcc_regions = set(_canon_region(df_all["RegionName"])) if "RegionName" in df_all.columns else set()
+
+    keys = feed.index.to_series()
+    matched = keys.isin(set(cohort_keys))
+    in_view = keys.isin(view_keys)
+    in_lcc = keys.isin(all_keys)
+    in_view_not_counted = in_view & ~matched
+    hidden_by_filter = in_lcc & ~in_view
+    missing_from_lcc = ~in_lcc & feed["region"].isin(lcc_regions)
+    other_scope = ~in_lcc & ~missing_from_lcc
+
+    # Matched loans whose executive on the list differs from the LCC's (the
+    # table stays on the LCC executive so both sides of its % group alike).
+    exec_changed = 0
+    if matched.any():
+        lcc = cohort.set_index(cohort_keys.to_numpy())
+        on_list = feed[matched.to_numpy()]
+        for lcc_col, feed_col in (("MNT CODE", "exec_code"), ("MNT NAME", "exec_name")):
+            if lcc_col in lcc.columns and (on_list[feed_col] != "").all():
+                lcc_exec = lcc.loc[on_list.index, lcc_col].astype(str).str.strip().str.upper()
+                exec_changed = int((lcc_exec.to_numpy() != on_list[feed_col].to_numpy()).sum())
+                break
+
+    n_cohort = len(cohort_keys)
+    return {
+        "cohort_count": n_cohort,
+        "daily_feed_count": len(feed),
+        "matched_count": int(matched.sum()),
+        "pct_of_cohort_on_daily_list": _safe_div(int(matched.sum()), n_cohort),
+        "in_view_not_counted_count": int(in_view_not_counted.sum()),
+        "in_view_not_counted_loan_nos": sorted(keys[in_view_not_counted]),
+        "hidden_by_filter_count": int(hidden_by_filter.sum()),
+        "missing_from_lcc_count": int(missing_from_lcc.sum()),
+        "missing_from_lcc_loan_nos": sorted(keys[missing_from_lcc]),
+        "missing_from_lcc_by_branch": feed.loc[missing_from_lcc.to_numpy(), "unit"].value_counts().to_dict(),
+        "other_scope_count": int(other_scope.sum()),
+        "exec_changed_count": exec_changed,
+    }
 
 
 _GRAIN_SPECS: dict[str, dict] = {
-    "region": {
-        "master_cols": ["RegionName"],
-        "daily_candidates": [["REGIONNAME"], ["RegionName"], ["REGION"]],
-        "aliases": _REGION_ALIASES,
-        "out_cols": ["Region"],
-    },
-    "branch": {
-        "master_cols": ["Unit"],
-        "daily_candidates": [["UNIT"], ["Unit"]],
-        "aliases": None,
-        "out_cols": ["Branch"],
-    },
-    "executive": {
-        # Composite key -- the SAME convention registry/semantic_model.py uses
-        # for the executive entity: an executive name recurs across branches,
-        # so name alone doesn't uniquely identify one (verified on real data:
-        # (RE NAME, UNIT) tuples overlap the master's (MNT NAME, Unit) tuples;
-        # RE NAME alone would silently merge different people at different
-        # branches who happen to share a name).
-        "master_cols": ["MNT NAME", "Unit"],
-        "daily_candidates": [["RE NAME", "UNIT"], ["RE NAME", "Unit"]],
-        "aliases": None,
-        "out_cols": ["Executive", "Branch"],
-    },
+    "region":    {"master_cols": ["RegionName"],        "out_cols": ["Region"]},
+    "branch":    {"master_cols": ["Unit", "RegionName"], "out_cols": ["Branch", "Region"]},
+    # Executive = (name, branch): the same name recurs across branches
+    # (registry/semantic_model.py's executive entity uses the same key).
+    "executive": {"master_cols": ["MNT NAME", "Unit"],  "out_cols": ["Executive", "Branch"]},
 }
 
 
-def _canon_cols(df: pd.DataFrame, cols: list[str], aliases: dict | None = None) -> pd.DataFrame:
-    out = pd.DataFrame(index=df.index)
-    for c in cols:
-        s = df[c].astype(str).str.strip().str.upper()
-        if aliases:
-            s = s.replace(aliases)
-        out[c] = s
-    return out
+def _with_pcts(df: pd.DataFrame, count_cols: list[str]) -> pd.DataFrame:
+    total = df["Running Loans"]
+    for c in count_cols:
+        df[f"{c} %"] = (df[c] / total.where(total > 0) * 100).round(2)
+    return df
 
 
 def compute_recent_advances_status_by_grain(
     df_curr: pd.DataFrame, daily_df: pd.DataFrame, grain: str = "region",
     cohort_start: str = RECENT_ADVANCES_COHORT_START,
 ) -> pd.DataFrame:
-    """One row per Region/Branch/Executive (grain) + a Grand Total row: total
-    cohort loans (master), delinquent/PNPA(SMA-2)/NPA counts from today's
-    due-date-missed feed's own Arrears/EMI, and each as a % of that group's
-    total cohort. Sorted WORST first (highest Delinquent %) -- the row order
-    itself is the priority order for a manager, and the UI/Excel layers color
-    it red (worst) to green (best) on top of this. A feed group with no
-    matching master group (name mismatch / not in this master) keeps its
-    counts but gets a blank total and %, rather than a misleading number."""
+    """One row per region/branch/executive + a Grand Total row: Running Loans
+    (running Nov'25+ loans in the LCC), how many of them are on the list
+    (Delinquent), and the bucket split -- each count with a % of Running Loans.
+    Sorted worst first (highest Delinquent %). An "Other" bucket column only
+    appears when some list loan has no positive Arrears/EMI."""
     spec = _GRAIN_SPECS[grain]
-    cohort = _cohort_df(df_curr, cohort_start)
-    if cohort.empty or "Loan No" not in cohort.columns or not set(spec["master_cols"]).issubset(cohort.columns):
+    cohort = _running_cohort(df_curr, cohort_start)
+    feed = _feed_by_loan(daily_df)
+    if cohort.empty or feed is None or not set(spec["master_cols"]).issubset(cohort.columns):
         return pd.DataFrame()
-    daily_cols = next((c for c in spec["daily_candidates"] if set(c).issubset(daily_df.columns)), None)
-    arrears_col = next((c for c in _DAILY_FEED_ARREARS_CANDIDATES if c in daily_df.columns), None)
-    loan_col = next((c for c in _DAILY_FEED_LOAN_COL_CANDIDATES if c in daily_df.columns), None)
-    if not (daily_cols and arrears_col and loan_col):
-        return pd.DataFrame()
+
+    keys = _loan_key(cohort["Loan No"])
+    on_list = keys.isin(set(feed.index))
+    bucket = bucket_from_arrears_emi(keys.map(feed["arrears"]))
+    bucket = bucket.mask(bucket.isin(["STD", "NA"]), _OTHER_BUCKET).where(on_list, "")
+    buckets = STATUS_BUCKETS + ([_OTHER_BUCKET] if (bucket == _OTHER_BUCKET).any() else [])
 
     out_cols = spec["out_cols"]
-    m_keys = _canon_cols(cohort, spec["master_cols"], spec["aliases"])
-    m_keys.columns = out_cols
-    totals = m_keys.assign(_loan=cohort["Loan No"].values).groupby(out_cols)["_loan"].nunique()
+    labels = [cohort[c].astype(str).str.strip().rename(o) for c, o in zip(spec["master_cols"], out_cols)]
+    table = pd.DataFrame({"Running Loans": cohort.groupby(labels).size(), "Delinquent": on_list.groupby(labels).sum()})
+    per_bucket = pd.get_dummies(bucket).reindex(columns=buckets, fill_value=0).groupby(labels).sum()
+    table = table.join(per_bucket).astype(int).reset_index()
 
-    f_keys = _canon_cols(daily_df, daily_cols, spec["aliases"])
-    f_keys.columns = out_cols
-    feed = f_keys.assign(
-        _loan=daily_df[loan_col].astype(str).values,
-        _a=pd.to_numeric(daily_df[arrears_col], errors="coerce").values,
-    ).drop_duplicates("_loan")
-    feed["_pnpa"] = (feed["_a"] >= 2) & (feed["_a"] < 3)
-    feed["_npa"] = feed["_a"] >= 3
-    by_grp = feed.groupby(out_cols).agg(delinq=("_loan", "size"), pnpa=("_pnpa", "sum"), npa=("_npa", "sum"))
+    count_cols = ["Delinquent"] + buckets
+    table = _with_pcts(table, count_cols).sort_values("Delinquent %", ascending=False, na_position="last")
 
-    label = pd.Timestamp(cohort_start).strftime("%b'%y")
-    total_col = f"Total {label} Onward Cases"
-    rows = []
-    for key in totals.index.union(by_grp.index):
-        key_tuple = key if isinstance(key, tuple) else (key,)
-        total = int(totals.get(key, 0)) or None
-        d = int(by_grp["delinq"].get(key, 0))
-        p = int(by_grp["pnpa"].get(key, 0))
-        n = int(by_grp["npa"].get(key, 0))
-        row = dict(zip(out_cols, key_tuple))
-        row.update({
-            total_col: total,
-            "Delinquent Cases": d, "Delinquent %": _pct_or_none(d, total),
-            "PNPA (SMA-2) Cases": p, "PNPA %": _pct_or_none(p, total),
-            "NPA Cases": n, "NPA %": _pct_or_none(n, total),
-        })
-        rows.append(row)
-    if not rows:
-        return pd.DataFrame()
-    out = pd.DataFrame(rows).sort_values("Delinquent %", ascending=False, na_position="last").reset_index(drop=True)
-
-    grand_total = int(out[total_col].fillna(0).sum())
-    gd, gp, gn = (int(out[c].sum()) for c in ("Delinquent Cases", "PNPA (SMA-2) Cases", "NPA Cases"))
     grand = {c: "" for c in out_cols}
     grand[out_cols[0]] = "Grand Total"
-    grand.update({
-        total_col: grand_total,
-        "Delinquent Cases": gd, "Delinquent %": _pct_or_none(gd, grand_total),
-        "PNPA (SMA-2) Cases": gp, "PNPA %": _pct_or_none(gp, grand_total),
-        "NPA Cases": gn, "NPA %": _pct_or_none(gn, grand_total),
-    })
-    return pd.concat([out, pd.DataFrame([grand])], ignore_index=True)
+    grand.update({c: int(table[c].sum()) for c in ["Running Loans"] + count_cols})
+    table = pd.concat([table, _with_pcts(pd.DataFrame([grand]), count_cols)], ignore_index=True)
 
-
-def compute_recent_advances_region_status(
-    df_curr: pd.DataFrame, daily_df: pd.DataFrame, cohort_start: str = RECENT_ADVANCES_COHORT_START,
-) -> pd.DataFrame:
-    """Region-grain convenience wrapper -- see compute_recent_advances_status_by_grain."""
-    return compute_recent_advances_status_by_grain(df_curr, daily_df, grain="region", cohort_start=cohort_start)
-
-
+    ordered = out_cols + ["Running Loans"] + [x for c in count_cols for x in (c, f"{c} %")]
+    return table[ordered]
 
 
 # ── Standalone, manager-presentable Excel export ─────────────────────────────
@@ -813,20 +827,23 @@ def build_root_cause_workbook(
 
     if daily_match:
         ws = wb.create_sheet("Recent Adv Daily Feed Match")
-        ws["A1"] = "Recent Advances Cohort vs. Today's Due-Date-Missed Feed"
+        ws["A1"] = "Running Recent Advances vs. Today's Due-Date-Missed List"
         ws["A1"].font = _SECTION_FONT
         labels = [
-            ("Cohort Loans", daily_match.get("cohort_count")),
-            ("Daily Feed Loans", daily_match.get("daily_feed_count")),
-            ("Matched (on both)", daily_match.get("matched_count")),
-            ("% of Cohort Currently on Missed-Due-Date List", daily_match.get("pct_of_cohort_on_daily_list")),
-            ("% of Daily Feed Found in Cohort", daily_match.get("pct_of_daily_list_in_cohort")),
-            ("Daily Feed Loans NOT in Cohort (likely disbursed after this snapshot)", daily_match.get("unmatched_daily_count")),
+            ("Running loans (LCC)", daily_match.get("cohort_count")),
+            ("Loans on the missed-due-date list", daily_match.get("daily_feed_count")),
+            ("Counted: running loans on the list", daily_match.get("matched_count")),
+            ("% of running loans on the list", daily_match.get("pct_of_cohort_on_daily_list")),
+            ("Not counted: in LCC but not a running recent loan there (check Ag_Date / status)", daily_match.get("in_view_not_counted_count")),
+            ("Not counted: hidden by the dashboard filters", daily_match.get("hidden_by_filter_count")),
+            ("Not counted: region covered by this LCC, but loan missing from it", daily_match.get("missing_from_lcc_count")),
+            ("Not counted: region/zone not in this LCC", daily_match.get("other_scope_count")),
+            ("Delinquent loans with a different executive on the list (shown under LCC executive)", daily_match.get("exec_changed_count")),
         ]
         for i, (label, val) in enumerate(labels, start=3):
             ws.cell(row=i, column=1, value=label).font = Font(bold=True)
             ws.cell(row=i, column=2, value=val)
-        ws.column_dimensions["A"].width = 58
+        ws.column_dimensions["A"].width = 86
 
     buf = io.BytesIO()
     wb.save(buf)

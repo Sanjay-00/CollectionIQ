@@ -10,6 +10,7 @@ import pandas as pd
 
 from compiler.core import compile_logical
 from agents.plan_executor import execute_plan
+from utils import add_customer_loan_count
 
 
 def _df():
@@ -31,7 +32,8 @@ def _df():
     for i in range(5, 7):  add(i,   222, "A", "R1", "STD")
     for i in range(7, 10): add(i,   333, "B", "R1", "NPA")
     for i in range(10, 14):add(i,   444, "C", "R2", "NPA" if i == 10 else "STD")
-    return pd.DataFrame(rows)
+    # Real uploads get Customer Loan Count at load time (utils.load_and_validate).
+    return add_customer_loan_count(pd.DataFrame(rows))
 
 
 def _run(ir):
@@ -238,11 +240,11 @@ class TestQuery8_EntityFilterOnLoanTableReturnsFullRows:
         assert any("nested aggregation currently requires a grouping dimension" in e for e in errs)
 
     def test_combines_with_a_top_level_filter(self):
-        # Top-level filters apply BEFORE the entity predicate is evaluated
-        # (matches the existing entity_filters/aggregation convention -- see
-        # TestQuery3, where "count >= 2" is checked against an already-NPA-
-        # scoped concept): "fleet owner" here means >=3 loans WITHIN the
-        # NPA-filtered rows, not >=3 loans overall.
+        # Fleet status is a fact about the customer (>=3 loans across the whole
+        # upload, utils.CUSTOMER_LOAN_COUNT), so a top-level filter narrows
+        # which LOANS are shown, never who counts as a fleet owner. "Fleet
+        # owners in NPA" = fleet owners' NPA loans. (The stricter "customers
+        # with >=3 NPA loans" is still expressible -- see TestQuery3.)
         plan, errs = compile_logical({
             "intent": "loan_table",
             "filters": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
@@ -252,10 +254,10 @@ class TestQuery8_EntityFilterOnLoanTableReturnsFullRows:
         assert errs == [], errs
         out, err = execute_plan(_df(), plan)
         assert err == ""
-        # cust111: 2 NPA loans (< 3, excluded); cust333: 3 NPA loans (qualifies);
-        # cust444: 1 NPA loan (excluded).
-        assert set(out["Cust Mob No"]) == {333}
-        assert len(out) == 3
+        # 111 (4 loans, 2 NPA), 333 (3 loans, 3 NPA), 444 (4 loans, 1 NPA) are
+        # all fleet owners with NPA loans; 222 (2 loans) is not a fleet owner.
+        assert set(out["Cust Mob No"]) == {111, 333, 444}
+        assert len(out) == 6                              # their NPA loans only
         assert set(out["curr_bucket"]) == {"NPA"}
 
 
@@ -278,7 +280,7 @@ class TestQuery9_MisplacedEntityConceptInFilters:
         assert errs == [], errs
         out, err = execute_plan(_df(), plan)
         assert err == ""
-        assert set(out["Cust Mob No"]) == {333}   # only cust 333 has >=3 NPA loans
+        assert set(out["Cust Mob No"]) == {111, 333, 444}   # fleet owners with any NPA loan
 
     def test_entity_concept_in_filters_still_compiles_for_loan_table(self):
         plan, errs = compile_logical({
@@ -290,8 +292,8 @@ class TestQuery9_MisplacedEntityConceptInFilters:
         assert errs == [], errs
         out, err = execute_plan(_df(), plan)
         assert err == ""
-        assert set(out["Cust Mob No"]) == {333}
-        assert len(out) == 3
+        assert set(out["Cust Mob No"]) == {111, 333, 444}
+        assert len(out) == 6
 
     def test_entity_concept_as_a_count_measure_is_redundant_not_an_error(self):
         # Real production IR: the Planner ALSO tried to "count" fleet_operator
@@ -308,9 +310,9 @@ class TestQuery9_MisplacedEntityConceptInFilters:
         assert errs == [], errs
         out, err = execute_plan(_df(), plan)
         assert err == ""
-        assert set(out["Cust Mob No"]) == {333}
+        assert set(out["Cust Mob No"]) == {111, 333, 444}
         # Redundant measure resolves to "how many qualifying entities", i.e. 1 per row.
-        assert list(out["fleet_operator_count"]) == [1]
+        assert list(out["fleet_operator_count"]) == [1, 1, 1]
 
     def test_regular_concept_filters_still_work_unchanged(self):
         # Sanity: a normal CONCEPTS entry (not an entity concept) must still

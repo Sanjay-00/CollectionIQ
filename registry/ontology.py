@@ -1,14 +1,13 @@
-﻿"""Ontology  -  the VOCABULARY layer of the registry.
+"""Ontology  -  the VOCABULARY layer of the registry.
 
-Three things live here:
+Everything here is LIVE: the AI Query compiler, the priority framework and the
+Investigator all read these definitions, so editing one changes real answers.
 
-- PRIORITY_RULES  -  the 7-tier business priority framework. MIGRATED VERBATIM from
-  agents.domain_expert (which now re-exports it for back-compat). This is the
-  canonical home; agents.data_executor.execute_priority_mode and the prompt's
-  generated priority section both read it. Kept byte-identical so behavior is
-  unchanged in Phase 0.
+- PRIORITY_RULES  -  the 7-tier business priority framework. This is the canonical
+  home (agents.domain_expert re-exports it); agents.data_executor.execute_priority_mode
+  and the prompt's generated priority section both read it.
 
-- CONCEPTS  -  named, deterministic business rules the v2 compiler will expand. Each
+- CONCEPTS  -  named, deterministic business rules the compiler expands. Each
   concept is referenced by name in the logical IR; the compiler expands it to its
   full condition set, so a multi-condition concept (e.g. colending_at_risk) can
   NEVER silently lose a condition. Schema, per concept:
@@ -38,16 +37,20 @@ Three things live here:
   column itself is documented correctly in agents/logical_planner.py's glossary
   and usable directly as a raw column filter (Strike == "Y" / "N").
 
-  __CUTOFF_1Y__ is a dynamic placeholder (loan agreement date within last 12
-  months); execute_priority_mode resolves it today, and the v2 compiler resolves
-  it at lowering time. Same convention as PRIORITY_RULES.
+  __CUTOFF_1Y__ (utils.CUTOFF_PLACEHOLDER) is a dynamic placeholder: the start of
+  the "recent advances" window, RECENT_ADVANCES_MONTHS before the file's REPORTING
+  MONTH (not today). utils.resolve_dynamic_values resolves it -- once per compiled
+  plan in compile_logical, and in execute_priority_mode for PRIORITY_RULES.
+
+- ENTITY_CONCEPTS  -  per-customer predicates for nested aggregation (e.g.
+  fleet_operator).
 
 - METRICS  -  named numeric measures with their default aggregation AND grain. The
   grain is part of the definition (a measure is "sum of SOH AT loan grain"), so
   the compiler can prevent fan-out double-counting when grouping.
 
-Nothing here except PRIORITY_RULES is consumed yet  -  CONCEPTS/METRICS are additive
-in Phase 0, so they cannot change behavior.
+- AMBIGUOUS_TERMS  -  domain words (e.g. "business", "risky") the Logical Planner
+  must ask about instead of silently picking one reading.
 """
 
 # Thresholds shared with the dashboard (analysis/, smart_alerts.py) -- imported
@@ -61,6 +64,7 @@ from config import (
     RECENT_ADVANCES_MONTHS,
     HARD_BUCKET_ARREARS_EMI_MIN,
 )
+from utils import CUSTOMER_LOAN_COUNT
 
 # ── Business Priority Framework (migrated verbatim  -  single source of truth) ───
 # Used by the system prompt's generated priority section AND by the data executor
@@ -256,7 +260,11 @@ ENTITY_CONCEPTS: dict[str, dict] = {
         "entity": "customer",
         "label": "Fleet Operator",
         "description": f"A customer holding {FLEET_MIN_LOANS} or more loans/vehicles.",
-        "having": [{"agg": "nunique", "column": "Loan No", "op": ">=", "value": FLEET_MIN_LOANS}],
+        # CUSTOMER_LOAN_COUNT is counted over the whole upload at load time, so a
+        # dimension (branch/region) or a sidebar filter never demotes a fleet
+        # operator whose other loans fall outside it -- same rule as
+        # utils.fleet_loan_mask, used by every dashboard fleet view.
+        "having": [{"agg": "max", "column": CUSTOMER_LOAN_COUNT, "op": ">=", "value": FLEET_MIN_LOANS}],
     },
 }
 
@@ -401,6 +409,24 @@ METRICS: dict[str, dict] = {
         "scale": 100,
         "grain": "loan",
         "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",
+    },
+    "delinquency_pct": {
+        "label": "Delinquency %",
+        "kind": "count_ratio",
+        # Broadest delinquency reading: any arrears at all (Arrears/EMI > 0), i.e.
+        # everything except STD/NA -- same condition as CONCEPTS["delinquent"]
+        # above, just counted rather than used as a row filter. Deliberately
+        # wider than hard_bucket_pct (>= HARD_BUCKET_ARREARS_EMI_MIN) and npa_pct
+        # (curr_bucket == NPA): a 1-30 DPD account is delinquent here but neither
+        # hard-bucket nor NPA. Must match utils.compute_delinquency_pct (the
+        # shared helper used everywhere else -- dashboard + Portfolio
+        # Intelligence). tests/test_metric_consistency.py checks the two stay
+        # numerically identical.
+        "numerator_where": [{"column": "Arrears / EMI", "op": ">", "value": 0}],
+        "denominator_where": [],  # empty = count all rows in the group
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of accounts with any arrears (Arrears/EMI > 0): broadest delinquency reading, includes 1-30 DPD through NPA.",
     },
 }
 

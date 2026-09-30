@@ -1,8 +1,6 @@
 ﻿import pandas as pd
-from datetime import date
-from dateutil.relativedelta import relativedelta
 
-from config import RECENT_ADVANCES_MONTHS
+from utils import CUTOFF_PLACEHOLDER, resolve_dynamic_values
 
 # Bucket severity scores - higher = worse
 _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
@@ -28,6 +26,11 @@ def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
     col = cond["column"]
     op = cond["op"]
     val = cond["value"]
+
+    # On a non-date column an unresolved placeholder falls through to the string
+    # branch and silently matches everything -- fail loud instead.
+    if isinstance(val, str) and val == CUTOFF_PLACEHOLDER:
+        raise ValueError(f"unresolved {CUTOFF_PLACEHOLDER} on '{col}': call utils.resolve_dynamic_values first")
 
     if col not in df.columns:
         return df
@@ -204,11 +207,10 @@ def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
     }
 
 
-def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    """Run all priority rules in ranked order, combine results with a Priority column."""
+def execute_priority_mode(df: pd.DataFrame, as_of=None) -> tuple[pd.DataFrame, str]:
+    """Run all priority rules in ranked order, combine results with a Priority column.
+    as_of is the file's reporting month (anchors the "recent advances" tier)."""
     from agents.domain_expert import PRIORITY_RULES
-
-    cutoff_1y = pd.Timestamp(date.today() - relativedelta(months=RECENT_ADVANCES_MONTHS))
 
     all_rows = []
     seen_loans = set()
@@ -219,23 +221,14 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     # in rank order, but sort explicitly so that invariant can't silently break
     # if the list is ever reordered without updating ranks to match.
     for rule in sorted(PRIORITY_RULES, key=lambda r: r["rank"]):
-        conditions = rule["conditions"]
+        conditions = resolve_dynamic_values(rule["conditions"], as_of)
         subset = df.copy()
 
         for cond in conditions:
-            col = cond["column"]
-            op  = cond["op"]
-            val = cond["value"]
-
-            if col not in subset.columns:
+            if cond["column"] not in subset.columns:
                 subset = subset.iloc[0:0]
                 break
-
-            # Resolve dynamic cutoff placeholder
-            if val == "__CUTOFF_1Y__":
-                val = cutoff_1y
-
-            subset = _apply_condition(subset, {**cond, "value": val})
+            subset = _apply_condition(subset, cond)
 
         if len(subset) == 0:
             continue

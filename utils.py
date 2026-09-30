@@ -7,9 +7,51 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from config import HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS
+from config import (
+    HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS,
+    RECENT_ADVANCES_MONTHS,
+)
+from dateutil.relativedelta import relativedelta
 
 YELLOW = "#FFC000"
+
+# registry/ontology.py writes this in a concept's condition value instead of a
+# fixed date ("Ag_Date >= <start of the recent-advances window>").
+CUTOFF_PLACEHOLDER = "__CUTOFF_1Y__"
+
+
+def recent_advances_cutoff(as_of=None, months: int = RECENT_ADVANCES_MONTHS) -> pd.Timestamp:
+    """Start of the "recent advances" window: `months` before the file's
+    reporting month (as_of), or before today only when no reporting month is
+    known. Every surface -- Alerts, AI Query, Investigator, Root Cause -- must
+    anchor here, or re-analysing an older file gives each tab a different
+    window for the same rule. Date-level (no time of day), so a loan
+    disbursed exactly on the boundary date is always included."""
+    ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp(datetime.date.today())
+    return ref.normalize() - relativedelta(months=months)
+
+
+def count_agreed_after_month(df: pd.DataFrame, reporting_month) -> int:
+    """Loans whose Ag_Date falls AFTER the reporting month -- impossible in a
+    closing extract, and in practice a day/month swap at the source (a real Aug
+    extract had 98, each a valid past date once day and month were swapped)."""
+    if "Ag_Date" not in df.columns or reporting_month is None:
+        return 0
+    month_end = pd.Timestamp(reporting_month).to_period("M").end_time
+    return int((pd.to_datetime(df["Ag_Date"], errors="coerce") > month_end).sum())
+
+
+def resolve_dynamic_values(obj, as_of=None):
+    """Return a copy of a condition list / plan with every CUTOFF_PLACEHOLDER
+    replaced by recent_advances_cutoff(as_of). Walks nested dicts/lists, so a
+    whole compiled step-plan can be resolved in one pass."""
+    if isinstance(obj, dict):
+        return {k: resolve_dynamic_values(v, as_of) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [resolve_dynamic_values(v, as_of) for v in obj]
+    if isinstance(obj, str) and obj == CUTOFF_PLACEHOLDER:
+        return recent_advances_cutoff(as_of)
+    return obj
 
 _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 # pandas Timestamp is nanosecond-precision and bounded (~1677 to ~2262); a serial
@@ -165,6 +207,9 @@ COL_ALIASES = {
         "UN-CLEARED CHEQUE FOR THE MONTH/Amount Not remitted by RE",
     "Cum Coll (Inst+Exp+BC)": "Cum Coll (Inst+Exp)",
     "MONTH DUE P":"MONTH DUE PC",
+    # ZONAG Aug-2026 extract naming (confirmed same meaning by the business).
+    "EMI Accrued": "VehEMI Accrued",
+    "Cum Due (PC)": "Cum Due PC",
 }
 
 # All expected columns (used for reference only  -  missing ones show a warning, not error)
@@ -248,14 +293,57 @@ PREV_CARRYOVER_COLS = {
 }
 
 
+def bucket_from_arrears_emi(arrears_emi: pd.Series) -> pd.Series:
+    """The app's one DPD-bucket rule: Arrears/EMI -> STD/1-30 DPD/SMA-1/SMA-2/NPA
+    (NA when missing). Every bucket anywhere in the app must come from here."""
+    v = pd.to_numeric(arrears_emi, errors="coerce")
+    return pd.Series(
+        np.select(
+            [v.isna(), v <= 0, v < 1, v < 2, v < 3],
+            ["NA",     "STD",  "1-30 DPD", "SMA-1", "SMA-2"],
+            default="NPA",
+        ),
+        index=arrears_emi.index,
+    )
+
+
+CUSTOMER_LOAN_COUNT = "Customer Loan Count"
+
+
+def add_customer_loan_count(df: pd.DataFrame) -> pd.DataFrame:
+    """Add CUSTOMER_LOAN_COUNT: how many distinct loans this loan's customer
+    (Cust Mob No) holds in the WHOLE upload. Computed once at load time, before
+    any sidebar filter, so "fleet operator" is a fact about the customer, not
+    about the current view -- filtering to one branch must not demote a
+    customer whose other loans sit in another branch. Blank mobile numbers get
+    no count (NA): unrelated customers without a mobile on file would otherwise
+    merge into one phantom fleet operator."""
+    if "Cust Mob No" not in df.columns or "Loan No" not in df.columns:
+        return df
+    attrs = dict(df.attrs)
+    mob = df["Cust Mob No"].astype(str).str.strip()
+    has_mobile = (mob != "") & (mob.str.lower() != "nan") & df["Cust Mob No"].notna()
+    counts = df[has_mobile].groupby(mob[has_mobile])["Loan No"].nunique()
+    df = df.assign(**{CUSTOMER_LOAN_COUNT: mob.map(counts).where(has_mobile).astype("Int64")})
+    df.attrs = attrs
+    return df
+
+
+def fleet_loan_mask(df: pd.DataFrame) -> pd.Series:
+    """True for loans whose customer is a fleet operator (>= FLEET_MIN_LOANS
+    loans). Uses CUSTOMER_LOAN_COUNT (whole-upload count) when present; frames
+    without it (hand-built test data) are counted within themselves."""
+    from config import FLEET_MIN_LOANS
+    if CUSTOMER_LOAN_COUNT not in df.columns:
+        df = add_customer_loan_count(df)
+    if CUSTOMER_LOAN_COUNT not in df.columns:
+        return pd.Series(False, index=df.index)
+    return (df[CUSTOMER_LOAN_COUNT] >= FLEET_MIN_LOANS).fillna(False).astype(bool)
+
+
 def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    v = pd.to_numeric(df["Arrears / EMI"], errors="coerce")
-    df["curr_bucket"] = np.select(
-        [v.isna(), v <= 0, v < 1, v < 2, v < 3],
-        ["NA",     "STD",  "1-30 DPD", "SMA-1", "SMA-2"],
-        default="NPA",
-    )
+    df["curr_bucket"] = bucket_from_arrears_emi(df["Arrears / EMI"]).to_numpy()
     df["curr_score"] = df["curr_bucket"].map(BUCKET_SCORE)
     # SOH = Sum of Hire = POS + Closing Arrears = total exposure if customer defaults
     _pos = pd.to_numeric(df["POS"], errors="coerce").fillna(0) if "POS" in df.columns else pd.Series(0.0, index=df.index)
@@ -369,8 +457,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Pass 1  -  strip spaces
     df.columns = pd.Index([str(c).strip() for c in df.columns])
 
-    # Pass 2  -  known aliases
-    df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns}, inplace=True)
+    # Pass 2  -  known aliases (never onto a name the file already has -- that
+    # would leave two columns with the same name)
+    df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns and v not in df.columns}, inplace=True)
 
     # Build case-insensitive lookup; longest targets first so more-specific
     # columns win over shorter prefix-collision siblings.
@@ -575,6 +664,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         df = df.drop_duplicates(subset=["Loan No"])
         dropped_duplicates = before - len(df)
     df.attrs["dropped_duplicate_loans"] = dropped_duplicates
+    df = add_customer_loan_count(df)
 
     # Non-critical columns (REQUIRED_COLS minus CRITICAL_COLS) can be missing or
     # fail to normalize-match without ever raising an error -- this module's own
@@ -592,7 +682,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     return df, []
 
 
-def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = ()) -> pd.DataFrame:
+def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = (), date_from=None) -> pd.DataFrame:
     if len(df.columns) == 0:
         return df
     if region != "All" and "RegionName" in df.columns:
@@ -605,6 +695,9 @@ def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segme
         _seg_col = next((c for c in ["SegmentName", "Segment"] if c in df.columns), None)
         if _seg_col:
             df = df[df[_seg_col].isin(segment)]
+    if date_from and "Ag_Date" in df.columns:
+        ag_date = pd.to_datetime(df["Ag_Date"], errors="coerce")
+        df = df[ag_date >= pd.Timestamp(date_from)]
     return df
 
 
@@ -747,6 +840,32 @@ def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
     if total == 0:
         return 0.0
     return _safe_pct((to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), total)
+
+
+def compute_delinquency_count(df: pd.DataFrame) -> int:
+    """Count of accounts with any arrears: Arrears/EMI > 0. Broadest delinquency
+    definition (1-30 DPD through NPA, i.e. everything except STD/NA) -- matches
+    registry/ontology.py's CONCEPTS["delinquent"] row-level filter exactly, just
+    counted rather than used as a filter. See compute_delinquency_pct for the rate.
+    """
+    if df.empty or "Arrears / EMI" not in df.columns:
+        return 0
+    return int((to_num(df, "Arrears / EMI") > 0).sum())
+
+
+def compute_delinquency_pct(df: pd.DataFrame) -> float:
+    """% of accounts with any arrears (Arrears/EMI > 0), among all accounts.
+
+    Single source of truth for the dashboard and every Portfolio Intelligence table
+    that reports Delinquency% (compute_region_scorecard, compute_branch_quadrant,
+    compute_executive_scorecard). See compute_strike_pct's docstring re: the AI
+    Query path (registry/ontology.py's delinquency_pct count_ratio METRIC, kept in
+    sync via tests/test_metric_consistency.py).
+    """
+    total = account_count(df)
+    if total == 0:
+        return 0.0
+    return _safe_pct(compute_delinquency_count(df), total)
 
 
 def _mom_pct(curr, prev):

@@ -350,7 +350,9 @@ def _execute_step(
     as_of is the report's OWN reporting month (app.py's curr_month), passed
     straight through to any step that anchors a relative-date window to it
     (vintage_summary, new_advances_summary, new_advances_by_dimension,
-    new_advances_trend, product_analysis, repossession_list) -- never
+    new_advances_trend, product_analysis, repossession_list, and the
+    "recent advances" concept inside concept_filter/priority_menu/
+    priority_accounts/worst_loans_by_metric) -- never
     wall-clock today, same convention every other as_of-taking function in
     this codebase follows (see vintage_summary's own docstring)."""
     fn = STEP_REGISTRY[step_type]
@@ -464,16 +466,19 @@ def _execute_step(
     if step_type == "concept_filter":
         return fn(
             df_curr, params["concept"],
-            scope_col=params.get("scope_col"), scope_value=params.get("scope_value"),
+            scope_col=params.get("scope_col"), scope_value=params.get("scope_value"), as_of=as_of,
         )
 
     if step_type == "priority_accounts":
         return fn(
             df_curr, scope_col=params.get("scope_col"), scope_value=params.get("scope_value"),
-            all_columns=bool(params.get("all_columns")),
+            all_columns=bool(params.get("all_columns")), as_of=as_of,
         )
 
-    if step_type in ("priority_menu", "high_arrears_at_risk", "fleet_defaulters"):
+    if step_type == "priority_menu":
+        return fn(df_curr, scope_col=params.get("scope_col"), scope_value=params.get("scope_value"), as_of=as_of)
+
+    if step_type in ("high_arrears_at_risk", "fleet_defaulters"):
         return fn(df_curr, scope_col=params.get("scope_col"), scope_value=params.get("scope_value"))
 
     if step_type == "top_closing_arrears":
@@ -488,7 +493,7 @@ def _execute_step(
             scope_value = tuple(scope_value)
         return fn(
             df_curr, params["metric"], scope_col=params.get("scope_col"), scope_value=scope_value,
-            all_columns=bool(params.get("all_columns")),
+            all_columns=bool(params.get("all_columns")), as_of=as_of,
         )
 
     if step_type == "executive_roster":
@@ -657,7 +662,7 @@ def _render_analyse_further(
                 if kind == "concept":
                     concept = category["concept"]
                     drill_df = STEP_REGISTRY["concept_filter"](
-                        df_curr, concept, scope_col=scope_col, scope_value=scope_value,
+                        df_curr, concept, scope_col=scope_col, scope_value=scope_value, as_of=as_of,
                     ).head(shown)
                     new_type, new_value = "concept_filter", concept
                     new_params = {"concept": concept, "scope_col": scope_col, "scope_value": scope_value}
@@ -816,7 +821,7 @@ def _render_analyse_further(
             exec_label = record.entity_value[0] if isinstance(record.entity_value, tuple) else record.entity_value
             if st.button(f"Analyse further: loans behind {exec_label}'s {chosen}", key=f"drill_{dl_key}"):
                 drill_df = STEP_REGISTRY["worst_loans_by_metric"](
-                    df_curr, chosen, scope_col="executive", scope_value=record.entity_value,
+                    df_curr, chosen, scope_col="executive", scope_value=record.entity_value, as_of=as_of,
                 )
                 summary = summarize_worst_loans(drill_df)
                 new_type = "worst_loans_by_metric"
@@ -921,7 +926,7 @@ def _render_analyse_further(
             list_scope_col = (record.params or {}).get("scope_col")
             list_scope_value = (record.params or {}).get("scope_value")
             drill_df = STEP_REGISTRY["worst_loans_by_metric"](
-                df_curr, record.metric_focus, scope_col=list_scope_col, scope_value=list_scope_value,
+                df_curr, record.metric_focus, scope_col=list_scope_col, scope_value=list_scope_value, as_of=as_of,
             )
             summary = summarize_worst_loans(drill_df)
             new_type = "worst_loans_by_metric"

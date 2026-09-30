@@ -19,17 +19,14 @@ plan, and validates it with the existing validate_plan. Unknown concept/metric -
 a loud error (routes to repair/clarification), never a silent wrong plan.
 """
 import re
-from datetime import date
 
 import pandas as pd
-from dateutil.relativedelta import relativedelta
 
 from registry.ontology import CONCEPTS, METRICS, ENTITY_CONCEPTS
 from registry.semantic_model import ENTITIES, DIMENSIONS, entity_key, resolve_dimension, is_coarser
 from agents.plan_executor import validate_plan
 from compiler.measures import MEASURE_HANDLERS, MEASURE_ROLLUPS
-from utils import PREV_CARRYOVER_COLS
-from config import RECENT_ADVANCES_MONTHS
+from utils import PREV_CARRYOVER_COLS, resolve_dynamic_values
 
 # Key columns of loan-level "dimension" entities (branch/region/executive). A
 # per-entity predicate that aggregates over one of these  -  when it is not the output
@@ -46,22 +43,14 @@ def _snake(name: str) -> str:
     return s or "value"
 
 
-def _resolve_cutoff(value):
-    """Resolve the dynamic __CUTOFF_1Y__ placeholder to a concrete timestamp.
-    Mirrors agents.data_executor.execute_priority_mode so concept definitions that
-    use the placeholder (recent_advance_high_bucket) behave identically. Despite
-    the "1Y" name the window is config.RECENT_ADVANCES_MONTHS (the same constant
-    smart_alerts.py uses for the identical "recent advances" concept), not a
-    hardcoded 12  -  changing that one setting now changes this everywhere."""
-    if value == "__CUTOFF_1Y__":
-        return pd.Timestamp(date.today() - relativedelta(months=RECENT_ADVANCES_MONTHS))
-    return value
-
-
 def _expand_filters(filters: list, errs: list) -> list:
     """Expand each filter item into concrete {column, op, value} conditions.
     Concept refs expand to their FULL condition list (the anti-dropped-condition
-    guarantee). Raw conditions pass through. ANDed together downstream."""
+    guarantee). Raw conditions pass through. ANDed together downstream.
+
+    Leaves utils.CUTOFF_PLACEHOLDER unresolved: compile_logical resolves the
+    whole plan once against the reporting month, and any other caller must
+    wrap the result in utils.resolve_dynamic_values(..., as_of)."""
     conditions: list = []
     for item in filters or []:
         if not isinstance(item, dict):
@@ -73,10 +62,9 @@ def _expand_filters(filters: list, errs: list) -> list:
             if concept is None:
                 errs.append(f"unknown concept '{name}'")
                 continue
-            for cond in concept["conditions"]:
-                conditions.append({**cond, "value": _resolve_cutoff(cond["value"])})
+            conditions.extend(dict(cond) for cond in concept["conditions"])
         elif "column" in item and "op" in item:
-            conditions.append({**item, "value": _resolve_cutoff(item.get("value"))})
+            conditions.append(dict(item))
         else:
             errs.append(f"uninterpretable filter (need 'concept' or 'column'+'op'): {item!r}")
     return conditions
@@ -177,11 +165,7 @@ def _resolve_count_metric(name: str) -> dict | None:
     # 4. {concept}_count → expand from registry
     concept = CONCEPTS.get(prefix)
     if concept:
-        where = [
-            {**cond, "value": _resolve_cutoff(cond["value"])}
-            for cond in concept["conditions"]
-        ]
-        return {"agg": "count", "kind": "count", "where": where}
+        return {"agg": "count", "kind": "count", "where": [dict(c) for c in concept["conditions"]]}
 
     # 5. {bucket}_count → count where curr_bucket == value
     bucket_val = _BUCKET_ALIASES.get(prefix)
@@ -586,12 +570,15 @@ def _is_misplaced_entity_concept(concept) -> bool:
     return concept in ENTITY_CONCEPTS and concept not in CONCEPTS
 
 
-def compile_logical(ir: dict, columns) -> tuple[list, list]:
+def compile_logical(ir: dict, columns, as_of=None) -> tuple[list, list]:
     """Lower a logical IR into a physical step-plan. Returns (plan, errors).
     A non-empty errors list means the plan must NOT be executed (route to
     repair/clarification). The returned plan is also passed through the existing
     validate_plan so hallucinated columns are caught with the same gate the
-    LLM-authored path uses."""
+    LLM-authored path uses.
+
+    as_of is the file's reporting month: date-relative concepts (e.g. "recent
+    advances") are anchored to it, not to today."""
     errs: list[str] = []
     ir = ir or {}
 
@@ -728,6 +715,8 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
         display_cols = ir.get("display_columns") or []
         if display_cols and ir.get("intent") in (None, "", "loan_table"):
             plan.append({"op": "select", "columns": display_cols})
+
+    plan = resolve_dynamic_values(plan, as_of)
 
     # Reuse the existing deterministic column validator as the final gate.
     if plan and not errs:
