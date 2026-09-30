@@ -19,7 +19,10 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule
 
-from utils import to_num, account_count, is_yes, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask
+from utils import (
+    to_num, account_count, is_yes, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask,
+    canonical_region,
+)
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN,
     RECENT_ADVANCES_COHORT_START,
@@ -116,7 +119,16 @@ def compute_insurance_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.Dat
     return pd.DataFrame(rows).sort_values("Insurance-Only %", ascending=False).reset_index(drop=True)
 
 
-# ── Item 2: Chronic vs. shock four-way split, by branch ─────────────────────
+# ── Item 2: Deep arrears, still paying vs not paying (four-way split), by branch ─────────────────────
+
+# The four groups of compute_chronic_shock_split, named for what the data
+# shows (not a prediction), so a manager can read them without a glossary.
+HARD_NOT_PAYING = "Hard + Not Paying"
+HARD_STILL_PAYING = "Hard + Still Paying"
+WAS_SILENT = f"Was Silent, Now Under {HARD_BUCKET_ARREARS_EMI_MIN} EMIs"
+EARLY_DELINQUENCY = "Early Delinquency"
+ARREARS_GROUPS = [HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY]
+
 
 def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.DataFrame:
     """Cross a BEHAVIORAL flag (No Coll 3 Months and >6 EMI -- a zero-payment
@@ -125,11 +137,12 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
     severity regardless of history). The two can diverge -- a customer can hit
     one without the other -- so treating them as the same signal hides which
     of four genuinely different populations an account belongs to:
-      - Chronic + Hard:      write-off/legal candidates
-      - Chronic + Not Hard:  partial payer after a long silence, worth a call
-                              before they relapse
-      - Shock + Hard:        sudden deterioration, a restructuring candidate
-      - Neither:             normal delinquency
+      - HARD_NOT_PAYING (chronic + hard):     legal/write-off candidates
+      - HARD_STILL_PAYING (hard, not chronic): deep arrears but still paying
+                                               something; restructuring candidate
+      - WAS_SILENT (chronic, not hard):        part-paid after a long silence,
+                                               worth a call before they slip back
+      - EARLY_DELINQUENCY (neither):           normal early delinquency
     """
     required = {"Arrears / EMI", group_col}
     if df.empty or not required.issubset(df.columns):
@@ -153,22 +166,16 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
         keys = keys if isinstance(keys, tuple) else (keys,)
         n = account_count(grp)
         row = dict(zip(group_cols, keys))
-        row.update({
-            "Delinquent Accounts": n,
-            "Chronic + Hard": int(grp["_chronic_hard"].sum()),
-            "Chronic + Hard %": _safe_div(grp["_chronic_hard"].sum(), n),
-            "Chronic + Not Hard": int(grp["_chronic_not_hard"].sum()),
-            "Chronic + Not Hard %": _safe_div(grp["_chronic_not_hard"].sum(), n),
-            "Shock + Hard": int(grp["_shock_hard"].sum()),
-            "Shock + Hard %": _safe_div(grp["_shock_hard"].sum(), n),
-            "Neither": int(grp["_neither"].sum()),
-            "Neither %": _safe_div(grp["_neither"].sum(), n),
-        })
+        row["Delinquent Accounts"] = n
+        for label, flag in ((HARD_NOT_PAYING, "_chronic_hard"), (HARD_STILL_PAYING, "_shock_hard"),
+                            (WAS_SILENT, "_chronic_not_hard"), (EARLY_DELINQUENCY, "_neither")):
+            row[label] = int(grp[flag].sum())
+            row[f"{label} %"] = _safe_div(grp[flag].sum(), n)
         rows.append(row)
 
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("Chronic + Hard %", ascending=False).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(f"{HARD_NOT_PAYING} %", ascending=False).reset_index(drop=True)
 
 
 # ── Item 5: Per-region "why" synthesis ───────────────────────────────────────
@@ -176,7 +183,7 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
 _DRIVER_LABELS = {
     "insurance_only_share":  "Insurance-driven delinquency",
     "chronic_share":         "Chronic non-payer buildup",
-    "shock_share":           "Sudden-shock deterioration",
+    "shock_share":           "Deep arrears, still paying",
     "fleet_share":           "Fleet-operator concentration",
     "recent_vintage_share":  "Recent-advance (sourcing/underwriting) quality",
 }
@@ -453,14 +460,14 @@ def load_daily_missed_feed(file) -> tuple[pd.DataFrame | None, str | None]:
 STATUS_BUCKETS = ["1-30 DPD", "SMA-1", "SMA-2", "NPA"]
 _OTHER_BUCKET = "Other"  # on the list but Arrears/EMI blank or <= 0
 
-# The master LCC and the daily feed can spell a region differently.
-_REGION_ALIASES = {"CHHATRAPATI SAMBHAJI NAGAR": "CS NAGAR"}
+# The master LCC and the daily feed can spell a region differently
+# (config.REGION_NAME_ALIASES, shared with the upload loader).
 _DAILY_FEED_REGION_CANDIDATES = ["REGIONNAME", "RegionName", "REGION"]
 _DAILY_FEED_ARREARS_CANDIDATES = ["ARREARS / EMI", "Arrears / EMI"]
 
 
 def _canon_region(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.strip().str.upper().replace(_REGION_ALIASES)
+    return canonical_region(s.astype(str).str.strip().str.upper())
 
 
 def _loan_key(s: pd.Series) -> pd.Series:
@@ -758,7 +765,7 @@ def build_root_cause_workbook(
     row = 4
     cover.cell(row=row, column=1, value="Contents").font = _SECTION_FONT
     row += 1
-    contents = ["Region Diagnosis (the \"why\" table)", "Insurance vs. Installment Split (by branch)", "Chronic vs. Shock Split (by branch)"]
+    contents = ["Region Diagnosis (the \"why\" table)", "Insurance vs. Installment Split (by branch)", "Deep Arrears: Still Paying vs Not Paying (by branch)"]
     if recent_bucket_df is not None and not recent_bucket_df.empty:
         contents += ["Recent Advances Summary", "Recent Advances Bucket Split", "Recent Advances by Region", "Recent Advances by Branch"]
     status_labels = {"Region": region_status, "Branch": branch_status, "Executive": executive_status}
@@ -789,7 +796,7 @@ def build_root_cause_workbook(
 
     _write_df_sheet(wb.create_sheet("Region Diagnosis"), why_df, status_col="Status")
     _write_df_sheet(wb.create_sheet("Insurance Split"), insurance_split_df)
-    _write_df_sheet(wb.create_sheet("Chronic vs Shock"), chronic_shock_df)
+    _write_df_sheet(wb.create_sheet("Paying vs Not Paying"), chronic_shock_df)
 
     if recent_bucket_df is not None and not recent_bucket_df.empty:
         if recent_summary:

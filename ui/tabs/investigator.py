@@ -57,7 +57,7 @@ from investigator.steps import (
 )
 from investigator.suggestions import suggest_mechanism_steps
 from registry.semantic_model import resolve_dimension
-from ui.components import _dl_btn
+from ui.components import _dl_btn, _safe_df
 
 _NEW_CHAT_TITLE = "New chat"
 _TITLE_MAX_CHARS = 40
@@ -1024,7 +1024,7 @@ def _render_result_body(
 
     if record.narrative:
         st.markdown(record.narrative)
-    st.dataframe(result_df, width='stretch', hide_index=True)
+    st.dataframe(_safe_df(result_df), width='stretch', hide_index=True)
     _dl_btn(result_df, f"investigator_{record.step_type or 'result'}.xlsx", key=dl_key, full_source=df_curr)
 
     if show_controls:
@@ -1129,7 +1129,7 @@ def _process_new_question(
         if result_df is None or result_df.empty:
             st.info(_empty_result_message(turn["step_type"], df_prev))
         else:
-            st.dataframe(result_df, width='stretch', hide_index=True)
+            st.dataframe(_safe_df(result_df), width='stretch', hide_index=True)
             _dl_btn(result_df, f"investigator_{turn['step_type']}.xlsx", key=dl_key, full_source=df_curr)
             _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
 

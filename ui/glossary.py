@@ -1,14 +1,16 @@
 """Plain-language definitions for the app's own analytical terms (not standard
 NBFC vocabulary), shown as an ⓘ hover next to the term. Thresholds come from
-config.py, so a definition can't drift from the rule it describes."""
+config.py and group names from analysis/root_cause.py, so a definition can't
+drift from the rule or label it describes."""
+from analysis.root_cause import EARLY_DELINQUENCY, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT
 from config import FLEET_MIN_LOANS, HARD_BUCKET_ARREARS_EMI_MIN, RECENT_ADVANCES_MONTHS
 from ui.components import _esc
 
 _H = HARD_BUCKET_ARREARS_EMI_MIN
 
 _CHRONIC = f"No payment received in the last 3 months AND more than {_H} EMIs overdue."
-_SHOCK = (f"{_H}+ EMIs overdue now, but NOT chronic: the customer paid something in the last "
-          "3 months, so this is a recent slide, not a long silence.")
+_STILL_PAYING = (f"{_H} or more EMIs overdue, but the customer has paid something in the last 3 months: "
+                 "trying, but not keeping up.")
 _FLEET = f"A customer (same mobile number) with {FLEET_MIN_LOANS} or more loans in the whole upload."
 
 GLOSSARY: dict[str, str] = {
@@ -16,18 +18,21 @@ GLOSSARY: dict[str, str] = {
     "Chronic (3M+)": f"Number of chronic loans: {_CHRONIC[0].lower()}{_CHRONIC[1:]}",
     "Hard Bucket": f"{_H} or more EMIs overdue right now.",
     "Hard Bucket%": f"% of loans with {_H} or more EMIs overdue right now.",
-    "Sudden shock": _SHOCK,
-    "Chronic + Hard": f"Chronic and still {_H}+ EMIs overdue: legal / write-off candidates.",
-    "Chronic + Not Hard": f"Chronic, but now under {_H} EMIs overdue: part-paid after a long silence. Call before they slip back.",
-    "Shock + Hard": _SHOCK + " Worth a restructuring conversation.",
-    "Neither": f"Behind on payments, but neither chronic nor {_H}+ EMIs overdue: normal early delinquency.",
+    HARD_NOT_PAYING: (f"{_H} or more EMIs overdue AND no payment in the last 3 months. "
+                      "Legal, repossession or write-off candidates."),
+    HARD_STILL_PAYING: _STILL_PAYING + " Worth a restructuring conversation.",
+    WAS_SILENT: (f"Paid nothing for 3+ months at some point, but now under {_H} EMIs overdue after "
+                 "paying part of it down. Call before they go silent again."),
+    EARLY_DELINQUENCY: (f"Behind on payments, but under {_H} EMIs overdue and not silent for 3 months. "
+                        "Normal follow-up by the field executive."),
     "Insurance-Only": ("EMI fully paid; only the insurance/expense charge is unpaid. "
                        "Fix with a cash or WCL adjustment, not a credit problem."),
     "Installment-Only": "EMI unpaid; no unpaid insurance/expense charge.",
     "Both": "Both the EMI and the insurance/expense charge are unpaid.",
     "Delinquent Accounts": "Loans with any EMI or charge overdue (Arrears/EMI above 0).",
     "Dominant Driver": ("The cause behind the biggest share of this region's delinquent loans: "
-                        "insurance-only, chronic, sudden shock, fleet operators or recent advances."),
+                        "insurance-only, chronic non-payers, deep arrears still paying, fleet operators "
+                        "or recent advances."),
     "Driver Share %": "Share of the region's delinquent loans explained by the dominant driver.",
     "Fleet operator": _FLEET,
     "Concern Score": ("0-100 rank of this branch against all other branches (higher = worse), blending "
@@ -38,7 +43,7 @@ GLOSSARY: dict[str, str] = {
 DRIVER_HELP: dict[str, str] = {
     "Insurance-driven delinquency": GLOSSARY["Insurance-Only"],
     "Chronic non-payer buildup": _CHRONIC,
-    "Sudden-shock deterioration": _SHOCK,
+    "Deep arrears, still paying": _STILL_PAYING,
     "Fleet-operator concentration": "Delinquent loans belonging to fleet operators. " + _FLEET,
     "Recent-advance (sourcing/underwriting) quality": (
         f"Delinquent loans agreed in the {RECENT_ADVANCES_MONTHS} months before the reporting month: "

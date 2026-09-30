@@ -386,3 +386,26 @@ class TestMomCellColoring:
         html = _style_mom_columns(df, ["Accounts MoM %", "Funded MoM %"]).to_html()
         assert "0.110000" not in html
         assert "0.11" in html
+
+
+def test_every_table_on_screen_goes_through_safe_df():
+    # _safe_df strips the meaningless 00:00:00 from LCC dates (via _dateonly);
+    # a table shown without it prints "2023-09-23 00:00:00".
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    raw = []
+    for f in [root / "app.py", *sorted((root / "ui").rglob("*.py"))]:
+        text = f.read_text(encoding="utf-8-sig")
+        for m in re.finditer(r"^\s*st\.dataframe\(\s*([A-Za-z_][\w.]*)", text, re.MULTILINE):
+            arg = m.group(1)
+            if arg != "_safe_df" and arg != "styled_df":   # styled_df is built from _safe_df
+                raw.append(f"{f.relative_to(root)}: {m.group(0)}")
+    assert raw == []
+
+
+def test_safe_df_drops_midnight_time_from_dates():
+    import pandas as pd
+    from ui.components import _safe_df
+    df = pd.DataFrame({"Ag_Date": pd.to_datetime(["2023-09-23"]).astype("datetime64[us]")})
+    assert str(_safe_df(df)["Ag_Date"].iloc[0]) == "2023-09-23"

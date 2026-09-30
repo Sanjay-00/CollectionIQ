@@ -13,8 +13,10 @@ import streamlit as st
 
 from ui.components import _dl_btn, _divider, append_total_row, _esc
 from ui.glossary import DRIVER_HELP, help_for, info_icon
+from config import HARD_BUCKET_ARREARS_EMI_MIN
 from analysis.root_cause import (
     build_root_cause_workbook, load_daily_missed_feed,
+    ARREARS_GROUPS, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY,
     compute_recent_advances_daily_match, compute_recent_advances_status_by_grain,
 )
 
@@ -144,8 +146,8 @@ def _render_contamination_notice(contamination: dict) -> None:
     st.markdown(
         f'<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;'
         f'padding:10px 14px;font-size:12px;color:#92400e;margin-bottom:16px;">'
-        f'⚠️ Data quality: unrecognized values found and excluded from the flags below '
-        f'(not silently trusted as Yes/No) &mdash; {_esc(items)}.'
+        f'⚠️ Some yes/no columns contain values the app doesn\'t recognise: {_esc(items)}. '
+        f'Those rows are left out of these tables rather than guessed as Yes or No.'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -169,7 +171,7 @@ def _render_why_table(why_df: pd.DataFrame) -> None:
     for _, row in view.iterrows():
         badge = _badge(row.get("Status", "-"))
         delta = row.get("Δ NPA%")
-        delta_txt = f"{delta:+.2f}pp" if delta is not None and pd.notna(delta) else "—"
+        delta_txt = f"{delta:+.2f}pp" if delta is not None and pd.notna(delta) else "no prev month"
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:14px;padding:10px 14px;'
             f'border:1px solid #e5e7eb;border-radius:8px;margin-bottom:8px;">'
@@ -209,7 +211,7 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
     st.caption(
         "Among delinquent accounts: Insurance-Only means the customer is current on the "
         "loan itself (installment arrears ≤ 0) but an unpaid insurance/expense charge is "
-        "creating the delinquency — fixable with a cash/WCL adjustment, not a credit "
+        "creating the delinquency: fixable with a cash/WCL adjustment, not a credit "
         "problem. Both = genuine shortfall on both legs (colored by severity). "
         "Sorted by highest Insurance-Only share first."
     )
@@ -243,44 +245,35 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
 
 
 def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
-    _section("Chronic vs. Shock Split, by Branch", margin_top="24px")
+    _section("Deep Arrears: Still Paying vs Not Paying, by Branch", margin_top="24px")
     st.caption(
-        "Chronic = no collection for 3+ months and arrears already past 6 EMIs at some "
-        "point (behavioral history). Hard = currently ≥6 EMIs overdue (today's snapshot). "
-        "The two can diverge: Chronic+Hard are write-off/legal candidates, Chronic+Not Hard "
-        "are worth a call before they relapse, Shock+Hard are sudden deterioration worth a "
-        "restructuring conversation."
+        f"Every delinquent loan in one of four groups, by how far behind it is today "
+        f"({HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs = hard) and whether the customer has paid anything in "
+        f"the last 3 months. Hover the ⓘ on each column for what to do with that group."
     )
     if cs_df.empty:
         st.info("Not enough data to compute the chronic/shock split.")
         return
-    show_cols = ["Unit", "RegionName", "Delinquent Accounts",
-                 "Chronic + Hard", "Chronic + Hard %", "Chronic + Not Hard", "Chronic + Not Hard %",
-                 "Shock + Hard", "Shock + Hard %", "Neither", "Neither %"]
+    show_cols = ["Unit", "RegionName", "Delinquent Accounts"] + [x for g in ARREARS_GROUPS for x in (g, f"{g} %")]
     show_cols = [c for c in show_cols if c in cs_df.columns]
-    ratio_cols = {
-        "Chronic + Hard %": ("Chronic + Hard", "Delinquent Accounts"),
-        "Chronic + Not Hard %": ("Chronic + Not Hard", "Delinquent Accounts"),
-        "Shock + Hard %": ("Shock + Hard", "Delinquent Accounts"),
-        "Neither %": ("Neither", "Delinquent Accounts"),
-    }
+    ratio_cols = {f"{g} %": (g, "Delinquent Accounts") for g in ARREARS_GROUPS}
     view = append_total_row(cs_df[show_cols], ratio_cols=ratio_cols)
     cols = [
         {"key": "Unit", "align": "left", "bold": True},
         {"key": "RegionName", "align": "left", "label": "Region"},
         {"key": "Delinquent Accounts", "fmt": _fmt_int},
-        {"key": "Chronic + Hard", "fmt": _fmt_int},
-        {"key": "Chronic + Hard %", "fmt": _fmt_pct(1), "color": _severity_color(hi=15, mid=7)},
-        {"key": "Chronic + Not Hard", "fmt": _fmt_int},
-        {"key": "Chronic + Not Hard %", "fmt": _fmt_pct(1)},
-        {"key": "Shock + Hard", "fmt": _fmt_int},
-        {"key": "Shock + Hard %", "fmt": _fmt_pct(1), "color": _severity_color(hi=15, mid=7)},
-        {"key": "Neither", "fmt": _fmt_int},
-        {"key": "Neither %", "fmt": _fmt_pct(1)},
+        {"key": HARD_NOT_PAYING, "fmt": _fmt_int},
+        {"key": f"{HARD_NOT_PAYING} %", "fmt": _fmt_pct(1), "color": _severity_color(hi=15, mid=7)},
+        {"key": HARD_STILL_PAYING, "fmt": _fmt_int},
+        {"key": f"{HARD_STILL_PAYING} %", "fmt": _fmt_pct(1), "color": _severity_color(hi=15, mid=7)},
+        {"key": WAS_SILENT, "fmt": _fmt_int},
+        {"key": f"{WAS_SILENT} %", "fmt": _fmt_pct(1)},
+        {"key": EARLY_DELINQUENCY, "fmt": _fmt_int},
+        {"key": f"{EARLY_DELINQUENCY} %", "fmt": _fmt_pct(1)},
     ]
     cols = [c for c in cols if c["key"] in view.columns]
     st.markdown(_html_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
-    _dl_btn(cs_df, "chronic_vs_shock_split.xlsx", "dl_root_cause_chronic_shock")
+    _dl_btn(cs_df, "deep_arrears_paying_vs_not_paying.xlsx", "dl_root_cause_chronic_shock")
 
 
 def _render_recent_advances_summary(summary: dict) -> None:
@@ -332,7 +325,7 @@ def _render_recent_advances_by_group(count_df: pd.DataFrame, soh_df: pd.DataFram
     if count_df.empty and soh_df.empty:
         return
     group_key = group_col
-    tab_count, tab_soh = st.tabs([f"By {label}  —  Count %", f"By {label}  —  SOH %"])
+    tab_count, tab_soh = st.tabs([f"By {label}: Count %", f"By {label}: SOH %"])
     with tab_count:
         if count_df.empty:
             st.info("No data.")
@@ -564,7 +557,7 @@ def render_root_cause_tab(
         <div class="ai-panel">
           <div class="ai-title">Root Cause Diagnostics</div>
           <div class="ai-subtitle">
-            Not just "what the numbers are" — why Collection%/NPA%/SMA-2% are moving,
+            Not just "what the numbers are", but why Collection%/NPA%/SMA-2% are moving,
             region by region and branch by branch, so mitigation can follow.
           </div>
         </div>
