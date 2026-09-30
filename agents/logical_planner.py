@@ -364,13 +364,19 @@ METRICS format (derived columns computed from measure aliases: use for differenc
   If you wrote {{"metric": "prev_npa_count", "alias": "prev_npa"}}, use "prev_npa" in expr, NOT "prev_npa_count".
   Always add an order_by on the derived alias when the user asks to sort by it.
 
-REGISTERED PERCENTAGE METRICS: Strike % and Hard Bucket % are catalog METRICS
-  (count_ratio kind), same as collection_pct/lcc_pct: reference them directly by
-  name, never hand-build them with a manual count+derive.
+REGISTERED PERCENTAGE METRICS: Strike %, Hard Bucket % and Delinquency % are catalog
+  METRICS (count_ratio kind), same as collection_pct/lcc_pct: reference them directly
+  by name, never hand-build them with a manual count+derive.
     {{"metric": "strike_pct", "alias": "curr_strike_pct"}}
     {{"metric": "hard_bucket_pct", "alias": "curr_hard_pct"}}
+    {{"metric": "delinquency_pct", "alias": "curr_delinquency_pct"}}
   These also support the bare "prev_" prefix and time.compare, exactly like
   collection_pct (e.g. "prev_strike_pct", or just add a time.compare block).
+  Delinquency % (Arrears/EMI > 0) is the BROADEST risk reading: includes 1-30 DPD
+  through NPA. Do not confuse with npa_pct (curr_bucket == NPA only) or
+  hard_bucket_pct (>= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue) -- three different,
+  narrower-to-broader severity thresholds. For a plain "delinquent accounts" count
+  (not %), use the "delinquent_count" synthetic count-metric shorthand above.
 
 COUNT-BASED PERCENTAGES (any other "% of accounts matching X" that is NOT a
   registered catalog METRIC): build from two "count" measures + a METRICS derive.

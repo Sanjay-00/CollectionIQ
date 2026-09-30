@@ -2,8 +2,8 @@ import pandas as pd
 import streamlit as st
 
 
-def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str, str, str]:
-    """Render sidebar filter controls. Returns (sel_region, sel_branch, sel_status)."""
+def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str, str, list, "pd.Timestamp | None"]:
+    """Render sidebar filter controls. Returns (sel_region, sel_branch, sel_status, sel_segment, sel_date_from)."""
     with st.sidebar:
         st.markdown('<div class="filter-header">⚙ FILTERS</div>', unsafe_allow_html=True)
 
@@ -32,6 +32,22 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         statuses = ["All"] + sorted(df_curr_raw["Loan Status"].dropna().unique().tolist())
         sel_status = st.selectbox("Loan Status", statuses, key="sel_status_key")
 
+        sel_date_from = None
+        if "Ag_Date" in df_curr_raw.columns:
+            _ag_dates = pd.to_datetime(df_curr_raw["Ag_Date"], errors="coerce").dropna()
+            if len(_ag_dates) > 0:
+                _min_date, _max_date = _ag_dates.min().date(), _ag_dates.max().date()
+                _picked = st.date_input(
+                    "Loan Date (on/after)",
+                    value=None,
+                    min_value=_min_date,
+                    max_value=_max_date,
+                    key="sel_date_from_key",
+                    help="Show only loans originated on or after this date. Leave blank for no date filter.",
+                )
+                if _picked:
+                    sel_date_from = _picked
+
         _seg_col = next((c for c in ["SegmentName", "Segment"] if c in df_curr_raw.columns), None)
         if _seg_col:
             # Count segments on the same filtered slice the analysis table uses
@@ -42,6 +58,9 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
                 _df_seg = _df_seg[_df_seg["RegionName"] == sel_region]
             if sel_branch != "All" and "Unit" in _df_seg.columns:
                 _df_seg = _df_seg[_df_seg["Unit"] == sel_branch]
+            if sel_date_from and "Ag_Date" in _df_seg.columns:
+                _ag = pd.to_datetime(_df_seg["Ag_Date"], errors="coerce")
+                _df_seg = _df_seg[_ag >= pd.Timestamp(sel_date_from)]
             _seg_counts = (
                 _df_seg.groupby(_seg_col)["Loan No"].nunique()
                 if "Loan No" in _df_seg.columns
@@ -84,8 +103,8 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
             # ("clear cache & reload") not actually being honored for this cache.
             for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result",
                        "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region",
-                       "_ai_query_cache", "sel_region_key", "sel_status_key"]:
+                       "_ai_query_cache", "sel_region_key", "sel_status_key", "sel_date_from_key"]:
                 st.session_state.pop(_k, None)
             st.rerun()
 
-    return sel_region, sel_branch, sel_status, sel_segment
+    return sel_region, sel_branch, sel_status, sel_segment, sel_date_from

@@ -16,8 +16,8 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
     Returns a DataFrame ranked by collection_pct with performance_tier column.
 
     Columns: Executive (Branch), Accounts, Strike Rate %, Collection %,
-             [Roll Fwd %, Roll Bwd %], NPA, SMA-2, Total POS (L), Total SOH (L),
-             Demand (L), Collected (L), Tier
+             [Roll Fwd %, Roll Bwd %], NPA, SMA-2, Delinquent, Delinquency %,
+             Total POS (L), Total SOH (L), Demand (L), Collected (L), Tier
     Groups by MNT NAME + Unit so the same executive in different branches appears separately.
     Executives with fewer than min_accounts are excluded.
 
@@ -64,6 +64,11 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
     # per-executive number in this function (see this function's own
     # docstring for why a per-executive Python loop was already ruled out).
     df["_hard_bucket_flag"] = to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
+    # Delinquency: any arrears at all (Arrears/EMI > 0) -- broader than the hard
+    # bucket flag above. Single source of truth is utils.compute_delinquency_pct;
+    # vectorized here (not a per-executive call to that helper) for the same
+    # profiling reason as _hard_bucket_flag above.
+    df["_delinquent_flag"] = to_num(df, "Arrears / EMI") > 0
 
     if has_roll:
         curr_score = df["curr_bucket"].map(BUCKET_SCORE)
@@ -76,7 +81,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
         "_strike_valid": "sum", "_strike_yes": "sum",
         "_demand_num": "sum", "_collected_num": "sum",
         "_soh_num": "sum", "_pos_num": "sum",
-        "_hard_bucket_flag": "sum",
+        "_hard_bucket_flag": "sum", "_delinquent_flag": "sum",
     }
     if has_roll:
         agg_cols.update({"_roll_valid": "sum", "_roll_fwd": "sum", "_roll_bwd": "sum"})
@@ -131,6 +136,7 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
 
         display_name = f"{exec_name} ({branch})" if branch else exec_name
         hard_bucket_pct = round(_safe_pct(a["_hard_bucket_flag"], n), 1)
+        delinquency_pct = round(_safe_pct(a["_delinquent_flag"], n), 1)
 
         row = {
             "Executive (Branch)": display_name,
@@ -145,6 +151,8 @@ def compute_executive_scorecard(df: pd.DataFrame, min_accounts: int = SCORECARD_
             "Strike Rate %":      strike_rate,
             "Collection %":       coll_pct,
             "Hard Bucket %":      hard_bucket_pct,
+            "Delinquent":         int(a["_delinquent_flag"]),
+            "Delinquency %":      delinquency_pct,
         }
         if has_roll:
             row["Roll Fwd %"] = roll_fwd_pct
@@ -230,9 +238,10 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
 
     rows_html = ""
     _ratio_cols = {
-        "Collection %": ("Collected (L)", "Demand (L)", 100),
-        "NPA %":         ("NPA", "Accounts", 100),
-        "SMA-2 %":       ("SMA-2", "Accounts", 100),
+        "Collection %":   ("Collected (L)", "Demand (L)", 100),
+        "NPA %":          ("NPA", "Accounts", 100),
+        "SMA-2 %":        ("SMA-2", "Accounts", 100),
+        "Delinquency %":  ("Delinquent", "Accounts", 100),
     }
     df_display = append_total_row(scorecard_df[headers], ratio_cols=_ratio_cols)
     n_data_rows = len(scorecard_df)
@@ -291,6 +300,11 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
             elif col == "SMA-2":
                 color = "#d97706" if val > 0 else "#16a34a"
                 cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{val}</td>'
+            elif col == "Delinquent":
+                color = "#d97706" if val > 0 else "#16a34a"
+                cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{val}</td>'
+            elif col == "Delinquency %":
+                cells += f'<td style="padding:8px 12px;font-size:13px;">{val}%</td>'
             else:
                 cells += f'<td style="padding:8px 12px;font-size:13px;">{html.escape(val) if isinstance(val, str) else val}</td>'
         rows_html += (

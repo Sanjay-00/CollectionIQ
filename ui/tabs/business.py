@@ -82,7 +82,7 @@ def _mom_caption_html(pct, label: str = "MoM") -> str:
 @st.cache_data(show_spinner=False, max_entries=32)
 def _cached_new_advances_trend(
     _df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
-    curr_month: str, months, granularity: str,
+    curr_month: str, months, granularity: str, date_from=None,
 ) -> pd.DataFrame:
     trend_df = compute_new_advances_trend(_df_c, as_of=curr_month, months=months)
     return roll_new_advances_trend(trend_df, granularity)
@@ -91,7 +91,7 @@ def _cached_new_advances_trend(
 @st.cache_data(show_spinner=False, max_entries=32)
 def _cached_vintage_rollup(
     _vintage_df: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple,
-    granularity: str,
+    granularity: str, date_from=None,
 ) -> pd.DataFrame:
     return _roll_vintage(_vintage_df, granularity)
 
@@ -147,7 +147,7 @@ def _render_new_advances(data: dict) -> None:
 
 def _render_new_advances_trend(
     df_curr: pd.DataFrame, curr_month: str,
-    data_version: int, region: str, branch: str, status: str, segment: tuple,
+    data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None,
 ) -> None:
     _section("Section 2: New Advances Trend", margin_top="24px")
     st.caption(
@@ -177,7 +177,7 @@ def _render_new_advances_trend(
     months = None if window_choice == "All" else int(window_choice)
 
     plot_df = _cached_new_advances_trend(
-        df_curr, data_version, region, branch, status, segment, curr_month, months, granularity,
+        df_curr, data_version, region, branch, status, segment, curr_month, months, granularity, date_from,
     )
     if plot_df.empty:
         st.info("No Ag_Date history found for a trend view.")
@@ -224,7 +224,7 @@ def _render_new_advances_by_dimension(data: dict) -> None:
 
 def _render_disbursement_vintage(
     vintage_df: pd.DataFrame,
-    data_version: int, region: str, branch: str, status: str, segment: tuple,
+    data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None,
 ) -> None:
     _section("Section 4: Disbursement Vintage", margin_top="24px")
     st.caption(
@@ -240,7 +240,7 @@ def _render_disbursement_vintage(
         "Group by", _GRANULARITY_OPTIONS,
         horizontal=True, key="vintage_gran", index=1,
     )
-    plot_df = _cached_vintage_rollup(vintage_df, data_version, region, branch, status, segment, granularity)
+    plot_df = _cached_vintage_rollup(vintage_df, data_version, region, branch, status, segment, granularity, date_from)
     fig_v = build_vintage_chart(plot_df)
     if fig_v.data:
         _chart_card(fig_v)
@@ -257,12 +257,12 @@ def render_business_tab(
     curr_month: str,
     dimension_data: dict,
     vintage_df: pd.DataFrame,
-    data_version: int, region: str, branch: str, status: str, segment: tuple,
+    data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None,
 ) -> None:
     _render_new_advances(new_advances or {})
     _divider()
 
-    _render_new_advances_trend(df_curr, curr_month, data_version, region, branch, status, segment)
+    _render_new_advances_trend(df_curr, curr_month, data_version, region, branch, status, segment, date_from)
     _divider()
 
     _render_new_advances_by_dimension(dimension_data or {})
@@ -270,5 +270,5 @@ def render_business_tab(
 
     _render_disbursement_vintage(
         vintage_df if vintage_df is not None else pd.DataFrame(),
-        data_version, region, branch, status, segment,
+        data_version, region, branch, status, segment, date_from,
     )

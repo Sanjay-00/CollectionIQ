@@ -10,7 +10,7 @@ import pandas as pd
 
 from compiler.core import compile_logical
 from agents.plan_executor import execute_plan
-from utils import compute_strike_pct, compute_hard_bucket_pct, compute_metrics
+from utils import compute_strike_pct, compute_hard_bucket_pct, compute_delinquency_pct, compute_metrics
 
 
 def _df():
@@ -48,6 +48,17 @@ class TestHardBucketPctConsistency:
         df = _df()
         df["Arrears / EMI"] = [0, 0, 0, 6, 6, 6, 6, 9, 9, 12]
         assert _via_compiler("hard_bucket_pct", df) == compute_hard_bucket_pct(df)
+
+
+class TestDelinquencyPctConsistency:
+    def test_ai_query_path_matches_shared_helper(self):
+        df = _df()
+        assert _via_compiler("delinquency_pct", df) == compute_delinquency_pct(df)
+
+    def test_still_matches_on_a_different_distribution(self):
+        df = _df()
+        df["Arrears / EMI"] = [0, 0, 0, 0.5, 1, 2, 3, 0, 0, 0]
+        assert _via_compiler("delinquency_pct", df) == compute_delinquency_pct(df)
 
 
 class TestStrikePctConsistency:
