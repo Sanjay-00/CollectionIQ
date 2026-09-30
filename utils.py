@@ -9,7 +9,7 @@ import plotly.io as pio
 
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS,
-    RECENT_ADVANCES_MONTHS,
+    RECENT_ADVANCES_MONTHS, REGION_NAME_ALIASES,
 )
 from dateutil.relativedelta import relativedelta
 
@@ -305,6 +305,56 @@ def bucket_from_arrears_emi(arrears_emi: pd.Series) -> pd.Series:
         ),
         index=arrears_emi.index,
     )
+
+
+def _region_key(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
+
+
+_REGION_BY_KEY = {
+    k: v for alias, v in REGION_NAME_ALIASES.items()
+    for k in (_region_key(pd.Series([alias]))[0], _region_key(pd.Series([v]))[0])
+}
+
+
+def canonical_region(s: pd.Series) -> pd.Series:
+    """Map known spellings of one region (config.REGION_NAME_ALIASES) to its
+    single name; every other value is returned unchanged."""
+    return _region_key(s).map(_REGION_BY_KEY).fillna(s)
+
+
+def repair_upload(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Fix two known source-extract faults, and describe each fix so the app
+    can show it (never a silent change):
+      - rows where CoLending_Loans and CUSTOMER_STATUS traded places (ALIVE/DEAD
+        under co-lending AND Y/N under customer status -- only a swap produces
+        that pair, so swapping back is not a guess);
+      - alternate spellings of the same region."""
+    notes: list[str] = []
+    if {"CoLending_Loans", "CUSTOMER_STATUS"}.issubset(df.columns):
+        co = df["CoLending_Loans"].astype(str).str.strip().str.upper()
+        cs = df["CUSTOMER_STATUS"].astype(str).str.strip().str.upper()
+        swapped = co.isin(["ALIVE", "DEAD"]) & cs.isin(["Y", "N", "YES", "NO"])
+        if swapped.any():
+            df = df.copy()
+            df.loc[swapped, ["CoLending_Loans", "CUSTOMER_STATUS"]] = (
+                df.loc[swapped, ["CUSTOMER_STATUS", "CoLending_Loans"]].to_numpy()
+            )
+            n_colending = int(cs[swapped].isin(["Y", "YES"]).sum())
+            notes.append(
+                f"Fixed {int(swapped.sum()):,} row(s) where CoLending_Loans and CUSTOMER_STATUS were swapped "
+                f"in the source file ({n_colending:,} of them are co-lending loans)."
+            )
+    if "RegionName" in df.columns:
+        fixed = canonical_region(df["RegionName"])
+        changed = fixed.astype(str) != df["RegionName"].astype(str)
+        if changed.any():
+            renames = df.loc[changed, "RegionName"].astype(str).str.strip().value_counts()
+            df = df.assign(RegionName=fixed)
+            notes.append("Merged region spellings: " + ", ".join(
+                f"{old} → {canonical_region(pd.Series([old]))[0]} ({n:,} rows)" for old, n in renames.items()
+            ) + ".")
+    return df, notes
 
 
 CUSTOMER_LOAN_COUNT = "Customer Loan Count"
@@ -651,6 +701,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
         if col in df.columns:
             df[col] = clean_mobile(df[col])
 
+    df, data_fixes = repair_upload(df)
     df = assign_buckets(df)
 
     # Drop duplicate Loan Nos  -  keep the first occurrence.
@@ -678,6 +729,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     df.attrs["missing_optional_cols"] = [
         c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in df.columns
     ]
+    df.attrs["data_fixes"] = data_fixes
 
     return df, []
 

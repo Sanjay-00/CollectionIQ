@@ -76,6 +76,20 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     background: #1a1a1a !important; border: 1px solid #2d2d2d !important;
     color: #fff !important; border-radius: 8px !important;
 }
+/* ── Sidebar date filter: same black box as the dropdowns above it ── */
+[data-testid="stSidebar"] .stDateInput > label {
+    color: #FFC000 !important; font-weight: 600 !important; font-size: 11px !important;
+    text-transform: uppercase !important; letter-spacing: 0.8px !important;
+}
+[data-testid="stSidebar"] .stDateInput > div,
+[data-testid="stSidebar"] .stDateInput [data-baseweb="input"],
+[data-testid="stSidebar"] .stDateInput [data-baseweb="base-input"],
+[data-testid="stSidebar"] .stDateInput input {
+    background: #1a1a1a !important; border-color: #2d2d2d !important;
+}
+[data-testid="stSidebar"] .stDateInput > div { border-radius: 8px !important; }
+[data-testid="stSidebar"] .stDateInput input { color: #fff !important; font-size: 14px !important; }
+[data-testid="stSidebar"] .stDateInput input::placeholder { color: #6b7280 !important; }
 /* ── Sidebar segment expander (checkbox dropdown) ── */
 [data-testid="stSidebar"] .stExpander {
     background: #1a1a1a !important; border: 1px solid #2d2d2d !important;
@@ -353,6 +367,23 @@ hr { border: none !important; border-top: 1px solid #e5e7eb !important; margin: 
 /* ── Selectbox ── */
 [data-baseweb="select"] > div,
 [role="combobox"] { border-radius: 8px !important; }
+
+/* ── Light text on every input box ──
+   .streamlit/config.toml draws input boxes dark (secondaryBackgroundColor
+   #1a1a1a) but sets text black (textColor #000000), so any dropdown or number
+   box without its own rule came out black-on-black. Set once here for the
+   whole app instead of per tab (text inputs/areas are styled further down). */
+div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+div[data-testid="stSelectbox"] [role="combobox"],
+div[data-testid="stSelectbox"] [role="combobox"] *,
+div[data-testid="stMultiSelect"] [role="combobox"],
+div[data-testid="stMultiSelect"] [role="combobox"] * { color: #fff !important; }
+div[data-testid="stNumberInput"] input {
+    color: #fff !important; -webkit-text-fill-color: #fff !important;
+    caret-color: #FFC000 !important; font-weight: 600 !important;
+}
+div[data-testid="stNumberInput"] button { color: #FFC000 !important; }
+div[data-testid="stNumberInput"] button svg { fill: #FFC000 !important; }
 
 /* ── AI panel ── */
 .ai-panel {

@@ -228,36 +228,6 @@ def _bump_data_version(fingerprint: str | None = None) -> None:
         st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
 
 
-def _style_main_content_selectbox(color: str = "#fff") -> None:
-    """Fix near-invisible dark-on-dark text on a main-content (non-sidebar)
-    st.selectbox -- ui/styles.py's white-text rule only targets
-    `[data-testid="stSidebar"] .stSelectbox`, so any selectbox rendered
-    outside the sidebar keeps the default dark text on the dark selectbox
-    background.
-
-    This targets EVERY `stSelectbox` on the page (Streamlit doesn't scope
-    injected `st.markdown` styles to one call site), so every caller should
-    use the SAME color for visual consistency. Only the active tab's render
-    code runs per rerun (app.py's segmented-control switcher), so a mismatched
-    color between callers can no longer leak into a different, inactive tab --
-    it would just look inconsistent if this tab's own color ever differed from
-    the others'. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py,
-    ui/tabs/business.py.
-    """
-    # data-baseweb="select" is gone as of Streamlit 1.59.0 (the Selectbox
-    # widget dropped BaseWeb entirely) -- role="combobox" is the new stable
-    # target. Both kept side by side, same cross-version-safety reasoning as
-    # ui/styles.py's own tab-navigation/sidebar-selectbox fixes.
-    st.markdown(f"""
-<style>
-div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-div[data-testid="stSelectbox"] [data-baseweb="select"] span,
-div[data-testid="stSelectbox"] [role="combobox"],
-div[data-testid="stSelectbox"] [role="combobox"] * {{ color: {color} !important; }}
-</style>""", unsafe_allow_html=True)
-
-
 def _dateonly(df: pd.DataFrame) -> pd.DataFrame:
     """Drop the always-00:00:00 time component from datetime64 columns.
 
@@ -609,12 +579,15 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
 
     dfs, errors = [], []
     dropped_dupes = 0  # per-file dupes (from load_and_validate) + any cross-file dupes below
+    data_fixes: list[str] = []
     for f in files:
         df, errs = load_and_validate(f)
         if errs:
             errors.append(f"{getattr(f, 'name', 'file')}: {errs[0]}")
         else:
             dropped_dupes += df.attrs.get("dropped_duplicate_loans", 0)
+            prefix = f"{getattr(f, 'name', 'file')}: " if len(files) > 1 else ""
+            data_fixes += [prefix + n for n in df.attrs.get("data_fixes", [])]
             dfs.append(df)
 
     if not dfs:
@@ -650,4 +623,5 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     combined.attrs["missing_optional_cols"] = [
         c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in combined.columns
     ]
+    combined.attrs["data_fixes"] = data_fixes
     return combined, errors

@@ -182,6 +182,15 @@ GOOD_CUSTOMER_MIN_LCC_PCT = 100
 # treated as a fleet operator rather than an individual borrower
 FLEET_MIN_LOANS = 3
 
+# Region spellings that mean the same region, mapped to one name at load time
+# (every uploaded file and the due-date-missed list). Matching ignores case,
+# spaces and punctuation, so "C.S. Nagar" and "cs nagar" both match "CS NAGAR".
+# Add a line here when a new variant shows up.
+REGION_NAME_ALIASES = {
+    "CS NAGAR": "CHHATRAPATI SAMBHAJI NAGAR",
+    "CSN": "CHHATRAPATI SAMBHAJI NAGAR",
+}
+
 # Region Scorecard status label: NPA% move larger than this (in percentage
 # points) is labelled Worsening/Improving; smaller moves are "Stable"
 REGION_STATUS_DELTA_PP = 1.0

@@ -5,7 +5,7 @@ import streamlit as st
 from langsmith import traceable
 
 from utils import fmt_value
-from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _style_main_content_selectbox, _esc, _confidence_badge_html
+from ui.components import _dl_btn, _safe_df, _send_feedback, _kpi_card_html, _static_kpi_card_html, _esc, _confidence_badge_html
 
 # result_grain -> (singular, plural) display noun, used wherever the UI used to
 # hardcode "accounts"/"Customer Records" regardless of the result's actual row
@@ -445,14 +445,6 @@ function fill(text) {
           </div>
         </div>
         """, unsafe_allow_html=True)
-
-        # MUST match ui/tabs/migration.py's/business.py's own calls to this same
-        # helper, for visual consistency across tabs (this styles EVERY
-        # stSelectbox on the page, not just this one -- harmless now that only
-        # the active tab's render code runs per rerun, but still page-wide
-        # within that one render, so a mismatched color here would look
-        # inconsistent even though it can no longer leak into an inactive tab).
-        _style_main_content_selectbox("#fff")
 
         sel_col, _ = st.columns([1, 3])
         with sel_col:

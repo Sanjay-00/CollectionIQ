@@ -175,54 +175,43 @@ if "df_curr_raw" not in st.session_state:
 df_curr_raw: pd.DataFrame = st.session_state["df_curr_raw"]
 df_prev_raw: pd.DataFrame = st.session_state["df_prev_raw"]
 
-# A real LCC extract shouldn't have duplicate Loan Nos at all, so surface the
-# count instead of dropping them with zero trace -- see utils.py::load_and_validate.
-_dup_curr = df_curr_raw.attrs.get("dropped_duplicate_loans", 0)
-_dup_prev = df_prev_raw.attrs.get("dropped_duplicate_loans", 0)
-if _dup_curr or _dup_prev:
-    _dup_parts = []
-    if _dup_curr:
-        _dup_parts.append(f"{_dup_curr} in the current month file")
-    if _dup_prev:
-        _dup_parts.append(f"{_dup_prev} in the previous month file")
-    st.caption(f"ℹ️ Removed duplicate Loan No row(s): {', '.join(_dup_parts)}.")
-
-# Non-critical columns (e.g. CoLending_Loans, LGL_FLAG, SegmentName) can be
-# missing from an extract without erroring -- surface which ones, so "no
-# co-lending accounts found" isn't confused with "that column isn't in this
-# file at all." See utils.py::load_and_validate.
-_missing_curr = set(df_curr_raw.attrs.get("missing_optional_cols", []))
-_missing_prev = set(df_prev_raw.attrs.get("missing_optional_cols", []))
-_missing_cols = _missing_curr | _missing_prev
-if _missing_cols:
-    st.caption(
-        f"ℹ️ {len(_missing_cols)} optional column(s) not found in this upload: "
-        f"{', '.join(sorted(_missing_cols))}. Features relying on these may show no results, not an error."
-    )
-
-# Safety net for a date column (Ag_Date/Last Receipt Date/ParentLDueDate)
-# where a meaningful fraction of values failed to parse -- see
-# utils.py::_parse_date_column's own docstring for the 3 real ways this
-# already happened silently before this warning existed. Shown as a warning
-# (not just an info caption) since a broken date column can silently distort
-# business logic (vintage cohorts, repossession windows, "paid this month"
-# filters), not just show an empty list.
-_date_warn_curr = df_curr_raw.attrs.get("date_parse_warnings", [])
-_date_warn_prev = df_prev_raw.attrs.get("date_parse_warnings", [])
-for _w in _date_warn_curr:
-    st.warning(f"⚠️ Current month file: {_w}")
-for _w in _date_warn_prev:
-    st.warning(f"⚠️ Previous month file: {_w}")
-
-for _label, _df, _month in (("Current", df_curr_raw, curr_month), ("Previous", df_prev_raw, prev_month)):
+# Data-quality checks on the upload, gathered into ONE collapsed panel instead
+# of a stack of banners above the tabs. Warnings (things that can distort
+# numbers) are listed before notes (informational), and the panel's own label
+# carries the counts, so nothing is hidden -- just not in the way.
+_dq_warnings: list[str] = []
+_dq_notes: list[str] = []
+for _label, _df, _month in (("Current month", df_curr_raw, curr_month), ("Previous month", df_prev_raw, prev_month)):
+    # A date column where many values failed to parse can distort vintage
+    # cohorts, repossession windows and "paid this month" filters -- see
+    # utils.py::_parse_date_column.
+    for _w in _df.attrs.get("date_parse_warnings", []):
+        _dq_warnings.append(f"**{_label}:** {_w}")
     _n_future = count_agreed_after_month(_df, _month)
     if _n_future:
-        st.warning(
-            f"⚠️ {_label} month file: {_n_future:,} loan(s) have an agreement date (Ag_Date) after the "
-            f"reporting month ({pd.Timestamp(_month):%b %Y}). This is usually a day/month swap in the source "
-            "file (e.g. 6 Dec entered as 12 Jun). Kept as-is, but they may land in the wrong "
-            "new-advances/vintage month."
+        _dq_warnings.append(
+            f"**{_label}:** {_n_future:,} loan(s) are dated after the reporting month "
+            f"({pd.Timestamp(_month):%b %Y}), usually a day/month swap in the source file "
+            "(6 Dec entered as 12 Jun). Kept as-is, but they may land in the wrong new-advances/vintage month."
         )
+    # A real extract shouldn't have duplicate Loan Nos; they're dropped, so say how many.
+    if _df.attrs.get("dropped_duplicate_loans", 0):
+        _dq_notes.append(f"**{_label}:** removed {_df.attrs['dropped_duplicate_loans']:,} duplicate Loan No row(s).")
+    # Source-file faults repaired at load (utils.repair_upload): say what changed.
+    _dq_notes += [f"**{_label}:** {n}" for n in _df.attrs.get("data_fixes", [])]
+# Missing optional columns (e.g. CoLending_Loans) make "no co-lending accounts"
+# indistinguishable from "that column isn't in this file" -- so name them.
+_missing_cols = set(df_curr_raw.attrs.get("missing_optional_cols", [])) | set(df_prev_raw.attrs.get("missing_optional_cols", []))
+if _missing_cols:
+    _dq_notes.append(
+        f"Column(s) not found in this upload: {', '.join(sorted(_missing_cols))}. "
+        "Anything that uses them may show no results, which is not an error."
+    )
+if _dq_warnings or _dq_notes:
+    _parts = [f"{len(_dq_warnings)} warning{'s' * (len(_dq_warnings) != 1)}"] if _dq_warnings else []
+    _parts += [f"{len(_dq_notes)} note{'s' * (len(_dq_notes) != 1)}"] if _dq_notes else []
+    with st.expander(f"{'⚠️' if _dq_warnings else 'ℹ️'} Data checks: {', '.join(_parts)}", expanded=False):
+        st.markdown("\n".join([f"- ⚠️ {w}" for w in _dq_warnings] + [f"- ℹ️ {n}" for n in _dq_notes]))
 
 # Auto-load prev if uploaded after initial generate. _load_and_concat is NOT
 # cached, so a file that fails to parse must not be re-parsed on every rerun:
