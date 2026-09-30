@@ -7,8 +7,11 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
-from utils import load_and_validate, expand_to_all_columns, REQUIRED_COLS, CRITICAL_COLS
+from utils import load_and_validate, expand_to_all_columns, add_customer_loan_count, REQUIRED_COLS, CRITICAL_COLS
 
 
 def _esc(val):
@@ -308,8 +311,106 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
 @st.cache_data(show_spinner=False, max_entries=64)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
-    _dateonly(df).to_excel(buf, index=False, engine="openpyxl")
+    out = _dateonly(df)
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        out.to_excel(writer, index=False, sheet_name="Sheet1")
+        style_excel_sheet(writer.sheets["Sheet1"], out)
     return buf.getvalue()
+
+
+# ── Excel download styling ────────────────────────────────────────────────────
+# Same look as the app's own tables: black header with amber text, bold Total
+# row with an amber rule, and red/green colour scales on metric columns.
+_XL_HEADER_FILL = PatternFill("solid", fgColor="111111")
+_XL_HEADER_FONT = Font(bold=True, color="FFC000")
+_XL_TOTAL_FILL = PatternFill("solid", fgColor="FFFBEA")
+_XL_TOTAL_BORDER = Border(top=Side(style="medium", color="FFC000"))
+_XL_GREEN, _XL_YELLOW, _XL_RED = "63BE7B", "FFEB84", "F8696B"  # Excel's own default scale
+
+# Colour direction by column name. Only "%" columns (and Concern Score) get a
+# scale -- plain counts and amounts aren't "good" or "bad" on their own.
+_XL_HIGHER_IS_WORSE = (
+    "NPA", "SMA", "DELINQUEN", "HARD BUCKET", "ROLL FWD", "ROLL FORWARD", "1-30 DPD",
+    "CHRONIC", "SHOCK", "INSURANCE-ONLY", "INSTALLMENT-ONLY", "CONCERN SCORE",
+)
+_XL_HIGHER_IS_BETTER = ("COLLECTION", "STRIKE", "LCC", "ROLL BWD", "ROLL BACK")
+
+# Per-cell number formats are the one slow part (openpyxl styles cell by cell);
+# past this size (e.g. a 60k-row x 90-col loan dump) they're skipped. The
+# header, filters, widths and colour scales are cheap at any size.
+_XL_FORMAT_MAX_CELLS = 200_000
+
+
+def _xl_metric_direction(col) -> str | None:
+    name = str(col).upper()
+    if "%" not in name and "CONCERN SCORE" not in name:
+        return None
+    if any(k in name for k in _XL_HIGHER_IS_WORSE):
+        return "worse"
+    if any(k in name for k in _XL_HIGHER_IS_BETTER):
+        return "better"
+    return None
+
+
+def style_excel_sheet(ws, df: pd.DataFrame) -> None:
+    """Format a sheet that `df` was just written to (header in row 1, no index)."""
+    n_rows, n_cols = len(df), len(df.columns)
+    if n_cols == 0:
+        return
+
+    for cell in ws[1]:
+        cell.fill, cell.font = _XL_HEADER_FILL, _XL_HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = "A2"
+    if n_rows:
+        ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{n_rows + 1}"
+
+    sample = df.head(200)
+    for j, col in enumerate(df.columns, start=1):
+        lengths = [len(str(v)) for v in sample[col].tolist() if not _is_blank(v)]
+        ws.column_dimensions[get_column_letter(j)].width = min(max([len(str(col))] + lengths) + 3, 40)
+
+    has_total = n_rows > 0 and str(df.iloc[-1, 0]).strip() in {"Total", "Grand Total"}
+    n_data = n_rows - 1 if has_total else n_rows
+    if has_total:
+        for cell in ws[n_rows + 1]:
+            cell.font, cell.fill, cell.border = Font(bold=True), _XL_TOTAL_FILL, _XL_TOTAL_BORDER
+
+    small = n_rows * n_cols <= _XL_FORMAT_MAX_CELLS
+    for j, col in enumerate(df.columns, start=1):
+        values = pd.to_numeric(df[col].iloc[:n_data], errors="coerce")
+        non_blank = int((~df[col].iloc[:n_data].map(_is_blank)).sum())
+        if pd.api.types.is_bool_dtype(df[col]) or non_blank == 0 or values.notna().sum() != non_blank:
+            continue  # not a numeric column
+        letter = get_column_letter(j)
+
+        direction = _xl_metric_direction(col)
+        if direction and n_data >= 2:
+            low, high = (_XL_GREEN, _XL_RED) if direction == "worse" else (_XL_RED, _XL_GREEN)
+            ws.conditional_formatting.add(f"{letter}2:{letter}{n_data + 1}", ColorScaleRule(
+                start_type="min", start_color=low,
+                mid_type="percentile", mid_value=50, mid_color=_XL_YELLOW,
+                end_type="max", end_color=high,
+            ))
+
+        if not small:
+            continue
+        if "%" in str(col):
+            fmt = '0.0"%"'  # values are already on a 0-100 scale
+        elif _is_id_like_column(str(col)):
+            continue
+        elif (values.dropna() % 1 == 0).all():
+            if values.abs().max() < 10_000:
+                continue  # small whole numbers (counts, years, tenure) read fine as-is
+            fmt = "#,##0"
+        else:
+            fmt = "#,##0.00"
+        for (cell,) in ws.iter_rows(min_row=2, max_row=n_rows + 1, min_col=j, max_col=j):
+            cell.number_format = fmt
+
+
+def _is_blank(v) -> bool:
+    return v is None or v == "" or (not isinstance(v, (list, tuple, dict)) and pd.isna(v))
 
 
 def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame | None = None) -> None:
@@ -536,6 +637,9 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
         before = len(combined)
         combined = combined.drop_duplicates(subset=["Loan No"], keep="first")
         dropped_dupes += before - len(combined)
+    # Recount across ALL files: a customer's loans can sit in different
+    # regional files, and each file only counted its own.
+    combined = add_customer_loan_count(combined)
     # pd.concat doesn't propagate .attrs from its inputs, so set it explicitly
     # on the combined frame -- this is the only place callers need to check.
     combined.attrs["dropped_duplicate_loans"] = dropped_dupes
