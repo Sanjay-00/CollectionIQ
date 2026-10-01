@@ -68,9 +68,10 @@ class TestComputePulseKpis:
         # Same shape as smart_alerts.py's alert_insurance_delinquency:
         # EMI-current (inst arrears <= 0) but expense arrears above the
         # threshold, with some overall arrears -- else not counted.
+        from config import INSURANCE_EXP_ARREARS_MIN as T
         curr = make_df([
-            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 1.0},  # counts
-            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 4_000.0, "Arrears / EMI": 1.0},  # below threshold
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": T + 1_000.0, "Arrears / EMI": 1.0},  # counts
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": T - 1_000.0, "Arrears / EMI": 1.0},  # below threshold
             {"ARREARS AGAINST INST": 500.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 1.0},  # real inst arrears too -- excluded
             {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 0.0},  # no overall arrears -- excluded
         ])
@@ -633,6 +634,12 @@ class TestComputeNewAdvancesTrendChart:
 # ── compute_npa_sma2_comparison ──────────────────────────────────────────────
 
 class TestComputeNpaSma2Comparison:
+    @pytest.fixture(autouse=True)
+    def _small_executives(self, monkeypatch):
+        # These tests check matching/ranking logic on 1-3 loan executives;
+        # the MIN_ACCOUNTS_EXECUTIVE floor itself has its own test.
+        monkeypatch.setattr(pi, "MIN_ACCOUNTS_EXECUTIVE", 1)
+
     def _dfs(self):
         curr = make_df([
             *[{"RegionName": "WEST", "Unit": "MAHAD", "curr_bucket": b}
@@ -810,7 +817,7 @@ class TestComputeBranchQuadrant:
     def test_chronic_and_npa_counts_correct(self):
         out, _ = compute_branch_quadrant(self._df())
         rows = out.set_index("Branch")
-        assert rows.loc["BADBR", "Chronic (3M+)"] == 2
+        assert rows.loc["BADBR", "Not Paying 3M+"] == 2
         assert rows.loc["BADBR", "NPA%"] == 40.0   # 2 of 5
         assert rows.loc["GOODBR", "NPA%"] == 0.0
 
@@ -833,6 +840,12 @@ class TestComputeBranchQuadrant:
 # ── compute_executive_recovery ───────────────────────────────────────────────
 
 class TestComputeExecutiveRecovery:
+    @pytest.fixture(autouse=True)
+    def _small_executives(self, monkeypatch):
+        # These tests check matching/ranking logic on 1-3 loan executives;
+        # the MIN_ACCOUNTS_EXECUTIVE floor itself has its own test.
+        monkeypatch.setattr(pi, "MIN_ACCOUNTS_EXECUTIVE", 1)
+
     def _df(self):
         exec1 = [
             {"MNT NAME": "EXEC1", "prev_bucket": "NPA",   "curr_bucket": "SMA-1"},  # rescued

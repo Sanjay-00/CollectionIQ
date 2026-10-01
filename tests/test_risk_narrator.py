@@ -169,7 +169,7 @@ class TestBuildPrompt:
                 "top_concern": [
                     {"Rank": 1, "Branch": "MAHAD", "Region": "WEST", "Accounts": 10,
                      "SMA-2%": 5.0, "NPA%": 3.0, "Collection%": 85.0, "Strike%": 70.0,
-                     "Roll Fwd%": 12.0, "Chronic (3M+)": 2, "SOH (Cr)": 1.2},
+                     "Roll Fwd%": 12.0, "Not Paying 3M+": 2, "SOH (Cr)": 1.2},
                 ],
                 "total_branches": 1,
             },

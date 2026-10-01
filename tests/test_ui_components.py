@@ -127,13 +127,20 @@ class TestDlBtnFullSource:
     """Curated on screen, full raw + computed columns in the download."""
 
     def _capture(self, monkeypatch):
+        """The button gets a function (built on click); "clicking" runs it."""
         seen = {}
 
         def fake_excel_bytes(df):
             seen["df"] = df
             return b"x"
 
+        def fake_button(label, data=None, **_):
+            assert callable(data), "downloads must be built on click, not on every page load"
+            assert "df" not in seen            # nothing built before the click
+            assert data() == b"x"
+
         monkeypatch.setattr("ui.components._excel_bytes", fake_excel_bytes)
+        monkeypatch.setattr("ui.components.st.download_button", fake_button)
         return seen
 
     def test_download_carries_raw_and_computed_columns(self, monkeypatch):
@@ -399,7 +406,7 @@ def test_every_table_on_screen_goes_through_safe_df():
         text = f.read_text(encoding="utf-8-sig")
         for m in re.finditer(r"^\s*st\.dataframe\(\s*([A-Za-z_][\w.]*)", text, re.MULTILINE):
             arg = m.group(1)
-            if arg != "_safe_df" and arg != "styled_df":   # styled_df is built from _safe_df
+            if arg not in ("_safe_df", "styled_df", "heat_styler"):   # both apply _safe_df
                 raw.append(f"{f.relative_to(root)}: {m.group(0)}")
     assert raw == []
 

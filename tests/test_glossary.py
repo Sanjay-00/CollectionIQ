@@ -11,9 +11,9 @@ def test_every_root_cause_driver_has_a_definition():
     assert set(_DRIVER_LABELS.values()) == set(DRIVER_HELP)
 
 
-def test_chronic_matches_the_lcc_flag():
+def test_not_paying_3m_matches_the_lcc_flag():
     # "No Coll 3 Months and >6 EMI": 3 months without payment, over 6 EMIs overdue.
-    text = GLOSSARY["Chronic"]
+    text = GLOSSARY["Not Paying 3M+"]
     assert "3 months" in text and f"more than {HARD_BUCKET_ARREARS_EMI_MIN} EMIs" in text
 
 

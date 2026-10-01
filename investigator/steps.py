@@ -37,7 +37,7 @@ from compiler.core import _expand_filters
 from config import HARD_BUCKET_ARREARS_EMI_MIN
 from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
-from utils import BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, resolve_dynamic_values, to_num
+from utils import BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, resolve_dynamic_values, to_num, unit_metrics
 
 # ── Metric direction metadata ────────────────────────────────────────────────
 # Single source of truth for "is a higher value of this metric good," shared
@@ -340,38 +340,11 @@ def roll_rate_by_dimension(
 
 
 def _dimension_metrics(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    """One vectorized groupby(col) pass computing Accounts/Collection%/NPA%/
-    Hard Bucket%/SOH -- precomputed boolean/numeric columns once, then a
-    single .agg() per group, same pattern as compute_executive_scorecard's
-    own docstring describes and justifies (analysis/executive_scorecard.py:24-31)."""
-    d = df.copy()
-    d["_demand"]    = to_num(d, "Net Collection Demand Inst+Exp+BC")
-    d["_collected"] = to_num(d, "Month Collection (Excluding Reserve Collection)")
-    d["_soh"]       = to_num(d, "SOH")
-    d["_hard_bucket_flag"] = to_num(d, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
-    has_bucket = "curr_bucket" in d.columns
-    if has_bucket:
-        d["_npa_flag"] = d["curr_bucket"] == "NPA"
-
-    agg_cols = {"_demand": "sum", "_collected": "sum", "_soh": "sum", "_hard_bucket_flag": "sum"}
-    if has_bucket:
-        agg_cols["_npa_flag"] = "sum"
-    grouped = d.groupby(col).agg(agg_cols)
-    n = d.groupby(col).size()
-
-    rows = []
-    for key, row in grouped.iterrows():
-        count = int(n.loc[key])
-        demand = row["_demand"]
-        rows.append({
-            col:              key,
-            "Accounts":       count,
-            "Collection%":    round(row["_collected"] / demand * 100, 2) if demand > 0 else 0.0,
-            "NPA%":           round(row["_npa_flag"] / count * 100, 2) if has_bucket and count > 0 else 0.0,
-            "Hard Bucket%":   round(row["_hard_bucket_flag"] / count * 100, 2) if count > 0 else 0.0,
-            "SOH (Cr)":       round(row["_soh"] / 1_00_00_000, 2),
-        })
-    return pd.DataFrame(rows)
+    """Accounts/Collection%/NPA%/Hard Bucket%/SOH per `col` value, from
+    utils.unit_metrics: the same definitions every dashboard table uses."""
+    cols = [col, "Accounts", "Collection%", "NPA%", "Hard Bucket%", "SOH (Cr)"]
+    m = unit_metrics(df, [col])
+    return pd.DataFrame(columns=cols) if m.empty else m[cols].reset_index(drop=True)
 
 
 # ── vintage_summary ───────────────────────────────────────────────────────────

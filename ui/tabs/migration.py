@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from ui.components import _static_kpi_card_html, _chart_card, _empty_state, _npa_pct_color
+from ui.components import _static_kpi_card_html, _chart_card, _empty_state, heat_range, heat_style
 
 
 def _filter_options(df: pd.DataFrame, col: str) -> list[str]:
@@ -37,20 +37,17 @@ def _bucket_summary_table_html(df: pd.DataFrame) -> str:
         for h in headers
     )
     rows_html = ""
+    # Roll Fwd% is a risk (no "safe" level): red shading by rank, never green.
+    # Roll Bwd% is the good direction, so it keeps its green threshold.
+    fwd_rng = heat_range(df["Roll Fwd%"].tolist())
     for _, row in df.iterrows():
         fwd, stable, bwd = row["Roll Fwd%"], row["Stable%"], row["Roll Bwd%"]
-        # Roll Fwd% is high=bad, same direction _npa_pct_color already encodes -- reuse it
-        # (thresholds widened to 20/10 since a bucket-level forward-roll rate runs higher
-        # than a portfolio NPA%). Roll Bwd% is high=GOOD (the opposite direction), so it
-        # can't reuse _sma2_pct_color -- that helper colors a HIGH value red, which would
-        # be backwards here; kept as its own inline threshold instead of a shared helper.
-        fwd_color = _npa_pct_color(fwd, hi=20, mid=10)
         bwd_color = "#16a34a" if bwd >= 10 else ("#d97706" if bwd >= 5 else "#374151")
         rows_html += (
             f'<tr style="border-bottom:1px solid #f0f0f0;">'
             f'<td style="padding:8px 12px;font-size:12px;font-weight:700;">{row["Bucket"]}</td>'
             f'<td style="padding:8px 12px;font-size:12px;text-align:right;">{row["Accounts"]:,}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;text-align:right;font-weight:700;color:{fwd_color};">{fwd:.1f}%</td>'
+            f'<td style="padding:8px 12px;font-size:12px;text-align:right;font-weight:700;{heat_style(fwd, fwd_rng)}">{fwd:.1f}%</td>'
             f'<td style="padding:8px 12px;font-size:12px;text-align:right;color:#6b7280;">{stable:.1f}%</td>'
             f'<td style="padding:8px 12px;font-size:12px;text-align:right;font-weight:700;color:{bwd_color};">{bwd:.1f}%</td>'
             f'</tr>'

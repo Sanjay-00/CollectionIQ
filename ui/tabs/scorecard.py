@@ -31,8 +31,8 @@ def render_scorecard_tab(df_curr: pd.DataFrame, scorecard_df) -> None:
         strike_color = "#16a34a" if avg_strike >= 70 else "#d97706" if avg_strike >= 50 else "#dc2626"
         st.markdown(_static_kpi_card_html("Avg Strike Rate %", f"{avg_strike:.1f}%", "EMI obligation cleared this month", color=strike_color), unsafe_allow_html=True)
     with c3:
-        npa_color = "#16a34a" if avg_npa < 5 else "#d97706" if avg_npa < 10 else "#dc2626"
-        st.markdown(_static_kpi_card_html("Avg NPA %", f"{avg_npa:.1f}%", "Across all executives", color=npa_color), unsafe_allow_html=True)
+        # No "safe" NPA level, so the card stays neutral rather than going green.
+        st.markdown(_static_kpi_card_html("Avg NPA %", f"{avg_npa:.1f}%", "Across all executives"), unsafe_allow_html=True)
 
     # ── Rank-by selector  -  Collection % is the default; Strike % re-ranks the
     # same executives independently, so a lead can also see who's actually

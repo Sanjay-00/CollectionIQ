@@ -9,12 +9,15 @@ import numpy as np
 import plotly.graph_objects as go
 
 from utils import (
-    BUCKET_ORDER, BUCKET_SCORE, BUCKET_COLORS, to_num, account_count, is_yes,
-    compute_strike_pct, compute_hard_bucket_pct, compute_overdue_demand_pct,
-    compute_delinquency_count, fleet_loan_mask,
+    _safe_pct,
+    BUCKET_ORDER, BUCKET_COLORS, to_num, account_count, is_yes,
+    compute_overdue_demand_pct,
+    fleet_loan_mask, attach_prev_delinquency, _unit_key, order_unit_columns,
+    unit_metrics, first_value, as_of_or_today, segment_column, match_prev, loan_flags, portfolio_metrics,
 )
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN,
+    MIN_ACCOUNTS_EXECUTIVE,
     MIN_ACCOUNTS_PRODUCT_SEGMENT,
     MIN_ACCOUNTS_SOURCE_VINTAGE,
     MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE,
@@ -32,8 +35,11 @@ from config import (
     VINTAGE_CHART_CRITICAL_PCT,
     VINTAGE_CHART_WATCH_PCT,
     NEW_ADVANCES_TREND_DEFAULT_MONTHS,
-    INSURANCE_EXP_ARREARS_MIN,
     RECENT_ADVANCES_COHORT_START,
+    NOT_PAYING_3M_FLAG_COL,
+    HARD_BUCKET_ARREARS_EMI_MIN,
+    REPOSSESSION_BUCKETS,
+    REPOSSESSION_EXCLUDE_STATUSES,
 )
 
 YELLOW = "#FFC000"
@@ -42,21 +48,12 @@ VALID_BUCKETS = [b for b in BUCKET_ORDER if b != "NA"]
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def _safe_div(num: float, den: float, scale: float = 100.0) -> float:
-    return round(float(num) / float(den) * scale, 2) if den else 0.0
+# The one "x as % of y" rule (0.0 when y is 0), shared with utils.
+_safe_div = _safe_pct
 
 
-def _npa_pct(df: pd.DataFrame) -> float:
-    if df.empty or "Loan No" not in df.columns or "curr_bucket" not in df.columns:
-        return 0.0
-    total = df["Loan No"].nunique()
-    return _safe_div((df["curr_bucket"] == "NPA").sum(), total)
-
-
-def _coll_pct(df: pd.DataFrame) -> float:
-    demand = to_num(df, "Net Collection Demand Inst+Exp+BC").sum()
-    coll = to_num(df, "Month Collection (Excluding Reserve Collection)").sum()
-    return _safe_div(coll, demand)
+def _none_if_nan(v):
+    return None if v is None or pd.isna(v) else float(v)
 
 
 def _soh_cr(df: pd.DataFrame) -> float:
@@ -126,17 +123,12 @@ def _add_quarter_end_markers(fig: go.Figure, x_labels: list) -> None:
 
 
 def _roll_rates(grp: pd.DataFrame) -> tuple[float | None, float | None]:
-    if "prev_bucket" not in grp.columns or "curr_bucket" not in grp.columns:
+    """(Roll Fwd%, Roll Bwd%) for one slice, from unit_metrics; (None, None)
+    when no loan has both months' bucket."""
+    m = portfolio_metrics(grp)
+    if m is None or "Roll Fwd%" not in m.index:
         return None, None
-    curr_sc = grp["curr_bucket"].map(BUCKET_SCORE)
-    prev_sc = grp["prev_bucket"].map(BUCKET_SCORE)
-    valid = curr_sc.notna() & prev_sc.notna()
-    n = int(valid.sum())
-    if n == 0:
-        return None, None
-    fwd = round((valid & (curr_sc > prev_sc)).sum() / n * 100, 1)
-    bwd = round((valid & (curr_sc < prev_sc)).sum() / n * 100, 1)
-    return fwd, bwd
+    return _none_if_nan(m["Roll Fwd%"]), _none_if_nan(m["Roll Bwd%"])
 
 
 def _bucket_counts(df: pd.DataFrame) -> dict:
@@ -247,17 +239,14 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
     def _calc(df):
         if df.empty:
             return {}
-        total = account_count(df)
-        soh = _soh_cr(df)
+        m = portfolio_metrics(df)   # the shared definitions, whole portfolio
+        total = int(m["Accounts"])
+        soh = m["SOH (Cr)"]
         pos_cr = round(to_num(df, "POS").sum() / 1e7, 2)
         arrears_cr = round(to_num(df, "Closing Arrears").sum() / 1e7, 2)
-        npa_pct = _npa_pct(df)
-        npa_count = int((df["curr_bucket"] == "NPA").sum()) if "curr_bucket" in df.columns else 0
-        sma2_count = int((df["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in df.columns else 0
-        sma2_pct = _safe_div(sma2_count, total)
-        hard_pct = compute_hard_bucket_pct(df)
-        coll = _coll_pct(df)
-        strike_pct = compute_strike_pct(df)
+        npa_pct, npa_count = m["NPA%"], int(m["NPA"])
+        sma2_count, sma2_pct = int(m["SMA-2"]), m["SMA-2%"]
+        hard_pct, coll, strike_pct = m["Hard Bucket%"], m["Collection%"], m["Strike%"]
         overdue_demand = compute_overdue_demand_pct(df)
 
         # Insurance Debit Cases: same definition as smart_alerts.py's
@@ -265,11 +254,9 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         # insurance charge alone is creating delinquency) -- reuses the same
         # INSURANCE_EXP_ARREARS_MIN threshold so the KPI card and the alert
         # can never quietly disagree on what counts.
-        arr_inst = to_num(df, "ARREARS AGAINST INST")
-        arr_exp = to_num(df, "ARREARS AGAINST EXP")
         arrears_emi = to_num(df, "Arrears / EMI")
-        insurance_mask = (arr_inst <= 0) & (arr_exp > INSURANCE_EXP_ARREARS_MIN) & (arrears_emi > 0)
-        insurance_debit_count = account_count(df[insurance_mask])
+        insurance_debit_count = int(m["Insurance-Only"])
+        npa_soh_pct = m["NPA% (SOH)"]
 
         # NOV'25 Onward Delinquency: delinquent accounts (Arrears/EMI > 0)
         # originated on/after RECENT_ADVANCES_COHORT_START -- a FIXED cohort-start
@@ -284,7 +271,7 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
 
         return {
             "accounts": total, "soh": soh, "pos_cr": pos_cr, "arrears_cr": arrears_cr,
-            "npa_count": npa_count, "npa_pct": npa_pct,
+            "npa_count": npa_count, "npa_pct": npa_pct, "npa_soh_pct": npa_soh_pct,
             "sma2_count": sma2_count, "sma2_pct": sma2_pct,
             "hard_pct": hard_pct, "coll_pct": coll, "strike_pct": strike_pct,
             "overdue_coll_pct": overdue_demand["overdue_pct"],
@@ -351,6 +338,7 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         _card("SMA-2 %",        "sma2_pct",  f"{c.get('sma2_pct',0):.2f}%",  "%",  True),
         _card("NPA Accounts",   "npa_count", f"{c.get('npa_count',0):,}",    "",   True),
         _card("NPA %",          "npa_pct",   f"{c.get('npa_pct',0):.2f}%",   "%",  True),
+        _card("NPA % (SOH)",    "npa_soh_pct", f"{c.get('npa_soh_pct',0):.2f}%", "%", True),
         _card("Collection %",   "coll_pct",  f"{c.get('coll_pct',0):.2f}%",  "%",  False),
         # inverse=False: Strike% = % of accounts current on their installment
         # obligation (compute_strike_pct's own docstring) -- rising is GOOD
@@ -369,64 +357,67 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
 # ── Section 2: Region Delinquency Scorecard ────────────────────────────────────
 
 def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd.DataFrame:
-    """One row per region: SMA-2/NPA counts and rates, MoM deltas, Collection%, Strike%, SOH, roll rates, trend status."""
+    """One row per region: account/delinquency/SMA-2/NPA counts and rates,
+    MoM deltas, Collection%, Strike%, SOH, roll rates, trend status. Every
+    number comes from utils.unit_metrics (the shared definitions)."""
     if "RegionName" not in df_curr.columns or df_curr.empty:
         return pd.DataFrame()
+    m = unit_metrics(df_curr, ["RegionName"])
+    prev = (unit_metrics(df_prev, ["RegionName"]).set_index("RegionName")
+            if len(df_prev) > 0 and "RegionName" in df_prev.columns else pd.DataFrame())
 
     rows = []
-    for region, grp in df_curr.groupby("RegionName"):
-        n = account_count(grp)
-        curr_npa = _npa_pct(grp)
-        curr_coll = _coll_pct(grp)
-        soh = _soh_cr(grp)
-        strike_pct = compute_strike_pct(grp)
-        roll_fwd, roll_bwd = _roll_rates(grp)
-
-        sma2_count = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
-        sma2_pct   = _safe_div(sma2_count, n)
-        npa_count  = int((grp["curr_bucket"] == "NPA").sum()) if "curr_bucket" in grp.columns else 0
-        delinq_count = compute_delinquency_count(grp)
-        delinq_pct   = _safe_div(delinq_count, n)
-
-        prev_npa = 0.0
-        prev_sma2_pct = 0.0
-        has_prev_region = False
-        if len(df_prev) > 0 and "RegionName" in df_prev.columns:
-            prev_grp = df_prev[df_prev["RegionName"] == region]
-            if len(prev_grp) > 0:
-                prev_npa = _npa_pct(prev_grp)
-                prev_n = account_count(prev_grp)
-                prev_sma2_count = int((prev_grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in prev_grp.columns else 0
-                prev_sma2_pct = _safe_div(prev_sma2_count, prev_n)
-                has_prev_region = True
-
-        delta = round(curr_npa - prev_npa, 2) if has_prev_region else None
-        sma2_delta = round(sma2_pct - prev_sma2_pct, 2) if has_prev_region else None
+    for _, r in m.iterrows():
+        region = r["RegionName"]
+        has_prev_region = not prev.empty and region in prev.index
+        delta = round(r["NPA%"] - prev.at[region, "NPA%"], 2) if has_prev_region else None
+        sma2_delta = round(r["SMA-2%"] - prev.at[region, "SMA-2%"], 2) if has_prev_region else None
         status = "-"
         if delta is not None:
             status = "Worsening" if delta > REGION_STATUS_DELTA_PP else ("Improving" if delta < -REGION_STATUS_DELTA_PP else "Stable")
-
         rows.append({
             "Region": region,
-            "SMA-2": sma2_count,
-            "SMA-2%": sma2_pct,
-            "NPA": npa_count,
-            "NPA%": curr_npa,
-            "Delinquent": delinq_count,
-            "Delinquency%": delinq_pct,
+            "Accounts": int(r["Accounts"]),
+            "SMA-2": int(r["SMA-2"]),
+            "SMA-2%": r["SMA-2%"],
+            "NPA": int(r["NPA"]),
+            "NPA%": r["NPA%"],
+            "NPA% (SOH)": r["NPA% (SOH)"],
+            "Delinquent": int(r["Delinquent"]),
+            "Delinquency%": r["Delinquency%"],
             "Δ SMA-2%": sma2_delta,
             "Δ NPA%": delta,
-            "Collection%": curr_coll,
-            "Strike%": strike_pct,
-            "SOH (Cr)": soh,
-            "Roll Fwd%": roll_fwd,
-            "Roll Bwd%": roll_bwd,
+            "Collection%": r["Collection%"],
+            "Strike%": r["Strike%"],
+            "SOH (Cr)": r["SOH (Cr)"],
+            "Roll Fwd%": _none_if_nan(r.get("Roll Fwd%")),
+            "Roll Bwd%": _none_if_nan(r.get("Roll Bwd%")),
             "Status": status,
         })
 
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
+    out = attach_prev_delinquency(out, df_prev, {"Region": "RegionName"})
+    return out[order_unit_columns(out.columns, ["Region"])]
+
+
+_EXEC_KEY = "_exec_key"
+_EXEC_SEP = "\x1f"
+
+
+def _with_exec_key(df: pd.DataFrame) -> pd.DataFrame:
+    """Add one column identifying an executive as name + branch (never the
+    name alone), so two same-named people in different branches stay two
+    rows in every executive table."""
+    if "MNT NAME" not in df.columns:
+        return df
+    unit = df["Unit"].astype(str) if "Unit" in df.columns else ""
+    return df.assign(**{_EXEC_KEY: df["MNT NAME"].astype(str) + _EXEC_SEP + unit})
+
+
+def _exec_name(key) -> str:
+    return str(key).split(_EXEC_SEP, 1)[0]
 
 
 # ── Section 2b: Overdue vs Month Demand Collection (Region / Branch / Executive) ──
@@ -460,7 +451,7 @@ def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.Data
     Collection % KPI on real data (confirmed: Net Collection Demand Inst+Exp+BC is
     NOT equal to Arrear Opening + Month Due-Inst/Exp/BC -- it's a distinct
     source-system field with its own logic, not a sum of the two). Overall
-    Collection here calls the SAME _coll_pct() this file already uses for the
+    Collection here uses the SAME shared Collection% (utils.unit_metrics) as the
     Pulse KPI and compute_region_scorecard, so "Overall Collection %" in this
     table is always numerically identical to "Collection %" everywhere else in
     the app, by construction, not by coincidence.
@@ -469,12 +460,18 @@ def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.Data
     region); Executive rows carry both Branch and Region -- same identity-column
     pattern compute_npa_sma2_comparison already uses (grp[src].iloc[0], since
     every row in a Unit/MNT NAME group shares the same parent Region/Branch)."""
+    df_curr = _with_exec_key(df_curr)
+    flags = loan_flags(df_curr) if not df_curr.empty else None
+
     def _rows(col: str, label: str, extra_cols: list[tuple[str, str]] | None = None, min_accounts: int = 0) -> pd.DataFrame:
         if col not in df_curr.columns or df_curr.empty:
             return pd.DataFrame()
         extra_cols = extra_cols or []
+        # Overall Collection % for every unit in one pass (shared definition).
+        coll = unit_metrics(df_curr, [col], flags=flags).set_index(col)["Collection%"]
         rows = []
-        for name, grp in df_curr.groupby(col):
+        for key, grp in df_curr.groupby(col):
+            name = _exec_name(key) if col == _EXEC_KEY else key
             n = account_count(grp)
             if n < min_accounts:
                 continue
@@ -492,7 +489,7 @@ def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.Data
                 "Month Demand Collection (Cr)": round(stats["demand_collected"] / 1e7, 2),
                 "Month Demand Collection %": stats["demand_pct"],
                 "Overall Collection (Cr)": round(overall_paid / 1e7, 2),
-                "Overall Collection %": _coll_pct(grp),
+                "Overall Collection %": float(coll.get(key, 0.0)),
             })
             rows.append(row)
         if not rows:
@@ -502,7 +499,7 @@ def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.Data
     return {
         "region":    _rows("RegionName", "Region"),
         "branch":    _rows("Unit", "Branch", extra_cols=[("RegionName", "Region")]),
-        "executive": _rows("MNT NAME", "Executive", extra_cols=[("Unit", "Branch"), ("RegionName", "Region")],
+        "executive": _rows(_EXEC_KEY, "Executive", extra_cols=[("Unit", "Branch"), ("RegionName", "Region")],
                             min_accounts=MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE),
     }
 
@@ -551,341 +548,157 @@ def compute_overdue_demand_chart(df: pd.DataFrame, label_col: str, title_suffix:
 
 def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     """
-    Per-dimension comparison: NPA count + SMA-2 count, curr vs prev, with Δ and Δ%.
-    Returns dict with keys 'region', 'branch', 'executive'  -  each a DataFrame.
+    Per-dimension comparison: accounts, delinquency (with last month's %),
+    NPA + SMA-2 counts curr vs prev with Δ and Δ%, and roll rates.
+    Returns dict with keys 'region', 'branch', 'executive' - each a DataFrame.
+
+    All numbers come from utils.unit_metrics (one grouped pass per month).
+    Labels are matched to last month case/space-insensitively; an executive
+    is (name, branch), never name alone, so two same-named people in
+    different branches stay separate, and a name the source truncates to a
+    different length next month still matches (utils.match_prev).
     """
     has_prev = len(df_prev) > 0
+    if df_curr.empty:
+        return {}
+    # Per-loan checks once per month, reused by all three groupings.
+    curr_flags = loan_flags(df_curr)
+    prev_flags = loan_flags(df_prev) if has_prev else None
 
-    def _dim_rows(df_c, df_p, col, extra_cols: list[tuple[str, str]] | None = None, prefix_fallback: bool = False, precomputed_curr: dict | None = None):
-        """extra_cols: [(source_column, output_label), ...] context columns pulled from the group's first row.
+    def _norm(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        return df.assign(**{f"_k_{c}": df[c].map(_unit_key) for c in cols if c in df.columns})
 
-        prefix_fallback: for free-text columns like MNT NAME (manually retyped each month, not a
-        controlled vocabulary like RegionName/Unit), the source export sometimes truncates the
-        same person's name to a different length between months (e.g. "...DNYANESHWAR F" this
-        month vs "...DNYANESHWAR FA" last month). When the exact normalized name has no match,
-        fall back to a prefix relationship -- but only when exactly one previous-period name is a
-        prefix-match candidate, so two different people with similar names never get merged.
+    def _delta(c, p):
+        if p is None:
+            return None, None
+        d = c - p
+        pct = round(d / p * 100, 1) if p > 0 else (100.0 if d > 0 else 0.0)
+        return d, pct
 
-        precomputed_curr: {name: {"npa", "sma2"}} -- when given (the "Unit"/branch call site),
-        skip recomputing the current-period NPA/SMA-2 counts inline and use these instead. They
-        come from _branch_aggregates, which already did this exact groupby+count pass for
-        compute_branch_quadrant -- avoids a second, independent full df_curr.groupby("Unit")
-        pass over the same rows for the same numbers. Deliberately does NOT cover Roll Fwd%/Bwd%
-        -- _branch_aggregates coerces a None roll rate (no prev_bucket data) to 0.0, but this
-        function's own _roll_rates(grp) call below preserves None, and that distinction must
-        not change here. Prev-period matching (this function's actual unique logic) is
-        untouched either way.
-        """
-        if col not in df_c.columns:
-            return []
-        extra_cols = extra_cols or []
+    def _table(label_cols: list[str], min_accounts: int, fuzzy_pos, display, extras: dict) -> pd.DataFrame:
+        """label_cols: raw columns to group by; display(row) -> the identity
+        columns; extras: {output column: source column} from the unit's first row."""
+        if not set(label_cols) <= set(df_curr.columns):
+            return pd.DataFrame()
+        key_cols = [f"_k_{c}" for c in label_cols]
+        # An executive groups on the NORMALIZED branch (the same branch typed
+        # two ways is one branch) but keeps the raw name for display.
+        group_cols = [label_cols[0]] + key_cols[1:]
+        curr = _norm(df_curr, label_cols)
+        m = unit_metrics(curr, group_cols, min_accounts=min_accounts, flags=curr_flags)
+        if m.empty:
+            return pd.DataFrame()
+        prev: dict = {}
+        if has_prev and set(label_cols) <= set(df_prev.columns):
+            pm = unit_metrics(_norm(df_prev, label_cols), key_cols, flags=prev_flags)
+            prev = {tuple(r[k] for k in key_cols): r for _, r in pm.iterrows()}
+        firsts = {out: first_value(curr, group_cols, src) for out, src in extras.items()}
+
         rows = []
-        # An exact-string join silently drops any row with case/whitespace drift between this
-        # month's and last month's spelling. Normalize the join key (not the displayed name) so
-        # "Sunil Waghmare" and "SUNIL WAGHMARE " match.
-        def _key(v) -> str:
-            return str(v).strip().upper()
-
-        prev_map: dict = {}
-        if has_prev and col in df_p.columns and "curr_bucket" in df_p.columns:
-            for grp_key, grp in df_p.groupby(col):
-                prev_map[_key(grp_key)] = {
-                    "npa": int((grp["curr_bucket"] == "NPA").sum()),
-                    "sma2": int((grp["curr_bucket"] == "SMA-2").sum()),
-                }
-        prev_keys = list(prev_map.keys())
-
-        def _lookup(key: str) -> dict:
-            if key in prev_map:
-                return prev_map[key]
-            if not prefix_fallback:
-                return {}
-            candidates = [k for k in prev_keys if k.startswith(key) or key.startswith(k)]
-            return prev_map[candidates[0]] if len(candidates) == 1 else {}
-
-        for grp_key, grp in df_c.groupby(col):
-            name = str(grp_key)
-            n = account_count(grp)
-            if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
-                continue
-            if precomputed_curr is not None:
-                pc = precomputed_curr.get(name)
-                if pc is None:
-                    continue
-                npa_c, sma2_c = pc["npa"], pc["sma2"]
-            else:
-                npa_c  = int((grp["curr_bucket"] == "NPA").sum())  if "curr_bucket" in grp.columns else 0
-                sma2_c = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
-            prev   = _lookup(_key(grp_key))
-            npa_p  = prev.get("npa")
-            sma2_p = prev.get("sma2")
-
-            def _delta(c, p):
-                if p is None:
-                    return None, None
-                d = c - p
-                pct = round(d / p * 100, 1) if p > 0 else (100.0 if d > 0 else 0.0)
-                return d, pct
-
-            npa_d,  npa_dpct  = _delta(npa_c,  npa_p)
-            sma2_d, sma2_dpct = _delta(sma2_c, sma2_p)
-            row = {col: name}
-            for src, label in extra_cols:
-                row[label] = grp[src].iloc[0] if src in grp.columns and len(grp) else None
+        for _, r in m.iterrows():
+            gkey = tuple(r[c] for c in group_cols)
+            p = match_prev(prev, (_unit_key(gkey[0]),) + gkey[1:], fuzzy_pos) if prev else None
+            npa_p = int(p["NPA"]) if p is not None else None
+            sma2_p = int(p["SMA-2"]) if p is not None else None
+            npa_d, npa_dpct = _delta(int(r["NPA"]), npa_p)
+            sma2_d, sma2_dpct = _delta(int(r["SMA-2"]), sma2_p)
+            row = display(r)
+            for out, ser in firsts.items():
+                v = ser.get(gkey if len(gkey) > 1 else gkey[0])
+                row[out] = None if v is None or pd.isna(v) else str(v)
             row.update({
-                "Accounts":         n,
-                "SMA-2 (Curr)":     sma2_c,
-                "SMA-2 (Prev)":     sma2_p,
-                "NPA (Curr)":       npa_c,
-                "NPA (Prev)":       npa_p,
-                "SMA-2 Δ":         sma2_d,
-                "SMA-2 Δ%":        sma2_dpct,
-                "NPA Δ":            npa_d,
-                "NPA Δ%":          npa_dpct,
+                "Accounts": int(r["Accounts"]),
+                "Delinquent": int(r["Delinquent"]),
+                "Delinquency%": r["Delinquency%"],
             })
-            roll_fwd, roll_bwd = _roll_rates(grp)
-            row["Roll Fwd%"] = roll_fwd
-            row["Roll Bwd%"] = roll_bwd
+            if prev:
+                prev_pct = float(p["Delinquency%"]) if p is not None else None
+                row["Prev Delinquency%"] = prev_pct
+                row["Δ Delinquency%"] = round(r["Delinquency%"] - prev_pct, 2) if prev_pct is not None else None
+            row.update({
+                "SMA-2 (Curr)": int(r["SMA-2"]), "SMA-2 (Prev)": sma2_p,
+                "NPA (Curr)": int(r["NPA"]), "NPA (Prev)": npa_p,
+                "SMA-2 Δ": sma2_d, "SMA-2 Δ%": sma2_dpct, "NPA Δ": npa_d, "NPA Δ%": npa_dpct,
+                "Roll Fwd%": _none_if_nan(r.get("Roll Fwd%")), "Roll Bwd%": _none_if_nan(r.get("Roll Bwd%")),
+            })
             rows.append(row)
-        return rows
-
-    def _executive_rows(df_c: pd.DataFrame, df_p: pd.DataFrame) -> list[dict]:
-        """Executives grouped by (MNT NAME, Unit), not name alone -- two different people who
-        happen to share a name in different branches (e.g. two "Rahul Sharma"s, one in branch X
-        and one in Y) must never be merged into a single row. Display name is disambiguated as
-        "Rahul Sharma (X)" / "Rahul Sharma (Y)", matching compute_executive_recovery's convention.
-
-        Unit is a controlled vocabulary (exact match only); MNT NAME still gets the prefix-
-        truncation fallback, but candidates are restricted to the same Unit so it can't match a
-        same-named person in a different branch.
-        """
-        if "MNT NAME" not in df_c.columns:
-            return []
-
-        def _key(v) -> str:
-            return str(v).strip().upper()
-
-        # Unit has the same case-inconsistency as MNT NAME in real extracts (e.g. "AKOLA" vs
-        # "akola" for the same branch) -- group on the normalized value, not the raw column, or
-        # the same branch silently fragments into duplicate rows/groups.
-        has_unit = "Unit" in df_c.columns
-        if has_unit:
-            df_c = df_c.assign(_unit_key=df_c["Unit"].map(_key))
-        group_cols = ["MNT NAME", "_unit_key"] if has_unit else ["MNT NAME"]
-
-        prev_map: dict = {}
-        prev_names_by_unit: dict = {}
-        if has_prev and "MNT NAME" in df_p.columns and "curr_bucket" in df_p.columns:
-            p_has_unit = "_unit_key" in group_cols and "Unit" in df_p.columns
-            if p_has_unit:
-                df_p = df_p.assign(_unit_key=df_p["Unit"].map(_key))
-            p_group_cols = [c for c in group_cols if c == "MNT NAME" or (c == "_unit_key" and p_has_unit)]
-            grouped = df_p.groupby(p_group_cols[0]) if len(p_group_cols) == 1 else df_p.groupby(p_group_cols)
-            for grp_key, grp in grouped:
-                name_k, unit_k = (_key(grp_key[0]), _key(grp_key[1])) if isinstance(grp_key, tuple) else (_key(grp_key), "")
-                prev_map[(name_k, unit_k)] = {
-                    "npa": int((grp["curr_bucket"] == "NPA").sum()),
-                    "sma2": int((grp["curr_bucket"] == "SMA-2").sum()),
-                }
-                prev_names_by_unit.setdefault(unit_k, []).append(name_k)
-
-        def _lookup(name_k: str, unit_k: str) -> dict:
-            if (name_k, unit_k) in prev_map:
-                return prev_map[(name_k, unit_k)]
-            candidates = [n for n in prev_names_by_unit.get(unit_k, []) if n.startswith(name_k) or name_k.startswith(n)]
-            return prev_map[(candidates[0], unit_k)] if len(candidates) == 1 else {}
-
-        def _delta(c, p):
-            if p is None:
-                return None, None
-            d = c - p
-            pct = round(d / p * 100, 1) if p > 0 else (100.0 if d > 0 else 0.0)
-            return d, pct
-
-        # Vectorized current-period pass, replacing a per-group Python loop that
-        # profiled at ~1.2s on a real ~60k-row/292-executive file (the single
-        # most expensive part of compute_npa_sma2_comparison) -- almost all of
-        # that cost was pandas' own per-group DataFrame-slice materialization
-        # (groupby .__iter__/._chop), not any actual per-group computation, so
-        # replacing the per-group NPA/SMA-2/roll-rate counting with ONE
-        # groupby().agg() pass over precomputed boolean columns removes that
-        # cost while computing the exact same numbers. The prev-period
-        # exact+prefix-fallback matching logic above is untouched -- it already
-        # operates on the small aggregated prev_map dict, not raw rows, so it
-        # was never the expensive part. Verified byte-for-byte identical to the
-        # old per-group implementation on real data via pd.testing.assert_frame_equal
-        # (including the final sort_values("NPA (Curr)") tie-break order --
-        # pandas groupby's default sort=True key ordering must be preserved,
-        # not sort=False, or tied rows land in a different order post-sort).
-        has_curr_bucket = "curr_bucket" in df_c.columns
-        npa_flag  = (df_c["curr_bucket"] == "NPA")   if has_curr_bucket else pd.Series(False, index=df_c.index)
-        sma2_flag = (df_c["curr_bucket"] == "SMA-2") if has_curr_bucket else pd.Series(False, index=df_c.index)
-
-        has_roll = has_curr_bucket and "prev_bucket" in df_c.columns
-        if has_roll:
-            curr_sc = df_c["curr_bucket"].map(BUCKET_SCORE)
-            prev_sc = df_c["prev_bucket"].map(BUCKET_SCORE)
-            roll_valid_flag = curr_sc.notna() & prev_sc.notna()
-            roll_fwd_flag = roll_valid_flag & (curr_sc > prev_sc)
-            roll_bwd_flag = roll_valid_flag & (curr_sc < prev_sc)
-        else:
-            roll_valid_flag = pd.Series(False, index=df_c.index)
-            roll_fwd_flag = pd.Series(False, index=df_c.index)
-            roll_bwd_flag = pd.Series(False, index=df_c.index)
-
-        has_loan_no = "Loan No" in df_c.columns
-        has_region = "RegionName" in df_c.columns
-
-        agg_df = df_c.assign(
-            _npa=npa_flag, _sma2=sma2_flag,
-            _roll_valid=roll_valid_flag, _roll_fwd=roll_fwd_flag, _roll_bwd=roll_bwd_flag,
-        )
-        agg_spec = {"_npa": "sum", "_sma2": "sum", "_roll_valid": "sum", "_roll_fwd": "sum", "_roll_bwd": "sum"}
-        if has_loan_no:
-            agg_spec["Loan No"] = "nunique"
-        if has_region:
-            agg_spec["RegionName"] = "first"
-
-        grouped_agg = agg_df.groupby(group_cols).agg(agg_spec)
-        if has_loan_no:
-            n_col = "Loan No"
-        else:
-            grouped_agg["_n"] = agg_df.groupby(group_cols).size()
-            n_col = "_n"
-
-        rows = []
-        for grp_key, r in grouped_agg.iterrows():
-            n = int(r[n_col])
-            if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
-                continue
-            raw_name, raw_unit = grp_key if isinstance(grp_key, tuple) else (grp_key, None)
-            npa_c  = int(r["_npa"])
-            sma2_c = int(r["_sma2"])
-            prev   = _lookup(_key(raw_name), _key(raw_unit) if raw_unit is not None else "")
-            npa_p  = prev.get("npa")
-            sma2_p = prev.get("sma2")
-            npa_d,  npa_dpct  = _delta(npa_c,  npa_p)
-            sma2_d, sma2_dpct = _delta(sma2_c, sma2_p)
-            region = str(r["RegionName"]) if has_region else None
-            row = {
-                "MNT NAME": f"{raw_name} ({raw_unit})" if raw_unit else str(raw_name),
-                "Unit": raw_unit,
-                "Region": region,
-                "Accounts": n,
-                "SMA-2 (Curr)": sma2_c,
-                "SMA-2 (Prev)": sma2_p,
-                "NPA (Curr)": npa_c,
-                "NPA (Prev)": npa_p,
-                "SMA-2 Δ": sma2_d,
-                "SMA-2 Δ%": sma2_dpct,
-                "NPA Δ": npa_d,
-                "NPA Δ%": npa_dpct,
-            }
-            roll_valid_n = int(r["_roll_valid"])
-            if roll_valid_n == 0:
-                roll_fwd, roll_bwd = None, None
-            else:
-                roll_fwd = round(int(r["_roll_fwd"]) / roll_valid_n * 100, 1)
-                roll_bwd = round(int(r["_roll_bwd"]) / roll_valid_n * 100, 1)
-            row["Roll Fwd%"] = roll_fwd
-            row["Roll Bwd%"] = roll_bwd
-            rows.append(row)
-        return rows
+        return pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False, kind="stable").reset_index(drop=True)
 
     result = {}
-
-    rows = _dim_rows(df_curr, df_prev, "RegionName")
-    if rows:
-        result["region"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
-
-    _branch_agg = _branch_aggregates(df_curr)
-    _branch_curr = (
-        {r["Branch"]: {"npa": r["NPA"], "sma2": r["SMA-2"]} for r in _branch_agg.to_dict("records")}
-        if not _branch_agg.empty else {}
-    )
-    rows = _dim_rows(df_curr, df_prev, "Unit", extra_cols=[("RegionName", "Region")], precomputed_curr=_branch_curr)
-    if rows:
-        result["branch"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
-
+    region = _table(["RegionName"], MIN_ACCOUNTS_DIMENSION_BREAKDOWN, None,
+                    lambda r: {"RegionName": str(r["RegionName"])}, {})
+    if not region.empty:
+        result["region"] = region
+    branch = _table(["Unit"], MIN_ACCOUNTS_DIMENSION_BREAKDOWN, None,
+                    lambda r: {"Unit": str(r["Unit"])}, {"Region": "RegionName"})
+    if not branch.empty:
+        result["branch"] = branch
     if "MNT NAME" in df_curr.columns and "curr_bucket" in df_curr.columns:
-        rows = _executive_rows(df_curr, df_prev)
-        if rows:
-            result["executive"] = pd.DataFrame(rows).sort_values("NPA (Curr)", ascending=False).reset_index(drop=True)
-
+        if "Unit" in df_curr.columns:
+            exec_ = _table(["MNT NAME", "Unit"], MIN_ACCOUNTS_EXECUTIVE, 0,
+                           lambda r: {"MNT NAME": f"{r['MNT NAME']} ({r['_k_Unit']})", "Unit": r["_k_Unit"]},
+                           {"Region": "RegionName"})
+        else:
+            exec_ = _table(["MNT NAME"], MIN_ACCOUNTS_EXECUTIVE, 0,
+                           lambda r: {"MNT NAME": str(r["MNT NAME"]), "Unit": None}, {"Region": "RegionName"})
+        if not exec_.empty:
+            result["executive"] = exec_
     return result
 
 
 # ── Section 2: Branch Quadrant ────────────────────────────────────────────────
 
 def _branch_aggregates(df_curr: pd.DataFrame) -> pd.DataFrame:
-    """One row per branch (Unit): current-period-only stats shared by
-    compute_branch_quadrant and compute_npa_sma2_comparison's branch pass,
-    which previously each ran their own independent `df_curr.groupby("Unit")`
-    Python loop recomputing the same NPA/SMA-2 counts, Collection%, and roll
-    rates. Deliberately CURRENT-period only (no df_prev, no name-matching) --
-    compute_npa_sma2_comparison's prev-period fuzzy name-matching logic is
-    unique to that function and stays there unchanged; this helper only
-    replaces the parts with zero cross-function behavioral risk (plain counts
-    and percentages, no reimplementation of a shared correctness-critical
-    function like compute_strike_pct).
-
-    Columns: Branch, Region, Accounts, NPA, NPA%, SMA-2, SMA-2%, Delinquent,
-    Delinquency%, Collection%, Strike%, Hard Bucket%, SOH (Cr), Roll Fwd%,
-    Roll Bwd%, Chronic (3M+).
-    Rows below MIN_ACCOUNTS_DIMENSION_BREAKDOWN are excluded (both consumers
-    already applied this exact same threshold independently).
-    """
+    """One row per branch (Unit), from utils.unit_metrics: shared by
+    compute_branch_quadrant and compute_npa_sma2_comparison's branch pass.
+    Roll Fwd%/Roll Bwd% stay NaN for a branch with no previous-month bucket
+    (not 0: "no history" isn't "nothing got worse"). Branches below
+    MIN_ACCOUNTS_DIMENSION_BREAKDOWN are excluded."""
     if "Unit" not in df_curr.columns or df_curr.empty:
         return pd.DataFrame()
+    m = unit_metrics(df_curr, ["Unit"], min_accounts=MIN_ACCOUNTS_DIMENSION_BREAKDOWN)
+    if m.empty:
+        return pd.DataFrame()
+    region = first_value(df_curr, ["Unit"], "RegionName")
+    m.insert(1, "Region", m["Unit"].map(region).astype(str) if not region.empty else None)
+    if "Roll Fwd%" not in m.columns:
+        m["Roll Fwd%"], m["Roll Bwd%"] = np.nan, np.nan
+    return m.rename(columns={"Unit": "Branch"}).assign(Branch=lambda d: d["Branch"].astype(str))
 
-    rows = []
-    for branch, grp in df_curr.groupby("Unit"):
-        n = account_count(grp)
-        if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
+
+def _concern_score(df: pd.DataFrame) -> pd.Series:
+    """0-100 percentile rank blend (config.CONCERN_SCORE_WEIGHTS, higher =
+    worse). A component a branch has no data for (e.g. Roll Fwd% with no
+    previous month) is left out and the remaining weights re-scaled, instead
+    of scoring it as the best possible value."""
+    parts, weights = [], []
+    for col, w in CONCERN_SCORE_WEIGHTS.items():
+        if col not in df.columns:
             continue
-        roll_fwd, roll_bwd = _roll_rates(grp)
-        chronic = int(is_yes(grp, "No Coll 3 Months and >6 EMI").sum())
-        npa_n  = int((grp["curr_bucket"] == "NPA").sum())   if "curr_bucket" in grp.columns else 0
-        sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
-        delinq_n = compute_delinquency_count(grp)
-        region = str(grp["RegionName"].iloc[0]) if "RegionName" in grp.columns and len(grp) else None
-        rows.append({
-            "Branch": str(branch),
-            "Region": region,
-            "Accounts": n,
-            "NPA": npa_n,
-            "NPA%": _safe_div(npa_n, n),
-            "SMA-2": sma2_n,
-            "SMA-2%": _safe_div(sma2_n, n),
-            "Delinquent": delinq_n,
-            "Delinquency%": _safe_div(delinq_n, n),
-            "Collection%": _coll_pct(grp),
-            "Strike%": compute_strike_pct(grp),
-            "Hard Bucket%": compute_hard_bucket_pct(grp),
-            "SOH (Cr)": _soh_cr(grp),
-            "Roll Fwd%": roll_fwd if roll_fwd is not None else 0.0,
-            "Roll Bwd%": roll_bwd if roll_bwd is not None else 0.0,
-            "Chronic (3M+)": chronic,
-        })
-    return pd.DataFrame(rows)
+        rank = df[col].rank(ascending=True, pct=True)
+        parts.append(rank * w)
+        weights.append(rank.notna() * w)
+    if not parts:
+        return pd.Series(0, index=df.index)
+    score = pd.concat(parts, axis=1).sum(axis=1) / pd.concat(weights, axis=1).sum(axis=1).replace(0, np.nan)
+    return score.mul(100).round(0).fillna(0).astype(int)
 
 
-def compute_branch_quadrant(df_curr: pd.DataFrame) -> tuple[pd.DataFrame, go.Figure]:
-    """Branch scatter (Collection% vs NPA%, bubble=SOH) + concern score table."""
+def compute_branch_quadrant(df_curr: pd.DataFrame, df_prev: pd.DataFrame | None = None) -> tuple[pd.DataFrame, go.Figure]:
+    """Branch scatter (Collection% vs NPA%, bubble=SOH) + concern score table.
+    With df_prev, the table also carries Prev Delinquency% and Δ Delinquency%."""
     agg = _branch_aggregates(df_curr)
     if agg.empty:
         return pd.DataFrame(), go.Figure()
 
-    # NPA% here uses the SAME per-branch NPA-count/account-count ratio as
-    # _branch_aggregates -- confirmed identical to the original inline
-    # _npa_pct(grp) call (both are npa_count/n*100, _safe_div rounds the same way).
-    df = agg[["Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "Delinquent", "Delinquency%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)"]].copy()
-    for col, w in CONCERN_SCORE_WEIGHTS.items():
-        df[f"_r_{col}"] = df[col].rank(ascending=True, pct=True) * w
-    df["Concern Score"] = df[[c for c in df.columns if c.startswith("_r_")]].sum(axis=1).mul(100).round(0).astype(int)
-    df = df.drop(columns=[c for c in df.columns if c.startswith("_r_")])
+    df = agg[["Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "NPA% (SOH)", "Delinquent",
+              "Delinquency%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Roll Fwd%",
+              "Not Paying 3M+", "Not Paying 3M+%"]].copy()
+    df["Concern Score"] = _concern_score(df)
     df = df.sort_values("Concern Score", ascending=False).reset_index(drop=True)
     df.insert(0, "Rank", range(1, len(df) + 1))
+    df = attach_prev_delinquency(df, df_prev, {"Branch": "Unit"})
+    df = df[order_unit_columns(df.columns, ["Rank", "Branch", "Region"])]
     return df, _build_quadrant_chart(df)
 
 
@@ -985,7 +798,9 @@ def _build_quadrant_chart(df: pd.DataFrame) -> go.Figure:
 # ── Section 2: Executive Recovery Leaderboard ─────────────────────────────────
 
 def compute_executive_recovery(df_curr: pd.DataFrame) -> pd.DataFrame:
-    """Executives ranked by net accounts rescued from high-risk buckets."""
+    """Executives ranked by net accounts rescued from high-risk buckets
+    (Rescued = moved from SMA-1/SMA-2/NPA to a better bucket; Slipped = any
+    worse bucket). From utils.unit_metrics; executives are (name, branch)."""
     if (
         "MNT NAME" not in df_curr.columns
         or "prev_bucket" not in df_curr.columns
@@ -994,37 +809,27 @@ def compute_executive_recovery(df_curr: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     group_cols = ["MNT NAME", "Unit"] if "Unit" in df_curr.columns else ["MNT NAME"]
-    rows = []
-    for keys, grp in df_curr.groupby(group_cols):
-        exec_name = str(keys[0]) if isinstance(keys, tuple) else str(keys)
-        branch    = str(keys[1]) if isinstance(keys, tuple) and len(keys) > 1 else ""
-        n = account_count(grp)
-        if n < MIN_ACCOUNTS_DIMENSION_BREAKDOWN:
-            continue
-        curr_sc = grp["curr_bucket"].map(BUCKET_SCORE)
-        prev_sc = grp["prev_bucket"].map(BUCKET_SCORE)
-        valid   = curr_sc.notna() & prev_sc.notna()
-        if not valid.any():
-            continue
-        was_risk = grp["prev_bucket"].isin(["NPA", "SMA-2", "SMA-1"])
-        rescued  = int((valid & was_risk & (curr_sc < prev_sc)).sum())
-        slipped  = int((valid & (curr_sc > prev_sc)).sum())
-        region   = str(grp["RegionName"].iloc[0]) if "RegionName" in grp.columns and len(grp) else ""
-        rows.append({
-            "Executive": f"{exec_name} ({branch})" if branch else exec_name,
-            "Branch": branch,
-            "Region": region,
-            "Accounts": n,
-            "Collection%": _coll_pct(grp),
-            "Strike%": compute_strike_pct(grp),
-            "Rescued": rescued,
-            "Slipped": slipped,
-            "Net Recovery": rescued - slipped,
-        })
-
-    if not rows:
+    m = unit_metrics(df_curr, group_cols, min_accounts=MIN_ACCOUNTS_EXECUTIVE)
+    if m.empty or "_roll_valid" not in m.columns:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("Net Recovery", ascending=False).reset_index(drop=True)
+    m = m[m["_roll_valid"] > 0]
+    if m.empty:
+        return pd.DataFrame()
+    region = first_value(df_curr, group_cols, "RegionName")
+    branch = m["Unit"].astype(str) if "Unit" in m.columns else pd.Series("", index=m.index)
+    keys = list(zip(*[m[c] for c in group_cols])) if len(group_cols) > 1 else list(m[group_cols[0]])
+    out = pd.DataFrame({
+        "Executive": [f"{n} ({b})" if b else str(n) for n, b in zip(m["MNT NAME"], branch)],
+        "Branch": branch.values,
+        "Region": [str(region.get(k, "")) if not region.empty else "" for k in keys],
+        "Accounts": m["Accounts"].values,
+        "Collection%": m["Collection%"].values,
+        "Strike%": m["Strike%"].values,
+        "Rescued": m["Rescued"].values,
+        "Slipped": m["Slipped"].values,
+    })
+    out["Net Recovery"] = out["Rescued"] - out["Slipped"]
+    return out.sort_values("Net Recovery", ascending=False, kind="stable").reset_index(drop=True)
 
 
 # ── Section 3: Good vs Bad ────────────────────────────────────────────────────
@@ -1125,45 +930,39 @@ def compute_product_analysis(df_curr: pd.DataFrame, as_of=None) -> dict:
     (e.g. a March extract opened in July) would wrongly exclude/include
     cohorts relative to July, not March."""
     results: dict[str, pd.DataFrame] = {}
+    if df_curr.empty:
+        return results
+    flags = loan_flags(df_curr)   # once, reused by every table below
 
-    seg_col = next((c for c in ["SegmentName", "Segment"] if c in df_curr.columns), None)
+    seg_col = segment_column(df_curr)
     if seg_col:
-        rows = _group_npa_table(df_curr, seg_col, "Segment", min_n=MIN_ACCOUNTS_PRODUCT_SEGMENT)
+        rows = _group_npa_table(df_curr, seg_col, "Segment", min_n=MIN_ACCOUNTS_PRODUCT_SEGMENT, flags=flags)
         if rows:
             results["segment"] = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
     if "FUEL_TYPE" in df_curr.columns:
-        rows = _group_npa_table(df_curr, "FUEL_TYPE", "Fuel Type", min_n=MIN_ACCOUNTS_PRODUCT_SEGMENT)
+        rows = _group_npa_table(df_curr, "FUEL_TYPE", "Fuel Type", min_n=MIN_ACCOUNTS_PRODUCT_SEGMENT, flags=flags)
         if rows:
             results["fuel"] = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
     if "Ag_Date" in df_curr.columns:
-        df_v = df_curr.copy()
-        df_v["_cohort"] = pd.to_datetime(df_v["Ag_Date"], errors="coerce").dt.to_period("M")
-        _ref_date = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.now()
-        _today_period = _ref_date.to_period("M")
-        cohort_rows = []
-        for cohort, grp in df_v.dropna(subset=["_cohort"]).groupby("_cohort"):
-            if cohort > _today_period:
-                continue  # exclude post-dated / future agreement dates
-            n = account_count(grp)
-            if n < MIN_ACCOUNTS_SOURCE_VINTAGE:
-                continue
-            soh = _soh_cr(grp)
-            avg_loan = to_num(grp, "Loan Amount").mean()
-            npa_n  = int((grp["curr_bucket"] == "NPA").sum())   if "curr_bucket" in grp.columns else 0
-            sma2_n = int((grp["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in grp.columns else 0
-            cohort_rows.append({
-                "Disbursement Month": str(cohort),
-                "Accounts":   n,
-                "NPA Count":  npa_n,
-                "SMA-2 Count": sma2_n,
-                "NPA%":        _safe_div(npa_n, n),
-                "SMA-2%":      _safe_div(sma2_n, n),
-                "Collection%": _coll_pct(grp),
-                "SOH (Cr)":    soh,
-                "Avg Loan (L)": round(avg_loan / 1e5, 2) if not pd.isna(avg_loan) else 0.0,
-            })
+        cohort = pd.to_datetime(df_curr["Ag_Date"], errors="coerce").dt.to_period("M")
+        # Post-dated / future agreement dates are left out.
+        in_range = cohort.notna() & (cohort <= as_of_or_today(as_of).to_period("M"))
+        df_v = df_curr[in_range].assign(_cohort=cohort[in_range].astype(str))
+        m = unit_metrics(df_v, ["_cohort"], min_accounts=MIN_ACCOUNTS_SOURCE_VINTAGE, flags=flags)
+        avg_loan = to_num(df_v, "Loan Amount").groupby(df_v["_cohort"]).mean()
+        cohort_rows = [{
+            "Disbursement Month": r["_cohort"],
+            "Accounts":   int(r["Accounts"]),
+            "NPA Count":  int(r["NPA"]),
+            "SMA-2 Count": int(r["SMA-2"]),
+            "NPA%":        r["NPA%"],
+            "SMA-2%":      r["SMA-2%"],
+            "Collection%": r["Collection%"],
+            "SOH (Cr)":    r["SOH (Cr)"],
+            "Avg Loan (L)": 0.0 if pd.isna(avg_loan.get(r["_cohort"])) else round(avg_loan[r["_cohort"]] / 1e5, 2),
+        } for _, r in m.iterrows()] if not m.empty else []
         if cohort_rows:
             results["vintage"] = (
                 pd.DataFrame(cohort_rows)
@@ -1172,7 +971,7 @@ def compute_product_analysis(df_curr: pd.DataFrame, as_of=None) -> dict:
             )
 
     if "SRC Name" in df_curr.columns:
-        rows = _group_npa_table(df_curr, "SRC Name", "Source", min_n=MIN_ACCOUNTS_SOURCE_VINTAGE)
+        rows = _group_npa_table(df_curr, "SRC Name", "Source", min_n=MIN_ACCOUNTS_SOURCE_VINTAGE, flags=flags)
         if rows:
             results["source"] = pd.DataFrame(rows).sort_values("NPA%", ascending=False).reset_index(drop=True)
 
@@ -1207,8 +1006,7 @@ def compute_new_advances(df_curr: pd.DataFrame, as_of=None) -> dict:
     if df_curr.empty or "Ag_Date" not in df_curr.columns:
         return empty
 
-    ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.today()
-    curr_ym = ref.to_period("M")
+    curr_ym = as_of_or_today(as_of).to_period("M")
     prev_ym = curr_ym - 1
 
     def _month_slice(ym):
@@ -1227,7 +1025,7 @@ def compute_new_advances(df_curr: pd.DataFrame, as_of=None) -> dict:
     prev_n, prev_amt = _totals(prev_adv)
     has_prev = prev_n > 0
 
-    seg_col = next((c for c in ["SegmentName", "Segment"] if c in curr_adv.columns), None)
+    seg_col = segment_column(curr_adv)
     segment_rows = []
     if seg_col and not curr_adv.empty:
         for val, grp in curr_adv.groupby(seg_col):
@@ -1286,8 +1084,8 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
     if df_curr.empty or "Ag_Date" not in df_curr.columns:
         return empty
 
-    ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.today()
-    curr_ym = ref.to_period("M")
+    df_curr = _with_exec_key(df_curr)
+    curr_ym = as_of_or_today(as_of).to_period("M")
     prev_ym = curr_ym - 1
     ag = pd.to_datetime(df_curr["Ag_Date"], errors="coerce")
     cohort = ag.dt.to_period("M")
@@ -1363,7 +1161,7 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
             if n < min_accounts:
                 continue
             prev_n, prev_amt, _ = prev_totals.get(name, (0, 0.0, 0))
-            row = {label: name}
+            row = {label: _exec_name(name) if col == _EXEC_KEY else name}
             for src, out_label in extra_cols:
                 row[out_label] = curr_extras.get(name, {}).get(src)
             row.update({
@@ -1390,7 +1188,7 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
         # Month Demand league table, this isn't ranking collection
         # performance where a single account can swing a %; it's a business/
         # origination view where even one new advance is real information.
-        "executive": _rows("MNT NAME", "Executive", extra_cols=[("Unit", "Branch"), ("RegionName", "Region")],
+        "executive": _rows(_EXEC_KEY, "Executive", extra_cols=[("Unit", "Branch"), ("RegionName", "Region")],
                             min_accounts=0),
     }
 
@@ -1498,50 +1296,25 @@ def compute_new_advances_trend_chart(trend_df: pd.DataFrame, granularity: str = 
     return fig
 
 
-def _group_npa_table(df: pd.DataFrame, group_col: str, label: str, min_n: int) -> list:
-    """Vectorized: one groupby(group_col).agg(...) pass over the WHOLE df,
-    not a Python-level call (account_count/_npa_pct/_coll_pct/_soh_cr, each
-    re-slicing the group) per distinct value -- confirmed via profiling to be
-    the dominant cost of compute_product_analysis on a real ~60k-row file
-    (called 3x for segment/fuel/source, ~4.3s combined). has_loan_no mirrors
-    _npa_pct's own "Loan No" column-presence gate exactly (returns 0.0 NPA%
-    if absent, regardless of account count), rather than silently reusing
-    whatever denominator account_count's own len(df) fallback would give."""
+def _group_npa_table(df: pd.DataFrame, group_col: str, label: str, min_n: int,
+                     flags: pd.DataFrame | None = None) -> list:
+    """Segment/fuel/source table rows from utils.unit_metrics (one grouped pass)."""
     if group_col not in df.columns:
         return []
-    has_loan_no = "Loan No" in df.columns
-    has_bucket  = "curr_bucket" in df.columns
-
-    d = df[[group_col]].copy()
-    d["_is_sma2"]       = (df["curr_bucket"] == "SMA-2") if has_bucket else False
-    d["_is_npa"]        = (df["curr_bucket"] == "NPA") if has_bucket else False
-    d["_demand_num"]    = to_num(df, "Net Collection Demand Inst+Exp+BC")
-    d["_collected_num"] = to_num(df, "Month Collection (Excluding Reserve Collection)")
-    d["_soh_num"]       = to_num(df, "SOH")
-    if has_loan_no:
-        d["Loan No"] = df["Loan No"]
-
-    n_series = d.groupby(group_col)["Loan No"].nunique() if has_loan_no else d.groupby(group_col).size()
-    agg = d.groupby(group_col).agg(
-        sma2_n=("_is_sma2", "sum"), npa_n=("_is_npa", "sum"),
-        demand=("_demand_num", "sum"), collected=("_collected_num", "sum"), soh=("_soh_num", "sum"),
-    )
-
+    m = unit_metrics(df, [group_col], min_accounts=min_n, flags=flags)
     rows = []
-    for val, n in n_series.items():
-        val_str = str(val).strip()
+    for _, r in m.iterrows():
+        val_str = str(r[group_col]).strip()
         if not val_str or val_str.lower() in ("nan", "none", ""):
             continue
-        if n < min_n:
-            continue
-        a = agg.loc[val]
         rows.append({
             label: val_str,
-            "Accounts": int(n),
-            "SMA-2%": _safe_div(a["sma2_n"], n),
-            "NPA%": _safe_div(a["npa_n"], n) if has_loan_no else 0.0,
-            "Collection%": _safe_div(a["collected"], a["demand"]),
-            "SOH (Cr)": round(a["soh"] / 1e7, 2),
+            "Accounts": int(r["Accounts"]),
+            "SMA-2%": r["SMA-2%"],
+            "NPA%": r["NPA%"],
+            "NPA% (SOH)": r["NPA% (SOH)"],
+            "Collection%": r["Collection%"],
+            "SOH (Cr)": r["SOH (Cr)"],
         })
     return rows
 
@@ -1696,11 +1469,12 @@ def compute_risk_indicators(
         _add("Fresh NPA Formation", rr_meta["npa_formation_rate"], None, "%", "down",
              "Non-NPA accounts that became NPA this month: more important than total NPA count")
 
-    col3m = "No Coll 3 Months and >6 EMI"
+    col3m = NOT_PAYING_3M_FLAG_COL
     if col3m in df_curr.columns:
         c = int(is_yes(df_curr, col3m).sum())
         p = int(is_yes(df_prev, col3m).sum()) if has_prev and col3m in df_prev.columns else 0
-        _add("Chronic Defaulters (3M+)", c, p, "", "down", "Zero payment ≥3 months AND >6 EMI arrears", is_count=True)
+        _add("Not Paying 3M+", c, p, "", "down",
+             f"No payment in 3 months AND more than {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue", is_count=True)
 
     if "Non Starter" in df_curr.columns:
         c = int(is_yes(df_curr, "Non Starter").sum())
@@ -1732,22 +1506,27 @@ def compute_concentration_treemap(df_curr: pd.DataFrame) -> go.Figure:
     if "RegionName" not in df_curr.columns or "Unit" not in df_curr.columns:
         return go.Figure()
 
-    def _raw_soh(df: pd.DataFrame) -> float:
-        return float(to_num(df, "SOH").sum() / 1e7)
-
     ids, labels, parents, values, colors, texts = ["portfolio"], ["Portfolio"], [""], [0.0], [0.0], [""]
+    if df_curr.empty:
+        return go.Figure()
+    flags = loan_flags(df_curr)
+    branches = unit_metrics(df_curr, ["RegionName", "Unit"], flags=flags)
+    if branches.empty:
+        return go.Figure()
+    region_npa = unit_metrics(df_curr, ["RegionName"], flags=flags).set_index("RegionName")["NPA%"]
 
     portfolio_total = 0.0
-    for region, rgrp in df_curr.groupby("RegionName"):
+    for region, rb in branches.groupby("RegionName", sort=True):
         r_id  = f"r_{region}"
-        r_npa = _npa_pct(rgrp)
+        r_npa = float(region_npa.get(region, 0.0))
 
-        # Compute branches first, accumulate their sum for the region value
+        # Branches first, accumulating their exact (unrounded) SOH for the region
         branch_sum = 0.0
         branch_buf: list[tuple] = []
-        for branch, bgrp in rgrp.groupby("Unit"):
-            b_soh = _raw_soh(bgrp)
-            b_npa = _npa_pct(bgrp)
+        for _, b in rb.iterrows():
+            branch = b["Unit"]
+            b_soh = float(b["SOH"] / 1e7)
+            b_npa = float(b["NPA%"])
             b_id  = f"b_{region}_{branch}"
             branch_buf.append((b_id, str(branch), r_id, b_soh, b_npa,
                                 f"{branch}<br>SOH ₹{b_soh:.1f}Cr<br>NPA {b_npa:.1f}%"))
@@ -1780,7 +1559,8 @@ def compute_concentration_treemap(df_curr: pd.DataFrame) -> go.Figure:
         textfont=dict(size=12),
         marker=dict(
             colors=colors,
-            colorscale=[[0, "#16a34a"], [0.1, "#86efac"], [0.3, "#fef08a"], [0.6, "#f97316"], [1.0, "#991b1b"]],
+            # NPA has no "safe" level, so never green: pale pink (low) -> dark red (high).
+            colorscale=[[0, "#fef2f2"], [0.3, "#fca5a5"], [0.6, "#ef4444"], [1.0, "#991b1b"]],
             cmin=0, cmax=cmax,
             showscale=True,
             colorbar=dict(title="NPA %", thickness=12, len=0.6),
@@ -1944,7 +1724,7 @@ def compute_top_accounts(df_curr: pd.DataFrame, n: int = 20) -> tuple[pd.DataFra
     if delinquent.empty:
         return pd.DataFrame(), empty_summary
 
-    seg_col = next((c for c in ["SegmentName", "Segment"] if c in delinquent.columns), None)
+    seg_col = segment_column(delinquent)
     cols = [c for c in [
         "Loan No", "Cust Name", "Cust Mob No", "RegionName", "Unit", seg_col, "MNT NAME",
         "curr_bucket", "SOH", "Closing Arrears", "Arrears / EMI", "VehEMI Accrued", "LCC%",
@@ -1983,8 +1763,10 @@ _REPO_DISPLAY_COLS = [
 def compute_repossession_list(df_curr: pd.DataFrame, as_of=None) -> pd.DataFrame:
     """
     Accounts eligible for repossession:
-      - curr_bucket in ["SMA-2", "NPA"]  (2+ EMI overdue, deep delinquent)
-      - Ag_Date within last 18 months    (recent loans  -  still have collateral value)
+      - curr_bucket in config.REPOSSESSION_BUCKETS (default SMA-2, NPA)
+      - Ag_Date within config.REPOSSESSION_WINDOW_MONTHS (collateral value left)
+      - Loan Status not in config.REPOSSESSION_EXCLUDE_STATUSES (S&S = the
+        vehicle is already seized and sold)
 
     as_of: the report's OWN reporting month/date, same reasoning as
     compute_product_analysis's as_of -- defaults to the real wall-clock date
@@ -1998,12 +1780,14 @@ def compute_repossession_list(df_curr: pd.DataFrame, as_of=None) -> pd.DataFrame
     if df_curr.empty:
         return pd.DataFrame()
 
-    _ref_date = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.today()
-    cutoff = _ref_date - pd.DateOffset(months=REPOSSESSION_WINDOW_MONTHS)
+    cutoff = as_of_or_today(as_of) - pd.DateOffset(months=REPOSSESSION_WINDOW_MONTHS)
 
     bucket_mask = pd.Series(False, index=df_curr.index)
     if "curr_bucket" in df_curr.columns:
-        bucket_mask = df_curr["curr_bucket"].isin(["SMA-2", "NPA"])
+        bucket_mask = df_curr["curr_bucket"].isin(REPOSSESSION_BUCKETS)
+    if "Loan Status" in df_curr.columns:
+        status = df_curr["Loan Status"].astype(str).str.strip().str.upper()
+        bucket_mask &= ~status.isin([s.upper() for s in REPOSSESSION_EXCLUDE_STATUSES])
 
     date_mask = pd.Series(True, index=df_curr.index)
     if "Ag_Date" in df_curr.columns:

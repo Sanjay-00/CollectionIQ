@@ -9,7 +9,7 @@ import plotly.io as pio
 
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS,
-    RECENT_ADVANCES_MONTHS, REGION_NAME_ALIASES,
+    RECENT_ADVANCES_MONTHS, REGION_NAME_ALIASES, INSURANCE_EXP_ARREARS_MIN, NOT_PAYING_3M_FLAG_COL,
 )
 from dateutil.relativedelta import relativedelta
 
@@ -857,67 +857,258 @@ def is_yes(df: pd.DataFrame, col: str) -> pd.Series:
     return normalized.isin(["Y", "YES"])
 
 
-def compute_strike_pct(df: pd.DataFrame) -> float:
-    """% of accounts current on their installment obligation (Strike=Y), among accounts
-    with a valid Y/N Strike value.
+# ── The one definition of every loan-level condition and unit metric ─────────
+# Every region/branch/executive/segment table totals these same per-loan
+# flags (unit_metrics), so "NPA", "delinquent", "insurance-only" etc. mean the
+# same thing in every tab, and a threshold changes in config.py only.
 
-    Single source of truth for the dashboard (compute_metrics) and Portfolio Intelligence
-    (analysis/portfolio_intelligence.py::compute_pulse_kpis), which both call this instead
-    of reimplementing it. The AI Query path (registry/ontology.py's strike_pct METRIC) is a
-    separate, declarative definition consumed by the general compiler
-    (compiler/measures.py's count_ratio handler) rather than a direct function call, so it
-    can't share this implementation directly - but it must match this definition, and
-    tests/test_metric_consistency.py checks the two stay in sync.
+def as_of_or_today(as_of=None) -> pd.Timestamp:
+    """The report's own reporting date, or today when none is given."""
+    return pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.today().normalize()
+
+
+def segment_column(df: pd.DataFrame) -> str | None:
+    """The vehicle-segment column this file uses ("SegmentName" or "Segment")."""
+    return next((c for c in ("SegmentName", "Segment") if c in df.columns), None)
+
+
+def insurance_only_mask(df: pd.DataFrame) -> pd.Series:
+    """Delinquent only because of the insurance/expense charge: EMI fully paid
+    (installment arrears <= 0), insurance/expense arrears above
+    config.INSURANCE_EXP_ARREARS_MIN, and Arrears/EMI above 0. A blank
+    installment/expense arrears means none recorded (0)."""
+    return ((to_num(df, "ARREARS AGAINST INST", fill=0) <= 0)
+            & (to_num(df, "ARREARS AGAINST EXP", fill=0) > INSURANCE_EXP_ARREARS_MIN)
+            & (to_num(df, "Arrears / EMI") > 0))
+
+
+def loan_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per loan, one column per condition/amount (index-aligned)."""
+    ae = to_num(df, "Arrears / EMI")
+    bucket = df["curr_bucket"] if "curr_bucket" in df.columns else bucket_from_arrears_emi(ae)
+    soh = to_num(df, "SOH", fill=0)
+    npa = bucket == "NPA"
+    strike = df["Strike"].astype(str).str.strip().str.upper() if "Strike" in df.columns else pd.Series("", index=df.index)
+    f = pd.DataFrame({
+        "delinquent": ae > 0,
+        "sma1": bucket == "SMA-1",
+        "sma2": bucket == "SMA-2",
+        "npa": npa,
+        "hard": ae >= HARD_BUCKET_ARREARS_EMI_MIN,
+        "not_paying_3m": is_yes(df, NOT_PAYING_3M_FLAG_COL),
+        "insurance_only": insurance_only_mask(df),
+        "soh": soh,
+        "npa_soh": soh.where(npa, 0.0),
+        "pos": to_num(df, "POS", fill=0),
+        "demand": to_num(df, "Net Collection Demand Inst+Exp+BC", fill=0),
+        "collected": to_num(df, "Month Collection (Excluding Reserve Collection)", fill=0),
+        "strike_valid": strike.isin(["Y", "N", "YES", "NO"]),
+        "strike_yes": strike.isin(["Y", "YES"]),
+    }, index=df.index)
+    if "prev_bucket" in df.columns and "curr_bucket" in df.columns:
+        curr_sc, prev_sc = df["curr_bucket"].map(BUCKET_SCORE), df["prev_bucket"].map(BUCKET_SCORE)
+        valid = curr_sc.notna() & prev_sc.notna()
+        f["roll_valid"] = valid
+        f["roll_fwd"] = valid & (curr_sc > prev_sc)
+        f["roll_bwd"] = valid & (curr_sc < prev_sc)
+        f["rescued"] = f["roll_bwd"] & df["prev_bucket"].isin(["SMA-1", "SMA-2", "NPA"])
+    return f
+
+
+def _round_each(s: pd.Series, decimals: int) -> pd.Series:
+    """Python's round() per value (NaN kept), like _safe_pct: pandas' .round()
+    can differ by 0.01 on exact ties such as 5.975."""
+    return s.map(lambda v: v if pd.isna(v) else round(float(v), decimals)).astype(float)
+
+
+def _pct_col(num: pd.Series, den: pd.Series, decimals: int = 2) -> pd.Series:
+    """x as % of y per row, 0.0 when y is 0."""
+    return _round_each(num / den.where(den != 0) * 100, decimals).fillna(0.0)
+
+
+def unit_metrics(df: pd.DataFrame, by: list[str], min_accounts: int = 0,
+                 flags: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Every standard metric per unit, from ONE groupby over loan_flags.
+
+    by: grouping columns (e.g. ["RegionName"], ["MNT NAME", "Unit"]); [] gives
+    one portfolio row. A blank label is left out (as every table always did).
+    Units with fewer than min_accounts are dropped. Columns:
+    Accounts, Delinquent, Delinquency%, SMA-1, SMA-2, SMA-2%, NPA, NPA%,
+    NPA% (SOH), Hard Bucket, Hard Bucket%, Not Paying 3M+, Not Paying 3M+%,
+    Insurance-Only, Collection%, Strike%, SOH (Cr), POS, Demand, Collected,
+    SOH and, when prev_bucket is present, Roll Fwd%/Roll Bwd% (NaN when no
+    loan has both months' bucket), Rescued, Slipped.
+
+    flags: loan_flags(df), when the caller totals the same frame several ways
+    (pass it once instead of recomputing every per-loan check each time)."""
+    if df.empty:
+        return pd.DataFrame()
+    f = (loan_flags(df) if flags is None else flags.loc[df.index]).copy()
+    keys = [df[c] for c in by] if by else [pd.Series(0, index=df.index)]
+    f["_id"] = df["Loan No"] if "Loan No" in df.columns else pd.Series(range(len(df)), index=df.index)
+    g = f.groupby(keys, sort=True)
+    s = g.sum(numeric_only=True)
+    n = g["_id"].nunique()
+    out = pd.DataFrame(index=s.index)
+    out["Accounts"] = n.astype(int)
+    for name, flag in (("Delinquent", "delinquent"), ("SMA-1", "sma1"), ("SMA-2", "sma2"), ("NPA", "npa"),
+                       ("Hard Bucket", "hard"), ("Not Paying 3M+", "not_paying_3m"),
+                       ("Insurance-Only", "insurance_only")):
+        out[name] = s[flag].astype(int)
+    out["Delinquency%"] = _pct_col(out["Delinquent"], out["Accounts"])
+    out["SMA-2%"] = _pct_col(out["SMA-2"], out["Accounts"])
+    out["NPA%"] = _pct_col(out["NPA"], out["Accounts"])
+    out["NPA% (SOH)"] = _pct_col(s["npa_soh"], s["soh"])
+    out["Hard Bucket%"] = _pct_col(out["Hard Bucket"], out["Accounts"])
+    out["Not Paying 3M+%"] = _pct_col(out["Not Paying 3M+"], out["Accounts"])
+    out["Collection%"] = _pct_col(s["collected"], s["demand"])
+    out["Strike%"] = _pct_col(s["strike_yes"], s["strike_valid"])
+    out["SOH (Cr)"] = _round_each(s["soh"] / 1e7, 2)
+    out["POS"], out["Demand"], out["Collected"], out["SOH"] = s["pos"], s["demand"], s["collected"], s["soh"]
+    if "roll_valid" in s.columns:
+        valid = s["roll_valid"].where(s["roll_valid"] > 0)
+        out["Roll Fwd%"] = _round_each(s["roll_fwd"] / valid * 100, 1)
+        out["Roll Bwd%"] = _round_each(s["roll_bwd"] / valid * 100, 1)
+        out["Rescued"] = s["rescued"].astype(int)
+        out["Slipped"] = s["roll_fwd"].astype(int)
+        out["_roll_valid"] = s["roll_valid"].astype(int)
+    out = out[out["Accounts"] >= min_accounts]
+    out.index.names = by or ["_all"]
+    return out.reset_index() if by else out.reset_index(drop=True)
+
+
+def first_value(df: pd.DataFrame, by: list[str], col: str) -> pd.Series:
+    """The first `col` value per group (e.g. a branch's Region), aligned to
+    unit_metrics' index order."""
+    if col not in df.columns:
+        return pd.Series(dtype=object)
+    return df.groupby(by, sort=True)[col].first()
+
+
+def portfolio_metrics(df: pd.DataFrame) -> pd.Series | None:
+    """unit_metrics for the whole frame as one row (None when empty)."""
+    m = unit_metrics(df, [])
+    return None if m.empty else m.iloc[0]
+
+
+def compute_strike_pct(df: pd.DataFrame) -> float:
+    """% of accounts current on their installment obligation (Strike=Y), among
+    accounts with a valid Y/N Strike value ("N"/"NO" count against the rate).
+
+    A view of utils.unit_metrics (the one definition every table uses). The
+    AI Query path (registry/ontology.py's strike_pct METRIC) is declarative
+    and can't call this, so tests/test_metric_consistency.py checks the two
+    agree.
     """
-    if df.empty or "Strike" not in df.columns:
-        return 0.0
-    # "N"/"NO" must count as valid-but-not-yes here even though is_yes() itself
-    # only recognizes the yes spellings -- excluding them from the denominator
-    # (matching only Y/YES) would inflate the % by dropping every "no" account
-    # from the base instead of counting it against the rate.
-    strike_valid = df[df["Strike"].astype(str).str.strip().str.upper().isin(["Y", "N", "YES", "NO"])]
-    if strike_valid.empty:
-        return 0.0
-    return _safe_pct(is_yes(strike_valid, "Strike").sum(), len(strike_valid))
+    m = portfolio_metrics(df)
+    return 0.0 if m is None else float(m["Strike%"])
 
 
 def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
-    """% of accounts >= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue.
-
-    Single source of truth for the dashboard (compute_metrics) and every Portfolio
-    Intelligence table that reports Hard Bucket% (compute_pulse_kpis, compute_region_scorecard,
-    compute_branch_quadrant). See compute_strike_pct's docstring re: the AI Query path.
-    """
-    total = account_count(df)
-    if total == 0:
-        return 0.0
-    return _safe_pct((to_num(df, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN).sum(), total)
+    """% of accounts >= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue (view of unit_metrics)."""
+    m = portfolio_metrics(df)
+    return 0.0 if m is None else float(m["Hard Bucket%"])
 
 
 def compute_delinquency_count(df: pd.DataFrame) -> int:
-    """Count of accounts with any arrears: Arrears/EMI > 0. Broadest delinquency
-    definition (1-30 DPD through NPA, i.e. everything except STD/NA) -- matches
-    registry/ontology.py's CONCEPTS["delinquent"] row-level filter exactly, just
-    counted rather than used as a filter. See compute_delinquency_pct for the rate.
-    """
-    if df.empty or "Arrears / EMI" not in df.columns:
+    """Accounts with any arrears: Arrears/EMI > 0 (view of unit_metrics). Matches
+    registry/ontology.py's CONCEPTS["delinquent"] row filter."""
+    if "Arrears / EMI" not in df.columns:
         return 0
-    return int((to_num(df, "Arrears / EMI") > 0).sum())
+    m = portfolio_metrics(df)
+    return 0 if m is None else int(m["Delinquent"])
 
 
 def compute_delinquency_pct(df: pd.DataFrame) -> float:
-    """% of accounts with any arrears (Arrears/EMI > 0), among all accounts.
-
-    Single source of truth for the dashboard and every Portfolio Intelligence table
-    that reports Delinquency% (compute_region_scorecard, compute_branch_quadrant,
-    compute_executive_scorecard). See compute_strike_pct's docstring re: the AI
-    Query path (registry/ontology.py's delinquency_pct count_ratio METRIC, kept in
-    sync via tests/test_metric_consistency.py).
-    """
-    total = account_count(df)
-    if total == 0:
+    """% of accounts with any arrears (view of unit_metrics). See
+    compute_strike_pct re: the AI Query path."""
+    if "Arrears / EMI" not in df.columns:
         return 0.0
-    return _safe_pct(compute_delinquency_count(df), total)
+    m = portfolio_metrics(df)
+    return 0.0 if m is None else float(m["Delinquency%"])
+
+
+def _unit_key(v) -> str:
+    """Join key for a manually typed label ("Pune " and "PUNE" are one unit)."""
+    return str(v).strip().upper()
+
+
+def delinquency_by(df: pd.DataFrame, cols: list[str]) -> dict[tuple, tuple[int, int]]:
+    """{normalized label tuple: (accounts, delinquent)} for each unit in `df`,
+    from unit_metrics on case/space-normalized labels."""
+    if df is None or df.empty or not set(cols) <= set(df.columns) or "Arrears / EMI" not in df.columns:
+        return {}
+    keys = [f"_k{i}" for i in range(len(cols))]
+    m = unit_metrics(df.assign(**{k: df[c].map(_unit_key) for k, c in zip(keys, cols)}), keys)
+    return {tuple(r[k] for k in keys): (int(r["Accounts"]), int(r["Delinquent"])) for _, r in m.iterrows()}
+
+
+def match_prev(prev: dict, key: tuple, fuzzy_pos: int | None = None):
+    """Last month's entry for a normalized label tuple: exact match first;
+    then, if fuzzy_pos is given (a name the source system truncates at
+    different lengths each month), the ONE entry whose name at that position
+    is a prefix of this one (or vice versa) with every other label equal.
+    None when there's no match or the prefix match is ambiguous."""
+    if key in prev:
+        return prev[key]
+    if fuzzy_pos is None:
+        return None
+    hits = [pk for pk in prev
+            if all(pk[i] == key[i] for i in range(len(key)) if i != fuzzy_pos)
+            and (pk[fuzzy_pos].startswith(key[fuzzy_pos]) or key[fuzzy_pos].startswith(pk[fuzzy_pos]))]
+    return prev[hits[0]] if len(hits) == 1 else None
+
+
+def attach_prev_delinquency(
+    table: pd.DataFrame, df_prev: pd.DataFrame, on: dict[str, str],
+    pct_col: str = "Delinquency%", fuzzy: str | None = None, decimals: int = 2,
+) -> pd.DataFrame:
+    """Add last month's delinquency % and the change (in percentage points)
+    right after `pct_col` in a per-region/branch/executive table.
+
+    on: {table column: previous-file column}, e.g. {"Branch": "Unit"}. Last
+    month is grouped by the previous file's OWN labels, so an executive's
+    previous figure is the book they held then. fuzzy: a table column whose
+    spelling gets truncated between months (MNT NAME); when there's no exact
+    match, a single prefix match within the same other labels is used.
+    No columns are added when there is no previous file."""
+    prev = delinquency_by(df_prev, list(on.values()))
+    if table.empty or not prev or pct_col not in table.columns:
+        return table
+    pos = list(on).index(fuzzy) if fuzzy in on else None
+
+    prev_pct, delta = [], []
+    for _, row in table.iterrows():
+        hit = match_prev(prev, tuple(_unit_key(row[c]) for c in on), pos)
+        p = round(_safe_pct(hit[1], hit[0]), decimals) if hit else None
+        c = row[pct_col]
+        prev_pct.append(p)
+        delta.append(round(c - p, 2) if p is not None and c is not None and not pd.isna(c) else None)
+
+    out = table.copy()
+    at = out.columns.get_loc(pct_col) + 1
+    out.insert(at, f"Prev {pct_col}", pd.Series(prev_pct, index=out.index, dtype=float))
+    out.insert(at + 1, f"Δ {pct_col}", pd.Series(delta, index=out.index, dtype=float))
+    return out
+
+
+# Reading order for every region/branch/executive table: size of the book,
+# how many are behind, the rate, last month's rate and the change, then the
+# deeper buckets. Both spellings ("Delinquency%" / "Delinquency %") covered.
+UNIT_TABLE_LEAD = [
+    "Accounts", "Delinquent", "Delinquent Accounts",
+    "Delinquency%", "Delinquency %", "Prev Delinquency%", "Prev Delinquency %",
+    "Δ Delinquency%", "Δ Delinquency %",
+    "SMA-2", "SMA-2%", "SMA-2 %", "Δ SMA-2%", "NPA", "NPA%", "NPA %", "NPA% (SOH)", "NPA % (SOH)", "Δ NPA%",
+]
+
+
+def order_unit_columns(cols, identity) -> list:
+    """`cols` reordered as: identity columns, then UNIT_TABLE_LEAD, then the
+    rest in their original order. Missing names are skipped."""
+    cols = list(cols)
+    head = [c for c in identity if c in cols] + [c for c in UNIT_TABLE_LEAD if c in cols and c not in identity]
+    return head + [c for c in cols if c not in head]
 
 
 def _mom_pct(curr, prev):
@@ -929,7 +1120,7 @@ def _mom_pct(curr, prev):
 def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     _zero = {
         "Month Demand": 0.0, "Total Collection": 0.0, "Collection %": 0.0,
-        "Strike %": 0.0, "NPA %": 0.0, "Hard Bucket %": 0.0, "SMA-2 %": 0.0,
+        "Strike %": 0.0, "NPA %": 0.0, "NPA % (SOH)": 0.0, "Hard Bucket %": 0.0, "SMA-2 %": 0.0,
         "Count": 0, "SOH": 0.0, "LCC%": 0.0, "CMD %": 0.0,
     }
 
@@ -948,17 +1139,13 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         # a file missing it must not crash the whole Dashboard tab.
         cum_coll_inst_exp = to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum()
 
-        strike_pct = compute_strike_pct(df)
-
-        npa_pct = _safe_pct(
-            df[df["curr_bucket"] == "NPA"]["Loan No"].nunique(),
-            n_accounts,
-        )
-        sma2_pct = _safe_pct(
-            df[df["curr_bucket"] == "SMA-2"]["Loan No"].nunique() if "curr_bucket" in df.columns else 0,
-            n_accounts,
-        )
-        hard_pct = compute_hard_bucket_pct(df)
+        # The shared per-loan definitions (unit_metrics), portfolio-wide.
+        m = unit_metrics(df, []).iloc[0]
+        strike_pct = float(m["Strike%"])
+        npa_pct = float(m["NPA%"])
+        npa_soh_pct = float(m["NPA% (SOH)"])
+        sma2_pct = float(m["SMA-2%"])
+        hard_pct = float(m["Hard Bucket%"])
         _cum_due = sum(
             pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
             for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns
@@ -988,6 +1175,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             "Collection %": _safe_pct(collection, demand),
             "Strike %": strike_pct,
             "NPA %": npa_pct,
+            "NPA % (SOH)": npa_soh_pct,
             "Hard Bucket %": hard_pct,
             "SMA-2 %": sma2_pct,
             "Count": n_accounts,

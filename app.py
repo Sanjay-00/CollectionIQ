@@ -43,7 +43,7 @@ from ui.tabs.investigator import render_investigator_tab
 from ui.tabs.root_cause import render_root_cause_tab
 from analysis.root_cause import (
     clean_contaminated_flags, compute_insurance_split,
-    compute_chronic_shock_split, compute_region_why_table,
+    compute_chronic_shock_split, compute_region_why_table, add_unit_delinquency,
     compute_recent_advances_summary, compute_recent_advances_bucket_summary,
     compute_recent_advances_bucket_by_group,
 )
@@ -333,8 +333,8 @@ def _cached_alerts(_df_c: pd.DataFrame, data_version: int, region: str, branch: 
     return run_all_alerts(_df_c, as_of=as_of)
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_scorecard(_df_c: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
-    return compute_executive_scorecard(_df_c)
+def _cached_scorecard(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
+    return compute_executive_scorecard(_df_c, df_prev=_df_p)
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def _cached_roll_rate(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None):
@@ -357,7 +357,7 @@ def _cached_portfolio_intel(
     pulse_kpis              = compute_pulse_kpis(df_c, df_p)
     fig_waterfall           = compute_bucket_waterfall(df_c, df_p)
     region_df               = compute_region_scorecard(df_c, df_p)
-    branch_df, fig_quadrant = compute_branch_quadrant(df_c)
+    branch_df, fig_quadrant = compute_branch_quadrant(df_c, df_p)
     exec_recovery_df        = compute_executive_recovery(df_c)
     product_data            = compute_product_analysis(df_c, as_of=curr_month)
     risk_indicators         = compute_risk_indicators(df_c, df_p, rr_meta_local if rr_matched > 0 else None)
@@ -382,7 +382,7 @@ def _cached_portfolio_intel(
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_root_cause(
-    _df_c: pd.DataFrame, _region_df: pd.DataFrame,
+    _df_c: pd.DataFrame, _df_p: pd.DataFrame, _region_df: pd.DataFrame,
     data_version: int, region: str, branch: str, status: str, segment: tuple, date_from,
     curr_month: str,
 ):
@@ -391,8 +391,8 @@ def _cached_root_cause(
     # figures are numerically identical to what Portfolio Intelligence already
     # shows for the same region, never a second independent calculation.
     df_clean, contamination = clean_contaminated_flags(_df_c)
-    insurance_split = compute_insurance_split(df_clean, group_col="Unit")
-    chronic_shock = compute_chronic_shock_split(df_clean, group_col="Unit")
+    insurance_split = add_unit_delinquency(compute_insurance_split(df_clean, group_col="Unit"), _df_c, _df_p)
+    chronic_shock = add_unit_delinquency(compute_chronic_shock_split(df_clean, group_col="Unit"), _df_c, _df_p)
     why_df = compute_region_why_table(df_clean, _region_df, as_of=curr_month)
     recent_summary = compute_recent_advances_summary(df_clean)
     recent_bucket = compute_recent_advances_bucket_summary(df_clean)
@@ -431,7 +431,7 @@ fig_status, fig_branch, fig_closing = _cached_dashboard_charts(
 
 scorecard_df = None
 if "MNT NAME" in df_curr.columns:
-    scorecard_df = _cached_scorecard(df_curr, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from)
+    scorecard_df = _cached_scorecard(df_curr, df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from)
 
 rr_matrix, rr_meta = None, None
 if len(df_prev_raw) > 0:
@@ -571,7 +571,7 @@ if _needs_pi:
             rc_recent_by_region_count, rc_recent_by_region_soh,
             rc_recent_by_branch_count, rc_recent_by_branch_soh,
         ) = _cached_root_cause(
-            df_curr, pi_region, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from,
+            df_curr, df_prev, pi_region, data_version, sel_region, sel_branch, sel_status, _seg_t, sel_date_from,
             curr_month,
         )
 

@@ -8,13 +8,13 @@ from ui.components import _kpi_card_html, _chart_card, _divider, _cached_html_ex
 
 _KIND = {
     "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
-    "Strike %": "pct", "NPA %": "pct", "Hard Bucket %": "pct", "SMA-2 %": "pct",
+    "Strike %": "pct", "NPA %": "pct", "NPA % (SOH)": "pct", "Hard Bucket %": "pct", "SMA-2 %": "pct",
     "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct",
 }
 _KPI_TOP      = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %", "Hard Bucket %"]
-_KPI_BOT      = ["Count", "CMD %"]
+_KPI_BOT      = ["Count", "NPA % (SOH)", "CMD %"]
 _KPI_EXPOSURE = ["SOH"]
-_INVERSE_MOM  = {"NPA %", "Hard Bucket %", "SMA-2 %"}
+_INVERSE_MOM  = {"NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %"}
 
 
 def _kpi_row(keys: list, metrics: dict, count_deltas: dict | None = None) -> None:

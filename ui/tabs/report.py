@@ -115,7 +115,7 @@ def render_report_tab(
         with add_c1:
             _col_caption("Risk & Segments")
             inc_indicators = st.checkbox("Risk Indicators", value=False, key="rpt_indicators",
-                                          help="Early-warning signals: SMA-1 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk")
+                                          help="Early-warning signals: SMA-1 pool, fresh NPA formation, not paying 3M+, non-starters, co-lending risk")
             inc_product = st.checkbox("Segment NPA Breakdown", value=False, key="rpt_product")
             inc_overdue_demand = st.checkbox("Overdue vs Month Demand", value=False, key="rpt_overdue_demand")
         with add_c2:

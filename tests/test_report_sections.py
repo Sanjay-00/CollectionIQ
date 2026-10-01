@@ -190,6 +190,12 @@ class TestComputeBucketMigrationSectionImage:
 # ── compute_npa_sma2_movement ─────────────────────────────────────────────────
 
 class TestComputeNpaSma2Movement:
+    @pytest.fixture(autouse=True)
+    def _small_executives(self, monkeypatch):
+        # These tests check matching/ranking logic on 1-3 loan executives;
+        # the MIN_ACCOUNTS_EXECUTIVE floor itself has its own test.
+        monkeypatch.setattr(__import__('analysis.portfolio_intelligence', fromlist=['x']), "MIN_ACCOUNTS_EXECUTIVE", 1)
+
     def test_portfolio_sequence_without_prev(self):
         curr = make_df([
             {"RegionName": "WEST", "Unit": "MAHAD", "curr_bucket": "NPA"},
@@ -348,6 +354,12 @@ class TestComputeBranchQuadrantSection:
 # ── compute_executive_recovery_section ────────────────────────────────────────
 
 class TestComputeExecutiveRecoverySection:
+    @pytest.fixture(autouse=True)
+    def _small_executives(self, monkeypatch):
+        # These tests check matching/ranking logic on 1-3 loan executives;
+        # the MIN_ACCOUNTS_EXECUTIVE floor itself has its own test.
+        monkeypatch.setattr(__import__('analysis.portfolio_intelligence', fromlist=['x']), "MIN_ACCOUNTS_EXECUTIVE", 1)
+
     def test_returns_none_without_prev_bucket(self):
         curr = make_df([{"MNT NAME": "RAJ", "Unit": "MAHAD", "curr_bucket": "STD"}])
         assert compute_executive_recovery_section(curr) is None

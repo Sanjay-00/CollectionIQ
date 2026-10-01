@@ -3,19 +3,21 @@ NBFC vocabulary), shown as an ⓘ hover next to the term. Thresholds come from
 config.py and group names from analysis/root_cause.py, so a definition can't
 drift from the rule or label it describes."""
 from analysis.root_cause import EARLY_DELINQUENCY, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT
-from config import FLEET_MIN_LOANS, HARD_BUCKET_ARREARS_EMI_MIN, RECENT_ADVANCES_MONTHS
+from config import CONCERN_SCORE_WEIGHTS, FLEET_MIN_LOANS, HARD_BUCKET_ARREARS_EMI_MIN, INSURANCE_EXP_ARREARS_MIN, RECENT_ADVANCES_MONTHS
 from ui.components import _esc
 
 _H = HARD_BUCKET_ARREARS_EMI_MIN
 
-_CHRONIC = f"No payment received in the last 3 months AND more than {_H} EMIs overdue."
+_NOT_PAYING = f"No payment received in the last 3 months AND more than {_H} EMIs overdue."
 _STILL_PAYING = (f"{_H} or more EMIs overdue, but the customer has paid something in the last 3 months: "
                  "trying, but not keeping up.")
 _FLEET = f"A customer (same mobile number) with {FLEET_MIN_LOANS} or more loans in the whole upload."
 
 GLOSSARY: dict[str, str] = {
-    "Chronic": _CHRONIC,
-    "Chronic (3M+)": f"Number of chronic loans: {_CHRONIC[0].lower()}{_CHRONIC[1:]}",
+    "Not Paying 3M+": f"Loans with {_NOT_PAYING[0].lower()}{_NOT_PAYING[1:]}",
+    "Not Paying 3M+%": f"% of the unit's loans with {_NOT_PAYING[0].lower()}{_NOT_PAYING[1:]}",
+    "NPA% (SOH)": "NPA measured by money: SOH of NPA loans as % of total SOH (NPA% counts loans instead).",
+    "NPA % (SOH)": "NPA measured by money: SOH of NPA loans as % of total SOH (NPA % counts loans instead).",
     "Hard Bucket": f"{_H} or more EMIs overdue right now.",
     "Hard Bucket%": f"% of loans with {_H} or more EMIs overdue right now.",
     HARD_NOT_PAYING: (f"{_H} or more EMIs overdue AND no payment in the last 3 months. "
@@ -25,24 +27,27 @@ GLOSSARY: dict[str, str] = {
                  "paying part of it down. Call before they go silent again."),
     EARLY_DELINQUENCY: (f"Behind on payments, but under {_H} EMIs overdue and not silent for 3 months. "
                         "Normal follow-up by the field executive."),
-    "Insurance-Only": ("EMI fully paid; only the insurance/expense charge is unpaid. "
-                       "Fix with a cash or WCL adjustment, not a credit problem."),
+    "Insurance-Only": (f"EMI fully paid; only the insurance/expense charge (over ₹{INSURANCE_EXP_ARREARS_MIN:,}) "
+                       "is unpaid. Fix with a cash or WCL adjustment, not a credit problem."),
+    "Other": (f"Behind for another reason: a small insurance charge (₹{INSURANCE_EXP_ARREARS_MIN:,} or less) "
+              "or only bounce/penal charges."),
     "Installment-Only": "EMI unpaid; no unpaid insurance/expense charge.",
     "Both": "Both the EMI and the insurance/expense charge are unpaid.",
     "Delinquent Accounts": "Loans with any EMI or charge overdue (Arrears/EMI above 0).",
     "Dominant Driver": ("The cause behind the biggest share of this region's delinquent loans: "
-                        "insurance-only, chronic non-payers, deep arrears still paying, fleet operators "
+                        "insurance-only, not paying for 3+ months, deep arrears still paying, fleet operators "
                         "or recent advances."),
     "Driver Share %": "Share of the region's delinquent loans explained by the dominant driver.",
     "Fleet operator": _FLEET,
     "Concern Score": ("0-100 rank of this branch against all other branches (higher = worse), blending "
-                      "NPA% (45%), Hard Bucket% (25%), Roll Fwd% (20%) and chronic loans (10%)."),
+                      + ", ".join(f"{k} ({round(w * 100)}%)" for k, w in CONCERN_SCORE_WEIGHTS.items())
+                      + ". A part with no data (e.g. Roll Fwd% without last month) is left out."),
 }
 
 # The Dominant Driver values (analysis/root_cause.py::_DRIVER_LABELS).
 DRIVER_HELP: dict[str, str] = {
     "Insurance-driven delinquency": GLOSSARY["Insurance-Only"],
-    "Chronic non-payer buildup": _CHRONIC,
+    "Not paying for 3+ months": _NOT_PAYING,
     "Deep arrears, still paying": _STILL_PAYING,
     "Fleet-operator concentration": "Delinquent loans belonging to fleet operators. " + _FLEET,
     "Recent-advance (sourcing/underwriting) quality": (

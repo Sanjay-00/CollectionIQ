@@ -20,7 +20,7 @@ def compute_branch_quadrant_section(df_curr: pd.DataFrame, df_prev: pd.DataFrame
         # report reader needs to interpret on its own.
         top_concern = df.head(5)[[
             "Rank", "Branch", "Region", "Accounts", "SMA-2%", "NPA%",
-            "Collection%", "Strike%", "Roll Fwd%", "Chronic (3M+)", "SOH (Cr)",
+            "Collection%", "Strike%", "Roll Fwd%", "Not Paying 3M+", "SOH (Cr)",
         ]].to_dict("records")
         return {"image": image, "top_concern": top_concern, "total_branches": len(df)}
     except Exception:

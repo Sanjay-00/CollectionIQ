@@ -522,7 +522,7 @@ class TestComputeMetrics:
         metrics = compute_metrics(df, make_df([]))
         expected_keys = {
             "Month Demand", "Total Collection", "Collection %", "Strike %",
-            "NPA %", "Hard Bucket %", "SMA-2 %", "Count", "SOH", "LCC%", "CMD %",
+            "NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Count", "SOH", "LCC%", "CMD %",
         }
         assert set(metrics.keys()) == expected_keys
         for key, val in metrics.items():

@@ -296,12 +296,13 @@ _XL_HEADER_FONT = Font(bold=True, color="FFC000")
 _XL_TOTAL_FILL = PatternFill("solid", fgColor="FFFBEA")
 _XL_TOTAL_BORDER = Border(top=Side(style="medium", color="FFC000"))
 _XL_GREEN, _XL_YELLOW, _XL_RED = "63BE7B", "FFEB84", "F8696B"  # Excel's own default scale
+_XL_WHITE = "FFFFFF"
 
 # Colour direction by column name. Only "%" columns (and Concern Score) get a
 # scale -- plain counts and amounts aren't "good" or "bad" on their own.
 _XL_HIGHER_IS_WORSE = (
     "NPA", "SMA", "DELINQUEN", "HARD BUCKET", "ROLL FWD", "ROLL FORWARD", "1-30 DPD",
-    "CHRONIC", "SHOCK", "INSURANCE-ONLY", "INSTALLMENT-ONLY", "CONCERN SCORE",
+    "NOT PAYING", "HARD +", "INSURANCE-ONLY", "INSTALLMENT-ONLY", "CONCERN SCORE",
 )
 _XL_HIGHER_IS_BETTER = ("COLLECTION", "STRIKE", "LCC", "ROLL BWD", "ROLL BACK")
 
@@ -320,6 +321,18 @@ def _xl_metric_direction(col) -> str | None:
     if any(k in name for k in _XL_HIGHER_IS_BETTER):
         return "better"
     return None
+
+
+def xl_color_scale(direction: str) -> ColorScaleRule:
+    """Risk ("worse") columns: white -> red, never green. Good ("better")
+    columns keep Excel's red -> yellow -> green."""
+    if direction == "worse":
+        return ColorScaleRule(start_type="min", start_color=_XL_WHITE, end_type="max", end_color=_XL_RED)
+    return ColorScaleRule(
+        start_type="min", start_color=_XL_RED,
+        mid_type="percentile", mid_value=50, mid_color=_XL_YELLOW,
+        end_type="max", end_color=_XL_GREEN,
+    )
 
 
 def style_excel_sheet(ws, df: pd.DataFrame) -> None:
@@ -356,12 +369,7 @@ def style_excel_sheet(ws, df: pd.DataFrame) -> None:
 
         direction = _xl_metric_direction(col)
         if direction and n_data >= 2:
-            low, high = (_XL_GREEN, _XL_RED) if direction == "worse" else (_XL_RED, _XL_GREEN)
-            ws.conditional_formatting.add(f"{letter}2:{letter}{n_data + 1}", ColorScaleRule(
-                start_type="min", start_color=low,
-                mid_type="percentile", mid_value=50, mid_color=_XL_YELLOW,
-                end_type="max", end_color=high,
-            ))
+            ws.conditional_formatting.add(f"{letter}2:{letter}{n_data + 1}", xl_color_scale(direction))
 
         if not small:
             continue
@@ -381,6 +389,12 @@ def style_excel_sheet(ws, df: pd.DataFrame) -> None:
 
 def _is_blank(v) -> bool:
     return v is None or v == "" or (not isinstance(v, (list, tuple, dict)) and pd.isna(v))
+
+
+def _download_frame(df: pd.DataFrame, full_source: pd.DataFrame | None) -> pd.DataFrame:
+    """What a table's download contains: the table itself, or (with
+    full_source) every raw upload column for the same loans."""
+    return expand_to_all_columns(df, full_source) if full_source is not None else df
 
 
 def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame | None = None) -> None:
@@ -412,14 +426,14 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame
     data). Content hashing fixes this correctly regardless of object
     identity -- verified: a fresh, freshly-copied 2,000-row DataFrame with
     identical content hits cache in ~0.025s vs a ~3.3s cold write."""
-    if full_source is not None:
-        df = expand_to_all_columns(df, full_source)
-    data = _excel_bytes(df)
-
     _, col = st.columns([5, 1])
     with col:
         st.download_button(
-            "⬇ Excel", data=data, file_name=filename,
+            # A function, not bytes: Streamlit builds the file only when the
+            # button is clicked. Building every table's styled workbook up
+            # front cost seconds per page load (~10s for an 8,000-loan table)
+            # for files nobody downloaded.
+            "⬇ Excel", data=lambda: _excel_bytes(_download_frame(df, full_source)), file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key, width='stretch',
         )
@@ -538,16 +552,57 @@ def _static_kpi_card_html(
     )
 
 
-def _npa_pct_color(val: float, hi: float = 10.0, mid: float = 5.0) -> str:
-    """Red/orange/green threshold color for an NPA%-style risk percentage."""
-    v = val or 0
-    return "#dc2626" if v > hi else ("#d97706" if v > mid else "#16a34a")
+# ── Risk heat-map shading ────────────────────────────────────────────────────
+# Risk measures (NPA, SMA, Delinquent, Hard Bucket, Roll Fwd...) have no "safe"
+# level, so they're never green: each cell is shaded from pale pink (lowest in
+# its column) to red (highest). Zero or missing gets no shade. Text stays dark.
+_HEAT_LOW, _HEAT_HIGH = (254, 242, 242), (248, 113, 113)  # #fef2f2 -> #f87171
+HEAT_TEXT = "#7f1d1d"
 
 
-def _sma2_pct_color(val: float, hi: float = 10.0, mid: float = 5.0) -> str:
-    """Red/orange/grey threshold color for a SMA-2%-style risk percentage."""
-    v = val or 0
-    return "#ef4444" if v > hi else ("#d97706" if v > mid else "#374151")
+def _is_num(v) -> bool:
+    try:
+        return v is not None and not pd.isna(v) and float(v) == float(v)
+    except (TypeError, ValueError):
+        return False
+
+
+def heat_range(values) -> tuple[float, float] | None:
+    """(lowest, highest) of the positive values in a column, or None if none."""
+    pos = [float(v) for v in values if _is_num(v) and float(v) > 0]
+    return (min(pos), max(pos)) if pos else None
+
+
+def heat_bg(val, rng: tuple[float, float] | None) -> str | None:
+    """Background hex for `val` within its column's `rng`, or None (no shade)."""
+    if rng is None or not _is_num(val) or float(val) <= 0:
+        return None
+    lo, hi = rng
+    t = 0.5 if hi <= lo else min(max((float(val) - lo) / (hi - lo), 0.0), 1.0)
+    return "#" + "".join(f"{round(a + (b - a) * t):02x}" for a, b in zip(_HEAT_LOW, _HEAT_HIGH))
+
+
+def heat_style(val, rng: tuple[float, float] | None) -> str:
+    """Inline CSS for a shaded cell ("" when unshaded)."""
+    bg = heat_bg(val, rng)
+    return f"background:{bg};color:{HEAT_TEXT};font-weight:600;" if bg else ""
+
+
+def heat_styler(df: pd.DataFrame, cols, last_row_is_total: bool = True):
+    """A pandas Styler (for st.dataframe) shading `cols` the same way; the
+    Total row is left unshaded and out of the ranking. Applies _safe_df."""
+    df = _safe_df(df)
+    peers = df.iloc[:-1] if last_row_is_total and len(df) else df
+    ranges = {c: heat_range(peers[c].tolist()) for c in cols if c in df.columns}
+
+    def _col(s: pd.Series) -> list[str]:
+        out = [heat_style(v, ranges[s.name]) for v in s]
+        if last_row_is_total and out:
+            out[-1] = ""
+        return out
+
+    floats = [c for c in df.columns if pd.api.types.is_float_dtype(df[c])]
+    return df.style.apply(_col, subset=list(ranges)).format(precision=2, subset=floats, na_rep="")
 
 
 def _send_feedback(run_id: str, score: float) -> None:

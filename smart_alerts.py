@@ -10,7 +10,7 @@ from config import (
     INSURANCE_EXP_ARREARS_MIN,
     RECENT_ADVANCES_MONTHS,
 )
-from utils import to_num, account_count, is_yes, recent_advances_cutoff
+from utils import to_num, account_count, is_yes, recent_advances_cutoff, insurance_only_mask
 
 
 def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -75,14 +75,10 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
 def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
     """Customer has no arrears against installment but has arrears against expenses (insurance).
     EMI is being paid but unpaid insurance charge is creating artificial delinquency."""
-    arr_inst = _to_num(df, "ARREARS AGAINST INST")
-    arr_exp  = _to_num(df, "ARREARS AGAINST EXP")
-    arrears  = _to_num(df, "Arrears / EMI")
-    mask = (arr_inst <= 0) & (arr_exp > INSURANCE_EXP_ARREARS_MIN) & (arrears > 0)
-    subset = df[mask]
+    subset = df[insurance_only_mask(df)]
     return {
         "title": "Insurance-Driven Delinquency",
-        "subtitle": "EMI paid but unpaid insurance charge causing delinquency",
+        "subtitle": f"EMI paid but unpaid insurance charge over ₹{INSURANCE_EXP_ARREARS_MIN:,} causing delinquency",
         "severity": "high",
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),

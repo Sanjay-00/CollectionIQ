@@ -50,6 +50,11 @@ table.data .matrix-hdr {{text-align:center;padding:7px 10px;font-size:10px;}}
 _INVERSE_KPIS = {"NPA %", "Hard Bucket %"}
 
 
+def _pct_or_dash(val) -> str:
+    """"12.3%", or "-" when there's no value (e.g. no previous month)."""
+    return "-" if val is None or pd.isna(val) else f"{float(val):.1f}%"
+
+
 def _esc(val) -> str:
     """Escape any string that came from the uploaded data or Gemini output before
     it enters an f-string HTML fragment. Manually-entered LCC fields (customer/
@@ -1098,7 +1103,7 @@ def _render_branch_quadrant(data: dict) -> str:
     if concern:
         header = "".join(
             f'<th style="background:#111827;color:{YELLOW};padding:9px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">{h}</th>'
-            for h in ["Rank", "Branch", "Region", "Accounts", "SMA-2%", "NPA%", "Collection%", "Strike%", "Roll Fwd%", "Chronic (3M+)", "SOH"]
+            for h in ["Rank", "Branch", "Region", "Accounts", "SMA-2%", "NPA%", "Collection%", "Strike%", "Roll Fwd%", "Not Paying 3M+", "SOH"]
         )
         rows = "".join(
             f'<tr>'
@@ -1110,8 +1115,8 @@ def _render_branch_quadrant(data: dict) -> str:
             f'<td style="padding:8px 12px;font-size:12px;">{c["NPA%"]:.1f}%</td>'
             f'<td style="padding:8px 12px;font-size:12px;">{c["Collection%"]:.1f}%</td>'
             f'<td style="padding:8px 12px;font-size:12px;">{c["Strike%"]:.1f}%</td>'
-            f'<td style="padding:8px 12px;font-size:12px;">{c["Roll Fwd%"]:.1f}%</td>'
-            f'<td style="padding:8px 12px;font-size:12px;">{c["Chronic (3M+)"]:,}</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{_pct_or_dash(c.get("Roll Fwd%"))}</td>'
+            f'<td style="padding:8px 12px;font-size:12px;">{c["Not Paying 3M+"]:,}</td>'
             f'<td style="padding:8px 12px;font-size:12px;">&#8377;{c["SOH (Cr)"]:.2f}Cr</td>'
             f'</tr>'
             for c in concern

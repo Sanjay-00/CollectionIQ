@@ -56,8 +56,8 @@ class TestHeaderAndLayout:
 class TestColourScales:
     def test_direction_follows_the_metric_and_skips_total_row(self):
         scales = _scales(_sheet(_branch_table()))
-        green, red = "63BE7B", "F8696B"
-        assert scales["D2:D4"] == (green, red)   # NPA %: higher is worse
+        green, red, white = "63BE7B", "F8696B", "FFFFFF"
+        assert scales["D2:D4"] == (white, red)   # NPA %: higher is worse, never green
         assert scales["C2:C4"] == (red, green)   # Collection %: higher is better
 
     def test_neutral_columns_get_no_colour(self):

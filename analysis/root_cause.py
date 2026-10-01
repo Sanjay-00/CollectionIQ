@@ -12,7 +12,6 @@ that every other analysis/*.py module consumes.
 """
 import io
 
-import numpy as np
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -21,16 +20,18 @@ from openpyxl.formatting.rule import ColorScaleRule
 
 from utils import (
     to_num, account_count, is_yes, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask,
-    canonical_region,
+    canonical_region, delinquency_by, attach_prev_delinquency, _unit_key, _safe_pct, order_unit_columns,
+    insurance_only_mask, bucket_from_arrears_emi as _bucket_rule,
 )
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN,
+    NOT_PAYING_3M_FLAG_COL,
     RECENT_ADVANCES_COHORT_START,
 )
 
 
-def _safe_div(num: float, den: float, scale: float = 100.0) -> float:
-    return round(float(num) / float(den) * scale, 2) if den else 0.0
+# The one "x as % of y" rule (0.0 when y is 0), shared with utils.
+_safe_div = _safe_pct
 
 
 # ── Shared flag cleaning ────────────────────────────────────────────────────
@@ -76,11 +77,14 @@ def clean_contaminated_flags(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
 
 def compute_insurance_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.DataFrame:
     """For every delinquent account (Arrears/EMI > 0), split into:
-      - insurance_only: ARREARS AGAINST INST <= 0 AND ARREARS AGAINST EXP > 0
-        (customer is current on the loan itself; a WCL/cash adjustment on the
-        insurance/expense leg clears this -- not a credit problem)
-      - installment_only: the reverse (real repayment shortfall, no expense arrears)
-      - both: genuine shortfall on both legs
+      - insurance_only: utils.insurance_only_mask (EMI paid, insurance/expense
+        arrears above config.INSURANCE_EXP_ARREARS_MIN) -- a cash/WCL
+        adjustment clears it, not a credit problem
+      - installment_only: installment arrears, no expense arrears
+      - both: shortfall on both legs
+      - other: none of the above (e.g. a small insurance charge under the
+        threshold, or only bounce/penal charges), so the four always add up
+        to every delinquent loan
     One row per group_col value (default: branch/Unit), plus the region it
     rolls up to for a report table that can show either grain."""
     required = {"Arrears / EMI", "ARREARS AGAINST INST", "ARREARS AGAINST EXP", group_col}
@@ -91,11 +95,12 @@ def compute_insurance_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.Dat
     if delinquent.empty:
         return pd.DataFrame()
 
-    inst = to_num(delinquent, "ARREARS AGAINST INST")
-    exp = to_num(delinquent, "ARREARS AGAINST EXP")
-    delinquent["_insurance_only"] = (inst <= 0) & (exp > 0)
+    inst = to_num(delinquent, "ARREARS AGAINST INST", fill=0)
+    exp = to_num(delinquent, "ARREARS AGAINST EXP", fill=0)
+    delinquent["_insurance_only"] = insurance_only_mask(delinquent)
     delinquent["_installment_only"] = (inst > 0) & (exp <= 0)
     delinquent["_both"] = (inst > 0) & (exp > 0)
+    delinquent["_other"] = ~(delinquent["_insurance_only"] | delinquent["_installment_only"] | delinquent["_both"])
 
     rows = []
     group_cols = [group_col] + (["RegionName"] if "RegionName" in df.columns and group_col != "RegionName" else [])
@@ -111,6 +116,8 @@ def compute_insurance_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.Dat
             "Installment-Only %": _safe_div(grp["_installment_only"].sum(), n),
             "Both": int(grp["_both"].sum()),
             "Both %": _safe_div(grp["_both"].sum(), n),
+            "Other": int(grp["_other"].sum()),
+            "Other %": _safe_div(grp["_other"].sum(), n),
         })
         rows.append(row)
 
@@ -128,6 +135,24 @@ HARD_STILL_PAYING = "Hard + Still Paying"
 WAS_SILENT = f"Was Silent, Now Under {HARD_BUCKET_ARREARS_EMI_MIN} EMIs"
 EARLY_DELINQUENCY = "Early Delinquency"
 ARREARS_GROUPS = [HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY]
+
+
+def add_unit_delinquency(table: pd.DataFrame, df_curr: pd.DataFrame, df_prev: pd.DataFrame | None,
+                         group_col: str = "Unit") -> pd.DataFrame:
+    """Put the unit's total Accounts before Delinquent Accounts and its
+    Delinquency% (delinquent / all its loans, from the full book, so it
+    matches Portfolio Intelligence) after, plus last month's % and the
+    change when there's a prev file."""
+    if table.empty or group_col not in table.columns or "Delinquent Accounts" not in table.columns:
+        return table
+    curr = delinquency_by(df_curr, [group_col])
+    out = table.copy()
+    hits = [curr.get((_unit_key(u),)) for u in out[group_col]]
+    out.insert(out.columns.get_loc("Delinquent Accounts"), "Accounts",
+               pd.Series([h[0] if h else None for h in hits], index=out.index, dtype="Int64"))
+    pct = [_safe_pct(h[1], h[0]) if h else None for h in hits]
+    out.insert(out.columns.get_loc("Delinquent Accounts") + 1, "Delinquency%", pd.Series(pct, index=out.index, dtype=float))
+    return attach_prev_delinquency(out, df_prev, {group_col: group_col})
 
 
 def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.DataFrame:
@@ -152,7 +177,7 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
     if delinquent.empty:
         return pd.DataFrame()
 
-    chronic = is_yes(delinquent, "No Coll 3 Months and >6 EMI") if "No Coll 3 Months and >6 EMI" in delinquent.columns else pd.Series(False, index=delinquent.index)
+    chronic = is_yes(delinquent, NOT_PAYING_3M_FLAG_COL)
     hard = to_num(delinquent, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
 
     delinquent["_chronic_hard"] = chronic & hard
@@ -182,7 +207,7 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
 
 _DRIVER_LABELS = {
     "insurance_only_share":  "Insurance-driven delinquency",
-    "chronic_share":         "Chronic non-payer buildup",
+    "chronic_share":         "Not paying for 3+ months",
     "shock_share":           "Deep arrears, still paying",
     "fleet_share":           "Fleet-operator concentration",
     "recent_vintage_share":  "Recent-advance (sourcing/underwriting) quality",
@@ -225,11 +250,9 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
         if n == 0:
             continue
 
-        inst = to_num(delinquent, "ARREARS AGAINST INST") if "ARREARS AGAINST INST" in delinquent.columns else pd.Series(0, index=delinquent.index)
-        exp = to_num(delinquent, "ARREARS AGAINST EXP") if "ARREARS AGAINST EXP" in delinquent.columns else pd.Series(0, index=delinquent.index)
-        insurance_only = ((inst <= 0) & (exp > 0)).sum()
+        insurance_only = insurance_only_mask(delinquent).sum()
 
-        chronic = is_yes(delinquent, "No Coll 3 Months and >6 EMI") if "No Coll 3 Months and >6 EMI" in delinquent.columns else pd.Series(False, index=delinquent.index)
+        chronic = is_yes(delinquent, NOT_PAYING_3M_FLAG_COL)
         hard = to_num(delinquent, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
         shock = (~chronic & hard).sum()
 
@@ -249,8 +272,17 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
         dominant_key = max(shares, key=shares.get)
 
         sc_row = region_scorecard[region_scorecard["Region"] == region]
+
+        def _sc(col):
+            # Delinquency% and last month's figures come from the region
+            # scorecard too, so they match Portfolio Intelligence exactly.
+            if sc_row.empty or col not in sc_row.columns or pd.isna(sc_row[col].iloc[0]):
+                return None
+            return float(sc_row[col].iloc[0])
+
         rows.append({
             "Region": region,
+            "Accounts": account_count(grp),
             "NPA%": float(sc_row["NPA%"].iloc[0]) if not sc_row.empty else None,
             "Δ NPA%": float(sc_row["Δ NPA%"].iloc[0]) if not sc_row.empty and sc_row["Δ NPA%"].iloc[0] is not None else None,
             "Collection%": float(sc_row["Collection%"].iloc[0]) if not sc_row.empty else None,
@@ -258,11 +290,17 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
             "Dominant Driver": _DRIVER_LABELS[dominant_key],
             "Driver Share %": round(shares[dominant_key], 1),
             "Delinquent Accounts": n,
+            "Delinquency%": _sc("Delinquency%"),
+            "Prev Delinquency%": _sc("Prev Delinquency%"),
+            "Δ Delinquency%": _sc("Δ Delinquency%"),
         })
 
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
+    if out["Prev Delinquency%"].isna().all():   # no previous file
+        out = out.drop(columns=["Prev Delinquency%", "Δ Delinquency%"])
+    out = out[order_unit_columns(out.columns, ["Region", "Status"])]
     # Worsening regions first -- that's where a manager's attention goes first.
     status_order = {"Worsening": 0, "Stable": 1, "-": 2, "Improving": 3}
     out["_sort"] = out["Status"].map(status_order).fillna(2)
@@ -279,16 +317,13 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
 _RECENT_BUCKET_ORDER = ["STD", "0-1", "1-2", "2-3", "NPA"]
 
 
+_RECENT_BUCKET_LABEL = {"1-30 DPD": "0-1", "SMA-1": "1-2", "SMA-2": "2-3"}
+
+
 def _assign_recent_bucket(arrears_emi: pd.Series) -> pd.Series:
-    v = pd.to_numeric(arrears_emi, errors="coerce")
-    return pd.Series(
-        np.select(
-            [v.isna(), v <= 0, v < 1, v < 2, v < 3],
-            ["NA", "STD", "0-1", "1-2", "2-3"],
-            default="NPA",
-        ),
-        index=arrears_emi.index,
-    )
+    """utils.bucket_from_arrears_emi (the app's one bucket rule), shown with
+    the EMI-band labels this report uses (0-1/1-2/2-3)."""
+    return _bucket_rule(arrears_emi).replace(_RECENT_BUCKET_LABEL)
 
 
 def compute_recent_advances_summary(df_curr: pd.DataFrame, cohort_start: str = RECENT_ADVANCES_COHORT_START) -> dict:
@@ -690,15 +725,14 @@ def _write_df_sheet(ws, df: pd.DataFrame, status_col: str | None = None) -> None
     ws.freeze_panes = "A2"
 
 
-# Excel's own default 3-color-scale palette (red/yellow/green) -- so this
-# reads as a native conditional format, not a custom one-off color choice.
+# White -> Excel's default red: delinquency has no "safe" level, so the
+# lowest value is plain white, never green (same rule as the app's tables).
 _COLORSCALE_RED = "F8696B"
-_COLORSCALE_YELLOW = "FFEB84"
-_COLORSCALE_GREEN = "63BE7B"
+_COLORSCALE_WHITE = "FFFFFF"
 
 
 def _apply_worst_first_colorscale(ws, n_data_rows: int, pct_col_letters: list[str]) -> None:
-    """Red (highest/worst) -> yellow -> green (lowest/best) on the given
+    """White (lowest) -> red (highest/worst) on the given
     columns, over rows 2..n_data_rows+1 -- i.e. EXCLUDING the Grand Total row,
     which callers append as the last row: an aggregate isn't a peer to rank
     against the entities it's a total of, and including it would also skew
@@ -707,8 +741,7 @@ def _apply_worst_first_colorscale(ws, n_data_rows: int, pct_col_letters: list[st
         return
     last_row = n_data_rows  # data rows are 2..(n_data_rows+1); Grand Total is row n_data_rows+1
     rule = ColorScaleRule(
-        start_type="min", start_color=_COLORSCALE_GREEN,
-        mid_type="percentile", mid_value=50, mid_color=_COLORSCALE_YELLOW,
+        start_type="min", start_color=_COLORSCALE_WHITE,
         end_type="max", end_color=_COLORSCALE_RED,
     )
     for col in pct_col_letters:
@@ -716,7 +749,7 @@ def _apply_worst_first_colorscale(ws, n_data_rows: int, pct_col_letters: list[st
 
 
 def _write_status_sheet(ws, df: pd.DataFrame) -> None:
-    """Like _write_df_sheet, plus the worst-first red->green color scale on
+    """Like _write_df_sheet, plus the worst-first white->red color scale on
     every '... %' column (Delinquent %/PNPA %/NPA %), excluding Grand Total."""
     _write_df_sheet(ws, df)
     if df.empty:

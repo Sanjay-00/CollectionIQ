@@ -7,9 +7,9 @@ import streamlit as st
 
 from ui.components import (
     _dl_btn, _safe_df, _kpi_card_html, _static_kpi_card_html,
-    _npa_pct_color, _sma2_pct_color, _chart_card, _divider, append_total_row,
-    _esc,
+    _chart_card, _divider, append_total_row, _esc, heat_range, heat_style, heat_styler,
 )
+from utils import order_unit_columns
 from ui.glossary import help_for, info_icon
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS,
@@ -45,6 +45,23 @@ def _delta_html(val, unit: str = "pp") -> str:
     color = "#dc2626" if val > 0.1 else ("#16a34a" if val < -0.1 else "#d97706")
     arrow = "▲" if val > 0.1 else ("▼" if val < -0.1 else "-")
     return f'<span style="color:{color};font-weight:700;">{arrow} {abs(val):.2f}{unit}</span>'
+
+
+def _pct_or_dash(val) -> str:
+    return " - " if val is None or pd.isna(val) else f"{val:.1f}%"
+
+
+def _total_cell(col: str, val) -> str:
+    """Total-row value: "12.3%" for a ratio column, "1,234" for a count."""
+    if val == "" or val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        if col.endswith("%"):
+            return f"{val:.1f}%"
+        if col == "SOH (Cr)":
+            return f"₹{val:.2f}Cr"
+        return f"{val:,.0f}" if float(val).is_integer() else f"{val:,.2f}"
+    return _esc(val)
 
 
 def _count_delta_html(val) -> str:
@@ -98,32 +115,43 @@ def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: boo
 
 # ── Section 2: Region Scorecard ───────────────────────────────────────────────
 
+_REGION_RISK_COLS = ("SMA-2", "SMA-2%", "NPA", "NPA%", "NPA% (SOH)", "Delinquent", "Delinquency%", "Roll Fwd%")
+# Total row: the true all-region ratio (sum / sum), never an average of rows.
+_REGION_RATIO_COLS = {"SMA-2%": ("SMA-2", "Accounts"), "NPA%": ("NPA", "Accounts"),
+                      "Delinquency%": ("Delinquent", "Accounts")}
+_PREV_DELINQ_HELP = ("Delinquency % in last month's file, for the same name as it appeared in that file "
+                     "(an executive's figure is the book they held last month).")
+_DELTA_DELINQ_HELP = "This month minus last month, in percentage points. Positive means worse."
+
 def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
     display_cols = [
-        "Region",
+        "Region", "Accounts",
         "SMA-2", "SMA-2%",
-        "NPA", "NPA%",
+        "NPA", "NPA%", "NPA% (SOH)",
         "Delinquent", "Delinquency%",
-        *( ["Δ SMA-2%", "Δ NPA%"] if has_prev else []),
+        *( ["Prev Delinquency%", "Δ Delinquency%", "Δ SMA-2%", "Δ NPA%"] if has_prev else []),
         "Collection%", "Strike%", "SOH (Cr)",
         *( ["Roll Fwd%", "Roll Bwd%"] if "Roll Fwd%" in df.columns and df["Roll Fwd%"].notna().any() else []),
         "Status",
     ]
-    display_cols = [c for c in display_cols if c in df.columns]
+    display_cols = order_unit_columns([c for c in display_cols if c in df.columns], ["Region"])
 
     th = "".join(
         f'<th style="background:#111;color:#FFC000;padding:7px 12px;font-size:11px;'
-        f'text-align:{"left" if c in ("Region","Status") else "right"};white-space:nowrap;">{c}</th>'
+        f'text-align:{"left" if c in ("Region","Status") else "right"};white-space:nowrap;">{c}'
+        f'{info_icon({"Prev Delinquency%": _PREV_DELINQ_HELP, "Δ Delinquency%": _DELTA_DELINQ_HELP}.get(c), color="#fde68a")}</th>'
         for c in display_cols
     )
 
     rows_html = ""
-    df_display = append_total_row(df[display_cols])
+    df_display = append_total_row(df[display_cols], ratio_cols=_REGION_RATIO_COLS)
     n_data_rows = len(df)
+    # Risk columns: red shading by rank within the column, never green.
+    heat = {c: heat_range(df[c].tolist()) for c in _REGION_RISK_COLS if c in df.columns}
     for i, row in df_display.iterrows():
         if i == n_data_rows:
             cells = "".join(
-                f'<td style="padding:7px 12px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;">{_esc(row[c])}</td>'
+                f'<td style="padding:7px 12px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;">{_total_cell(c, row[c])}</td>'
                 for c in display_cols
             )
             rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
@@ -140,29 +168,14 @@ def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
                 cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
             elif col == "Status":
                 cells += f'<td style="{style}">{_badge(str(val))}</td>'
-            elif col in ("Δ NPA%", "Δ SMA-2%"):
+            elif col in ("Δ NPA%", "Δ SMA-2%", "Δ Delinquency%"):
                 cells += f'<td style="{style}">{_delta_html(val)}</td>'
-            elif col == "SMA-2%":
-                c = _sma2_pct_color(val)
-                display = f"{val:.1f}%" if val is not None else " - "
-                cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
-            elif col in ("SMA-2", "NPA"):
-                c = "#ef4444" if (val or 0) > 50 else "#374151"
-                display = f"{int(val):,}" if val is not None else " - "
-                cells += f'<td style="{style}color:{c};">{display}</td>'
-            elif col == "NPA%":
-                c = _npa_pct_color(val)
-                display = f"{val:.1f}%" if val is not None else " - "
-                cells += f'<td style="{style}color:{c};font-weight:600;">{display}</td>'
-            elif col == "Delinquent":
-                c = "#d97706" if (val or 0) > 0 else "#374151"
-                display = f"{int(val):,}" if val is not None else " - "
-                cells += f'<td style="{style}color:{c};">{display}</td>'
-            elif col == "Delinquency%":
-                cells += f'<td style="{style}font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
-            elif col == "Roll Fwd%":
-                c = "#dc2626" if (val or 0) > 20 else ("#d97706" if (val or 0) > 10 else "#16a34a")
-                cells += f'<td style="{style}color:{c};font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
+            elif col == "Prev Delinquency%":
+                cells += f'<td style="{style}color:#6b7280;">{_pct_or_dash(val)}</td>'
+            elif col in heat:
+                missing = val is None or pd.isna(val)
+                display = " - " if missing else (f"{val:.1f}%" if col.endswith("%") else f"{int(val):,}")
+                cells += f'<td style="{style}{heat_style(val, heat[col])}">{display}</td>'
             elif col == "Roll Bwd%":
                 c = "#16a34a" if (val or 0) > 10 else "#d97706"
                 cells += f'<td style="{style}color:{c};font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
@@ -332,20 +345,27 @@ def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_
                 # this dashboard view deliberately does NOT show, so a column
                 # added for one consumer doesn't silently change another's.
                 _branch_display_cols = [c for c in [
-                    "Rank", "Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%",
-                    "Delinquent", "Delinquency%",
-                    "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Chronic (3M+)", "Concern Score",
+                    "Rank", "Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "NPA% (SOH)",
+                    "Delinquent", "Delinquency%", "Prev Delinquency%", "Δ Delinquency%",
+                    "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Not Paying 3M+", "Not Paying 3M+%", "Concern Score",
                 ] if c in branch_df.columns]
-                _branch_display_df = branch_df[_branch_display_cols]
+                _branch_display_df = branch_df[order_unit_columns(_branch_display_cols, ["Rank", "Branch", "Region"])]
                 _col_help = {
-                    "Chronic (3M+)": help_for("Chronic (3M+)"),
+                    "Not Paying 3M+": help_for("Not Paying 3M+"),
+                    "Not Paying 3M+%": help_for("Not Paying 3M+%"),
+                    "NPA% (SOH)": help_for("NPA% (SOH)"),
                     "Concern Score": help_for("Concern Score"),
                     "Hard Bucket%": help_for("Hard Bucket%"),
                     "Delinquent": help_for("Delinquent Accounts"),
                     "Delinquency%": "% of loans with any EMI or charge overdue (Arrears/EMI above 0).",
+                    "Prev Delinquency%": _PREV_DELINQ_HELP,
+                    "Δ Delinquency%": _DELTA_DELINQ_HELP,
                 }
+                _branch_risk_cols = ("SMA-2%", "NPA%", "Delinquent", "Delinquency%", "Hard Bucket%",
+                                     "Roll Fwd%", "Not Paying 3M+%", "NPA% (SOH)", "Concern Score")
                 st.dataframe(
-                    _safe_df(append_total_row(_branch_display_df)), use_container_width=True, hide_index=True,
+                    heat_styler(append_total_row(_branch_display_df), _branch_risk_cols),
+                    use_container_width=True, hide_index=True,
                     column_config={c: st.column_config.Column(help=h) for c, h in _col_help.items() if c in _branch_display_cols},
                 )
                 _dl_btn(_branch_display_df, "branch_quadrant.xlsx", "dl_branch_quad")
@@ -428,7 +448,10 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
             st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin:12px 0 6px;">Detailed Comparison Table</div>', unsafe_allow_html=True)
 
             identity_cols = {"region": [], "branch": ["Region"], "executive": ["Unit", "Region"]}.get(key, [])
-            show_cols = [col, *identity_cols, "Accounts", "SMA-2 (Curr)"]
+            show_cols = [col, *identity_cols, "Accounts", "Delinquent", "Delinquency%"]
+            if has_prev:
+                show_cols += ["Prev Delinquency%", "Δ Delinquency%"]
+            show_cols += ["SMA-2 (Curr)"]
             if has_prev:
                 show_cols += ["SMA-2 (Prev)"]
             show_cols += ["NPA (Curr)"]
@@ -445,6 +468,7 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
             _show_cols_present = [c for c in show_cols if c in df.columns]
             df_display = append_total_row(df[_show_cols_present])
             n_data_rows = len(df)
+            heat = {c: heat_range(df[c].tolist()) for c in ("NPA (Curr)", "SMA-2 (Curr)", "Roll Fwd%", "Delinquent", "Delinquency%") if c in df.columns}
             for i, row in df_display.iterrows():
                 if i == n_data_rows:
                     cells = "".join(
@@ -478,15 +502,16 @@ def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
                             color = "#dc2626" if val > 0 else ("#16a34a" if val < 0 else "#9ca3af")
                             arrow = "▲" if val > 0 else ("▼" if val < 0 else "-")
                             cells += f'<td style="{style}color:{color};font-weight:700;">{arrow} {abs(val):.1f}%</td>'
-                    elif c in ("NPA (Curr)",):
-                        color = "#dc2626" if (val or 0) > 20 else "#374151"
-                        cells += f'<td style="{style}color:{color};font-weight:700;">{int(val):,}</td>'
-                    elif c in ("SMA-2 (Curr)",):
-                        color = "#f97316" if (val or 0) > 20 else "#374151"
-                        cells += f'<td style="{style}color:{color};font-weight:700;">{int(val):,}</td>'
+                    elif c == "Delinquency%":
+                        cells += f'<td style="{style}{heat_style(val, heat[c])}">{_pct_or_dash(val)}</td>'
+                    elif c == "Prev Delinquency%":
+                        cells += f'<td style="{style}color:#6b7280;">{_pct_or_dash(val)}</td>'
+                    elif c == "Δ Delinquency%":
+                        cells += f'<td style="{style}">{_delta_html(val)}</td>'
+                    elif c in ("NPA (Curr)", "SMA-2 (Curr)", "Delinquent"):
+                        cells += f'<td style="{style}font-weight:700;{heat_style(val, heat[c])}">{int(val):,}</td>'
                     elif c == "Roll Fwd%":
-                        clr = "#dc2626" if (val or 0) > 20 else ("#d97706" if (val or 0) > 10 else "#16a34a")
-                        cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
+                        cells += f'<td style="{style}{heat_style(val, heat[c])}">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
                     elif c == "Roll Bwd%":
                         clr = "#16a34a" if (val or 0) > 10 else "#d97706"
                         cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
@@ -612,6 +637,7 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
     rows_html = ""
     df_display = append_total_row(df)
     n_data_rows = len(df)
+    heat = {c: heat_range(df[c].tolist()) for c in (npa_col, "NPA% (SOH)", "SMA-2%") if c in df.columns}
     for i, row in df_display.iterrows():
         if i == n_data_rows:
             cells = "".join(
@@ -627,12 +653,8 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
             val = row[col]
             align = "left" if i2 == 0 else "right"
             style = f"padding:6px 10px;font-size:12px;text-align:{align};"
-            if col == npa_col:
-                c = _npa_pct_color(val)
-                cells += f'<td style="{style}color:{c};font-weight:700;">{val:.1f}%</td>'
-            elif col == "SMA-2%":
-                c = _sma2_pct_color(val)
-                cells += f'<td style="{style}color:{c};font-weight:700;">{val:.1f}%</td>'
+            if col in heat:
+                cells += f'<td style="{style}{heat_style(val, heat[col])}">{val:.1f}%</td>'
             elif isinstance(val, float) and "%" in col:
                 cells += f'<td style="{style}">{val:.1f}%</td>'
             elif isinstance(val, float) and any(k in col for k in ("SOH", "Loan", "Avg")):
@@ -781,7 +803,7 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
     _section("Section 6: Concentration & Exposure Map", margin_top="24px")
 
     _chart_card(fig_treemap)
-    st.caption("Size = SOH (Cr). Color = NPA% (green = low risk → red = high risk). Click a region to drill into its branches.")
+    st.caption("Size = SOH (Cr). Color = NPA% (pale = lower, dark red = higher). Click a region to drill into its branches.")
 
     st.markdown("<br>", unsafe_allow_html=True)
     col_fleet, col_top = st.columns(2)
@@ -801,7 +823,7 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
             with c2:
                 st.markdown(_static_kpi_card_html("SOH", f"₹{soh:.2f}Cr", "Fleet total exposure", color="#dc2626"), unsafe_allow_html=True)
             with c3:
-                npa_color = "#dc2626" if npa_ops > 0 else "#16a34a"
+                npa_color = "#dc2626" if npa_ops > 0 else ""
                 st.markdown(_static_kpi_card_html("Operators with NPA", npa_ops, "≥1 NPA loan in fleet", color=npa_color), unsafe_allow_html=True)
             top_fleet = fleet.get("top_df", pd.DataFrame())
             if not top_fleet.empty:
@@ -829,7 +851,7 @@ def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, 
                 )
             with c3:
                 npa_count = summary.get("npa_count", 0)
-                npa_color = "#dc2626" if npa_count > 0 else "#16a34a"
+                npa_color = "#dc2626" if npa_count > 0 else ""
                 st.markdown(
                     _static_kpi_card_html("NPA Accounts", npa_count, "Already worst-case, within top 20", color=npa_color),
                     unsafe_allow_html=True,
@@ -976,7 +998,7 @@ def _render_repossession(repo_df: pd.DataFrame, df_curr: pd.DataFrame | None = N
         _dl_btn(view, "repo_by_recency.xlsx", "dl_repo_recency", full_source=df_curr)
 
     with sub_tabs[1]:
-        st.caption("Worst payment history first (LCC% ascending). Chronically non-paying accounts: least likely to self-cure.")
+        st.caption("Worst payment history first (LCC% ascending). Accounts that have paid least: least likely to catch up on their own.")
         if "LCC%" in repo_df.columns:
             view = repo_df.sort_values("LCC%", ascending=True).reset_index(drop=True)
         else:

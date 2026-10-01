@@ -78,8 +78,10 @@ LCC_DATE_MAX_YEAR = 2035
 # Easy Settlements: closing arrears below this are considered quick wins
 EASY_SETTLEMENT_MAX_ARREARS = 1_000          # ₹
 
-# Insurance Delinquency: expense arrears above this with zero inst arrears = insurance-driven
-INSURANCE_EXP_ARREARS_MIN = 5_000            # ₹
+# Insurance-only delinquency: EMI fully paid (no installment arrears) but the
+# insurance/expense arrears is above this amount. ONE rule for the Pulse card,
+# the Alert and the Root Cause split (utils.insurance_only_mask).
+INSURANCE_EXP_ARREARS_MIN = 3_000            # ₹
 
 # High Arrears: total arrears as a fraction of original loan amount
 HIGH_ARREARS_LOAN_RATIO = 0.50               # 50 %
@@ -87,15 +89,18 @@ HIGH_ARREARS_LOAN_RATIO = 0.50               # 50 %
 # Recent Advances: loans sanctioned within this window that already have delinquencies
 RECENT_ADVANCES_MONTHS = 12                  # months
 
-# Executive Scorecard: executives with fewer accounts than this are excluded from rankings
-SCORECARD_MIN_ACCOUNTS = 5
+# Executive tables (Scorecard, NPA & SMA-2 comparison, Recovery leaderboard):
+# executives with fewer accounts than this are left out, so every executive
+# table lists the same people. (Overdue vs Month Demand keeps its own, stricter
+# floor below.)
+MIN_ACCOUNTS_EXECUTIVE = 5
+SCORECARD_MIN_ACCOUNTS = MIN_ACCOUNTS_EXECUTIVE
 
 #  Portfolio Intelligence group-size thresholds ───────────────────────────────
 # A group below its threshold is excluded from that breakdown table entirely
 # (too few accounts for the %/ratio to be statistically meaningful).
 
-# Region/Branch/Executive dimension breakdowns (NPA-SMA2 comparison, branch
-# quadrant, executive recovery leaderboard)
+# Region/Branch breakdowns (NPA-SMA2 comparison, branch quadrant)
 MIN_ACCOUNTS_DIMENSION_BREAKDOWN = 3
 
 # Vehicle segment / fuel type breakdowns. _group_npa_table keeps a group when
@@ -160,6 +165,14 @@ HARD_BUCKET_ARREARS_EMI_MIN = 6
 # Repossession Priority List: eligible accounts must have been sanctioned
 # within this many months (older loans have less collateral value left)
 REPOSSESSION_WINDOW_MONTHS = 18
+# ...in one of these buckets...
+REPOSSESSION_BUCKETS = ("SMA-2", "NPA")
+# ...and not already seized and sold (Loan Status "S&S").
+REPOSSESSION_EXCLUDE_STATUSES = ("S&S",)
+
+# "Not paying 3M+": the LCC flag for no payment in 3 months with more than
+# HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue.
+NOT_PAYING_3M_FLAG_COL = "No Coll 3 Months and >6 EMI"
 
 # Portfolio Pulse "NOV'25 Onward Delinquency" KPI: a fixed cohort-start date
 # (NOT a rolling window relative to the report month, unlike
@@ -204,8 +217,9 @@ GOOD_BAD_REGION_DELTA_PP = 0.5
 CONCERN_SCORE_BAD_THRESHOLD = 60
 CONCERN_SCORE_GOOD_THRESHOLD = 35
 
-# Branch Concern Score component weights - must sum to 1.0
-CONCERN_SCORE_WEIGHTS = {"NPA%": 0.45, "Hard Bucket%": 0.25, "Roll Fwd%": 0.2, "Chronic (3M+)": 0.1}
+# Branch Concern Score component weights - must sum to 1.0. Every component
+# is a rate (% of the branch's accounts), so branch size doesn't bias it.
+CONCERN_SCORE_WEIGHTS = {"NPA%": 0.45, "Hard Bucket%": 0.25, "Roll Fwd%": 0.2, "Not Paying 3M+%": 0.1}
 
 # Risk Indicators (Is the Risk Profile Changing?): a % indicator moving less
 # than this (pp) is "Stable" rather than Improving/Worsening
