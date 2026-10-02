@@ -21,7 +21,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 from utils import (
     to_num, account_count, is_yes, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask,
     canonical_region, delinquency_by, attach_prev_delinquency, _unit_key, _safe_pct, order_unit_columns,
-    insurance_only_mask, bucket_from_arrears_emi as _bucket_rule,
+    insurance_only_mask, bucket_from_arrears_emi as _bucket_rule, parse_date_columns,
 )
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN,
@@ -476,6 +476,9 @@ def load_daily_missed_feed(file) -> tuple[pd.DataFrame | None, str | None]:
         return None, f"Could not read file: {e}"
     if best is None:
         return None, "Could not find a sheet with a Loan No column (expected 'LOAN NO') in this file."
+    # Same date conversion as the LCC upload (.xlsb lists store dates as
+    # serial numbers like 46236).
+    best, _ = parse_date_columns(best)
     return best, None
 
 

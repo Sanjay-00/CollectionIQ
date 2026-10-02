@@ -10,6 +10,7 @@ import plotly.io as pio
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS,
     RECENT_ADVANCES_MONTHS, REGION_NAME_ALIASES, INSURANCE_EXP_ARREARS_MIN, NOT_PAYING_3M_FLAG_COL,
+    KNOWN_DATE_COLUMNS, NOT_DATE_COLUMNS, DATE_COLUMN_MIN_PARSED_SHARE,
 )
 from dateutil.relativedelta import relativedelta
 
@@ -188,6 +189,47 @@ def _parse_text_dates(col: pd.Series) -> pd.Series:
             warnings.filterwarnings("ignore", message="Could not infer format")
             result.loc[todo] = pd.to_datetime(text[todo], errors="coerce", dayfirst=day_first)
     return result
+
+_DATE_NAME_RE = re.compile(r"(?:^|[^A-Z])DATE(?:[^A-Z]|$)|(?:^|[\s_])DT$", re.IGNORECASE)
+
+
+def is_date_column_name(name) -> bool:
+    """A column whose name says it holds dates: the word "date" ("Last
+    Received Date", "NPA_DATE", "AG DATE"; not "UPDATED_BY"), a camel-case
+    "...Date" ("NpaDate"), or a trailing "DT" ("NPA DT"), minus
+    config.NOT_DATE_COLUMNS ("Due Dt")."""
+    n = str(name).strip()
+    if n.upper() in {c.upper() for c in NOT_DATE_COLUMNS}:
+        return False
+    return bool(_DATE_NAME_RE.search(n) or re.search(r"[a-z]Date", n))   # also "NpaDate", "LastRecDate"
+
+
+def parse_date_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Convert every date column to a real date, whatever the file stored
+    (Excel serial, text, or date): config.KNOWN_DATE_COLUMNS always, plus any
+    column is_date_column_name finds. Dates outside LCC_DATE_MIN_YEAR..
+    LCC_DATE_MAX_YEAR become blank (e.g. a rupee amount in a date column).
+    Returns (df, warnings) -- one warning per column with >5% unreadable
+    values, or per name-matched column left unconverted because most of its
+    values aren't dates."""
+    warnings_out: list[str] = []
+    known = {c.upper() for c in KNOWN_DATE_COLUMNS}
+    for col in [c for c in df.columns if str(c).upper() in known or is_date_column_name(c)]:
+        parsed, failures, non_blank = _parse_date_column(df[col])
+        implausible = parsed.notna() & ~parsed.dt.year.between(LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR)
+        failures += int(implausible.sum())
+        parsed = parsed.where(~implausible, pd.NaT)
+        if str(col).upper() not in known and non_blank and (non_blank - failures) / non_blank < DATE_COLUMN_MIN_PARSED_SHARE:
+            warnings_out.append(f"{col}: looks like a date column by name, but most values aren't dates, so it was left as-is.")
+            continue
+        df[col] = parsed
+        if non_blank and failures / non_blank > 0.05:
+            warnings_out.append(
+                f"{col}: {failures} of {non_blank} value(s) could not be "
+                f"parsed as valid dates (showing blank instead of a wrong date)."
+            )
+    return df, warnings_out
+
 
 # Columns that MUST exist for calculations to work
 CRITICAL_COLS = [
@@ -622,39 +664,14 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             f"Missing critical column(s): {', '.join(missing_critical)}"
         ]
 
-    date_parse_warnings = []
-    for date_col in ["Ag_Date", "Last Receipt Date", "ParentLDueDate"]:
-        if date_col not in df.columns:
-            continue
-        df[date_col], unexpected_failures, total_non_blank = _parse_date_column(df[date_col])
-
-        # Business-plausibility bound, applied AFTER per-cell parsing regardless
-        # of which strategy produced a given cell: a stray numeric value that
-        # isn't actually a date (e.g. a rupee amount that ended up in this
-        # column in the source extract) can be numerically small enough to
-        # parse into a "valid" but nonsense Timestamp (e.g. year 2170) without
-        # ever overflowing pandas' Timestamp range, so the crash-prevention
-        # bound inside _parse_date_column doesn't catch it. Reject anything
-        # outside a real loan portfolio's plausible date range instead of
-        # letting a wrong-but-well-formed date reach business logic (e.g. Last
-        # Receipt Date feeds "paid this month" AI Query filters directly).
-        implausible = df[date_col].notna() & ~df[date_col].dt.year.between(LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR)
-        unexpected_failures += int(implausible.sum())
-        df[date_col] = df[date_col].where(~implausible, pd.NaT)
-
-        # Safety net for whatever edge case NEITHER this function nor its 3
-        # known predecessors anticipated: surface it as a visible warning (same
-        # pattern as missing_optional_cols below) instead of it silently
-        # vanishing into the data a 4th time. Threshold on the FRACTION of
-        # originally non-blank cells that failed, not a raw count, so this
-        # scales correctly from a 400-row sample file to a 60k-row production
-        # one, and never fires on a column that's just legitimately sparse
-        # (e.g. Last Receipt Date on loans with no payment yet).
-        if total_non_blank > 0 and unexpected_failures / total_non_blank > 0.05:
-            date_parse_warnings.append(
-                f"{date_col}: {unexpected_failures} of {total_non_blank} value(s) could not be "
-                f"parsed as valid dates (showing blank instead of a wrong date)."
-            )
+    # Every date column (the known three plus any column named like a date,
+    # e.g. "Last Received Date" / "NPA_DATE"): Excel serials, text and real
+    # dates all become one date type. A wrong-but-well-formed date (a rupee
+    # amount that parses as year 2170) is blanked by the plausible-year bound,
+    # since e.g. Last Receipt Date feeds "paid this month" AI Query filters.
+    # More than 5% unreadable values in a column -> a visible warning, so a
+    # new kind of bad value never silently vanishes into the data.
+    df, date_parse_warnings = parse_date_columns(df)
     df.attrs["date_parse_warnings"] = date_parse_warnings
 
     # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number

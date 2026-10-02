@@ -72,6 +72,18 @@ QUERY_LOG_RETENTION_DAYS = int(os.environ.get("COLLECTIONIQ_QUERY_LOG_RETENTION_
 LCC_DATE_MIN_YEAR = 1990
 LCC_DATE_MAX_YEAR = 2035
 
+# Date columns. These are always converted to dates on upload (Excel serial
+# numbers like 46236, text like 15/08/2026, or real dates -> one date type)...
+KNOWN_DATE_COLUMNS = ("Ag_Date", "Last Receipt Date", "ParentLDueDate")
+# ...and so is any OTHER column whose name contains the word "date" or ends in
+# "DT" (e.g. "Last Received Date", "NPA_DATE", "AG DATE", "NPA DT"), unless
+# it's listed here. "Due Dt" is the EMI due DAY (5, 10, 15...), not a date.
+NOT_DATE_COLUMNS = ("Due Dt",)
+# A column found by name is converted only if at least this share of its
+# non-blank values are real dates; otherwise it's left as-is (a mislabelled
+# column is never blanked) and a warning is shown.
+DATE_COLUMN_MIN_PARSED_SHARE = 0.5
+
 #  Smart Alert thresholds ────────────────────────────────────────────────────
 # Tune these to adjust sensitivity without touching business logic code.
 
