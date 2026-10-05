@@ -425,8 +425,7 @@ def _exec_name(key) -> str:
 # Single source of truth for "a branch carries Region; an executive carries
 # Branch+Region" -- compute_overdue_demand_scorecard's own output shape below.
 # Its three consumers (the dashboard table in ui/tabs/portfolio_intelligence.py,
-# the report section in report_agent/sections/overdue_demand.py, and the report
-# renderer in report_agent/nodes/report_builder.py) used to each hardcode their
+# and the monthly report (report_agent/story.py)) used to each hardcode their
 # own copy of this exact mapping -- correct, but three independently-maintained
 # copies (with inconsistent Title-case/lowercase casing between them) that a
 # future 4th grain or a rename would need to update in lockstep with nothing

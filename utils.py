@@ -1138,6 +1138,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     _zero = {
         "Month Demand": 0.0, "Total Collection": 0.0, "Collection %": 0.0,
         "Strike %": 0.0, "NPA %": 0.0, "NPA % (SOH)": 0.0, "Hard Bucket %": 0.0, "SMA-2 %": 0.0,
+        "Delinquency %": 0.0,
         "Count": 0, "SOH": 0.0, "LCC%": 0.0, "CMD %": 0.0,
     }
 
@@ -1163,6 +1164,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         npa_soh_pct = float(m["NPA% (SOH)"])
         sma2_pct = float(m["SMA-2%"])
         hard_pct = float(m["Hard Bucket%"])
+        delinq_pct = float(m["Delinquency%"])
         _cum_due = sum(
             pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
             for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns
@@ -1194,6 +1196,7 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             "NPA %": npa_pct,
             "NPA % (SOH)": npa_soh_pct,
             "Hard Bucket %": hard_pct,
+            "Delinquency %": delinq_pct,
             "SMA-2 %": sma2_pct,
             "Count": n_accounts,
             "SOH": pos,

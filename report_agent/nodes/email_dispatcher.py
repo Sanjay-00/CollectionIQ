@@ -4,7 +4,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from report_agent.state import ReportState
 
 
 def send_report_email(html_report: str, to_addr: str, curr_month: str) -> tuple[bool, str]:
@@ -57,11 +56,3 @@ def send_report_email(html_report: str, to_addr: str, curr_month: str) -> tuple[
         return True, ""
     except Exception as e:
         return False, str(e)
-
-
-def email_dispatcher_node(state: ReportState) -> ReportState:
-    """Send the HTML report via SMTP. Skips silently if SMTP_HOST is not configured."""
-    sent, error = send_report_email(
-        state.get("html_report", ""), state.get("email_to", ""), state.get("curr_month", ""),
-    )
-    return {**state, "email_sent": sent, "email_error": error}

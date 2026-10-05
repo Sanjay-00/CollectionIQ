@@ -63,7 +63,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 ![Landing Page](docs/screenshots/01-landing.png)
 &nbsp;
 
-**Dashboard: KPIs and portfolio health with Month-on-Month movement**
+**Dashboard: a one-page summary of the portfolio: KPIs vs last month, what changed and where, early warning, league tables, new business, alerts and what to do first, each linking to its detail tab**
 
 ![Dashboard](docs/screenshots/02-dashboard.png)
 &nbsp;
@@ -78,7 +78,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 ![Alerts](docs/screenshots/04-alerts.png)
 &nbsp;
 
-**Bucket Migration: Roll-forward / roll-backward rates and the prev-month → curr-month migration matrix**
+**Bucket Migration: who slipped this month (new defaulters, 1-30 → SMA-1 and onward) by loans and by SOH, where it's happening, and the loans to call first**
 
 ![Migration](docs/screenshots/05-migration.png)
 &nbsp;
@@ -194,7 +194,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 </table>
 &nbsp;
 
-**Monthly Portfolio Intelligence Report: board-ready HTML report with narrative, rankings and action plan**
+**Monthly Report: Regional / Leadership / Branch versions as HTML, PDF and an Excel annex**
 
 ![Report](docs/screenshots/20-report.png)
 &nbsp;
@@ -222,7 +222,9 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 
 **Field Executive Performance Scorecard** : Every executive ranked by collection %, strike rate, NPA count, SMA-2 count, and bucket roll rates using quartile-based tiers relative to the current portfolio. Toggle the ranking metric between Collection % and Strike % to see who's actually current on installment obligation this month, not just who collected the most.
 
-**Bucket Migration Analysis** : Two months of data reveal exactly how accounts moved between DPD buckets, the NPA formation rate, and which executives are improving or deteriorating.
+**Dashboard Summary** : The first tab reads like a monthly review: KPIs against last month, the regions and branches that moved most, early-warning slips with a next-month forecast, a league table for any metric (worst or best, with last month's rank), new business, alert counts, and a "what to do first" list with call lists that show the columns proving why each loan is on them. Every section links to its detail tab.
+
+**Roll Analysis by Count and SOH** : Two months of data show which loans moved between DPD buckets, measured both by number of loans and by last month's SOH, so a few large loans slipping are never hidden. The early steps get the most attention: new defaulters (STD last month, behind now) and 1-30 DPD loans slipping to SMA-1, by region, branch and executive, with the loans to call.
 
 **6 Smart Risk Alerts** : Pure pandas, no LLM, always accurate:
 
@@ -237,7 +239,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 
 **SOH as the True Exposure Metric** : Uses Sum of Hire (POS + Closing Arrears) instead of POS alone. For MAT and S&S accounts where POS = 0, SOH correctly reflects what is actually owed.
 
-**Monthly Portfolio Intelligence Report** : Board-ready, fully self-contained HTML report built from up to **22 independently toggleable sections**, verdict-first so a lead reads the AI narrative and five-point action plan before scrolling into supporting detail. Beyond branch and executive league tables, it includes embedded charts (bucket-distribution waterfall, region→branch concentration treemap, Collection% vs NPA% branch quadrant), month-over-month NPA/SMA-2 movement broken out by region/branch/executive, early-warning risk indicators, segment-wise NPA breakdown, top at-risk accounts, fleet exposure, repossession candidates, a good-customer retention list, new-advances originations and trend, overdue-vs-demand collection performance, and a rescued-vs-slipped executive recovery leaderboard, every number pulled from the same `analysis/` functions the dashboard tabs use, so a report figure and a dashboard figure never disagree. Email-safe layout. Generate once, send to any number of recipients without regenerating.
+**Monthly Report** : Built for the people it goes to: **Regional** (default, for regional managers), **Leadership** (2 to 3 pages) and **Branch** (one branch's executives and call lists). It opens with plain-sentence findings worked out from the data by fixed rules, then the scoreboard, early warning and forecast, league tables, needs attention, why it's happening, alerts and priorities. Nine optional detail sections (repossession, fleet, good customers, segments, overdue vs demand and more) can be added. One report model is rendered as **email-safe HTML, PDF and an Excel annex** (every table in full plus every call list), so the three never disagree. **Branch packs** zip one PDF and annex per branch for a regional manager to send on. An optional AI paragraph (off by default) only rewrites the findings; any number it writes that isn't in the data gets it dropped.
 &nbsp;
 
 
@@ -259,7 +261,7 @@ With CollectionIQ, the same question is answered in under 30 seconds by the lead
 
 ## Architecture
 
-CollectionIQ runs two independent AI pipelines orchestrated with LangGraph, one for answering queries in real time, one for generating the monthly portfolio report.
+CollectionIQ has one AI pipeline, orchestrated with LangGraph, for answering questions in real time. Everything else (dashboard, alerts, roll analysis, the monthly report) is deterministic pandas over one shared set of metric definitions, so a number is the same in every tab and every report.
 &nbsp;
 
 ### AI Query Pipeline
@@ -315,40 +317,48 @@ The step-plan engine (`agents/plan_executor.py`) exists because a single GROUP B
 The vocabulary the Logical Planner picks from lives in `registry/`: `ontology.py` defines named filter concepts (for example easy settlement, co-lending at risk) and named metrics (including registered percentage metrics like strike rate and hard bucket percentage), `semantic_model.py` defines the grain entities (loan, customer, executive, branch, region) and group-by dimensions, and `views.py` defines the pre-built fast-path views (executive scorecard, roll-rate matrix, top delinquent accounts, and more) that let a common question skip the general compiler entirely and return an answer that is numerically identical to what the dashboard tabs already show.
 
 &nbsp;
-### Report Pipeline
+### Report
 
-Triggered on demand. Runs fully autonomously, with no user input needed after clicking Generate. Only **one** Gemini call happens in the entire pipeline; everything else, including the 22 report sections, is pandas reusing the same `analysis/` functions the dashboard already trusts.
+Triggered on demand; no AI is needed. The report is first built as a **model** (an ordered list of headings, findings, KPI rows and tables) from the same engines the dashboard uses, then rendered three ways, so HTML, PDF and Excel always say the same thing.
 
-<sup>🟠 Gemini call &nbsp;·&nbsp; 🟢 deterministic, no LLM &nbsp;·&nbsp; ⚪ entry / delivery</sup>
+<sup>🟠 optional Gemini call &nbsp;·&nbsp; 🟢 deterministic, no LLM &nbsp;·&nbsp; ⚪ entry / delivery</sup>
 
 ```mermaid
 flowchart TD
-    Trigger(["🖱 Generate Monthly Report"]) --> PA
+    Trigger(["🖱 Generate report
+Regional · Leadership · Branch"]) --> ST
+    ST["🟢 Story
+report_agent/story.py
 
-    subgraph RP ["  Report Pipeline · LangGraph  "]
-        direction TB
-        PA["🟢 Portfolio Analyzer\nPandas\n\nComputes up to 22 toggleable report sections\nHealth · Verdict · Risk signals · Bucket & NPA movement\nEmbedded charts · Region/segment breakdowns · New advances\nAccount lists · Branch & executive leaderboards"]
-        RN["🟠 Risk Narrator\nGemini 2.5 Flash-Lite\n\nWrites 6-8 bullet-point executive narrative\nGenerates 5 prioritized action items with owner and timeline"]
-        RB["🟢 Report Builder\nPython\n\nAssembles fully self-contained HTML report\nTable-based layout · Email-safe · No external CSS"]
-        ED["⚪ Email Dispatcher\nSMTP\n\nSends report as body and attachment\nFires only if SMTP is configured in .env"]
-        PA --> RN --> RB --> ED
-    end
-
-    RB --> DL["⬇ Download HTML Report"]
-    ED --> EM["📧 Email to Configured Recipients"]
+Findings by fixed rules · Scoreboard · Early warning + forecast
+League tables · Needs attention · Why · Alerts · Priorities
++ optional detail sections"]
+    ST --> AI["🟠 AI wording (optional, off by default)
+Rewrites the findings; dropped if any
+number isn't in the data"]
+    ST --> R["🟢 Renderers
+report_agent/render.py"]
+    AI --> R
+    R --> H["⬇ HTML (email-safe)"]
+    R --> P["⬇ PDF"]
+    R --> X["⬇ Excel annex
+all tables in full + call lists"]
+    H --> EM["📧 SMTP, if configured"]
+    ST --> PK["⬇ Branch packs (ZIP)
+one PDF + annex per branch"]
 
     classDef llm fill:#FDEBD3,stroke:#C1611D,color:#7A3D0F,stroke-width:1.4px;
     classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
     classDef neutral fill:#E7EAF0,stroke:#5B6B7F,color:#37414F,stroke-width:1.4px;
-    class RN llm;
-    class PA,RB det;
-    class Trigger,ED,DL,EM neutral;
+    class AI llm;
+    class ST,R det;
+    class Trigger,H,P,X,EM,PK neutral;
 ```
 
 &nbsp;
 ### Data Layer
 
-Both pipelines operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine. Because the dashboard, the query pipeline, and the report all read this one cached DataFrame through the same `analysis/` functions, a number shown in one place is the same number shown everywhere else.
+The query pipeline, the dashboard and the report all operate on the same in-memory DataFrame loaded from the Excel upload. No database, no cloud storage. Data never leaves the machine. Because the dashboard, the query pipeline, and the report all read this one cached DataFrame through the same `analysis/` functions, a number shown in one place is the same number shown everywhere else.
 
 ```mermaid
 flowchart LR
@@ -357,7 +367,7 @@ flowchart LR
     BK --> KPI["KPI Computation\nCollection % · SOH · Arrears · MoM delta"]
     KPI --> DF[("💾 In-Memory\nDataFrame")]
     DF --> QP2["Query Pipeline"]
-    DF --> RP2["Report Pipeline"]
+    DF --> RP2["Dashboard and Report"]
     DF --> DB["Dashboard\nKPIs · Charts · Alerts · Scorecard"]
 
     classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
@@ -402,24 +412,27 @@ CollectionIQ/
 │   └── views.py                    # Fast-path pre-built view catalog
 │
 ├── analysis/
-│   ├── portfolio_intelligence.py   # Pulse KPIs, top accounts, fleet, risk indicators, and more
+│   ├── portfolio_intelligence.py   # Region/branch/product tables, fleet, top accounts, and more
 │   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
-│   └── roll_rate.py                # Bucket migration matrix and roll-rate KPIs
+│   ├── roll_rate.py                # Bucket migration matrix and roll-rate KPIs
+│   ├── roll_flow.py                # Roll steps by count and SOH, by region/branch/executive
+│   ├── root_cause.py               # Why delinquency moves: insurance split, paying vs not
+│   ├── action_center.py            # Findings, focus list, forecast, needs attention, call lists
+│   └── summary.py                  # Dashboard summary: moves, league tables, business, alerts
 │
 ├── ui/
 │   ├── tabs/                       # One module per dashboard tab, incl. ai_query.py, investigator.py
-│   ├── components.py               # Shared KPI cards, download buttons, safe table rendering
+│   ├── action_overview.py          # The Dashboard summary sections
+│   ├── components.py               # Shared KPI cards, download buttons, shading, safe tables
+│   ├── glossary.py                 # Plain-language definitions behind every ⓘ
 │   └── landing.py                  # Upload page and sample-data loader
 │
 ├── report_agent/
-│   ├── graph.py                    # Report pipeline (LangGraph)
-│   ├── charts.py                   # Plotly figure -> embedded base64 PNG (kaleido)
-│   ├── sections/                   # 22 independently toggleable report sections,
-│   │                               #   each a thin wrapper around an analysis/ function
+│   ├── story.py                    # The report model: presets and optional sections
+│   ├── render.py                   # Model -> HTML, PDF (reportlab) and Excel annex
+│   ├── packs.py                    # Branch packs: one report per branch, zipped
+│   ├── ai_summary.py               # Optional AI wording with a numbers check
 │   └── nodes/
-│       ├── portfolio_analyzer.py   # Dispatches enabled_sections to sections/
-│       ├── risk_narrator.py        # AI executive narrative and action plan
-│       ├── report_builder.py       # Assembles the verdict-first, email-safe HTML report
 │       └── email_dispatcher.py     # SMTP delivery
 │
 ├── sample_data/
@@ -436,12 +449,13 @@ CollectionIQ/
 | Layer | Technology | Role |
 |---|---|---|
 | UI and Dashboard | Streamlit | Interactive web interface, session state, multi-file upload |
-| AI Models | Google Gemini 2.5 Flash-Lite | All LLM agents across both pipelines (query and report) |
+| AI Models | Google Gemini 2.5 Flash-Lite | The query pipeline, the Investigator, and the optional report wording |
 | Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, fast-path views, and clarification |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
-| Charts | Plotly + Kaleido | Interactive dashboard charts; Kaleido renders three of them to embedded PNG for the HTML report |
+| Charts | Plotly | Interactive charts in the app and the dashboard HTML export |
+| Report Formats | reportlab · openpyxl | The monthly report as PDF, and its Excel annex |
 | AI SDK | google-genai | Gemini API via one shared client: per-request timeout, exponential-backoff retry on transient errors only (rate limits, server/network failures), fail-fast on permanent ones |
-| Report Delivery | Python smtplib | SMTP email with HTML body and attachment |
+| Report Delivery | Python smtplib | SMTP email with the HTML report as body and attachment |
 | Observability | LangSmith | Query tracing and result quality feedback |
 | Excel Formats | openpyxl · xlrd · pyxlsb | Handles .xlsx, .xls, and .xlsb with serial-date correction |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |

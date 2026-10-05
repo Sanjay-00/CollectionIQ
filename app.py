@@ -132,7 +132,7 @@ if generate and curr_file:
     # defaulting to "All". Popping the widget keys here forces every filter
     # back to "All" on every fresh upload, not just when the old value
     # happens to be absent from the new file.
-    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result", "_last_filter_key",
+    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "rpt2", "rpt2_packs", "_last_filter_key",
                "_sample_loaded", "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key",
                "sel_date_from_key"]:
         st.session_state.pop(_k, None)
@@ -413,7 +413,8 @@ df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, data_version, sel_re
 _filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}|{sel_date_from}"
 if st.session_state.get("_last_filter_key") != _filter_key:
     st.session_state.pop("ai_result", None)
-    st.session_state.pop("report_result", None)
+    st.session_state.pop("rpt2", None)
+    st.session_state.pop("rpt2_packs", None)
     st.session_state.pop("investigator_threads", None)
     st.session_state.pop("investigator_active_thread", None)
     st.session_state["_last_filter_key"] = _filter_key
@@ -479,7 +480,7 @@ n_alerts = sum(1 for a in alerts if a["count"] > 0)
 # match the previously-selected option string and silently deselect it.
 # The count is shown as a caption next to the selector instead.
 
-_TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence", "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
+from ui.components import TAB_LABELS as _TAB_LABELS
 
 active = st.segmented_control(
     "Section", options=_TAB_LABELS, default=_TAB_LABELS[0], key="_active_section", label_visibility="collapsed",
@@ -583,12 +584,14 @@ def _tab_error(name: str, exc: Exception) -> None:
 
 if active == "🗂️ Dashboard":
     try:
+        if not alerts_prev and len(df_prev) > 0:
+            alerts_prev = _cached_alerts(df_prev, data_version, sel_region, sel_branch, sel_status, _seg_t, "prev", prev_month, sel_date_from)
         render_dashboard_tab(
             df_curr, df_prev, metrics, curr_month,
             sel_region, sel_branch, sel_status,
             alerts, scorecard_df, rr_meta,
             fig_status, fig_branch, fig_closing,
-            data_version=data_version, segment=_seg_t,
+            data_version=data_version, segment=_seg_t, date_from=sel_date_from, alerts_prev=alerts_prev,
         )
     except Exception as _e:
         _tab_error("Dashboard", _e)

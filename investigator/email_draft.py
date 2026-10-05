@@ -53,7 +53,7 @@ def build_priority_email_html(
 ) -> str:
     """A plain, self-contained HTML email body. Every manually-typed LCC
     field (Cust Name, MNT NAME, branch_name itself) is escaped via _esc --
-    same discipline report_agent/nodes/report_builder.py's _esc() convention
+    same discipline report_agent/render.py's html.escape convention
     already follows, since an unescaped "&"/"<"/">" in a free-typed field
     breaks the surrounding table markup (CLAUDE.md documents this exact
     class of issue for the report's own HTML rendering). category_label

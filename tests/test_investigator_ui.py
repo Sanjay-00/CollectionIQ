@@ -310,7 +310,7 @@ class TestDeriveEntityKey:
 
 class TestTopActiveAlerts:
     """The proactive opening message's own filter/sort -- mirrors
-    report_agent/sections/risk_flags.py::compute_risk_flags's severity
+    analysis/summary.py::alert_snapshot's severity
     ranking exactly (critical > high > medium, then count descending),
     but operates on an ALREADY-COMPUTED alerts list (app.py's own cached
     run_all_alerts call, reused rather than re-run) instead of recomputing

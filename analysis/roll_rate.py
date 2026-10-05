@@ -146,11 +146,22 @@ def compute_bucket_roll_summary(matrix: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
+_VALUE_FORMAT = {
+    # value_kind: (cell text, hover label)
+    "count": (lambda v: f"{int(v):,}", "Accounts"),
+    "pct":   (lambda v: f"{v:.1f}%", "Share of row"),
+    "soh":   (lambda v: f"₹{v:,.2f} Cr", "Last month's SOH"),
+}
+
+
+def build_roll_rate_heatmap(matrix: pd.DataFrame, value_kind: str = "count") -> go.Figure:
     """
     Annotated Plotly heatmap of the migration matrix.
     Diagonal = stable (neutral). Above diagonal = deterioration (red). Below = improvement (green).
+    value_kind: "count" (loans), "pct" (% of each row) or "soh" (₹ Cr), which
+    only changes how the cells are written; the colour logic is the same.
     """
+    fmt, hover_label = _VALUE_FORMAT[value_kind]
     buckets = [b for b in VALID_BUCKETS if b in matrix.index and b in matrix.columns]
     z_values = matrix.loc[buckets, buckets].values.tolist()
     total = sum(sum(row) for row in z_values) or 1
@@ -167,7 +178,7 @@ def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
             curr_score = BUCKET_SCORE.get(col_bucket, 0)
             direction = curr_score - prev_score   # positive = worsened, negative = improved
             row_color.append(direction * (count / total * 100))
-            row_text.append(str(int(count)))
+            row_text.append(fmt(count))
         color_matrix.append(row_color)
         text_matrix.append(row_text)
 
@@ -190,7 +201,7 @@ def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
             [1.0,  "#991b1b"],   # dark red (severe worsening)
         ],
         showscale=False,
-        hovertemplate="From %{y}<br>To %{x}<br>Accounts: %{text}<extra></extra>",
+        hovertemplate=f"From %{{y}}<br>To %{{x}}<br>{hover_label}: %{{text}}<extra></extra>",
     ))
     fig.update_layout(
         title=dict(text="Bucket Migration Matrix (Prev Month → Curr Month)", font=dict(size=14, color="#000")),

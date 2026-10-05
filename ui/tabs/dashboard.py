@@ -1,20 +1,21 @@
-from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 
 from utils import build_html_export, fmt_value
-from ui.components import _kpi_card_html, _chart_card, _divider, _cached_html_export
+from ui.components import _kpi_card_html, _divider
+from ui.action_overview import render_summary
 
 _KIND = {
     "Month Demand": "money", "Total Collection": "money", "Collection %": "pct",
     "Strike %": "pct", "NPA %": "pct", "NPA % (SOH)": "pct", "Hard Bucket %": "pct", "SMA-2 %": "pct",
-    "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct",
+    "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct", "Delinquency %": "pct",
 }
-_KPI_TOP      = ["Month Demand", "Total Collection", "Collection %", "Strike %", "NPA %", "Hard Bucket %"]
-_KPI_BOT      = ["Count", "NPA % (SOH)", "CMD %"]
-_KPI_EXPOSURE = ["SOH"]
-_INVERSE_MOM  = {"NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %"}
+# Scoreboard rows. CMD % stays in the HTML export but off the screen until
+# its business definition is confirmed.
+_KPI_COLLECTIONS = ["Month Demand", "Total Collection", "Collection %", "Strike %", "LCC%"]
+_KPI_RISK        = ["Count", "SOH", "Delinquency %", "SMA-2 %", "NPA %", "NPA % (SOH)", "Hard Bucket %"]
+_INVERSE_MOM     = {"NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Delinquency %"}
 
 
 def _kpi_row(keys: list, metrics: dict, count_deltas: dict | None = None) -> None:
@@ -53,61 +54,18 @@ def render_dashboard_tab(
     fig_closing,
     data_version: int = 0,
     segment: tuple = (),
+    date_from=None,
+    alerts_prev: list | None = None,
 ) -> None:
-    # ── KPIs ────────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-label">Key Performance Indicators</div>', unsafe_allow_html=True)
-    _kpi_row(_KPI_TOP, metrics, count_deltas={"NPA %": _npa_count_delta(df_curr, df_prev)})
+    # ── Scoreboard: collections, then book and risk ──────────────────────────
+    st.markdown('<div class="section-label">Collections</div>', unsafe_allow_html=True)
+    _kpi_row(_KPI_COLLECTIONS, metrics)
+    st.markdown('<div class="section-label" style="margin-top:14px;">Book and Risk</div>', unsafe_allow_html=True)
+    _kpi_row(_KPI_RISK, metrics, count_deltas={"NPA %": _npa_count_delta(df_curr, df_prev)})
 
-    # ── Charts ──────────────────────────────────────────────────────────────
-    # fig_status/fig_branch/fig_closing are now built once in app.py's
-    # cached pipeline (_cached_dashboard_charts), not rebuilt here on every
-    # rerun -- see that function's docstring for why.
-    st.markdown('<div class="section-label">Portfolio Analysis</div>', unsafe_allow_html=True)
-
-    col_bar, col_hbar, col_lcc = st.columns([2, 2, 1])
-    with col_bar:
-        _chart_card(fig_status)
-    with col_hbar:
-        _chart_card(fig_branch)
-    with col_lcc:
-        lcc_val   = fmt_value(metrics["LCC%"][0], "pct")
-        lcc_mom   = metrics["LCC%"][1]
-        if lcc_mom is None:
-            lcc_mom_html = '<span style="color:#9ca3af;">no prev data</span>'
-        else:
-            lcc_arrow = "▲" if lcc_mom >= 0 else "▼"
-            lcc_cls   = "kpi-mom-up" if lcc_mom >= 0 else "kpi-mom-down"
-            lcc_mom_html = f'<span class="{lcc_cls}">{lcc_arrow} {abs(lcc_mom):.2f}%</span>'
-        sma2_val  = fmt_value(metrics.get("SMA-2 %", (0, 0))[0], "pct")
-        sma2_mom  = metrics.get("SMA-2 %", (0, 0))[1]
-        if sma2_mom is None:
-            sma2_mom_html = '<span style="color:#9ca3af;">no prev data</span>'
-        else:
-            sma2_arrow = "▲" if sma2_mom >= 0 else "▼"
-            sma2_cls  = "kpi-mom-down" if sma2_mom >= 0 else "kpi-mom-up"
-            sma2_mom_html = f'<span class="{sma2_cls}">{sma2_arrow} {abs(sma2_mom):.2f}%</span>'
-        st.markdown(f"""
-        <div class="kpi-card" style="display:flex;flex-direction:column;
-             justify-content:center;align-items:center;text-align:center;margin-top:0;margin-bottom:12px;">
-          <div class="kpi-label">LCC %</div>
-          <div style="font-size:36px;font-weight:800;color:#111;line-height:1.1;">{lcc_val}</div>
-          <div class="kpi-mom">MoM {lcc_mom_html}</div>
-        </div>
-        <div class="kpi-card" style="display:flex;flex-direction:column;
-             justify-content:center;align-items:center;text-align:center;margin-top:0;">
-          <div class="kpi-label">SMA-2 %</div>
-          <div style="font-size:36px;font-weight:800;color:#ef4444;line-height:1.1;">{sma2_val}</div>
-          <div class="kpi-mom">MoM {sma2_mom_html}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    col_trend, col_bot = st.columns([3, 2])
-    with col_trend:
-        _chart_card(fig_closing)
-    with col_bot:
-        st.markdown("<br>", unsafe_allow_html=True)
-        _kpi_row(_KPI_BOT, metrics)
-        _kpi_row(_KPI_EXPOSURE, metrics)
+    # ── Summary of the whole portfolio, each section linking to its tab ──────
+    filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(segment))}|{date_from}"
+    render_summary(df_curr, df_prev, data_version, filter_key, curr_month, alerts, alerts_prev or [])
 
     # ── HTML export ─────────────────────────────────────────────────────────
     _divider("24px 0 16px 0")
@@ -117,17 +75,16 @@ def render_dashboard_tab(
             "Region": sel_region, "Branch": sel_branch,
             "Loan Status": sel_status, "Year Month": str(curr_month),
         }
-        _html_cache_key = (data_version, sel_region, sel_branch, sel_status, segment)
-        html_content = _cached_html_export(
-            _html_cache_key, build_html_export,
-            df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing,
-            filters_applied, curr_month=curr_month, alerts=alerts,
-            scorecard_df=scorecard_df,
-            roll_rate_meta=rr_meta,
-        )
+        # Built on click (the charts live only in this export now).
+        def _export() -> bytes:
+            return build_html_export(
+                df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing,
+                filters_applied, curr_month=curr_month, alerts=alerts,
+                scorecard_df=scorecard_df, roll_rate_meta=rr_meta,
+            ).encode("utf-8")
         st.download_button(
             label="⬇  Download Dashboard as HTML",
-            data=html_content.encode("utf-8"),
+            data=_export,
             file_name=f"collectioniq_dashboard_{curr_month}.html",
             mime="text/html",
             width='stretch',

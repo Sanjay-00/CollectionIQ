@@ -139,19 +139,6 @@ MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE = 11
 NEW_ADVANCES_TREND_DEFAULT_MONTHS = 24
 NEW_ADVANCES_TREND_MONTH_OPTIONS = [6, 12, 24, 36, 60, "All"]
 
-# The monthly report is a static, non-interactive document (no dropdown to
-# pick a window), so its own New Advances Trend chart uses a fixed window --
-# deliberately NOT reusing NEW_ADVANCES_TREND_DEFAULT_MONTHS, since the report
-# and dashboard defaults are allowed to diverge for good reason (a printed
-# report favors a longer, more complete trend; the dashboard default favors a
-# faster first render).
-NEW_ADVANCES_REPORT_TREND_MONTHS = 36
-
-# Report top-N cap for the New Advances by Region/Branch/Executive section --
-# same "printed document, not a scrollable table" reasoning as
-# branch_performance.py's own top5/bottom5 cap.
-NEW_ADVANCES_REPORT_TOP_N = 5
-
 # SegmentName/Segment values are sometimes truncated inconsistently by the
 # source system at DIFFERENT lengths for the SAME real segment (observed in
 # real production data: "Passenger Commerc" / "Passenger Commerci" /
@@ -249,3 +236,30 @@ RISK_INDICATOR_MATERIALITY_COUNT = 1
 # can't silently go stale in the chart's own annotation.
 VINTAGE_CHART_CRITICAL_PCT = 10
 VINTAGE_CHART_WATCH_PCT = 5
+
+# Roll / flow analysis (Migration tab): the early-warning steps, in the order
+# a collection manager should act on them. Each is "loans in this bucket last
+# month that are in a WORSE bucket now", measured by loans and by last month's
+# SOH. The first two (new defaulters, 1-30 slipping further) are the cheapest
+# to bring back and the ones that otherwise become NPA a few months later.
+ROLL_STEPS = {
+    "STD → Behind": "STD",
+    "1-30 → SMA-1+": "1-30 DPD",
+    "SMA-1 → SMA-2+": "SMA-1",
+    "SMA-2 → NPA": "SMA-2",
+}
+
+# Action overview (top of the Dashboard tab): what to fix first.
+ACTION_HEADLINES_MAX = 6          # most headline sentences shown
+ACTION_TOP_N = 5                  # branches / executives listed under "Needs attention"
+# A unit is only judged when it has at least this many loans matched in both
+# months, so a 2-of-4 swing in a tiny branch never tops the list.
+ACTION_MIN_ACCOUNTS = {"branch": 30, "executive": 15}
+ACTION_HOTSPOT_MULTIPLE = 1.5     # a rate this many times the portfolio's is a hotspot...
+ACTION_MIN_ROLLED = 3             # ...when at least this many loans made the move
+ACTION_RISING_PP = 2.0            # delinquency up/down by this many points is "rising"/"improving"
+ACTION_COLLECTION_GAP_PP = 5.0    # collection this many points below the portfolio is flagged
+ACTION_RANGE_Z = 1.96             # forecast range: about 95% of months land inside it
+
+# Dashboard summary: how many units each short list / league table shows.
+DASHBOARD_TOP_N = 5

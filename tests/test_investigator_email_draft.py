@@ -35,7 +35,7 @@ class TestBuildPriorityEmailHtml:
     def test_escapes_manually_typed_fields_against_html_injection(self):
         # Cust Name/MNT NAME are free-typed LCC fields -- unescaped, a stray
         # "&"/"<"/">" breaks the surrounding table markup (same convention
-        # report_agent/nodes/report_builder.py's _esc() already follows).
+        # report_agent/render.py's html.escape already follows).
         df = pd.DataFrame([{"Cust Name": "A & B <Corp>", "Loan No": "L1"}])
         html = build_priority_email_html(df, "MAHAD")
         assert "A &amp; B &lt;Corp&gt;" in html

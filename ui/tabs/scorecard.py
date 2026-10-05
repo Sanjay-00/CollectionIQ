@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _empty_state
+from ui.components import _dl_btn, _static_kpi_card_html, _empty_state
 
 
 def render_scorecard_tab(df_curr: pd.DataFrame, scorecard_df) -> None:

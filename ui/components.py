@@ -24,7 +24,7 @@ def _esc(val):
     and since uploads are user-supplied they're also a stored-XSS vector on
     a shared deployment. Gemini/planner output (query titles, insight
     bullets, plan descriptions) is the same risk class and must go through
-    here too. report_agent/nodes/report_builder.py has its own _esc for the
+    here too. report_agent/render.py escapes its own HTML for the
     same reason; this is the dashboard-side twin.
 
     Strings are escaped (quote=True so it's also safe inside attribute
@@ -391,6 +391,20 @@ def _is_blank(v) -> bool:
     return v is None or v == "" or (not isinstance(v, (list, tuple, dict)) and pd.isna(v))
 
 
+# The app's tabs, in order (app.py's tab bar). Shared so a "See details"
+# button can switch to a tab by its exact label.
+TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence",
+              "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
+TAB_KEY = "_active_section"
+
+
+def goto_tab_button(tab: str, key: str, label: str | None = None) -> None:
+    """A small button that opens another tab (sets the tab bar's value)."""
+    def _go() -> None:
+        st.session_state[TAB_KEY] = tab
+    st.button(label or f"See details in {tab.split(' ', 1)[1]} →", key=key, on_click=_go)
+
+
 def _download_frame(df: pd.DataFrame, full_source: pd.DataFrame | None) -> pd.DataFrame:
     """What a table's download contains: the table itself, or (with
     full_source) every raw upload column for the same loans."""
@@ -437,37 +451,6 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key, width='stretch',
         )
-
-
-def _cached_html_export(cache_key: tuple, build_fn, *args, **kwargs) -> str:
-    """ui/tabs/dashboard.py's build_html_export call ran unconditionally on
-    every render (not gated behind the download button click -- Streamlit's
-    download_button needs its `data=` bytes ready upfront, so there's no
-    native "compute on click" for this), and it's expensive: pio.to_html() on
-    3 full Plotly figures plus assembling a large formatted HTML string, every
-    single Streamlit rerun of the ENTIRE app, since Dashboard is tabs[0] and
-    always executes regardless of which tab is actually visible.
-
-    `cache_key` must be the same (data_version, region, branch, status,
-    segment) tuple app.py's own _cached_* functions already use as their
-    cache key -- NOT `df_curr is` the object from last time. That was the
-    original design here (mirroring _dl_btn's old approach) but it never
-    actually worked: df_curr itself comes from a @st.cache_data call
-    (_cached_filter), and st.cache_data returns a fresh COPY on every cache
-    hit, not the original object -- proven directly by calling a trivial
-    @st.cache_data function twice with identical args and getting `is` False
-    both times. So this was a guaranteed cache miss on every single rerun.
-    build_fn/its figure args aren't reliably auto-hashable by st.cache_data
-    (Plotly Figure objects, arbitrary callables), so this uses the same
-    explicit-tuple-key idiom the rest of app.py's caching already relies on,
-    rather than trying to make Streamlit hash them."""
-    cache = st.session_state.setdefault("_html_export_cache", {})
-    cached = cache.get("dashboard")
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-    html_content = build_fn(*args, **kwargs)
-    cache["dashboard"] = (cache_key, html_content)
-    return html_content
 
 
 def _kpi_card_html(

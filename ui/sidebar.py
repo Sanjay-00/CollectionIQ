@@ -101,7 +101,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
             # asked in this session -- including a stale, since-fixed answer
             # from before a pipeline bug fix, with the button's own promise
             # ("clear cache & reload") not actually being honored for this cache.
-            for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "report_result",
+            for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "rpt2", "rpt2_packs",
                        "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region",
                        "_ai_query_cache", "sel_region_key", "sel_status_key", "sel_date_from_key"]:
                 st.session_state.pop(_k, None)

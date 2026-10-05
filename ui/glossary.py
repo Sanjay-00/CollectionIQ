@@ -39,6 +39,14 @@ GLOSSARY: dict[str, str] = {
                         "or recent advances."),
     "Driver Share %": "Share of the region's delinquent loans explained by the dominant driver.",
     "Fleet operator": _FLEET,
+    # Roll / flow steps (Migration tab, config.ROLL_STEPS)
+    "STD → Behind": ("New defaulters: paid up (STD) last month, behind on payments now. "
+                     "The cheapest to bring back; call before the next due date."),
+    "1-30 → SMA-1+": ("Were 1-30 days behind last month, now SMA-1 or worse: slipping further. "
+                      "Stop them here before they reach SMA-2."),
+    "SMA-1 → SMA-2+": "Were SMA-1 last month, now SMA-2 or worse: one step from NPA.",
+    "SMA-2 → NPA": "Were SMA-2 last month, NPA now: new NPAs this month.",
+    "Back to STD": "Were behind last month (any bucket), fully paid up (STD) now: recovered loans.",
     "Concern Score": ("0-100 rank of this branch against all other branches (higher = worse), blending "
                       + ", ".join(f"{k} ({round(w * 100)}%)" for k, w in CONCERN_SCORE_WEIGHTS.items())
                       + ". A part with no data (e.g. Roll Fwd% without last month) is left out."),

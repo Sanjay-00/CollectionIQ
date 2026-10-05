@@ -494,7 +494,7 @@ div[data-testid="stAlert"][kind="error"]   { background: rgba(220,38,38,0.08) !i
 [data-testid="stMetricDelta"] { font-size: 12px !important; font-weight: 600 !important; }
 
 /* ── Caption ── */
-[data-testid="stCaptionContainer"] { color: #9ca3af !important; font-size: 11px !important; }
+[data-testid="stCaptionContainer"] { color: #4b5563 !important; font-size: 12px !important; }
 
 /* ── Spinner ── */
 [data-testid="stSpinner"] > div { border-top-color: #FFC000 !important; }

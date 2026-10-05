@@ -105,13 +105,10 @@ _ALERT_TITLE_TO_STEP: dict[str, tuple[str, dict]] = {
     "High Arrears: Loan at Risk": ("high_arrears_at_risk", {}),
 }
 
-# Mirrors report_agent/sections/risk_flags.py::compute_risk_flags's own
-# severity ranking EXACTLY (same dict, same tie-break) -- duplicated
-# rather than imported because that function re-runs run_all_alerts
-# itself, and app.py has ALREADY computed and cached this exact alerts
-# list once per upload (reused by the AI Query tab too); recomputing it a
-# second time here would throw away that cache for no reason. If this
-# ranking is ever retuned, risk_flags.py's copy must be updated too.
+# Severity order for the opening message's top alerts (critical, then
+# high, then medium; most loans first within each), the same order the
+# Dashboard and report use (analysis/summary.py::alert_snapshot). Works on
+# app.py's already-cached alerts list, never re-running the alerts.
 _ALERT_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2}
 
 

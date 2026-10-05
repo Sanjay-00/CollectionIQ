@@ -171,7 +171,7 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
             if col == "Executive (Branch)":
                 # MNT NAME/Unit are manually-typed LCC fields -- escape so an
                 # &, <, > in a real name can't break the table markup (same
-                # rule as report_builder.py's _esc and ui/components.py's).
+                # rule as report_agent/render.py and ui/components.py's _esc).
                 cells += (
                     f'<td style="padding:8px 12px;font-size:13px;font-weight:600;">'
                     f'{html.escape(str(val))} &nbsp;{tier_badge}</td>'

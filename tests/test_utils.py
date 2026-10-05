@@ -522,7 +522,7 @@ class TestComputeMetrics:
         metrics = compute_metrics(df, make_df([]))
         expected_keys = {
             "Month Demand", "Total Collection", "Collection %", "Strike %",
-            "NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Count", "SOH", "LCC%", "CMD %",
+            "NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Delinquency %", "Count", "SOH", "LCC%", "CMD %",
         }
         assert set(metrics.keys()) == expected_keys
         for key, val in metrics.items():
@@ -845,7 +845,7 @@ class TestLoadAndValidateSegmentNormalization:
 class TestBuildHtmlExportEscaping:
     """Regression: build_html_export interpolates filter values and the
     scorecard's free-text 'Executive (Branch)' column into raw f-string HTML,
-    same bug class already fixed in report_agent/nodes/report_builder.py.
+    same bug class report_agent/render.py guards against.
     A manually-entered name like "RAJESH & SONS <TRANSPORT>" must not break
     the surrounding table markup, and the file is offered as a raw download."""
 

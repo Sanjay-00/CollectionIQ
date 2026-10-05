@@ -1,7 +1,6 @@
 import io
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
 from ui.components import _bump_data_version
@@ -106,7 +105,7 @@ def render_landing() -> None:
                 # Region/Branch/Status selection left over from a real upload
                 # earlier in this session could otherwise silently carry over
                 # onto the sample data.
-                for _k in ["ai_result", "report_result", "_last_filter_key",
+                for _k in ["ai_result", "rpt2", "rpt2_packs", "_last_filter_key",
                            "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key",
                            "sel_date_from_key"]:
                     st.session_state.pop(_k, None)
