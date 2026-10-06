@@ -951,7 +951,7 @@ def unit_metrics(df: pd.DataFrame, by: list[str], min_accounts: int = 0,
     one portfolio row. A blank label is left out (as every table always did).
     Units with fewer than min_accounts are dropped. Columns:
     Accounts, Delinquent, Delinquency%, SMA-1, SMA-2, SMA-2%, NPA, NPA%,
-    NPA% (SOH), Hard Bucket, Hard Bucket%, Not Paying 3M+, Not Paying 3M+%,
+    NPA% (SOH), NPA SOH (Cr), Hard Bucket, Hard Bucket%, Not Paying 3M+, Not Paying 3M+%,
     Insurance-Only, Collection%, Strike%, SOH (Cr), POS, Demand, Collected,
     SOH and, when prev_bucket is present, Roll Fwd%/Roll Bwd% (NaN when no
     loan has both months' bucket), Rescued, Slipped.
@@ -981,6 +981,7 @@ def unit_metrics(df: pd.DataFrame, by: list[str], min_accounts: int = 0,
     out["Collection%"] = _pct_col(s["collected"], s["demand"])
     out["Strike%"] = _pct_col(s["strike_yes"], s["strike_valid"])
     out["SOH (Cr)"] = _round_each(s["soh"] / 1e7, 2)
+    out["NPA SOH (Cr)"] = _round_each(s["npa_soh"] / 1e7, 2)
     out["POS"], out["Demand"], out["Collected"], out["SOH"] = s["pos"], s["demand"], s["collected"], s["soh"]
     if "roll_valid" in s.columns:
         valid = s["roll_valid"].where(s["roll_valid"] > 0)

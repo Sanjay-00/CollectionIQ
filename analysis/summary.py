@@ -31,6 +31,13 @@ LEAGUE_METRICS = {
 }
 
 
+# The count behind each league metric, shown beside it as "11.9% (37)".
+LEAGUE_COUNTS = {"NPA %": "NPA", "Delinquency %": "Delinquent", "SMA-2 %": "SMA-2",
+                 "Hard Bucket %": "Hard Bucket", "New defaulters %": "STD → Behind | Accounts"}
+# The money behind a % by SOH, shown beside it as "34.6% (₹121.40 Cr)".
+LEAGUE_AMOUNTS = {"NPA % (SOH)": "NPA SOH (Cr)"}
+
+
 def _units(df: pd.DataFrame, grain: str) -> pd.DataFrame:
     """unit_metrics per unit with a display name, region and a normalized key
     (case/space-insensitive) to match the same unit in last month's file."""
@@ -64,7 +71,9 @@ def league_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, metric: str, grai
             return pd.DataFrame(), 0
         name_cols = ["Executive", "Branch"] if grain == "Executive" else [grain]
         roll_key = list(zip(*[roll[c].map(_unit_key) for c in name_cols]))
-        now = now.merge(pd.DataFrame({"_key": roll_key, col: roll[col].values}), on="_key", how="inner")
+        count_col = LEAGUE_COUNTS[metric]
+        now = now.merge(pd.DataFrame({"_key": roll_key, col: roll[col].values, count_col: roll[count_col].values}),
+                        on="_key", how="inner")
     now = now[now["Accounts"] >= _MIN[grain]]
     if now.empty:
         return pd.DataFrame(), 0
@@ -86,6 +95,9 @@ def league_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, metric: str, grai
         grain: top["Name"].values,
         "Accounts": top["Accounts"].values,
         "Now": top[col].values,
+        "Count": top[LEAGUE_COUNTS[metric]].values if metric in LEAGUE_COUNTS else [None] * len(top),
+        "Amount (Cr)": top[LEAGUE_AMOUNTS[metric]].values if metric in LEAGUE_AMOUNTS else [None] * len(top),
+        "Delinquent": top["Delinquent"].values,
         # Always shown beside the chosen metric, for context.
         "Delinquency %": top["Delinquency%"].values,
         "Last Month": [prev_val.get(k) for k in top["_key"]],
@@ -107,12 +119,50 @@ def biggest_moves(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str, n: i
         return {"worse": [], "better": []}
     now = now[now["Accounts"] >= _MIN[grain]]
     before = dict(zip(prev["_key"], prev[metric]))
+    count = {"Delinquency%": "Delinquent", "NPA%": "NPA", "SMA-2%": "SMA-2"}.get(metric)
     rows = [{"name": r["Name"], "region": r.get("Region"), "now": float(r[metric]),
+             "count": int(r[count]) if count else None,
              "change": round(float(r[metric]) - before[r["_key"]], 2)}
             for _, r in now.iterrows() if r["_key"] in before]
     rows = [r for r in rows if r["change"] != 0]
     return {"worse": sorted([r for r in rows if r["change"] > 0], key=lambda r: -r["change"])[:n],
             "better": sorted([r for r in rows if r["change"] < 0], key=lambda r: r["change"])[:n]}
+
+
+def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.DataFrame:
+    """Every headline metric for each region / branch / executive, with the
+    COUNT behind each % (so a screen can show "11.9% (37)"), last month's
+    delinquency and NPA, and roll counts. Units below the app's usual minimum
+    for their level are left out (MIN_ACCOUNTS_DIMENSION_BREAKDOWN for
+    branches, MIN_ACCOUNTS_EXECUTIVE for executives)."""
+    from config import MIN_ACCOUNTS_DIMENSION_BREAKDOWN, MIN_ACCOUNTS_EXECUTIVE
+    now = _units(df_curr, grain)
+    if now.empty:
+        return pd.DataFrame()
+    floor = {"Region": 1, "Branch": MIN_ACCOUNTS_DIMENSION_BREAKDOWN, "Executive": MIN_ACCOUNTS_EXECUTIVE}[grain]
+    now = now[now["Accounts"] >= floor]
+    prev = _units(df_prev, grain)
+    before = prev.set_index("_key")[["Delinquency%", "NPA%"]].to_dict("index") if not prev.empty else {}
+    out = pd.DataFrame({grain: now["Name"].values})
+    if grain == "Executive":
+        out["Branch"] = now["Unit"].astype(str).values
+    if grain != "Region" and "Region" in now.columns:
+        out["Region"] = now["Region"].values
+    for col in ("Accounts", "Delinquent", "Delinquency%"):
+        out[col] = now[col].values
+    p = [before.get(k) for k in now["_key"]]
+    out["Prev Delinquency%"] = [None if b is None else b["Delinquency%"] for b in p]
+    out["Δ Delinquency%"] = [None if b is None else round(v - b["Delinquency%"], 2) for v, b in zip(now["Delinquency%"], p)]
+    for col in ("SMA-2", "SMA-2%", "NPA", "NPA%", "NPA% (SOH)", "NPA SOH (Cr)"):
+        out[col] = now[col].values
+    out["Δ NPA%"] = [None if b is None else round(v - b["NPA%"], 2) for v, b in zip(now["NPA%"], p)]
+    for col in ("Hard Bucket", "Hard Bucket%", "Collection%", "Strike%", "SOH (Cr)"):
+        out[col] = now[col].values
+    if "Roll Fwd%" in now.columns:
+        out["Roll Fwd%"] = now["Roll Fwd%"].values
+        out["Slipped"] = now["Slipped"].values
+        out["Rescued"] = now["Rescued"].values
+    return out.reset_index(drop=True)
 
 
 def business_snapshot(df_curr: pd.DataFrame, as_of) -> dict:

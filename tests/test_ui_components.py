@@ -416,3 +416,49 @@ def test_safe_df_drops_midnight_time_from_dates():
     from ui.components import _safe_df
     df = pd.DataFrame({"Ag_Date": pd.to_datetime(["2023-09-23"]).astype("datetime64[us]")})
     assert str(_safe_df(df)["Ag_Date"].iloc[0]) == "2023-09-23"
+
+
+def test_percent_and_count_share_one_cell():
+    from ui.components import html_table, pct_count
+    assert pct_count(11.94, 37) == '11.9% <span style="color:#6b7280;font-weight:400;">(37)</span>'
+    assert "-" in pct_count(None, 3)
+    df = pd.DataFrame({"Branch": ["A"], "NPA%": [12.5], "NPA": [5]})
+    html = html_table(df, [{"key": "Branch"}, {"key": "NPA%", "label": "NPA", "fmt": "pct_count", "count": "NPA"}])
+    assert "12.5% <span" in html and "(5)" in html and html.count("</th>") == 2   # one column, not two
+
+
+def test_percent_by_soh_and_its_crore_share_one_cell():
+    from ui.components import html_table, pct_amount
+    assert pct_amount(34.62, 121.4) == '34.6% <span style="color:#6b7280;font-weight:400;">(₹121.40 Cr)</span>'
+    assert "-" in pct_amount(None, 1.0)
+    df = pd.DataFrame({"Branch": ["A"], "NPA% (SOH)": [8.0], "NPA SOH (Cr)": [1.5]})
+    html = html_table(df, [{"key": "Branch"},
+                           {"key": "NPA% (SOH)", "fmt": "pct_cr", "amount": "NPA SOH (Cr)"}])
+    assert "8.0% <span" in html and "(₹1.50 Cr)" in html and html.count("</th>") == 2
+
+
+def test_top_x_in_each_branch(monkeypatch):
+    import ui.tabs.portfolio_intelligence as pi
+    df = pd.DataFrame({"Branch": ["A"] * 5 + ["B"] * 5, "SOH": list(range(10, 0, -1))})
+    picks = {"pi_t_n": 2, "pi_t_b": "All"}
+    monkeypatch.setattr(pi.st, "columns", lambda spec: [_Fake(picks)] * 3)
+    monkeypatch.setattr(pi.st, "caption", lambda *a, **k: None)
+    out = pi._list_controls("pi_t", df, "Branch")
+    assert out.groupby("Branch").size().to_dict() == {"A": 2, "B": 2}      # top 2 from EACH branch
+    assert out["SOH"].tolist() == [10, 9, 5, 4]
+
+
+class _Fake:
+    """Stands in for a Streamlit column: selectbox returns a preset, the
+    'each branch' checkbox is ticked."""
+    def __init__(self, picks):
+        self.picks = picks
+
+    def selectbox(self, label, options, index=0, key=None):
+        return self.picks.get(key, options[index])
+
+    def checkbox(self, label, key=None, disabled=False):
+        return True
+
+    def markdown(self, *a, **k):
+        return None

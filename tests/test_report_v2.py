@@ -133,3 +133,32 @@ def test_branch_packs_zip_one_report_per_branch(data):
     assert names == ["BARAMATI_2026-08.pdf", "BARAMATI_2026-08.xlsx", "MALEGAON_2026-08.pdf", "MALEGAON_2026-08.xlsx"]
     blob, _ = build_branch_packs(c, p, "2026-08", "2026-07", with_excel=False)
     assert all(n.endswith(".pdf") for n in zipfile.ZipFile(BytesIO(blob)).namelist())
+
+
+def test_unit_tables_carry_a_total_of_everything_in_view(monkeypatch, data):
+    import report_agent.story as story
+    monkeypatch.setattr(story, "TABLE_ROWS_ON_PAGE", 1)        # show 1 branch of 2
+    c, p = data
+    m = build_report(c, p, "2026-08", "2026-07", "Regional")
+    br = next(b for b in m["blocks"] if b["type"] == "table" and b["title"] == "Branches")
+    t = br["total"]
+    assert t["Branch"] == "Total (all 2 branches)" and t["Accounts"] == len(c)       # not just the row shown
+    assert t["Delinquency%"] == round(t["Delinquent"] / t["Accounts"] * 100, 2)      # sum over sum
+    html = render.to_html(m)
+    assert "Total (all 2 branches)" in html
+    wb = load_workbook(BytesIO(render.to_excel(m)))
+    ws = wb["Branches"]
+    assert ws.cell(ws.max_row, 1).value == "Total (all 2 branches)" and ws.cell(ws.max_row, 1).font.bold
+
+
+def test_every_download_has_a_blue_header_with_white_text():
+    from openpyxl import load_workbook as lw
+    from ui.components import _excel_bytes
+    ws = lw(BytesIO(_excel_bytes.__wrapped__(pd.DataFrame({"A": [1], "B": [2]})))).active
+    assert ws["A1"].fill.fgColor.rgb.endswith("1F4E78") and ws["A1"].font.color.rgb.endswith("FFFFFF")
+
+
+def test_percent_cells_carry_their_count_or_crore():
+    row = pd.Series({"NPA%": 12.5, "NPA": 5, "NPA% (SOH)": 8.0, "NPA SOH (Cr)": 1.5})
+    assert render.cell_text(row, {"key": "NPA%", "fmt": "pct", "count": "NPA"}) == "12.5% (5)"
+    assert render.cell_text(row, {"key": "NPA% (SOH)", "fmt": "pct", "amount": "NPA SOH (Cr)"}) == "8.0% (₹1.50 Cr)"

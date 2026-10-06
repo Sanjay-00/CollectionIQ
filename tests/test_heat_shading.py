@@ -22,35 +22,36 @@ def test_zero_and_missing_get_no_shade():
 
 
 def test_root_cause_status_table_never_green_and_total_unshaded():
-    from ui.tabs.root_cause import _count_with_pct, _html_table
+    from ui.tabs.root_cause import _html_table, _pct_and
     df = pd.DataFrame({
         "Region": ["A", "B", "Grand Total"], "Running Loans": [100, 100, 200],
         "NPA": [0, 4, 4], "NPA %": [0.0, 4.0, 2.0],
         "Delinquent": [10, 30, 40], "Delinquent %": [10.0, 30.0, 20.0],
     })
     cols = [{"key": "Region", "align": "left"}, {"key": "Running Loans"}]
-    cols += [{"key": c, "fmt": _count_with_pct(c), "heat": f"{c} %"} for c in ("NPA", "Delinquent")]
+    cols += [{"key": f"{c} %", "label": c, "fmt": _pct_and(c), "heat": True} for c in ("NPA", "Delinquent")]
     html = _html_table(df, cols, last_row_is_total=True)
+    assert "30.0% <span" in html and "(30)</span>" in html   # % first, count in brackets
     assert not any(g in html for g in GREENS)
     assert "#f87171" in html                                  # worst region is red
     total_row = html.split("<tr")[-1]
     assert "background:#f" not in total_row.split(">", 1)[1]  # no shaded cell in Grand Total
 
 
-def test_region_scorecard_and_product_table_have_no_green_on_risk(monkeypatch):
+def test_unit_table_and_product_table_have_no_green_on_risk(monkeypatch):
     import ui.tabs.portfolio_intelligence as pi
     captured = []
     monkeypatch.setattr(pi.st, "markdown", lambda html, **_: captured.append(html))
-    monkeypatch.setattr(pi, "_dl_btn", lambda *a, **k: None)
     region = pd.DataFrame({
-        "Region": ["A", "B"], "SMA-2": [0, 5], "SMA-2%": [0.0, 5.0], "NPA": [1, 9], "NPA%": [1.0, 9.0],
-        "Delinquent": [3, 20], "Delinquency%": [3.0, 20.0], "Roll Fwd%": [2.0, 30.0],
-        "Collection%": [95.0, 80.0], "Strike%": [90.0, 70.0], "SOH (Cr)": [1.0, 2.0], "Status": ["Stable", "Stable"],
+        "Region": ["A", "B"], "Accounts": [100, 100], "SMA-2": [0, 5], "SMA-2%": [0.0, 5.0], "NPA": [1, 9],
+        "NPA%": [1.0, 9.0], "NPA% (SOH)": [1.0, 12.0], "Delinquent": [3, 20], "Delinquency%": [3.0, 20.0],
+        "Hard Bucket": [1, 4], "Hard Bucket%": [1.0, 4.0], "Roll Fwd%": [2.0, 30.0], "Slipped": [2, 30],
+        "Collection%": [95.0, 80.0], "Strike%": [90.0, 70.0],
     })
-    pi._render_region_scorecard(region, has_prev=False)
+    html = pi.units_table_html(region, "Region")
     pi._render_product_table(pd.DataFrame({"Segment": ["X", "Y"], "Accounts": [10, 20],
                                            "NPA%": [0.5, 3.0], "SMA-2%": [1.0, 2.0]}))
-    html = "".join(captured)
+    html += "".join(captured)
     assert "#f87171" in html and not any(g in html for g in GREENS)
 
 
@@ -63,7 +64,9 @@ def test_executive_scorecard_risk_columns_not_green():
         "Delinquent": [0, 5], "Delinquency %": [0.0, 50.0], "Roll Fwd %": [0.0, 25.0], "Tier": ["top", "bottom"],
     })
     html = build_scorecard_table_html(df)
-    assert html.count("background:#fbb2b2") == 7              # E2's seven risk cells, lone value = mid shade
+    # E2's four risk cells (counts sit inside their % cells now); lone value = mid shade
+    assert html.count("background:#fbb2b2") == 4
+    assert "20.0% <span" in html and "(2)</span>" in html     # NPA % with its count in one cell
     assert 'color:#16a34a;">0<' not in html                   # zeros are plain, not green
 
 

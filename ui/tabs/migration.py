@@ -3,6 +3,7 @@ import streamlit as st
 
 from ui.components import (
     _static_kpi_card_html, _chart_card, _empty_state, heat_range, heat_style, _dl_btn, _safe_df, _esc,
+    html_table,
 )
 from ui.glossary import help_for, info_icon
 from config import ROLL_STEPS
@@ -34,40 +35,28 @@ def _cached_filtered_roll_rate(_df_curr_f: pd.DataFrame, _df_prev_f: pd.DataFram
 
 
 def _bucket_summary_table_html(df: pd.DataFrame) -> str:
-    headers = ["Bucket", "Accounts", "Roll Fwd%", "Stable%", "Roll Bwd%"]
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:8px 12px;font-size:11px;'
-        f'text-align:{"left" if h == "Bucket" else "right"};white-space:nowrap;">{h}</th>'
-        for h in headers
-    )
-    rows_html = ""
-    # Roll Fwd% is a risk (no "safe" level): red shading by rank, never green.
-    # Roll Bwd% is the good direction, so it keeps its green threshold.
-    fwd_rng = heat_range(df["Roll Fwd%"].tolist())
-    for _, row in df.iterrows():
-        fwd, stable, bwd = row["Roll Fwd%"], row["Stable%"], row["Roll Bwd%"]
-        bwd_color = "#16a34a" if bwd >= 10 else ("#d97706" if bwd >= 5 else "#374151")
-        rows_html += (
-            f'<tr style="border-bottom:1px solid #f0f0f0;">'
-            f'<td style="padding:8px 12px;font-size:12px;font-weight:700;">{row["Bucket"]}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;text-align:right;">{row["Accounts"]:,}</td>'
-            f'<td style="padding:8px 12px;font-size:12px;text-align:right;font-weight:700;{heat_style(fwd, fwd_rng)}">{fwd:.1f}%</td>'
-            f'<td style="padding:8px 12px;font-size:12px;text-align:right;color:#6b7280;">{stable:.1f}%</td>'
-            f'<td style="padding:8px 12px;font-size:12px;text-align:right;font-weight:700;color:{bwd_color};">{bwd:.1f}%</td>'
-            f'</tr>'
-        )
-    return (
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-        f'</table></div>'
-    )
+    """Per last-month bucket: % that rolled forward / stayed / rolled back, each
+    with its loans in brackets, plus a Total row (sum over sum). Roll Fwd% is
+    a risk, so it is red-shaded; never green."""
+    total = None
+    if not df.empty and df["Accounts"].sum():
+        n = int(df["Accounts"].sum())
+        sums = {k: int(df[k].sum()) for k in ("Roll Fwd", "Stable", "Roll Bwd") if k in df.columns}
+        total = {"Bucket": "Total", "Accounts": n, **sums,
+                 **{f"{k}%": round(v / n * 100, 2) for k, v in sums.items()}}
+    cols = [{"key": "Bucket", "bold": True}, {"key": "Accounts", "fmt": "int"},
+            {"key": "Roll Fwd%", "label": "Rolled forward", "fmt": "pct_count", "count": "Roll Fwd", "heat": True},
+            {"key": "Stable%", "label": "Stayed", "fmt": "pct_count", "count": "Stable"},
+            {"key": "Roll Bwd%", "label": "Rolled back", "fmt": "pct_count", "count": "Roll Bwd"}]
+    return html_table(df, cols, total=total)
 
 
 # ── Roll / flow by count and SOH (analysis/roll_flow.py) ─────────────────────
 
 _MATRIX_MEASURES = {"Accounts %": ("count_pct", "pct"), "Accounts": ("count", "count"),
                     "SOH %": ("soh_pct", "pct"), "SOH (₹ Cr)": ("soh", "soh")}
+# A % cell carries what's behind it in brackets: loans for "Accounts %", ₹ Cr for "SOH %".
+_MATRIX_DETAIL = {"count_pct": ("count", "count"), "soh_pct": ("soh", "soh")}
 _GRAIN_TABS = [("By Region", "region"), ("By Branch", "branch"), ("By Executive", "executive")]
 # The first two steps are the early slips a manager can still catch cheaply.
 _CATCH_EARLY = set(list(ROLL_STEPS)[:2])
@@ -304,7 +293,12 @@ def render_migration_tab(
     st.markdown('<div class="section-label" style="margin-top:20px;">Bucket Migration Matrix</div>', unsafe_allow_html=True)
     measure = st.radio("Show matrix as", list(_MATRIX_MEASURES), horizontal=True, key="mig_matrix_measure")
     m_key, kind = _MATRIX_MEASURES[measure]
-    _chart_card(build_roll_rate_heatmap(flow["matrix"][m_key], kind) if flow["summary"] else build_roll_rate_heatmap(rr_matrix))
+    if flow["summary"]:
+        d_key, d_kind = _MATRIX_DETAIL.get(m_key, (None, "count"))
+        _chart_card(build_roll_rate_heatmap(flow["matrix"][m_key], kind,
+                                            detail=flow["matrix"][d_key] if d_key else None, detail_kind=d_kind))
+    else:
+        _chart_card(build_roll_rate_heatmap(rr_matrix))
     if measure.endswith("%"):
         st.caption("Each row adds to 100%: of what was in that bucket last month, where it is now.")
     st.caption(

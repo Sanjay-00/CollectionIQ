@@ -36,11 +36,33 @@ def kpis(title: str, items: list[dict]) -> dict:
 
 
 def table(title: str, df: pd.DataFrame, columns: list[dict], note: str = "",
-          full: pd.DataFrame | None = None, sheet: str | None = None, total: bool = False) -> dict:
+          full: pd.DataFrame | None = None, sheet: str | None = None, total: dict | None = None) -> dict:
     """columns: {"key", "label"?, "fmt": text|int|pct|pp|cr|rs_cr|count_change, "heat"?: bool,
-    "good_if_up"?: bool}. `full` is the untruncated frame for the Excel annex."""
+    "good_if_up"?: bool, "count"?: column}. `full` is the untruncated frame for
+    the Excel annex. `total`: an optional Total row (dict), worked out from ALL
+    the data in view, never just the rows shown."""
     return {"type": "table", "title": title, "df": df.reset_index(drop=True), "columns": columns,
             "note": note, "full": df if full is None else full, "sheet": sheet or title[:31], "total": total}
+
+
+def _unit_total(c: pd.DataFrame, p: pd.DataFrame | None, name_col: str, label: str = "Total") -> dict | None:
+    """Every loan in view as one Total row (sum over sum), with last month's
+    delinquency and the change -- matching the unit tables' columns."""
+    from utils import unit_metrics
+    m = unit_metrics(c, [])
+    if m.empty:
+        return None
+    t = m.iloc[0]
+    row = {name_col: label, "Accounts": int(t["Accounts"]), "Delinquent": int(t["Delinquent"]),
+           "Delinquency%": float(t["Delinquency%"]), "SMA-2": int(t["SMA-2"]), "SMA-2%": float(t["SMA-2%"]),
+           "NPA": int(t["NPA"]), "NPA%": float(t["NPA%"]), "NPA% (SOH)": float(t["NPA% (SOH)"]),
+           "NPA SOH (Cr)": float(t["NPA SOH (Cr)"]),
+           "Collection%": float(t["Collection%"]), "Strike%": float(t["Strike%"])}
+    pm = unit_metrics(p, []) if p is not None and len(p) else pd.DataFrame()
+    if not pm.empty:
+        row["Prev Delinquency%"] = float(pm.iloc[0]["Delinquency%"])
+        row["Δ Delinquency%"] = round(row["Delinquency%"] - row["Prev Delinquency%"], 2)
+    return row
 
 
 # ── Formatting used inside sentences ─────────────────────────────────────────
@@ -119,9 +141,10 @@ def _early_warning(ac: dict) -> list[dict]:
     blocks = [heading("Early Warning: Loans That Slipped",
                       "Loans in each bucket last month that are in a worse bucket now, by loans and by last month's SOH."),
               table("Roll steps", pd.DataFrame(rows), [
-                  {"key": "Step", "fmt": "text"}, {"key": "Loans", "fmt": "int"},
-                  {"key": "% of loans", "fmt": "pct"}, {"key": "SOH (Cr)", "fmt": "cr"},
-                  {"key": "% of SOH", "fmt": "pct"}, {"key": "Out of", "fmt": "text"}], sheet="Early warning")]
+                  {"key": "Step", "fmt": "text"},
+                  {"key": "% of loans", "label": "Loans", "fmt": "pct", "count": "Loans"},
+                  {"key": "% of SOH", "label": "SOH", "fmt": "pct", "amount": "SOH (Cr)"},
+                  {"key": "Out of", "fmt": "text"}], sheet="Early warning")]
     out = ac.get("outlook")
     if out:
         npa, nd = out["new_npa"], out["new_defaulters"]
@@ -134,14 +157,14 @@ def _early_warning(ac: dict) -> list[dict]:
 
 
 _UNIT_COLS = [  # the shared reading order: size, delinquency (now, last month, change), buckets, collection
-    {"key": "Accounts", "fmt": "int"}, {"key": "Delinquent", "fmt": "int"},
-    {"key": "Delinquency%", "label": "Delinquency %", "fmt": "pct", "heat": True},
+    {"key": "Accounts", "fmt": "int"},
+    {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct", "count": "Delinquent", "heat": True},
     {"key": "Prev Delinquency%", "label": "Last Month", "fmt": "pct"},
     {"key": "Δ Delinquency%", "label": "Change", "fmt": "pp"},
-    {"key": "SMA-2%", "label": "SMA-2 %", "fmt": "pct", "heat": True},
-    {"key": "NPA%", "label": "NPA %", "fmt": "pct", "heat": True},
-    {"key": "NPA% (SOH)", "label": "NPA % (SOH)", "fmt": "pct", "heat": True},
-    {"key": "Collection%", "label": "Collection %", "fmt": "pct", "good_if_up": True},
+    {"key": "SMA-2%", "label": "SMA-2", "fmt": "pct", "count": "SMA-2", "heat": True},
+    {"key": "NPA%", "label": "NPA", "fmt": "pct", "count": "NPA", "heat": True},
+    {"key": "NPA% (SOH)", "label": "NPA by SOH", "fmt": "pct", "amount": "NPA SOH (Cr)", "heat": True},
+    {"key": "Collection%", "label": "Collection", "fmt": "pct", "good_if_up": True},
 ]
 
 
@@ -150,18 +173,19 @@ def _present(cols: list[dict], df: pd.DataFrame) -> list[dict]:
 
 
 def _regions(c, p) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_region_scorecard
-    reg = compute_region_scorecard(c, p)
+    from analysis.summary import unit_table
+    reg = unit_table(c, p, "Region")
     if reg.empty:
         return []
     reg = reg.sort_values("Delinquency%", ascending=False)
     cols = _present([{"key": "Region", "fmt": "text"}, *_UNIT_COLS], reg)
-    return [heading("Regions", "Worst delinquency first."), table("Regions", reg, cols, sheet="Regions")]
+    return [heading("Regions", "Worst delinquency first."),
+            table("Regions", reg, cols, sheet="Regions", total=_unit_total(c, p, "Region"))]
 
 
 def _branches(c, p) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_branch_quadrant
-    br = compute_branch_quadrant(c, p)[0]
+    from analysis.summary import unit_table
+    br = unit_table(c, p, "Branch")
     if br.empty:
         return []
     br = br.sort_values("Delinquency%", ascending=False)
@@ -169,7 +193,9 @@ def _branches(c, p) -> list[dict]:
     shown = br.head(TABLE_ROWS_ON_PAGE)
     note = "Worst delinquency first." + (f" Showing the worst {len(shown)} of {len(br)}; all are in the Excel annex."
                                           if len(br) > len(shown) else "")
-    return [heading("Branches", note), table("Branches", shown, cols, full=br, sheet="Branches")]
+    label = "Total" if len(shown) == len(br) else f"Total (all {len(br)} branches)"
+    return [heading("Branches", note), table("Branches", shown, cols, full=br, sheet="Branches",
+                                             total=_unit_total(c, p, "Branch", label))]
 
 
 def _roll_by(c, grain: str, title: str) -> list[dict]:
@@ -179,23 +205,35 @@ def _roll_by(c, grain: str, title: str) -> list[dict]:
         return []
     name = {"branch": "Branch", "executive": "Executive", "region": "Region"}[grain]
     keep = [name, *(["Branch"] if grain == "executive" else []), *(["Region"] if grain != "region" else []),
-            "Matched Accounts", "STD → Behind | %", "STD → Behind | SOH %", "1-30 → SMA-1+ | %",
-            "1-30 → SMA-1+ | SOH %", "SMA-2 → NPA | %", "SMA-2 → NPA | SOH %", "Back to STD | %"]
+            "Matched Accounts", "STD → Behind | %", "STD → Behind | Accounts", "STD → Behind | SOH %",
+            "STD → Behind | SOH (Cr)", "1-30 → SMA-1+ | %", "1-30 → SMA-1+ | Accounts", "1-30 → SMA-1+ | SOH %",
+            "1-30 → SMA-1+ | SOH (Cr)", "SMA-2 → NPA | %", "SMA-2 → NPA | Accounts", "SMA-2 → NPA | SOH %",
+            "SMA-2 → NPA | SOH (Cr)",
+            "Back to STD | %", "Back to STD | Accounts"]
     df = by[[k for k in keep if k in by.columns]]
     cols = [{"key": name, "fmt": "text"}, *([{"key": "Branch", "fmt": "text"}] if grain == "executive" else []),
             *([{"key": "Region", "fmt": "text"}] if grain != "region" else []),
             {"key": "Matched Accounts", "label": "Loans", "fmt": "int"},
-            {"key": "STD → Behind | %", "label": "New defaulters %", "fmt": "pct", "heat": True},
-            {"key": "STD → Behind | SOH %", "label": "by SOH", "fmt": "pct", "heat": True},
-            {"key": "1-30 → SMA-1+ | %", "label": "1-30 → SMA-1+ %", "fmt": "pct", "heat": True},
-            {"key": "1-30 → SMA-1+ | SOH %", "label": "by SOH", "fmt": "pct", "heat": True},
-            {"key": "SMA-2 → NPA | %", "label": "SMA-2 → NPA %", "fmt": "pct", "heat": True},
-            {"key": "SMA-2 → NPA | SOH %", "label": "by SOH", "fmt": "pct", "heat": True},
-            {"key": "Back to STD | %", "label": "Recovered %", "fmt": "pct", "good_if_up": True}]
+            {"key": "STD → Behind | %", "label": "New defaulters", "fmt": "pct", "count": "STD → Behind | Accounts", "heat": True},
+            {"key": "STD → Behind | SOH %", "label": "by SOH", "fmt": "pct", "amount": "STD → Behind | SOH (Cr)", "heat": True},
+            {"key": "1-30 → SMA-1+ | %", "label": "1-30 → SMA-1+", "fmt": "pct", "count": "1-30 → SMA-1+ | Accounts", "heat": True},
+            {"key": "1-30 → SMA-1+ | SOH %", "label": "by SOH", "fmt": "pct", "amount": "1-30 → SMA-1+ | SOH (Cr)", "heat": True},
+            {"key": "SMA-2 → NPA | %", "label": "SMA-2 → NPA", "fmt": "pct", "count": "SMA-2 → NPA | Accounts", "heat": True},
+            {"key": "SMA-2 → NPA | SOH %", "label": "by SOH", "fmt": "pct", "amount": "SMA-2 → NPA | SOH (Cr)", "heat": True},
+            {"key": "Back to STD | %", "label": "Recovered", "fmt": "pct", "count": "Back to STD | Accounts", "good_if_up": True}]
     shown = df.head(TABLE_ROWS_ON_PAGE)
     note = "Most new defaulters first." + (f" Showing {len(shown)} of {len(df)}; all are in the Excel annex."
                                            if len(df) > len(shown) else "")
-    return [heading(title, note), table(title, shown, _present(cols, df), full=df, sheet=title[:31])]
+    total = None
+    s = rf.roll_steps_summary(c)
+    if s:
+        unit = {"branch": "branches", "executive": "executives", "region": "regions"}[grain]
+        total = {name: "Total" if len(shown) == len(df) else f"Total (all {len(df)} {unit})",
+                 "Matched Accounts": len(rf._matched(c))}
+        for step in ("STD → Behind", "1-30 → SMA-1+", "SMA-2 → NPA", "Back to STD"):
+            total[f"{step} | %"], total[f"{step} | Accounts"] = s[step]["pct"], s[step]["n"]
+            total[f"{step} | SOH %"], total[f"{step} | SOH (Cr)"] = s[step]["soh_pct"], s[step]["soh_cr"]
+    return [heading(title, note), table(title, shown, _present(cols, df), full=df, sheet=title[:31], total=total)]
 
 
 def _attention(ac: dict) -> list[dict]:
@@ -298,14 +336,19 @@ def _executives(c, p) -> list[dict]:
         return []
     ex = ex.sort_values("Delinquency %", ascending=False)
     cols = _present([{"key": "MNT NAME", "label": "Executive", "fmt": "text"}, {"key": "Accounts", "fmt": "int"},
-                     {"key": "Delinquent", "fmt": "int"},
-                     {"key": "Delinquency %", "fmt": "pct", "heat": True},
+                     {"key": "Delinquency %", "label": "Delinquent", "fmt": "pct", "count": "Delinquent", "heat": True},
                      {"key": "Prev Delinquency %", "label": "Last Month", "fmt": "pct"},
                      {"key": "Δ Delinquency %", "label": "Change", "fmt": "pp"},
-                     {"key": "NPA %", "fmt": "pct", "heat": True},
+                     {"key": "NPA %", "label": "NPA", "fmt": "pct", "count": "NPA", "heat": True},
                      {"key": "Collection %", "fmt": "pct", "good_if_up": True},
                      {"key": "Strike Rate %", "label": "Strike %", "fmt": "pct", "good_if_up": True}], ex)
-    return [heading("Executives", "Worst delinquency first."), table("Executives", ex, cols, sheet="Executives")]
+    total = _unit_total(c, p, "MNT NAME")
+    if total:      # the executive table spells its columns with a space ("Delinquency %")
+        total = {**total, "Delinquency %": total["Delinquency%"], "NPA %": total["NPA%"],
+                 "Collection %": total["Collection%"], "Strike Rate %": total["Strike%"],
+                 "Prev Delinquency %": total.get("Prev Delinquency%"), "Δ Delinquency %": total.get("Δ Delinquency%")}
+    return [heading("Executives", "Worst delinquency first."), table("Executives", ex, cols, sheet="Executives",
+                                                                     total=total)]
 
 
 def _call_lists(ac: dict) -> list[dict]:
@@ -345,11 +388,27 @@ _RUPEE_COLS = {"SOH", "Closing Arrears", "Loan Amount", "Last Receipt Amount", "
                "Month Due-Inst", "Month Due-Exp"}
 
 
+_COUNT_FOR = {"Delinquency%": "Delinquent", "Delinquency %": "Delinquent"}
+_AMOUNT_FOR = {"NPA% (SOH)": "NPA SOH (Cr)", "NPA % (SOH)": "NPA SOH (Cr)"}   # % by SOH -> its ₹ Cr
+
+
+def _count_column(pct_col: str, columns) -> str | None:
+    """The count behind a % column, if the table has it ("NPA%" -> "NPA")."""
+    cand = _COUNT_FOR.get(pct_col) or pct_col.replace("%", "").strip()
+    return cand if cand in columns and cand != pct_col else None
+
+
 def _auto_columns(df: pd.DataFrame, heat=(), good=()) -> list[dict]:
-    """A column spec from the column names: % -> pct, (Cr) -> crore, rupee
-    amounts -> ₹, counts -> int, everything else as text."""
+    """A column spec from the column names: % -> pct (with its count in the
+    same cell when the table has it, and the count column then not shown on
+    its own), (Cr) -> crore, rupee amounts -> ₹, counts -> int, else text."""
+    counts = {c: _count_column(c, df.columns) for c in df.columns if "%" in c}
+    amounts = {c: a for c, a in _AMOUNT_FOR.items() if c in df.columns and a in df.columns}
+    hidden = {v for v in counts.values() if v} | set(amounts.values())
     cols = []
     for c in df.columns:
+        if c in hidden:
+            continue
         num = pd.api.types.is_numeric_dtype(df[c]) and not pd.api.types.is_bool_dtype(df[c])
         if num and ("%" in c):
             f = "pct"
@@ -363,7 +422,8 @@ def _auto_columns(df: pd.DataFrame, heat=(), good=()) -> list[dict]:
             f = "int"
         else:
             f = "text"
-        cols.append({"key": c, "fmt": f, "heat": c in heat, "good_if_up": c in good})
+        cols.append({"key": c, "fmt": f, "heat": c in heat, "good_if_up": c in good, "count": counts.get(c),
+                     "amount": amounts.get(c)})
     return cols
 
 
@@ -410,16 +470,17 @@ def _x_business(c, p, m) -> list[dict]:
 
 
 def _x_products(c, p, m) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_product_analysis
-    pr = compute_product_analysis(c, as_of=m)
+    from utils import segment_column, unit_metrics
     heat = ("SMA-2%", "NPA%", "NPA% (SOH)")
     blocks = [heading("Segments and Sourcing", "Highest NPA first.")]
-    for key, label in (("segment", "Segment"), ("fuel", "Fuel Type"), ("source", "Source")):
-        df = pr.get(key, pd.DataFrame())
+    for col, label in ((segment_column(c), "Segment"), ("FUEL_TYPE", "Fuel Type"), ("SRC Name", "Source")):
+        if not col or col not in c.columns:
+            continue
+        df = unit_metrics(c, [col]).rename(columns={col: label})
         if not df.empty:
             blocks.append(_list_table(f"By {label.lower()}", df.sort_values("NPA%", ascending=False),
-                                      [label, "Accounts", "SMA-2%", "NPA%", "NPA% (SOH)", "Collection%", "SOH (Cr)"],
-                                      n=15, heat=heat, good=("Collection%",)))
+                                      [label, "Accounts", "SMA-2", "SMA-2%", "NPA", "NPA%", "NPA% (SOH)", "NPA SOH (Cr)",
+                                       "Collection%", "SOH (Cr)"], n=15, heat=heat, good=("Collection%",)))
     return blocks if len(blocks) > 1 else []
 
 

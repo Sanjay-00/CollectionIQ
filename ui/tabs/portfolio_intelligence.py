@@ -1,27 +1,27 @@
-﻿"""
-Portfolio Intelligence tab  -  pre-computed answers to the 5 portfolio questions.
-Zero AI calls. Loads instantly.
+"""
+Portfolio Intelligence tab: one question at a time. A row of views at the
+top (Regions & Branches, Executives, Segments, Exposure, Action Lists); each
+shows a one-line takeaway, ONE table in the shared format (a % and its count
+in one cell, red shading on risk), optional detail collapsed underneath, and
+a download. Overview, alerts and early warning live on the Dashboard, Alerts
+and Migration tabs. Zero AI calls.
 """
 import pandas as pd
 import streamlit as st
 
 from ui.components import (
-    _dl_btn, _safe_df, _kpi_card_html, _static_kpi_card_html,
-    _chart_card, _divider, append_total_row, _esc, heat_range, heat_style, heat_styler,
+    _dl_btn, _safe_df, _chart_card, append_total_row, _esc, heat_range, heat_style, html_table, pct_count,
 )
-from utils import order_unit_columns
-from ui.glossary import help_for, info_icon
 from config import (
-    FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS,
-    GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
+    FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS, GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
 )
 
-_STATUS_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706", "-": "#9ca3af"}
-_STATUS_ICON  = {"Improving": "🟢", "Worsening": "🔴", "Stable": "🟡", "-": "⚪"}
-_SEV_COLOR    = {"critical": "#dc2626", "high": "#f97316", "medium": "#d97706", "low": "#16a34a"}
+VIEWS = ["Regions & Branches", "Executives", "Segments", "Exposure", "Action Lists"]
+VIEW_KEY = "pi_view"
+_TOP_CHOICES = [10, 20, 50, 100, "All"]
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# ── Kept helpers (also used by the Business tab) ─────────────────────────────
 
 def _section(title: str, margin_top: str = "0px") -> None:
     st.markdown(
@@ -30,182 +30,10 @@ def _section(title: str, margin_top: str = "0px") -> None:
     )
 
 
-def _badge(status: str) -> str:
-    c = _STATUS_COLOR.get(status, "#9ca3af")
-    i = _STATUS_ICON.get(status, "⚪")
-    return (
-        f'<span style="background:{c}18;color:{c};font-size:11px;font-weight:700;'
-        f'padding:2px 9px;border-radius:12px;white-space:nowrap;">{i} {status}</span>'
-    )
-
-
-def _delta_html(val, unit: str = "pp") -> str:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return '<span style="color:#9ca3af;"> - </span>'
-    color = "#dc2626" if val > 0.1 else ("#16a34a" if val < -0.1 else "#d97706")
-    arrow = "▲" if val > 0.1 else ("▼" if val < -0.1 else "-")
-    return f'<span style="color:{color};font-weight:700;">{arrow} {abs(val):.2f}{unit}</span>'
-
-
-def _pct_or_dash(val) -> str:
-    return " - " if val is None or pd.isna(val) else f"{val:.1f}%"
-
-
-def _total_cell(col: str, val) -> str:
-    """Total-row value: "12.3%" for a ratio column, "1,234" for a count."""
-    if val == "" or val is None or (isinstance(val, float) and pd.isna(val)):
-        return ""
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
-        if col.endswith("%"):
-            return f"{val:.1f}%"
-        if col == "SOH (Cr)":
-            return f"₹{val:.2f}Cr"
-        return f"{val:,.0f}" if float(val).is_integer() else f"{val:,.2f}"
-    return _esc(val)
-
-
-def _count_delta_html(val) -> str:
-    if val is None:
-        return '<span style="color:#9ca3af;"> - </span>'
-    if val == 0:
-        return '<span style="color:#9ca3af;font-weight:700;">-</span>'
-    color = "#dc2626" if val > 0 else "#16a34a"
-    arrow = "▲" if val > 0 else "▼"
-    return f'<span style="color:{color};font-weight:700;">{arrow} {abs(int(val))}</span>'
-
-
-# ── Section 1: Portfolio Pulse ────────────────────────────────────────────────
-
-def _render_pulse(kpis: list, fig_waterfall, rr_meta: dict | None, has_prev: bool) -> None:
-    _section("Section 1: Portfolio Pulse (State of the Book in 30 Seconds)")
-
-    def _kpi_row(items):
-        return "".join(
-            _kpi_card_html(k["label"], k["value"], k["delta"], unit=k["unit"], inverse=k["inverse"], good_override=k.get("good_override"))
-            for k in items
-        )
-
-    st.markdown(f'<div class="kpi-row">{_kpi_row(kpis[:4])}</div>', unsafe_allow_html=True)
-    if len(kpis) > 4:
-        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[4:8])}</div>', unsafe_allow_html=True)
-    if len(kpis) > 8:
-        st.markdown(f'<div class="kpi-row" style="margin-top:8px;">{_kpi_row(kpis[8:])}</div>', unsafe_allow_html=True)
-
-    col_wf, col_npa = st.columns([3, 1])
-    with col_wf:
-        _chart_card(fig_waterfall)
-
-    with col_npa:
-        if rr_meta and rr_meta.get("matched_count", 0) > 0:
-            npa_form = rr_meta["npa_formation_rate"]
-            rbwd     = rr_meta["roll_backward_rate"]
-            rfwd     = rr_meta["roll_forward_rate"]
-            for label, val, color, tip in [
-                ("Fresh NPA Formation", f"{npa_form:.1f}%", "#991b1b", "Non-NPA → NPA this month"),
-                ("Roll-Backward Rate",  f"{rbwd:.1f}%",     "#16a34a", "Accounts rescued"),
-                ("Roll-Forward Rate",   f"{rfwd:.1f}%",     "#dc2626", "Accounts worsened"),
-            ]:
-                st.markdown(
-                    _static_kpi_card_html(label, val, tip, color=color, value_style="font-size:22px;", card_style="margin-bottom:8px;"),
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.info("Upload previous month file to see roll rates and NPA formation rate.")
-
-
-# ── Section 2: Region Scorecard ───────────────────────────────────────────────
-
-_REGION_RISK_COLS = ("SMA-2", "SMA-2%", "NPA", "NPA%", "NPA% (SOH)", "Delinquent", "Delinquency%", "Roll Fwd%")
-# Total row: the true all-region ratio (sum / sum), never an average of rows.
-_REGION_RATIO_COLS = {"SMA-2%": ("SMA-2", "Accounts"), "NPA%": ("NPA", "Accounts"),
-                      "Delinquency%": ("Delinquent", "Accounts")}
-_PREV_DELINQ_HELP = ("Delinquency % in last month's file, for the same name as it appeared in that file "
-                     "(an executive's figure is the book they held last month).")
-_DELTA_DELINQ_HELP = "This month minus last month, in percentage points. Positive means worse."
-
-def _render_region_scorecard(df: pd.DataFrame, has_prev: bool) -> None:
-    display_cols = [
-        "Region", "Accounts",
-        "SMA-2", "SMA-2%",
-        "NPA", "NPA%", "NPA% (SOH)",
-        "Delinquent", "Delinquency%",
-        *( ["Prev Delinquency%", "Δ Delinquency%", "Δ SMA-2%", "Δ NPA%"] if has_prev else []),
-        "Collection%", "Strike%", "SOH (Cr)",
-        *( ["Roll Fwd%", "Roll Bwd%"] if "Roll Fwd%" in df.columns and df["Roll Fwd%"].notna().any() else []),
-        "Status",
-    ]
-    display_cols = order_unit_columns([c for c in display_cols if c in df.columns], ["Region"])
-
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:7px 12px;font-size:11px;'
-        f'text-align:{"left" if c in ("Region","Status") else "right"};white-space:nowrap;">{c}'
-        f'{info_icon({"Prev Delinquency%": _PREV_DELINQ_HELP, "Δ Delinquency%": _DELTA_DELINQ_HELP}.get(c), color="#fde68a")}</th>'
-        for c in display_cols
-    )
-
-    rows_html = ""
-    df_display = append_total_row(df[display_cols], ratio_cols=_REGION_RATIO_COLS)
-    n_data_rows = len(df)
-    # Risk columns: red shading by rank within the column, never green.
-    heat = {c: heat_range(df[c].tolist()) for c in _REGION_RISK_COLS if c in df.columns}
-    for i, row in df_display.iterrows():
-        if i == n_data_rows:
-            cells = "".join(
-                f'<td style="padding:7px 12px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;">{_total_cell(c, row[c])}</td>'
-                for c in display_cols
-            )
-            rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
-            continue
-        status = str(row.get("Status", "-"))
-        row_bg = "#fff5f5" if status == "Worsening" else ("#f0fdf4" if status == "Improving" else "#fff")
-        cells = ""
-        for col in display_cols:
-            val = row.get(col)
-            align = "left" if col in ("Region", "Status") else "right"
-            style = f"padding:7px 12px;font-size:12px;text-align:{align};"
-
-            if col == "Region":
-                cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
-            elif col == "Status":
-                cells += f'<td style="{style}">{_badge(str(val))}</td>'
-            elif col in ("Δ NPA%", "Δ SMA-2%", "Δ Delinquency%"):
-                cells += f'<td style="{style}">{_delta_html(val)}</td>'
-            elif col == "Prev Delinquency%":
-                cells += f'<td style="{style}color:#6b7280;">{_pct_or_dash(val)}</td>'
-            elif col in heat:
-                missing = val is None or pd.isna(val)
-                display = " - " if missing else (f"{val:.1f}%" if col.endswith("%") else f"{int(val):,}")
-                cells += f'<td style="{style}{heat_style(val, heat[col])}">{display}</td>'
-            elif col == "Roll Bwd%":
-                c = "#16a34a" if (val or 0) > 10 else "#d97706"
-                cells += f'<td style="{style}color:{c};font-weight:600;">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
-            elif col in ("Collection%", "Strike%"):
-                cells += f'<td style="{style}">{val:.1f}%</td>' if val is not None else f'<td style="{style}"> - </td>'
-            elif col == "SOH (Cr)":
-                cells += f'<td style="{style}">₹{val:.2f}Cr</td>'
-            elif isinstance(val, (int, float)) and not pd.isna(val):
-                cells += f'<td style="{style}">{int(val):,}</td>'
-            else:
-                cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
-
-        rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #f0f0f0;">{cells}</tr>'
-
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-        f'</table></div>',
-        unsafe_allow_html=True,
-    )
-    _dl_btn(df, "region_scorecard.xlsx", "dl_region")
-
-
-# ── Section 2b: Overdue vs Month Demand Collection ────────────────────────────
-
 def _render_overdue_demand(scorecard_data: dict) -> None:
     from analysis.portfolio_intelligence import compute_overdue_demand_chart, OVERDUE_DEMAND_IDENTITY_COLS
 
-    _section("Section 2b: Overdue vs Month Demand Collection", margin_top="24px")
+    _section("Overdue vs Month Demand Collection", margin_top="6px")
     st.caption(
         "A payment clears last month's carried-over overdue FIRST; only what's left over "
         "counts against this month's own EMI demand. 100% means nothing was outstanding on "
@@ -293,338 +121,13 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
             _dl_btn(df, f"overdue_demand_{key}.xlsx", f"dl_overdue_demand_{key}")
 
 
-def _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp):
-    _section("Section 2: Who Needs Attention?  (Region / Branch / Executive)", margin_top="24px")
-
-    sub_tabs = st.tabs(["Region View", "Branch Quadrant", "Executive Recovery", "NPA & SMA-2 Comparison"])
-
-    with sub_tabs[0]:
-        if not region_df.empty:
-            n_wors = (region_df["Status"] == "Worsening").sum() if "Status" in region_df.columns else 0
-            n_impr = (region_df["Status"] == "Improving").sum() if "Status" in region_df.columns else 0
-            n_stbl = len(region_df) - n_wors - n_impr
-            c1, c2, c3 = st.columns(3)
-            for col, label, val, color in [
-                (c1, "Worsening Regions", n_wors, "#dc2626"),
-                (c2, "Improving Regions", n_impr, "#16a34a"),
-                (c3, "Stable Regions", n_stbl, "#d97706"),
-            ]:
-                with col:
-                    st.markdown(_static_kpi_card_html(label, val, color=color), unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
-            _render_region_scorecard(region_df, has_prev)
-        else:
-            st.info("No region data (RegionName column not found).")
-
-    with sub_tabs[1]:
-        if not branch_df.empty:
-            col_chart, col_legend = st.columns([3, 1])
-            with col_chart:
-                _chart_card(fig_quadrant)
-            with col_legend:
-                for label, color, desc in [
-                    ("Intervene Now", "#dc2626", "High NPA, Low Collection"),
-                    ("Watch",         "#f97316", "High NPA, High Collection"),
-                    ("Underperforming", "#d97706", "Low NPA, Low Collection"),
-                    ("Healthy",       "#16a34a", "Low NPA, High Collection"),
-                ]:
-                    st.markdown(
-                        f'<div style="border-left:4px solid {color};padding:6px 10px;'
-                        f'margin-bottom:8px;background:{color}0D;border-radius:0 6px 6px 0;">'
-                        f'<div style="font-size:12px;font-weight:700;color:{color};">{label}</div>'
-                        f'<div style="font-size:11px;color:#6b7280;">{desc}</div></div>',
-                        unsafe_allow_html=True,
-                    )
-                st.caption("Bubble size = SOH. Dashed lines = portfolio median.")
-
-            st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-top:12px;">Branch Rankings (Sortable)</div>', unsafe_allow_html=True)
-            with st.expander(f"View all {len(branch_df)} branches", expanded=False):
-                # Explicit subset (adds Region, keeps everything else this table
-                # already showed) -- compute_branch_quadrant's df also carries
-                # Strike% now (needed for the report's own branch table), which
-                # this dashboard view deliberately does NOT show, so a column
-                # added for one consumer doesn't silently change another's.
-                _branch_display_cols = [c for c in [
-                    "Rank", "Branch", "Region", "Accounts", "Collection%", "SMA-2%", "NPA%", "NPA% (SOH)",
-                    "Delinquent", "Delinquency%", "Prev Delinquency%", "Δ Delinquency%",
-                    "Hard Bucket%", "SOH (Cr)", "Roll Fwd%", "Not Paying 3M+", "Not Paying 3M+%", "Concern Score",
-                ] if c in branch_df.columns]
-                _branch_display_df = branch_df[order_unit_columns(_branch_display_cols, ["Rank", "Branch", "Region"])]
-                _col_help = {
-                    "Not Paying 3M+": help_for("Not Paying 3M+"),
-                    "Not Paying 3M+%": help_for("Not Paying 3M+%"),
-                    "NPA% (SOH)": help_for("NPA% (SOH)"),
-                    "Concern Score": help_for("Concern Score"),
-                    "Hard Bucket%": help_for("Hard Bucket%"),
-                    "Delinquent": help_for("Delinquent Accounts"),
-                    "Delinquency%": "% of loans with any EMI or charge overdue (Arrears/EMI above 0).",
-                    "Prev Delinquency%": _PREV_DELINQ_HELP,
-                    "Δ Delinquency%": _DELTA_DELINQ_HELP,
-                }
-                _branch_risk_cols = ("SMA-2%", "NPA%", "Delinquent", "Delinquency%", "Hard Bucket%",
-                                     "Roll Fwd%", "Not Paying 3M+%", "NPA% (SOH)", "Concern Score")
-                st.dataframe(
-                    heat_styler(append_total_row(_branch_display_df), _branch_risk_cols),
-                    use_container_width=True, hide_index=True,
-                    column_config={c: st.column_config.Column(help=h) for c, h in _col_help.items() if c in _branch_display_cols},
-                )
-                _dl_btn(_branch_display_df, "branch_quadrant.xlsx", "dl_branch_quad")
-        else:
-            st.info("No branch data (Unit column not found).")
-
-    with sub_tabs[2]:
-        if not exec_recovery_df.empty:
-            st.caption("Accounts rescued = moved from NPA/SMA-2/SMA-1 to a better bucket vs last month. Net Recovery = Rescued − Slipped.")
-            _render_exec_recovery(exec_recovery_df)
-        elif not has_prev:
-            st.info("Upload previous month file to see the executive recovery leaderboard.")
-        else:
-            st.info("No executive-level prev_bucket data available.")
-
-    with sub_tabs[3]:
-        _render_npa_sma2_comparison(npa_sma2_cmp or {}, has_prev)
-
-
-# ── Section 2: NPA & SMA-2 Comparison ────────────────────────────────────────
-
-def _render_npa_sma2_comparison(cmp_data: dict, has_prev: bool) -> None:
-    import plotly.graph_objects as go
-
-    if not cmp_data:
-        st.info("No comparison data available.")
-        return
-
-    dim_tabs_avail = []
-    if "region"    in cmp_data: dim_tabs_avail.append(("Region",    "RegionName", "region"))
-    if "branch"    in cmp_data: dim_tabs_avail.append(("Branch",    "Unit",       "branch"))
-    if "executive" in cmp_data: dim_tabs_avail.append(("Executive", "MNT NAME",   "executive"))
-
-    if not dim_tabs_avail:
-        st.info("No dimension data found.")
-        return
-
-    dim_sub = st.tabs([t[0] for t in dim_tabs_avail])
-    for tab, (label, col, key) in zip(dim_sub, dim_tabs_avail):
-        with tab:
-            df = cmp_data[key].copy()
-            names = df[col].tolist()
-
-            # ── grouped bar chart ────────────────────────────────────────────
-            fig = go.Figure()
-
-            def _bar(name, y_vals, color, text_color="#fff"):
-                y_clean = [v if v is not None and not (isinstance(v, float) and pd.isna(v)) else 0 for v in y_vals]
-                return go.Bar(
-                    name=name, x=names, y=y_clean,
-                    marker=dict(color=color, line=dict(width=0)),
-                    text=[str(int(v)) if v else "" for v in y_clean],
-                    textposition="inside",
-                    insidetextanchor="middle",
-                    textfont=dict(size=11, color=text_color, family="Arial Black"),
-                    hovertemplate=f"<b>%{{x}}</b><br>{name}: %{{y}}<extra></extra>",
-                )
-
-            fig.add_trace(_bar("NPA (Curr)", df["NPA (Curr)"].tolist(), "#dc2626"))
-            if has_prev and df["NPA (Prev)"].notna().any():
-                fig.add_trace(_bar("NPA (Prev)", df["NPA (Prev)"].tolist(), "#fca5a5", "#374151"))
-            fig.add_trace(_bar("SMA-2 (Curr)", df["SMA-2 (Curr)"].tolist(), "#ea580c"))
-            if has_prev and df["SMA-2 (Prev)"].notna().any():
-                fig.add_trace(_bar("SMA-2 (Prev)", df["SMA-2 (Prev)"].tolist(), "#fed7aa", "#374151"))
-
-            fig.update_layout(
-                barmode="group",
-                bargap=0.20, bargroupgap=0.06,
-                title=dict(text=f"NPA & SMA-2 Count: Current vs Previous  ({label})", font=dict(size=13, color="#111"), x=0),
-                xaxis=dict(tickangle=-30, showgrid=False, tickfont=dict(color="#374151")),
-                yaxis=dict(title="Account Count", showgrid=True, gridcolor="#f3f4f6", tickfont=dict(color="#374151")),
-                plot_bgcolor="white", paper_bgcolor="white",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=11)),
-                margin=dict(l=20, r=20, t=60, b=90),
-                height=430,
-            )
-            _chart_card(fig)
-
-            # ── delta table ──────────────────────────────────────────────────
-            st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin:12px 0 6px;">Detailed Comparison Table</div>', unsafe_allow_html=True)
-
-            identity_cols = {"region": [], "branch": ["Region"], "executive": ["Unit", "Region"]}.get(key, [])
-            show_cols = [col, *identity_cols, "Accounts", "Delinquent", "Delinquency%"]
-            if has_prev:
-                show_cols += ["Prev Delinquency%", "Δ Delinquency%"]
-            show_cols += ["SMA-2 (Curr)"]
-            if has_prev:
-                show_cols += ["SMA-2 (Prev)"]
-            show_cols += ["NPA (Curr)"]
-            if has_prev:
-                show_cols += ["NPA (Prev)", "SMA-2 Δ", "SMA-2 Δ%", "NPA Δ", "NPA Δ%"]
-            show_cols += ["Roll Fwd%", "Roll Bwd%"]
-
-            th = "".join(
-                f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
-                f'text-align:{"left" if c in (col, *identity_cols) else "center"};white-space:nowrap;">{c}</th>'
-                for c in show_cols if c in df.columns
-            )
-            rows_html = ""
-            _show_cols_present = [c for c in show_cols if c in df.columns]
-            df_display = append_total_row(df[_show_cols_present])
-            n_data_rows = len(df)
-            heat = {c: heat_range(df[c].tolist()) for c in ("NPA (Curr)", "SMA-2 (Curr)", "Roll Fwd%", "Delinquent", "Delinquency%") if c in df.columns}
-            for i, row in df_display.iterrows():
-                if i == n_data_rows:
-                    cells = "".join(
-                        f'<td style="padding:6px 10px;font-size:12px;text-align:{"left" if c in (col, *identity_cols) else "center"};'
-                        f'font-weight:800;border-top:2px solid #FFC000;">{_esc(row[c])}</td>'
-                        for c in _show_cols_present
-                    )
-                    rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
-                    continue
-                cells = ""
-                for c in _show_cols_present:
-                    val = row[c]
-                    align = "left" if c in (col, *identity_cols) else "center"
-                    style = f"padding:6px 10px;font-size:12px;text-align:{align};"
-
-                    if c == col:
-                        cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
-                    elif c in ("Region", "Unit"):
-                        cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
-                    elif c in ("NPA Δ", "SMA-2 Δ"):
-                        if val is None or (isinstance(val, float) and pd.isna(val)):
-                            cells += f'<td style="{style}color:#9ca3af;"> - </td>'
-                        else:
-                            color = "#dc2626" if val > 0 else ("#16a34a" if val < 0 else "#9ca3af")
-                            arrow = "▲" if val > 0 else ("▼" if val < 0 else "-")
-                            cells += f'<td style="{style}color:{color};font-weight:700;">{arrow} {abs(int(val))}</td>'
-                    elif c in ("NPA Δ%", "SMA-2 Δ%"):
-                        if val is None or (isinstance(val, float) and pd.isna(val)):
-                            cells += f'<td style="{style}color:#9ca3af;"> - </td>'
-                        else:
-                            color = "#dc2626" if val > 0 else ("#16a34a" if val < 0 else "#9ca3af")
-                            arrow = "▲" if val > 0 else ("▼" if val < 0 else "-")
-                            cells += f'<td style="{style}color:{color};font-weight:700;">{arrow} {abs(val):.1f}%</td>'
-                    elif c == "Delinquency%":
-                        cells += f'<td style="{style}{heat_style(val, heat[c])}">{_pct_or_dash(val)}</td>'
-                    elif c == "Prev Delinquency%":
-                        cells += f'<td style="{style}color:#6b7280;">{_pct_or_dash(val)}</td>'
-                    elif c == "Δ Delinquency%":
-                        cells += f'<td style="{style}">{_delta_html(val)}</td>'
-                    elif c in ("NPA (Curr)", "SMA-2 (Curr)", "Delinquent"):
-                        cells += f'<td style="{style}font-weight:700;{heat_style(val, heat[c])}">{int(val):,}</td>'
-                    elif c == "Roll Fwd%":
-                        cells += f'<td style="{style}{heat_style(val, heat[c])}">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
-                    elif c == "Roll Bwd%":
-                        clr = "#16a34a" if (val or 0) > 10 else "#d97706"
-                        cells += f'<td style="{style}color:{clr};font-weight:600;">{val:.1f}%</td>' if val is not None and not pd.isna(val) else f'<td style="{style}color:#9ca3af;"> - </td>'
-                    elif isinstance(val, (int, float)) and not pd.isna(val):
-                        cells += f'<td style="{style}">{int(val):,}</td>'
-                    else:
-                        cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
-                rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
-
-            st.markdown(
-                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e5e7eb;">'
-                f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-                f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-                f'</table></div>',
-                unsafe_allow_html=True,
-            )
-            _dl_btn(df[[c for c in show_cols if c in df.columns]], f"npa_sma2_{key}.xlsx", f"dl_cmp_{key}")
-
-            if not has_prev:
-                st.caption("Upload previous month file to see Δ columns.")
-
-
-# ── Section 3: Good vs Bad ────────────────────────────────────────────────────
-
-def _render_good_bad(good_bad: dict, has_prev: bool) -> None:
-    _section("Section 3: The Honest Mirror (What Went Right / Concerns)", margin_top="24px")
-    good = good_bad.get("good", [])
-    bad  = good_bad.get("bad", [])
-
-    if not good and not bad:
-        st.info("Upload both current and previous month files to see the Good vs Bad summary.")
-        return
-
-    col_g, col_b = st.columns(2)
-    with col_g:
-        items = "".join(
-            f'<li style="padding:6px 0;font-size:13px;border-bottom:1px solid #dcfce7;">{_esc(item)}</li>'
-            for item in good
-        ) or '<li style="color:#9ca3af;font-style:italic;">No notable improvements detected.</li>'
-        st.markdown(
-            f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;">'
-            f'<div style="font-size:13px;font-weight:700;color:#16a34a;margin-bottom:10px;">🟢 What Went Right</div>'
-            f'<ul style="list-style:none;padding:0;margin:0;">{items}</ul></div>',
-            unsafe_allow_html=True,
-        )
-    with col_b:
-        items = "".join(
-            f'<li style="padding:6px 0;font-size:13px;border-bottom:1px solid #fee2e2;">{_esc(item)}</li>'
-            for item in bad
-        ) or '<li style="color:#9ca3af;font-style:italic;">No notable concerns detected.</li>'
-        st.markdown(
-            f'<div style="background:#fff5f5;border:1px solid #fecaca;border-radius:10px;padding:16px;">'
-            f'<div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:10px;">🔴 Concerns This Month</div>'
-            f'<ul style="list-style:none;padding:0;margin:0;">{items}</ul></div>',
-            unsafe_allow_html=True,
-        )
-
-
-# ── Section 4: Risk Flag Deep Dive ────────────────────────────────────────────
-
-def _render_risk_flags(flag_df: pd.DataFrame) -> None:
-    _section("Section 4: Risk Flag Deep Dive", margin_top="24px")
-
-    if flag_df.empty:
-        st.info("No risk flag data available.")
-        return
-
-    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    flag_df = flag_df.copy()
-    flag_df["_sev_ord"] = flag_df["Severity"].map(lambda s: sev_order.get(s, 9))
-    flag_df = flag_df.sort_values("_sev_ord").drop(columns=["_sev_ord"])
-
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:7px 12px;font-size:11px;'
-        f'text-align:{"left" if h == "Risk Type" else "center"};white-space:nowrap;">{h}</th>'
-        for h in ["Risk Type", "Accounts", "SOH Exposure", "Last Month", "Δ vs Last Month"]
-    )
-
-    rows_html = ""
-    for _, row in flag_df.iterrows():
-        sev   = row.get("Severity", "medium")
-        color = _SEV_COLOR.get(sev, "#d97706")
-        cnt   = int(row["Accounts"])
-        soh   = row["SOH (Cr)"]
-        prev  = row["Last Month"]
-        delta = row["Δ"]
-        rows_html += (
-            f'<tr style="border-bottom:1px solid #f0f0f0;">'
-            f'<td style="padding:7px 12px;font-size:12px;font-weight:700;border-left:3px solid {color};">{row["Risk Type"]}</td>'
-            f'<td style="padding:7px 12px;font-size:14px;font-weight:800;color:{color};text-align:center;">{cnt}</td>'
-            f'<td style="padding:7px 12px;font-size:12px;text-align:center;">₹{soh:.2f}Cr</td>'
-            f'<td style="padding:7px 12px;font-size:12px;color:#6b7280;text-align:center;">{int(prev) if prev is not None else " - "}</td>'
-            f'<td style="padding:7px 12px;text-align:center;">{_count_delta_html(delta)}</td>'
-            f'</tr>'
-        )
-
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-        f'</table></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.caption("Open the 🚨 Alerts tab to drill into the accounts behind any of these flags.")
-
-
-# ── Section 5: Vintage & Sourcing ─────────────────────────────────────────────
-
 def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
     if df.empty:
         return
-    headers = list(df.columns)
+    # A % and its count share one cell ("11.9% (37)"); the count columns
+    # aren't shown on their own.
+    counts = {p: c for p, c in ((npa_col, "NPA Count"), ("SMA-2%", "SMA-2 Count")) if p in df.columns and c in df.columns}
+    headers = [c for c in df.columns if c not in counts.values()]
     # position:sticky keeps the header row visible while scrolling a long
     # table (e.g. Sourcing Channel routinely has 1,000+ rows on a real file)
     # -- needs its own background since sticky content scrolls underneath it.
@@ -654,7 +157,8 @@ def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
             align = "left" if i2 == 0 else "right"
             style = f"padding:6px 10px;font-size:12px;text-align:{align};"
             if col in heat:
-                cells += f'<td style="{style}{heat_style(val, heat[col])}">{val:.1f}%</td>'
+                shown = pct_count(val, row.get(counts[col])) if col in counts else f"{val:.1f}%"
+                cells += f'<td style="{style}{heat_style(val, heat[col])}">{shown}</td>'
             elif isinstance(val, float) and "%" in col:
                 cells += f'<td style="{style}">{val:.1f}%</td>'
             elif isinstance(val, float) and any(k in col for k in ("SOH", "Loan", "Avg")):
@@ -710,400 +214,375 @@ def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
     return agg.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
 
 
-def _render_vintage_sourcing(product_data: dict) -> None:
-    # Disbursement Vintage moved to the Business tab (ui/tabs/business.py) --
-    # it's a time-based Ag_Date-cohort view, the same axis as that tab's new
-    # advances trend, not a static portfolio-composition breakdown like the
-    # 3 sub-tabs remaining here.
-    _section("Section 5: Sourcing & Product Analysis", margin_top="24px")
+# ── Cached data for the views (one entry per filter selection) ───────────────
 
-    if not product_data:
-        st.info("No segment, fuel type, or source channel data found in this file.")
-        return
-
-    tabs_avail = []
-    if "source"  in product_data: tabs_avail.append(("Sourcing Channel", "source"))
-    if "segment" in product_data: tabs_avail.append(("Vehicle Segment", "segment"))
-    if "fuel"    in product_data: tabs_avail.append(("Fuel Type", "fuel"))
-
-    if not tabs_avail:
-        st.info("Insufficient data for product analysis.")
-        return
-
-    sub_tabs = st.tabs([t[0] for t in tabs_avail])
-    for sub_tab, (label, key) in zip(sub_tabs, tabs_avail):
-        with sub_tab:
-            df = product_data[key]
-            if key == "source":
-                st.caption(
-                    "DSA/sourcing channel NPA%. "
-                    "Politically sensitive but extremely valuable: bad sources get delisted."
-                )
-                _render_product_table(df)
-            else:
-                _render_product_table(df)
-            _dl_btn(df, f"product_{key}.xlsx", f"dl_prod_{key}")
+@st.cache_data(show_spinner=False, max_entries=24)
+def _cached_units(_c, _p, data_version: int, filter_key: str, grain: str) -> pd.DataFrame:
+    from analysis.summary import unit_table
+    return unit_table(_c, _p, grain)
 
 
-# ── Section 6: Concentration & Exposure ───────────────────────────────────────
+@st.cache_data(show_spinner=False, max_entries=24)
+def _cached_totals(_c, _p, data_version: int, filter_key: str, branch: str = "All") -> dict:
+    """The Total row: the whole view (or one branch) as one unit -- sum over
+    sum, never an average of rows -- with its own change against last month."""
+    from utils import _unit_key, unit_metrics
+    if branch != "All":
+        _c = _c[_c["Unit"].astype(str) == branch]
+        _p = _p[_p["Unit"].map(_unit_key) == _unit_key(branch)] if len(_p) and "Unit" in _p.columns else _p
+    m = unit_metrics(_c, [])
+    if m.empty:
+        return {}
+    t = m.iloc[0].to_dict()
+    pm = unit_metrics(_p, []) if _p is not None and len(_p) else pd.DataFrame()
+    if not pm.empty:
+        t["Δ Delinquency%"] = round(t["Delinquency%"] - float(pm.iloc[0]["Delinquency%"]), 2)
+    return t
 
-def _render_exec_recovery(df: pd.DataFrame) -> None:
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def _cached_segments(_c, data_version: int, filter_key: str, dim_col: str, breakdown: str, branch: str) -> pd.DataFrame:
+    from utils import unit_metrics
+    d = _c if branch == "All" else _c[_c["Unit"].astype(str) == branch]
+    by = {"Together": [dim_col], "By branch": [dim_col, "Unit"], "By executive": [dim_col, "MNT NAME", "Unit"]}[breakdown]
+    by = [c for c in by if c in d.columns]
+    m = unit_metrics(d, by, min_accounts=1 if breakdown == "Together" else 3)
+    return m.rename(columns={"Unit": "Branch", "MNT NAME": "Executive", dim_col: "Name"}) if not m.empty else m
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_delinquent(_c, data_version: int, filter_key: str) -> pd.DataFrame:
+    from analysis.portfolio_intelligence import compute_top_accounts
+    return compute_top_accounts(_c, n=len(_c))[0]
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_fleet(_c, data_version: int, filter_key: str) -> dict:
+    from analysis.portfolio_intelligence import compute_fleet_exposure
+    return compute_fleet_exposure(_c, top_n=None)
+
+
+# ── Shared pieces ────────────────────────────────────────────────────────────
+
+def _with_total_row(df: pd.DataFrame, total: dict | None) -> pd.DataFrame:
+    """The table as downloaded: its rows plus the same Total row as on screen."""
+    if not total:
+        return df
+    return pd.concat([df, pd.DataFrame([{k: v for k, v in total.items() if k in df.columns}])], ignore_index=True)
+
+
+def _takeaway(text: str) -> None:
+    st.markdown(f'<div style="border-left:4px solid #FFC000;background:#fffbea;padding:8px 12px;'
+                f'border-radius:6px;font-size:13.5px;color:#111827;margin:4px 0 10px 0;">{text}</div>',
+                unsafe_allow_html=True)
+
+
+def _move(v) -> str:
+    if v is None or pd.isna(v):
+        return ""
+    return "unchanged" if v == 0 else f"{'up' if v > 0 else 'down'} {abs(v):.1f} pts"
+
+
+def _list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows") -> pd.DataFrame:
+    """Top X, a branch filter and "top X in each branch", for any list
+    already sorted with the most important rows first."""
+    c1, c2, c3 = st.columns([1, 1.4, 1.6])
+    n = c1.selectbox("Show top", _TOP_CHOICES, index=0, key=f"{key}_n")
+    branches = ["All"] + (sorted(df[branch_col].dropna().astype(str).unique()) if branch_col in df.columns else [])
+    b = c2.selectbox("Branch", branches, key=f"{key}_b")
+    c3.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
+    each = c3.checkbox(f"Top {n} in each branch" if n != "All" else "Group by branch", key=f"{key}_each",
+                       disabled=b != "All" or branch_col not in df.columns)
+    d = df if b == "All" else df[df[branch_col].astype(str) == b]
+    if each and b == "All" and branch_col in d.columns:
+        d = d.groupby(branch_col, sort=True, group_keys=False).head(n if n != "All" else len(d))
+        d = d.sort_values(branch_col, kind="stable")
+    elif n != "All":
+        d = d.head(n)
+    st.caption(f"Showing {len(d):,} of {len(df):,} {noun}.")
+    return d
+
+
+_RENAME = {"RegionName": "Region", "Unit": "Branch", "MNT NAME": "Executive", "curr_bucket": "Bucket",
+           "SegmentName": "Segment", "Cust Name": "Customer", "Cust Mob No": "Mobile"}
+
+
+# ── View 1: Regions & Branches ───────────────────────────────────────────────
+
+_SORTS = {  # label -> (column, ascending)
+    "Delinquency % (worst first)": ("Delinquency%", False),
+    "Change in delinquency (biggest rise)": ("Δ Delinquency%", False),
+    "NPA % (worst first)": ("NPA%", False),
+    "NPA % by SOH (worst first)": ("NPA% (SOH)", False),
+    "SMA-2 % (worst first)": ("SMA-2%", False),
+    "Collection % (lowest first)": ("Collection%", True),
+    "Accounts (largest first)": ("Accounts", False),
+}
+
+
+def unit_columns(name: str, extra: list[str] = ()) -> list[dict]:
+    """The shared column set for a region / branch / executive table."""
+    return [
+        {"key": name, "bold": True},
+        *[{"key": e} for e in extra],
+        {"key": "Accounts", "fmt": "int"},
+        {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent", "heat": True,
+         "help": "Loans with any EMI or charge overdue: % of accounts (number of loans)."},
+        {"key": "Δ Delinquency%", "label": "Change vs last month", "fmt": "pp"},
+        {"key": "SMA-2%", "label": "SMA-2", "fmt": "pct_count", "count": "SMA-2", "heat": True},
+        {"key": "NPA%", "label": "NPA", "fmt": "pct_count", "count": "NPA", "heat": True},
+        {"key": "NPA% (SOH)", "label": "NPA by SOH", "fmt": "pct_cr", "amount": "NPA SOH (Cr)", "heat": True,
+         "help": "SOH of NPA loans as % of total SOH (₹ Cr of NPA SOH)."},
+        {"key": "Hard Bucket%", "label": "Hard Bucket", "fmt": "pct_count", "count": "Hard Bucket", "heat": True},
+        {"key": "Collection%", "label": "Collection", "fmt": "pct"},
+        {"key": "Strike%", "label": "Strike", "fmt": "pct"},
+        {"key": "Roll Fwd%", "label": "Rolled forward", "fmt": "pct_count", "count": "Slipped", "heat": True,
+         "help": "Loans in a worse bucket than last month: % of loans with both months' bucket (number of loans)."},
+    ]
+
+
+def _total_row(name: str, t: dict, label: str = "Total") -> dict:
+    if not t:
+        return {}
+    return {name: label, "Accounts": t["Accounts"], "Delinquency%": t["Delinquency%"], "Delinquent": t["Delinquent"],
+            "Δ Delinquency%": t.get("Δ Delinquency%"), "SOH (Cr)": t.get("SOH (Cr)"),
+            "SMA-2%": t["SMA-2%"], "SMA-2": t["SMA-2"], "NPA%": t["NPA%"], "NPA": t["NPA"],
+            "NPA% (SOH)": t["NPA% (SOH)"], "NPA SOH (Cr)": t.get("NPA SOH (Cr)"), "Hard Bucket%": t["Hard Bucket%"], "Hard Bucket": t["Hard Bucket"],
+            "Collection%": t["Collection%"], "Strike%": t["Strike%"],
+            "Roll Fwd%": t.get("Roll Fwd%"), "Slipped": t.get("Slipped")}
+
+
+def units_table_html(df: pd.DataFrame, name: str, total: dict | None = None, extra=()) -> str:
+    cols = [c for c in unit_columns(name, list(extra)) if c["key"] in df.columns]
+    return html_table(df, cols, total=total, max_height=560 if len(df) > 15 else None)
+
+
+def _units_takeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
+    top = df.iloc[0]
+    noun = name.lower() + ("es" if name == "Branch" else "s")
+    text = f"<b>{_esc(top[name])}</b> is first on this list: delinquency {top['Delinquency%']:.1f}% " \
+           f"({int(top['Delinquent']):,} loans)"
+    if pd.notna(top.get("Δ Delinquency%")):
+        text += f", {_move(top['Δ Delinquency%'])} on last month"
+    text += f"; NPA {top['NPA%']:.1f}% ({int(top['NPA']):,})."
+    if "Δ Delinquency%" in df.columns and df["Δ Delinquency%"].notna().any():
+        worse = int((df["Δ Delinquency%"] > 0).sum())
+        text += f" {worse} of {len(df)} {noun} got worse since last month."
+    return text
+
+
+def _view_units(c, p, data_version, filter_key, fig_quadrant, overdue) -> None:
+    a, b = st.columns([1, 2])
+    level = a.radio("Show", ["Region", "Branch"], horizontal=True, key="pi_level")
+    sort = b.selectbox("Sort by", list(_SORTS), key="pi_units_sort")
+    df = _cached_units(c, p, data_version, filter_key, level)
     if df.empty:
+        st.info("No region/branch columns in this file.")
         return
-    headers = list(df.columns)
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:7px 10px;font-size:11px;'
-        f'text-align:{"left" if h == "Executive" else "center"};white-space:nowrap;">{h}</th>'
-        for h in headers
-    )
-    rows_html = ""
-    df_display = append_total_row(df)
-    n_data_rows = len(df)
-    for i, row in df_display.iterrows():
-        if i == n_data_rows:
-            cells = "".join(
-                f'<td style="padding:7px 10px;font-size:12px;text-align:{"left" if h == "Executive" else "center"};'
-                f'font-weight:800;border-top:2px solid #FFC000;">{_esc(row[h])}</td>'
-                for h in headers
-            )
-            rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
-            continue
-        net = row.get("Net Recovery", 0)
-        row_bg = "#f0fdf4" if net > 0 else ("#fff5f5" if net < 0 else "#fff")
-        cells = ""
-        for col in headers:
-            val = row[col]
-            align = "left" if col == "Executive" else "center"
-            style = f"padding:7px 10px;font-size:12px;text-align:{align};"
-            if col == "Net Recovery":
-                c = "#16a34a" if val > 0 else ("#dc2626" if val < 0 else "#9ca3af")
-                cells += f'<td style="{style}font-weight:800;font-size:14px;color:{c};">{val:+d}</td>'
-            elif col == "Rescued":
-                cells += f'<td style="{style}color:#16a34a;font-weight:700;">{val}</td>'
-            elif col == "Slipped":
-                cells += f'<td style="{style}color:#dc2626;font-weight:700;">{val}</td>'
-            elif col in ("Collection%", "Strike%"):
-                cells += f'<td style="{style}">{val:.1f}%</td>'
-            elif isinstance(val, int):
-                cells += f'<td style="{style}">{val:,}</td>'
-            else:
-                cells += f'<td style="{style}">{_esc(val)}</td>'
-        rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #f0f0f0;">{cells}</tr>'
-
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody></table></div>',
-        unsafe_allow_html=True,
-    )
-    _dl_btn(df, "executive_recovery.xlsx", "dl_exec_recovery")
+    col, asc = _SORTS[sort]
+    df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
+    _takeaway(_units_takeaway(df, level, col))
+    total = _total_row(level, _cached_totals(c, p, data_version, filter_key))
+    st.markdown(units_table_html(df, level, total, extra=["Region"] if level == "Branch" else []), unsafe_allow_html=True)
+    _dl_btn(_with_total_row(df, total), f"{level.lower()}_table.xlsx", f"dl_pi_units_{level}")
+    if level == "Branch" and fig_quadrant is not None:
+        with st.expander("Chart: Collection % vs NPA % by branch (bubble = SOH)"):
+            _chart_card(fig_quadrant)
+            st.caption("Top-left (high NPA, low collection) needs action first. Dashed lines = portfolio middle.")
+    if overdue:
+        with st.expander("Collections detail: overdue vs this month's demand"):
+            _render_overdue_demand(overdue)
 
 
-def _render_concentration(fig_treemap, fleet: dict, top_accounts: pd.DataFrame, top_accounts_summary: dict | None = None, df_curr: pd.DataFrame | None = None) -> None:
-    _section("Section 6: Concentration & Exposure Map", margin_top="24px")
+# ── View 2: Executives ───────────────────────────────────────────────────────
 
-    _chart_card(fig_treemap)
-    st.caption("Size = SOH (Cr). Color = NPA% (pale = lower, dark red = higher). Click a region to drill into its branches.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_fleet, col_top = st.columns(2)
-
-    with col_fleet:
-        st.markdown(f'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Fleet Operator Exposure ({FLEET_MIN_LOANS}+ Loans per Customer){info_icon(help_for("Fleet operator"))}</div>', unsafe_allow_html=True)
-        cnt      = fleet.get("count", 0)
-        soh      = fleet.get("total_soh_cr", 0.0)
-        npa_ops  = fleet.get("npa_operators", 0)
-        excluded = fleet.get("excluded_blank_mobile_loans", 0)
-        if cnt == 0:
-            st.info(f"No fleet operators found (no customer with {FLEET_MIN_LOANS}+ loans). Uses Cust Mob No as customer identifier.")
-        else:
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(_static_kpi_card_html("Fleet Operators", f"{cnt:,}", f"≥{FLEET_MIN_LOANS} loans per customer"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(_static_kpi_card_html("SOH", f"₹{soh:.2f}Cr", "Fleet total exposure", color="#dc2626"), unsafe_allow_html=True)
-            with c3:
-                npa_color = "#dc2626" if npa_ops > 0 else ""
-                st.markdown(_static_kpi_card_html("Operators with NPA", npa_ops, "≥1 NPA loan in fleet", color=npa_color), unsafe_allow_html=True)
-            top_fleet = fleet.get("top_df", pd.DataFrame())
-            if not top_fleet.empty:
-                st.caption("⚠️ Customer identity uses Cust Mob No: same person with different numbers may appear separately.")
-                with st.expander("Top 20 Fleet Operators by SOH", expanded=False):
-                    st.dataframe(_safe_df(top_fleet), use_container_width=True, hide_index=True)
-                    _dl_btn(top_fleet, "fleet_operators.xlsx", "dl_fleet")
-        if excluded > 0:
-            st.caption(f"ℹ️ {excluded:,} loan(s) with no mobile number on file were excluded from fleet detection (can't be grouped by customer).")
-
-    with col_top:
-        st.markdown('<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;">Top 20 At-Risk Accounts by SOH</div>', unsafe_allow_html=True)
-        if not top_accounts.empty:
-            summary = top_accounts_summary or {}
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(
-                    _static_kpi_card_html("Total SOH", f"₹{summary.get('total_soh_cr', 0.0):.2f}Cr", "Top 20 combined exposure", color="#dc2626"),
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                st.markdown(
-                    _static_kpi_card_html("% of Portfolio SOH", f"{summary.get('pct_of_portfolio', 0.0):.1f}%", "Single-borrower concentration"),
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                npa_count = summary.get("npa_count", 0)
-                npa_color = "#dc2626" if npa_count > 0 else ""
-                st.markdown(
-                    _static_kpi_card_html("NPA Accounts", npa_count, "Already worst-case, within top 20", color=npa_color),
-                    unsafe_allow_html=True,
-                )
-            st.caption("Largest exposures among delinquent accounts only (any non-STD bucket): healthy loans are excluded regardless of size.")
-            with st.expander("View Top 20 At-Risk Accounts", expanded=False):
-                st.dataframe(_safe_df(top_accounts), use_container_width=True, hide_index=True)
-                _dl_btn(top_accounts, "top_at_risk_accounts_soh.xlsx", "dl_top_accounts", full_source=df_curr)
-        else:
-            st.info("No delinquent accounts found, or SOH/curr_bucket column not available.")
-
-
-# ── Risk Indicators table ─────────────────────────────────────────────────────
-
-def _render_risk_indicators(indicators: list[dict]) -> None:
-    _section("Section 5b: Is the Risk Profile Changing?", margin_top="24px")
-    if not indicators:
-        st.info("No risk indicators computed.")
+def _view_executives(c, p, data_version, filter_key) -> None:
+    df = _cached_units(c, p, data_version, filter_key, "Executive")
+    if df.empty:
+        st.info("No executive column (MNT NAME) in this file.")
         return
-
-    headers = ["Signal", "This Month", "Last Month", "Δ", "Direction", "Note"]
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:7px 12px;font-size:11px;'
-        f'text-align:{"left" if h in ("Signal","Note") else "center"};white-space:nowrap;">{h}</th>'
-        for h in headers
-    )
-    rows_html = ""
-    _DIR_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706", " - ": "#9ca3af"}
-    for ind in indicators:
-        d = ind["Direction"]
-        dc = _DIR_COLOR.get(d, "#9ca3af")
-        rows_html += (
-            f'<tr style="border-bottom:1px solid #f0f0f0;">'
-            f'<td style="padding:7px 12px;font-size:12px;font-weight:700;">{ind["Signal"]}</td>'
-            f'<td style="padding:7px 12px;font-size:13px;font-weight:800;text-align:center;">{ind["This Month"]}</td>'
-            f'<td style="padding:7px 12px;font-size:12px;color:#6b7280;text-align:center;">{ind["Last Month"]}</td>'
-            f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:{dc};text-align:center;">{ind["Δ"]}</td>'
-            f'<td style="padding:7px 12px;text-align:center;">{_badge(d)}</td>'
-            f'<td style="padding:7px 12px;font-size:11px;color:#6b7280;">{ind["Note"]}</td>'
-            f'</tr>'
-        )
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-        f'</table></div>',
-        unsafe_allow_html=True,
-    )
+    a, b = st.columns([1, 2])
+    branch = a.selectbox("Branch", ["All"] + sorted(df["Branch"].astype(str).unique()), key="pi_exec_branch")
+    sorts = {**_SORTS, "Most rolled forward": ("Slipped", False), "Most rescued": ("Rescued", False)}
+    sort = b.selectbox("Sort by", [k for k in sorts if sorts[k][0] in df.columns], key="pi_exec_sort")
+    if branch != "All":
+        df = df[df["Branch"].astype(str) == branch]
+    col, asc = sorts[sort]
+    df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
+    _takeaway(_units_takeaway(df, "Executive", col))
+    cols = unit_columns("Executive", ["Branch", "Region"])
+    if "Rescued" in df.columns:
+        cols.append({"key": "Rescued", "label": "Rescued", "fmt": "int",
+                     "help": "Loans moved from SMA-1/SMA-2/NPA to a better bucket since last month."})
+    t = _cached_totals(c, p, data_version, filter_key, branch)       # every loan in view, not just listed rows
+    total = _total_row("Executive", t, "Total" if branch == "All" else f"Total ({branch})")
+    if total and "Rescued" in df.columns:
+        total["Rescued"] = t.get("Rescued")
+    st.markdown(html_table(df, [x for x in cols if x["key"] in df.columns], total=total,
+                           max_height=560 if len(df) > 15 else None), unsafe_allow_html=True)
+    st.caption("Executives with fewer than the minimum number of loans are left out (config.MIN_ACCOUNTS_EXECUTIVE).")
+    _dl_btn(_with_total_row(df, total), "executives.xlsx", "dl_pi_exec")
 
 
-# ── Shared: Top-5 region/branch breakdown ─────────────────────────────────────
+# ── View 3: Segments ─────────────────────────────────────────────────────────
 
-def _top5_breakdown(df: pd.DataFrame, accent: str = "#ef4444") -> None:
-    """Render top-5 region and top-5 branch by account count side-by-side."""
-    col_r, col_b = st.columns(2)
-
-    def _table_html(title: str, rows: list[tuple[str, int]], total: int) -> str:
-        header = (
-            f'<div style="font-size:12px;font-weight:700;color:#6b7280;'
-            f'text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">{title}</div>'
-        )
-        body = ""
-        for rank, (name, cnt) in enumerate(rows, 1):
-            pct = cnt / total * 100 if total else 0
-            bar_w = max(int(pct * 1.8), 2)
-            body += (
-                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
-                f'<span style="min-width:16px;font-size:11px;color:#9ca3af;font-weight:700;">#{rank}</span>'
-                f'<span style="flex:1;font-size:12px;color:#111;white-space:nowrap;overflow:hidden;'
-                f'text-overflow:ellipsis;" title="{_esc(name)}">{_esc(name)}</span>'
-                f'<div style="width:{bar_w}px;height:6px;background:{accent};border-radius:3px;flex-shrink:0;"></div>'
-                f'<span style="min-width:28px;font-size:12px;font-weight:700;color:{accent};text-align:right;">{cnt}</span>'
-                f'</div>'
-            )
-        return f'<div style="background:#fafafa;border-radius:8px;padding:12px 14px;">{header}{body}</div>'
-
-    total = len(df)
-    with col_r:
-        if "RegionName" in df.columns:
-            top = df["RegionName"].value_counts().head(5).items()
-            st.markdown(_table_html("Top 5 Regions", list(top), total), unsafe_allow_html=True)
-        else:
-            st.caption("Region data unavailable")
-    with col_b:
-        if "Unit" in df.columns:
-            top = df["Unit"].value_counts().head(5).items()
-            st.markdown(_table_html("Top 5 Branches", list(top), total), unsafe_allow_html=True)
-        else:
-            st.caption("Branch data unavailable")
-
-
-# ── Repossession Analysis ─────────────────────────────────────────────────────
-
-def _render_repossession(repo_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
-    _section("Section 7: Repossession Priority List", margin_top="24px")
-    st.caption(
-        f"Accounts in SMA-2 or NPA bucket sanctioned within the last {REPOSSESSION_WINDOW_MONTHS} months. "
-        "These still have collateral value: act now before the asset depreciates further."
-    )
-
-    if repo_df.empty:
-        st.info(f"No accounts match repossession criteria (SMA-2/NPA + sanctioned ≤ {REPOSSESSION_WINDOW_MONTHS} months ago).")
+def _view_segments(c, data_version, filter_key) -> None:
+    from utils import segment_column
+    dims = {}
+    seg = segment_column(c)
+    if seg:
+        dims["Segment"] = seg
+    if "FUEL_TYPE" in c.columns:
+        dims["Fuel type"] = "FUEL_TYPE"
+    if not dims:
+        st.info("No segment or fuel type column in this file.")
         return
+    a, b, d = st.columns([1, 1.6, 1.2])
+    dim = a.radio("By", list(dims), horizontal=True, key="pi_seg_dim")
+    breakdown = b.radio("Break down", ["Together", "By branch", "By executive"], horizontal=True, key="pi_seg_breakdown")
+    branch = d.selectbox("Branch", ["All"] + sorted(c["Unit"].dropna().astype(str).unique()), key="pi_seg_branch")
+    df = _cached_segments(c, data_version, filter_key, dims[dim], breakdown, branch)
+    if df.empty:
+        st.info("No loans for this selection.")
+        return
+    sorts = {"NPA % (worst first)": ("NPA%", False), "Delinquency % (worst first)": ("Delinquency%", False),
+             "Accounts (largest first)": ("Accounts", False), "SOH (largest first)": ("SOH (Cr)", False)}
+    sort = st.selectbox("Sort by", list(sorts), key="pi_seg_sort")
+    col, asc = sorts[sort]
+    df = df.sort_values(col, ascending=asc, kind="stable").reset_index(drop=True)
+    top = df.iloc[0]
+    where = "".join(f" in {_esc(top[k])}" for k in ("Branch",) if k in df.columns) + \
+        (f" ({_esc(top['Executive'])})" if "Executive" in df.columns else "")
+    _takeaway(f"<b>{_esc(top['Name'])}</b>{where} is first on this list: NPA {top['NPA%']:.1f}% "
+              f"({int(top['NPA']):,} of {int(top['Accounts']):,} loans), delinquency {top['Delinquency%']:.1f}%.")
+    cols = [{"key": "Name", "label": dim, "bold": True},
+            *([{"key": "Branch"}] if "Branch" in df.columns else []),
+            *([{"key": "Executive"}] if "Executive" in df.columns else []),
+            {"key": "Accounts", "fmt": "int"},
+            {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent", "heat": True},
+            {"key": "SMA-2%", "label": "SMA-2", "fmt": "pct_count", "count": "SMA-2", "heat": True},
+            {"key": "NPA%", "label": "NPA", "fmt": "pct_count", "count": "NPA", "heat": True},
+            {"key": "NPA% (SOH)", "label": "NPA by SOH", "fmt": "pct_cr", "amount": "NPA SOH (Cr)", "heat": True},
+            {"key": "Collection%", "label": "Collection", "fmt": "pct"},
+            {"key": "SOH (Cr)", "label": "SOH", "fmt": "cr"}]
+    t = _cached_totals(c, pd.DataFrame(), data_version, filter_key, branch)
+    total = {"Name": "Total" if branch == "All" else f"Total ({branch})", **{k: t.get(k) for k in (
+        "Accounts", "Delinquency%", "Delinquent", "SMA-2%", "SMA-2", "NPA%", "NPA", "NPA% (SOH)", "NPA SOH (Cr)", "Collection%", "SOH (Cr)")}} if t else None
+    st.markdown(html_table(df, cols, total=total, max_height=560 if len(df) > 15 else None), unsafe_allow_html=True)
+    if breakdown != "Together":
+        st.caption("Groups with fewer than 3 loans are left out.")
+    keep = [k for k in ("Name", "Branch", "Executive", "Accounts", "Delinquent", "Delinquency%", "SMA-2", "SMA-2%",
+                        "NPA", "NPA%", "NPA% (SOH)", "NPA SOH (Cr)", "Collection%", "SOH (Cr)") if k in df.columns]
+    _dl_btn(_with_total_row(df[keep], total).rename(columns={"Name": dim}),
+            f"{dim.lower().replace(' ', '_')}_table.xlsx", "dl_pi_segments")
 
-    n_total = len(repo_df)
-    soh_col  = "SOH" in repo_df.columns
-    total_soh = repo_df["SOH"].sum() / 1e7 if soh_col else 0.0
 
-    c1, c2, c3 = st.columns(3)
-    sma2_n = int((repo_df["curr_bucket"] == "SMA-2").sum()) if "curr_bucket" in repo_df.columns else 0
-    npa_n  = int((repo_df["curr_bucket"] == "NPA").sum())  if "curr_bucket" in repo_df.columns else 0
-    with c1:
-        st.markdown(
-            _static_kpi_card_html("Eligible Accounts", f"{n_total:,}", f"SMA-2: {sma2_n:,} | NPA: {npa_n:,}", color="#ef4444"),
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown(
-            _static_kpi_card_html("Total SOH at Risk", f"₹{total_soh:.2f}Cr", "Asset value to be recovered", color="#dc2626"),
-            unsafe_allow_html=True,
-        )
-    with c3:
-        lcc_col = "LCC%" in repo_df.columns
-        avg_lcc = repo_df["LCC%"].dropna().mean() if lcc_col else 0.0
-        lcc_color = "#dc2626" if avg_lcc < 50 else "#d97706"
-        st.markdown(
-            _static_kpi_card_html("Avg LCC %", f"{avg_lcc:.1f}%", "Lower = worse payer history", color=lcc_color),
-            unsafe_allow_html=True,
-        )
+# ── View 4: Exposure ─────────────────────────────────────────────────────────
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    _top5_breakdown(repo_df, accent="#ef4444")
-    st.markdown("<br>", unsafe_allow_html=True)
+_BUCKET_FILTERS = {"All delinquent": None, "SMA-1 and worse": ["SMA-1", "SMA-2", "NPA"],
+                   "SMA-2 and worse": ["SMA-2", "NPA"], "NPA only": ["NPA"]}
 
-    sub_tabs = st.tabs(["By Recency", "By LCC% (Worst Payers)", "By SOH (Largest Exposure)"])
 
-    with sub_tabs[0]:
-        st.caption("Newest delinquent accounts first: recently sanctioned but already deep in arrears. Highest urgency.")
-        if "Ag_Date" in repo_df.columns:
-            view = repo_df.sort_values("Ag_Date", ascending=False).reset_index(drop=True)
-        else:
-            view = repo_df.copy()
+def _view_exposure(c, data_version, filter_key, fig_treemap) -> None:
+    what = st.radio("Show", ["Largest delinquent loans", "Fleet operators", "Concentration map"],
+                    horizontal=True, key="pi_exp_what")
+    if what == "Largest delinquent loans":
+        df = _cached_delinquent(c, data_version, filter_key)
+        if df.empty:
+            st.info("No delinquent loans.")
+            return
+        flt = st.selectbox("Buckets", list(_BUCKET_FILTERS), key="pi_exp_bucket")
+        if _BUCKET_FILTERS[flt]:
+            df = df[df["curr_bucket"].isin(_BUCKET_FILTERS[flt])]
+        df = df.rename(columns=_RENAME)
+        view = _list_controls("pi_top_loans", df, "Branch", "delinquent loans")
+        book = float(pd.to_numeric(c.get("SOH"), errors="coerce").sum()) if "SOH" in c.columns else 0.0
+        soh = float(view["SOH"].sum())
+        _takeaway(f"These {len(view):,} loans hold <b>₹{soh / 1e7:,.2f} Cr</b> SOH "
+                  f"({soh / book * 100 if book else 0:.1f}% of the whole book); "
+                  f"{int((view['Bucket'] == 'NPA').sum()):,} of them are already NPA.")
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view, "repo_by_recency.xlsx", "dl_repo_recency", full_source=df_curr)
-
-    with sub_tabs[1]:
-        st.caption("Worst payment history first (LCC% ascending). Accounts that have paid least: least likely to catch up on their own.")
-        if "LCC%" in repo_df.columns:
-            view = repo_df.sort_values("LCC%", ascending=True).reset_index(drop=True)
-        else:
-            view = repo_df.copy()
+        _dl_btn(view.rename(columns={v: k for k, v in _RENAME.items() if v in view.columns and k in c.columns}),
+                "largest_delinquent_loans.xlsx", "dl_pi_top_loans", full_source=c)
+    elif what == "Fleet operators":
+        fl = _cached_fleet(c, data_version, filter_key)
+        if not fl.get("count"):
+            st.info(f"No fleet operators (customers with {FLEET_MIN_LOANS}+ loans, matched by mobile number).")
+            return
+        _takeaway(f"<b>{fl['count']:,}</b> fleet operators (customers with {FLEET_MIN_LOANS}+ loans) hold "
+                  f"<b>₹{fl['total_soh_cr']:,.2f} Cr</b> SOH; {fl['npa_operators']:,} of them have at least one NPA loan.")
+        df = fl["top_df"].rename(columns={"Unit": "Branch"})
+        view = _list_controls("pi_fleet", df, "Branch", "fleet operators")
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view, "repo_by_lcc.xlsx", "dl_repo_lcc", full_source=df_curr)
+        if fl.get("excluded_blank_mobile_loans"):
+            st.caption(f"{fl['excluded_blank_mobile_loans']:,} loans with no mobile number can't be grouped by customer.")
+        _dl_btn(view, "fleet_operators.xlsx", "dl_pi_fleet")
+    else:
+        _chart_card(fig_treemap)
+        st.caption("Box size = SOH; colour = NPA % (pale = lower, dark red = higher). Click a region to see its branches.")
 
-    with sub_tabs[2]:
-        st.caption("Largest SOH exposure first: accounts where repossession recovers the most. Prioritise field resources here.")
-        if "SOH" in repo_df.columns:
-            view = repo_df.sort_values("SOH", ascending=False).reset_index(drop=True)
-        else:
-            view = repo_df.copy()
+
+# ── View 5: Action lists ─────────────────────────────────────────────────────
+
+def _view_actions(repo_df, good_df, df_curr) -> None:
+    what = st.radio("List", ["Repossession candidates", "Good customers"], horizontal=True, key="pi_act_what")
+    if what == "Repossession candidates":
+        if repo_df is None or repo_df.empty:
+            st.info("No repossession candidates.")
+            return
+        sorts = {"Largest SOH": ("SOH", False), "Worst payers (lowest LCC%)": ("LCC%", True),
+                 "Most recent loans": ("Ag_Date", False)}
+        sort = st.selectbox("Sort by", [k for k, v in sorts.items() if v[0] in repo_df.columns], key="pi_repo_sort")
+        col, asc = sorts[sort]
+        df = repo_df.sort_values(col, ascending=asc, kind="stable").rename(columns=_RENAME)
+        _takeaway(f"<b>{len(df):,}</b> SMA-2/NPA loans agreed in the last {REPOSSESSION_WINDOW_MONTHS} months "
+                  f"(seized-and-sold excluded), <b>₹{df['SOH'].sum() / 1e7:,.2f} Cr</b> SOH: "
+                  f"the vehicle still has value.")
+        view = _list_controls("pi_repo", df, "Branch", "loans")
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view, "repo_by_soh.xlsx", "dl_repo_soh", full_source=df_curr)
+        _dl_btn(view.rename(columns={"Branch": "Unit", "Region": "RegionName", "Executive": "MNT NAME",
+                                     "Bucket": "curr_bucket", "Customer": "Cust Name", "Mobile": "Cust Mob No"}),
+                "repossession_candidates.xlsx", "dl_pi_repo", full_source=df_curr)
+    else:
+        if good_df is None or good_df.empty:
+            st.info("No good customers by these rules.")
+            return
+        sorts = {"Lowest SOH (easiest to refinance)": ("SOH", True),
+                 "Most of the tenure done": ("Tenure Completed %", False)}
+        sort = st.selectbox("Sort by", [k for k, v in sorts.items() if v[0] in good_df.columns], key="pi_good_sort")
+        col, asc = sorts[sort]
+        df = good_df.sort_values(col, ascending=asc, kind="stable").rename(columns=_RENAME)
+        _takeaway(f"<b>{len(df):,}</b> customers have finished {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ of their tenure "
+                  f"and paid everything due (LCC {GOOD_CUSTOMER_MIN_LCC_PCT}%+): candidates for a top-up or a new loan.")
+        view = _list_controls("pi_good", df, "Branch", "customers")
+        st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
+        _dl_btn(view.rename(columns={"Branch": "Unit", "Region": "RegionName", "Customer": "Cust Name"}),
+                "good_customers.xlsx", "dl_pi_good", full_source=df_curr)
 
 
-# ── Main render entry point ───────────────────────────────────────────────────
+# ── The tab ──────────────────────────────────────────────────────────────────
 
 def render_portfolio_intelligence_tab(
-    pulse_kpis: list,
-    fig_waterfall,
-    region_df: pd.DataFrame,
-    branch_df: pd.DataFrame,
-    fig_quadrant,
-    exec_recovery_df: pd.DataFrame,
-    product_data: dict,
-    risk_indicators: list,
-    good_bad: dict,
-    flag_df: pd.DataFrame,
-    fig_treemap,
-    fleet: dict,
-    top_accounts: pd.DataFrame,
-    has_prev: bool,
-    rr_meta: dict | None,
-    repo_df: pd.DataFrame | None = None,
-    npa_sma2_cmp: dict | None = None,
-    good_customers: pd.DataFrame | None = None,
-    top_accounts_summary: dict | None = None,
-    overdue_demand_scorecard: dict | None = None,
-    df_curr: pd.DataFrame | None = None,
+    region_df=None, branch_df=None, fig_quadrant=None, exec_recovery_df=None, product_data=None,
+    fig_treemap=None, fleet=None, top_accounts=None, has_prev: bool = False, rr_meta=None,
+    repo_df=None, npa_sma2_cmp=None, good_customers=None, top_accounts_summary=None,
+    overdue_demand_scorecard=None, df_curr=None, df_prev=None, data_version: int = 0, filter_key: str = "",
+    **_unused,
 ) -> None:
+    """One view at a time (VIEWS). The overview, alerts and early warning that
+    used to sit here live on the Dashboard, Alerts and Migration tabs."""
+    df_prev = df_prev if df_prev is not None else pd.DataFrame()
     if not has_prev:
-        st.info(
-            "**Previous month file not loaded.** Upload it to unlock trend analysis (Δ NPA%, roll rates, recovery leaderboard, Good vs Bad). "
-            "All current-month views are available now."
-        )
-
-    _render_pulse(pulse_kpis, fig_waterfall, rr_meta, has_prev)
-    _divider()
-
-    _render_scorecard_section(region_df, branch_df, fig_quadrant, exec_recovery_df, has_prev, npa_sma2_cmp or {})
-    _divider()
-
-    _render_overdue_demand(overdue_demand_scorecard or {})
-    _divider()
-
-    _render_good_bad(good_bad, has_prev)
-    _divider()
-
-    _render_risk_flags(flag_df)
-    _divider()
-
-    _render_vintage_sourcing(product_data)
-    _divider()
-
-    _render_risk_indicators(risk_indicators)
-    _divider()
-
-    _render_concentration(fig_treemap, fleet, top_accounts, top_accounts_summary, df_curr=df_curr)
-    _divider()
-
-    _render_repossession(repo_df if repo_df is not None else pd.DataFrame(), df_curr=df_curr)
-    _divider()
-
-    _render_good_customers(good_customers if good_customers is not None else pd.DataFrame(), df_curr=df_curr)
-
-
-# ── Section 8: Good Customers ─────────────────────────────────────────────────
-
-def _render_good_customers(good_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
-    st.markdown('<div class="section-label">Section 8: Good Customers (Refinance &amp; Relationship Candidates)</div>', unsafe_allow_html=True)
-    st.caption(f"Criteria: {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ tenure completed AND LCC% >= {GOOD_CUSTOMER_MIN_LCC_PCT}%. Flag for refinance offer or relationship management.")
-
-    if good_df.empty:
-        st.info(f"No accounts meet the good customer criteria ({GOOD_CUSTOMER_MIN_TENURE_PCT}%+ tenure + LCC% >= {GOOD_CUSTOMER_MIN_LCC_PCT}%) in the current selection.")
-        return
-
-    n = len(good_df)
-    soh_col = "SOH" if "SOH" in good_df.columns else None
-    tenure_col = "Tenure Completed %" if "Tenure Completed %" in good_df.columns else None
-
-    total_soh_cr = round(pd.to_numeric(good_df[soh_col], errors="coerce").sum() / 1e7, 2) if soh_col else 0.0
-    avg_tenure = round(pd.to_numeric(good_df[tenure_col], errors="coerce").mean(), 1) if tenure_col else 0.0
-
-    cards = (
-        _static_kpi_card_html("Good Customers", f"{n:,}", "Refinance eligible")
-        + _static_kpi_card_html("Total SOH (Cr)", f"&#8377;{total_soh_cr:,.2f}", "Outstanding exposure (POS + arrears)")
-        + _static_kpi_card_html("Avg Tenure Completed", f"{avg_tenure}%", "Across all good customers")
-    )
-    st.markdown(f'<div class="kpi-row">{cards}</div>', unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    _top5_breakdown(good_df, accent="#16a34a")
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    st.dataframe(_safe_df(good_df), use_container_width=True, hide_index=True)
-    _dl_btn(good_df, "good_customers.xlsx", "dl_good_customers", full_source=df_curr)
+        st.caption("Last month's file isn't loaded, so changes and roll rates are blank.")
+    view = st.segmented_control("View", VIEWS, default=VIEWS[0], key=VIEW_KEY, label_visibility="collapsed")
+    view = view or VIEWS[0]
+    if view == "Regions & Branches":
+        _view_units(df_curr, df_prev, data_version, filter_key, fig_quadrant, overdue_demand_scorecard)
+    elif view == "Executives":
+        _view_executives(df_curr, df_prev, data_version, filter_key)
+    elif view == "Segments":
+        _view_segments(df_curr, data_version, filter_key)
+    elif view == "Exposure":
+        _view_exposure(df_curr, data_version, filter_key, fig_treemap)
+    else:
+        _view_actions(repo_df, good_customers, df_curr)

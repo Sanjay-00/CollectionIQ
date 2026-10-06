@@ -91,6 +91,7 @@ def test_npa_pct_by_soh_is_money_not_count():
     ])
     m = unit_metrics(df, []).iloc[0]
     assert m["NPA%"] == 50.0 and m["NPA% (SOH)"] == 90.0
+    assert m["NPA SOH (Cr)"] == 0.09                     # the money behind the %, in crore
 
 
 def test_percentages_round_ties_the_same_way_everywhere():

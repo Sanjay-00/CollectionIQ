@@ -291,10 +291,12 @@ def _excel_bytes(df: pd.DataFrame) -> bytes:
 # ── Excel download styling ────────────────────────────────────────────────────
 # Same look as the app's own tables: black header with amber text, bold Total
 # row with an amber rule, and red/green colour scales on metric columns.
-_XL_HEADER_FILL = PatternFill("solid", fgColor="111111")
-_XL_HEADER_FONT = Font(bold=True, color="FFC000")
-_XL_TOTAL_FILL = PatternFill("solid", fgColor="FFFBEA")
-_XL_TOTAL_BORDER = Border(top=Side(style="medium", color="FFC000"))
+# One header style for every Excel download: blue with white text.
+XL_HEADER_BLUE, XL_HEADER_TEXT, XL_TOTAL_TINT = "1F4E78", "FFFFFF", "DDEBF7"
+_XL_HEADER_FILL = PatternFill("solid", fgColor=XL_HEADER_BLUE)
+_XL_HEADER_FONT = Font(bold=True, color=XL_HEADER_TEXT)
+_XL_TOTAL_FILL = PatternFill("solid", fgColor=XL_TOTAL_TINT)
+_XL_TOTAL_BORDER = Border(top=Side(style="medium", color=XL_HEADER_BLUE))
 _XL_GREEN, _XL_YELLOW, _XL_RED = "63BE7B", "FFEB84", "F8696B"  # Excel's own default scale
 _XL_WHITE = "FFFFFF"
 
@@ -353,7 +355,8 @@ def style_excel_sheet(ws, df: pd.DataFrame) -> None:
         lengths = [len(str(v)) for v in sample[col].tolist() if not _is_blank(v)]
         ws.column_dimensions[get_column_letter(j)].width = min(max([len(str(col))] + lengths) + 3, 40)
 
-    has_total = n_rows > 0 and str(df.iloc[-1, 0]).strip() in {"Total", "Grand Total"}
+    first = str(df.iloc[-1, 0]).strip() if n_rows else ""
+    has_total = first == "Grand Total" or first == "Total" or first.startswith("Total (")
     n_data = n_rows - 1 if has_total else n_rows
     if has_total:
         for cell in ws[n_rows + 1]:
@@ -398,10 +401,13 @@ TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migrat
 TAB_KEY = "_active_section"
 
 
-def goto_tab_button(tab: str, key: str, label: str | None = None) -> None:
-    """A small button that opens another tab (sets the tab bar's value)."""
+def goto_tab_button(tab: str, key: str, label: str | None = None, state: dict | None = None) -> None:
+    """A small button that opens another tab (sets the tab bar's value), and
+    optionally a view inside it (`state`: session keys to set)."""
     def _go() -> None:
         st.session_state[TAB_KEY] = tab
+        for k, v in (state or {}).items():
+            st.session_state[k] = v
     st.button(label or f"See details in {tab.split(' ', 1)[1]} →", key=key, on_click=_go)
 
 
@@ -533,6 +539,98 @@ def _static_kpi_card_html(
         f'<div class="kpi-value"{val_attr}>{value}</div>'
         f'{caption_html}</div>'
     )
+
+
+# ── One table builder for every on-screen table ─────────────────────────────
+# A % with a count behind it is ONE cell: "11.9% (37)". The count tells the
+# reader how big the base is without a second column; downloads keep both as
+# separate numeric columns so they can still be sorted and summed in Excel.
+
+def pct_count(pct, count, decimals: int = 1) -> str:
+    """'11.9% (37)' as HTML (the count in grey). '-' when the % is missing."""
+    if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+        return '<span style="color:#9ca3af;">-</span>'
+    tail = "" if count is None or (isinstance(count, float) and pd.isna(count)) else \
+        f' <span style="color:#6b7280;font-weight:400;">({int(count):,})</span>'
+    return f"{float(pct):.{decimals}f}%{tail}"
+
+
+def pct_amount(pct, cr, decimals: int = 1) -> str:
+    """'34.6% (₹121.40 Cr)' as HTML (the amount in grey): a % by SOH with the
+    money behind it, as pct_count does for a % by count."""
+    if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+        return '<span style="color:#9ca3af;">-</span>'
+    tail = "" if cr is None or (isinstance(cr, float) and pd.isna(cr)) else         f' <span style="color:#6b7280;font-weight:400;">(₹{float(cr):,.2f} Cr)</span>'
+    return f"{float(pct):.{decimals}f}%{tail}"
+
+
+def _fmt_cell(v, kind: str, row=None, count_key: str | None = None, amount_key: str | None = None) -> str:
+    if kind == "pct_count":
+        return pct_count(v, row.get(count_key) if row is not None and count_key else None)
+    if kind == "pct_cr":
+        return pct_amount(v, row.get(amount_key) if row is not None and amount_key else None)
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return '<span style="color:#9ca3af;">-</span>'
+    if kind == "int":
+        return f"{int(v):,}"
+    if kind == "pct":
+        return f"{float(v):.1f}%"
+    if kind == "cr":
+        return f"₹{float(v):,.2f} Cr"
+    if kind == "inr":
+        return f"₹{round(float(v)):,}"
+    if kind == "num":
+        return f"{float(v):.2f}"
+    if kind == "pp":
+        v = float(v)
+        return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):.2f} pts"
+    if kind == "count_change":
+        v = int(v)
+        return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):,}"
+    return _esc(v)
+
+
+def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, max_height: int | None = None) -> str:
+    """cols: {"key", "label"?, "fmt": text|int|pct|pct_count|pct_cr|cr|inr|num|pp|count_change,
+    "count"?: count column for pct_count, "amount"?: ₹ Cr column for pct_cr, "heat"?: True (red shading by rank,
+    lowest = palest), "good_if_up"?: True (a rise is good: green arrows),
+    "help"?: hover text, "bold"?: True}. total: an optional final row (dict).
+    max_height: scroll inside the table with the header kept in view."""
+    heat = {c["key"]: heat_range(df[c["key"]].tolist()) for c in cols if c.get("heat") and c["key"] in df.columns}
+    head = "".join(
+        f'<th style="text-align:{"left" if c.get("fmt", "text") == "text" else "right"};">{_esc(c.get("label", c["key"]))}'
+        f'{_info(c.get("help"))}</th>' for c in cols)
+    rows = []
+    frames = [(r, False) for _, r in df.iterrows()] + ([(pd.Series(total), True)] if total else [])
+    for r, is_total in frames:
+        tds = ""
+        for c in cols:
+            kind, v = c.get("fmt", "text"), r.get(c["key"])
+            style = f'text-align:{"left" if kind == "text" else "right"};'
+            if c.get("bold"):
+                style += "font-weight:700;"
+            if not is_total and c["key"] in heat:
+                style += heat_style(v, heat[c["key"]])
+            if kind in ("pp", "count_change") and v is not None and not pd.isna(v) and float(v) != 0:
+                worse = (float(v) > 0) != bool(c.get("good_if_up"))
+                style += f'color:{"#dc2626" if worse else "#16a34a"};font-weight:700;'
+            tds += f'<td style="{style}">{_fmt_cell(v, kind, r, c.get("count"), c.get("amount"))}</td>'
+        rows.append(f'<tr class="{"ht-total" if is_total else ""}">{tds}</tr>')
+    scroll = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
+    css = ("<style>.ht th{background:#111;color:#FFC000;padding:7px 10px;font-size:11px;white-space:nowrap;"
+           "position:sticky;top:0;z-index:1;}.ht td{padding:6px 10px;font-size:12.5px;border-bottom:1px solid #f0f0f0;"
+           "background:#fff;white-space:nowrap;}.ht tr.ht-total td{font-weight:800;border-top:2px solid #FFC000;"
+           "background:#fffbea;}</style>")
+    return (f'{css}<div style="overflow-x:auto;{scroll}border-radius:10px;border:1px solid #e5e7eb;">'
+            f'<table class="ht" style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
+            f'<thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+
+
+def _info(text: str | None) -> str:
+    if not text:
+        return ""
+    return (f'<span title="{_esc(text)}" style="cursor:help;color:#fde68a;font-weight:400;'
+            f'font-size:0.9em;margin-left:3px;">&#9432;</span>')
 
 
 # ── Risk heat-map shading ────────────────────────────────────────────────────

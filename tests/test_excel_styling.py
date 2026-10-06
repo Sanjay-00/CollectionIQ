@@ -38,8 +38,8 @@ def _branch_table():
 class TestHeaderAndLayout:
     def test_header_colours_freeze_and_filter(self):
         ws = _sheet(_branch_table())
-        assert ws["A1"].fill.fgColor.rgb.endswith("111111")
-        assert ws["A1"].font.color.rgb.endswith("FFC000") and ws["A1"].font.bold
+        assert ws["A1"].fill.fgColor.rgb.endswith("1F4E78")              # blue header
+        assert ws["A1"].font.color.rgb.endswith("FFFFFF") and ws["A1"].font.bold   # white text
         assert ws.freeze_panes == "A2"
         assert ws.auto_filter.ref == "A1:G5"
 

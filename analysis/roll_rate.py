@@ -142,6 +142,10 @@ def compute_bucket_roll_summary(matrix: pd.DataFrame) -> pd.DataFrame:
             "Roll Fwd%":  fwd_pct,
             "Stable%":    stable_pct,
             "Roll Bwd%":  bwd_pct,
+            # The loans behind each %, shown beside it on screen ("12.0% (37)").
+            "Roll Fwd":   fwd,
+            "Stable":     stable,
+            "Roll Bwd":   bwd,
         })
     return pd.DataFrame(rows)
 
@@ -154,12 +158,15 @@ _VALUE_FORMAT = {
 }
 
 
-def build_roll_rate_heatmap(matrix: pd.DataFrame, value_kind: str = "count") -> go.Figure:
+def build_roll_rate_heatmap(matrix: pd.DataFrame, value_kind: str = "count",
+                            detail: pd.DataFrame | None = None, detail_kind: str = "count") -> go.Figure:
     """
     Annotated Plotly heatmap of the migration matrix.
     Diagonal = stable (neutral). Above diagonal = deterioration (red). Below = improvement (green).
     value_kind: "count" (loans), "pct" (% of each row) or "soh" (₹ Cr), which
     only changes how the cells are written; the colour logic is the same.
+    detail: an optional second matrix written under each value in brackets,
+    so a % reads "11.9% (37)" or "34.6% (₹1.21 Cr)" like every other table.
     """
     fmt, hover_label = _VALUE_FORMAT[value_kind]
     buckets = [b for b in VALID_BUCKETS if b in matrix.index and b in matrix.columns]
@@ -178,7 +185,10 @@ def build_roll_rate_heatmap(matrix: pd.DataFrame, value_kind: str = "count") -> 
             curr_score = BUCKET_SCORE.get(col_bucket, 0)
             direction = curr_score - prev_score   # positive = worsened, negative = improved
             row_color.append(direction * (count / total * 100))
-            row_text.append(fmt(count))
+            text = fmt(count)
+            if detail is not None and row_bucket in detail.index and col_bucket in detail.columns and count:
+                text += f"<br>({_VALUE_FORMAT[detail_kind][0](detail.loc[row_bucket, col_bucket])})"
+            row_text.append(text)
         color_matrix.append(row_color)
         text_matrix.append(row_text)
 

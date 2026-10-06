@@ -8,7 +8,6 @@ from analysis.portfolio_intelligence import (
     compute_branch_quadrant,
     compute_executive_recovery,
     compute_good_bad,
-    compute_risk_flag_comparison,
     compute_product_analysis,
     compute_risk_indicators,
     compute_fleet_exposure,
@@ -960,26 +959,6 @@ class TestComputeGoodBad:
         assert any("SMA-1 Pool" in g for g in out["good"])
         # below the 0.3pp threshold -> neither list
         assert not any("Noise Signal" in x for x in out["good"] + out["bad"])
-
-
-# ── compute_risk_flag_comparison ─────────────────────────────────────────────
-
-class TestComputeRiskFlagComparison:
-    @pytest.mark.parametrize("prev,expected_last_month,expected_delta", [
-        ([{"title": "Non Starters", "count": 8, "pos": 0, "severity": "high", "action": "Call"}], 8, 4),
-        ([], None, None),  # risk type didn't exist last month -> null prev/delta, not zero
-    ], ids=["matched_by_title", "new_risk_type"])
-    def test_merges_curr_and_prev_by_title(self, prev, expected_last_month, expected_delta):
-        curr = [{"title": "Non Starters", "count": 12, "pos": 1_00_00_000, "severity": "high", "action": "Call"}]
-        row = compute_risk_flag_comparison(curr, prev).iloc[0]
-        if expected_last_month is None:
-            assert pd.isna(row["Last Month"]) and pd.isna(row["Δ"])
-        else:
-            assert row["Last Month"] == expected_last_month
-            assert row["Δ"] == expected_delta
-
-    def test_empty_curr_returns_empty(self):
-        assert compute_risk_flag_comparison([], [{"title": "X", "count": 1}]).empty
 
 
 # ── compute_product_analysis ─────────────────────────────────────────────────

@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from config import DASHBOARD_TOP_N
-from ui.components import _dl_btn, _esc, _safe_df, goto_tab_button, heat_range, heat_style
+from ui.components import _dl_btn, _esc, _safe_df, goto_tab_button, heat_range, heat_style, pct_amount, pct_count
 from ui.glossary import help_for, info_icon
 
 _TONE = {"bad": ("#dc2626", "#fef2f2"), "good": ("#16a34a", "#f0fdf4"), "info": ("#d97706", "#fffbeb")}
@@ -23,15 +23,16 @@ def _label(text: str, top: str = "0px") -> None:
     st.markdown(f'<div class="section-label" style="margin-top:{top};">{text}</div>', unsafe_allow_html=True)
 
 
-def _header(text: str, tab: str | None, key: str, top: str = "22px") -> None:
-    """Section title with a "See details" button on the right."""
+def _header(text: str, tab: str | None, key: str, top: str = "22px", state: dict | None = None) -> None:
+    """Section title with a "See details" button on the right (`state`: which
+    view to open inside that tab)."""
     left, right = st.columns([4, 1])
     with left:
         _label(text, top)
     if tab:
         with right:
             st.markdown(f'<div style="height:{top};"></div>', unsafe_allow_html=True)
-            goto_tab_button(tab, key)
+            goto_tab_button(tab, key, state=state)
 
 
 def _tile(title: str, value: str, sub: str = "", accent: str = "#e5e7eb", help_text: str | None = None) -> str:
@@ -165,7 +166,7 @@ def _render_moves(moves: dict) -> None:
             for u in moves[level][key]:
                 region = f' <span style="color:#6b7280;">({_esc(u["region"])})</span>' if u.get("region") else ""
                 items += (f'<li style="margin:3px 0;"><b>{_esc(u["name"])}</b>{region} '
-                          f'<span style="color:#6b7280;">{level.lower()}</span>: delinquency {u["now"]:.1f}% '
+                          f'<span style="color:#6b7280;">{level.lower()}</span>: delinquency {pct_count(u["now"], u.get("count"))} '
                           f'{_arrow(u["change"])}</li>')
         body = items or '<li style="color:#6b7280;">Nothing moved by much.</li>'
         return (f'<div style="border:1px solid #e5e7eb;border-left:4px solid {color};border-radius:8px;'
@@ -186,7 +187,7 @@ def _render_early_warning(r: dict) -> None:
         d = s[step]
         good = step == "Back to STD"
         tiles.append(_tile(step, f"{d['n']:,}",
-                           f"{d['pct']:.1f}% of loans · {d['soh_pct']:.1f}% of SOH",
+                           f"{d['pct']:.1f}% of loans · {d['soh_pct']:.1f}% of SOH (₹{d['soh_cr']:,.2f} Cr)",
                            "#16a34a" if good else ("#dc2626" if step in list(rf.ROLL_STEPS)[:2] else "#f59e0b"),
                            help_for(step)))
     out = r.get("outlook")
@@ -220,11 +221,13 @@ def _render_league(df_curr, df_prev, data_version: int, filter_key: str) -> None
             f' <span style="color:#6b7280;font-size:11px;">(was {int(prank)})</span>')
         region = f'<td>{_esc(r["Region"])}</td>' if "Region" in table.columns else ""
         shade = heat_style(r["Now"], rng) if rng else ""
-        delq = "" if metric == "Delinquency %" else f'<td style="text-align:right;color:#374151;">{r["Delinquency %"]:.1f}%</td>'
+        delq = "" if metric == "Delinquency %" else             f'<td style="text-align:right;color:#374151;">{pct_count(r["Delinquency %"], r["Delinquent"])}</td>'
+        amount = r.get("Amount (Cr)")
+        now_cell = pct_amount(r["Now"], amount) if amount is not None and not pd.isna(amount)             else pct_count(r["Now"], r["Count"])
         rows += (f'<tr><td style="text-align:center;">{int(r["Rank"])}{rank_move}</td>'
                  f'<td style="font-weight:700;">{_esc(r[grain])}</td>{region}'
                  f'<td style="text-align:right;">{int(r["Accounts"]):,}</td>'
-                 f'<td style="text-align:right;{shade}">{r["Now"]:.1f}%</td>'
+                 f'<td style="text-align:right;{shade}">{now_cell}</td>'
                  f'<td style="text-align:right;color:#4b5563;">{prev}</td>'
                  f'<td style="text-align:right;">{_arrow(r["Change"], worse_if_up)}</td>{delq}</tr>')
     head = "".join(f"<th>{h}</th>" for h in ["Rank", grain, *(["Region"] if "Region" in table.columns else []),
@@ -302,7 +305,8 @@ def render_summary(df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: i
     sm = _cached_summary(df_curr, df_prev, data_version, filter_key, str(curr_month))
     has_prev = r["has_prev"]
 
-    _header("What Changed, and Where", tab["Portfolio Intelligence"], "go_pi_moves")
+    _header("What Changed, and Where", tab["Portfolio Intelligence"], "go_pi_moves",
+            state={"pi_view": "Regions & Branches", "pi_units_sort": "Change in delinquency (biggest rise)"})
     if has_prev:
         st.caption("Regions and branches whose delinquency moved most since last month.")
         _render_moves(sm["moves"])
@@ -312,7 +316,7 @@ def render_summary(df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: i
     _header("Early Warning: Loans That Slipped", tab["Migration"], "go_migration")
     _render_early_warning(r)
 
-    _header("League Table", tab["Portfolio Intelligence"], "go_pi_league")
+    _header("League Table", tab["Portfolio Intelligence"], "go_pi_league", state={"pi_view": "Regions & Branches"})
     _render_league(df_curr, df_prev, data_version, filter_key)
 
     _header("New Business", tab["Business"], "go_business")

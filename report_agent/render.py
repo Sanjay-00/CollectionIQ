@@ -49,6 +49,20 @@ def fmt(v, kind: str) -> str:
     return str(v)
 
 
+def cell_text(row, col: dict) -> str:
+    """The text of one cell; a % column with a "count" reads "11.9% (37)" and
+    one with an "amount" (₹ Cr) reads "34.6% (₹121.40 Cr)"."""
+    v = row.get(col["key"])
+    text = fmt(v, col["fmt"])
+    count = row.get(col["count"]) if col.get("count") else None
+    if col.get("count") and not _blank(v) and not _blank(count):
+        text += f" ({int(count):,})"
+    amount = row.get(col["amount"]) if col.get("amount") else None
+    if col.get("amount") and not _blank(v) and not _blank(amount):
+        text += f" (₹{float(amount):,.2f} Cr)"
+    return text
+
+
 def _cell_colors(block: dict) -> list[list[tuple[str | None, str | None]]]:
     """(background, text colour) for each body cell: red shading by rank on
     heat columns, red/green on change columns (a rise is worse unless the
@@ -117,8 +131,15 @@ def _html_block(b: dict) -> str:
                 style = (f'padding:5px 8px;font-size:12px;border-bottom:1px solid #eee;'
                          f'text-align:{"left" if c["fmt"] == "text" else "right"};'
                          f'{"background:" + bg + ";" if bg else ""}{"color:" + fg + ";font-weight:600;" if fg else ""}')
-                tds += f'<td style="{style}">{_e(fmt(row.get(c["key"]), c["fmt"]))}</td>'
+                tds += f'<td style="{style}">{_e(cell_text(row, c))}</td>'
             body += f'<tr style="background:{"#fff" if i % 2 == 0 else "#fafafa"};">{tds}</tr>'
+        if b.get("total"):
+            row = pd.Series(b["total"])
+            tds = "".join(
+                f'<td style="padding:5px 8px;font-size:12px;font-weight:800;border-top:2px solid {YELLOW};'
+                f'background:#fffbea;text-align:{"left" if c["fmt"] == "text" else "right"};">{_e(cell_text(row, c))}</td>'
+                for c in cols)
+            body += f"<tr>{tds}</tr>"
         note = f'<div style="font-size:11px;color:{MUTED};margin-top:4px;">{_e(b["note"])}</div>' if b["note"] else ""
         title = (f'<div style="font-size:12px;font-weight:700;color:{INK};margin:10px 0 4px 0;">{_e(b["title"])}</div>'
                  if b["title"] not in ("", None) and not b.get("hide_title") else "")
@@ -281,8 +302,8 @@ def to_pdf(model: dict) -> bytes:
             colors_ = _cell_colors(b)
             data = [[Paragraph(T(c.get("label", c["key"])), st["head"]) for c in cols]]
             for i, (_, row) in enumerate(df.iterrows()):
-                data.append([Paragraph(T(fmt(row.get(c["key"]), c["fmt"])), st["cell"]) for c in cols])
-            weights = [max(len(str(c.get("label", c["key"]))), *(len(fmt(v, c["fmt"])) for v in df[c["key"]].head(50)), 4)
+                data.append([Paragraph(T(cell_text(row, c)), st["cell"]) for c in cols])
+            weights = [max(len(str(c.get("label", c["key"]))), *(len(cell_text(r, c)) for _, r in df.head(50).iterrows()), 4)
                        if c["key"] in df.columns else 6 for c in cols]
             weights = [min(max(w, 9), 60) for w in weights]
             widths = [page_w * w / sum(weights) for w in weights]
@@ -295,7 +316,12 @@ def to_pdf(model: dict) -> bytes:
                     if bg:
                         style.append(("BACKGROUND", (ci, r), (ci, r), colors.HexColor(bg)))
                     if fg:
-                        data[r][ci] = Paragraph(f'<font color="{fg}"><b>{T(fmt(df.iloc[r - 1].get(cols[ci]["key"]), cols[ci]["fmt"]))}</b></font>', st["cell"])
+                        data[r][ci] = Paragraph(f'<font color="{fg}"><b>{T(cell_text(df.iloc[r - 1], cols[ci]))}</b></font>', st["cell"])
+            if b.get("total"):
+                trow = pd.Series(b["total"])
+                data.append([Paragraph(f"<b>{T(cell_text(trow, c))}</b>", st["cell"]) for c in cols])
+                style += [("LINEABOVE", (0, len(data) - 1), (-1, len(data) - 1), 1.5, colors.HexColor(YELLOW)),
+                          ("BACKGROUND", (0, len(data) - 1), (-1, len(data) - 1), colors.HexColor("#fffbea"))]
             tbl = Table(data, colWidths=widths, repeatRows=1, style=style)
             show_title = b["title"] and b["title"] != last_heading
             parts = [Paragraph(T(b["title"]), st["b"]), tbl] if show_title else [tbl]
@@ -350,7 +376,11 @@ def to_excel(model: dict) -> bytes:
                          "Detail": f'{it["value"]}' + (f' ({it["change"]} vs last month)' if it.get("change") else "")}
                         for it in b["items"]]
         elif b["type"] == "table":
-            sheets.append((b["sheet"], b["full"]))
+            full = b["full"]
+            if b.get("total"):
+                full = pd.concat([full, pd.DataFrame([b["total"]])[[c for c in full.columns if c in b["total"]]]],
+                                 ignore_index=True)
+            sheets.append((b["sheet"], full))
     sheets.insert(0, ("Summary", pd.DataFrame(summary)))
     for name, df in model.get("annex", []):
         sheets.append((name, df))

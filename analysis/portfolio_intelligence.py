@@ -888,34 +888,6 @@ def compute_good_bad(
 
 # ── Section 4: Risk Flag Comparison ──────────────────────────────────────────
 
-def compute_risk_flag_comparison(alerts_curr: list, alerts_prev: list) -> pd.DataFrame:
-    """Merge curr and prev alert counts into a comparison table."""
-    if not alerts_curr:
-        return pd.DataFrame()
-
-    prev_map = {a["title"]: a for a in alerts_prev} if alerts_prev else {}
-
-    rows = []
-    for a in alerts_curr:
-        title = a["title"]
-        cnt_c = a["count"]
-        soh_c = round(a.get("pos", 0) / 1e7, 2)
-        prev  = prev_map.get(title)
-        cnt_p = prev["count"] if prev else None
-        delta = (cnt_c - cnt_p) if cnt_p is not None else None
-        rows.append({
-            "Risk Type": title,
-            "Accounts": cnt_c,
-            "SOH (Cr)": soh_c,
-            "Last Month": cnt_p,
-            "Δ": delta,
-            "Severity": a.get("severity", "medium"),
-            "Action": a.get("action", ""),
-            "_df_key": title,
-        })
-    return pd.DataFrame(rows)
-
-
 # ── Section 5: Product / Segment Analysis ─────────────────────────────────────
 
 def compute_product_analysis(df_curr: pd.DataFrame, as_of=None) -> dict:
@@ -1595,7 +1567,7 @@ def _grouped_mode(df: pd.DataFrame, group_col: str, value_col: str) -> pd.Series
     return winners.set_index(group_col)[value_col]
 
 
-def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
+def compute_fleet_exposure(df_curr: pd.DataFrame, top_n: int | None = 20) -> dict:
     """
     Customers (identified by Cust Mob No) with 3+ loans  -  fleet operators.
     Returns summary dict + top_df (fleet customers ranked by total SOH).
@@ -1679,12 +1651,8 @@ def compute_fleet_exposure(df_curr: pd.DataFrame) -> dict:
         "NPA Loans":      grp_npa.reindex(fleet_customers).fillna(0).astype(int),
         "Total SOH (Cr)": grp_soh.reindex(fleet_customers),
     })
-    top_df = (
-        top_df
-        .sort_values("Total SOH (Cr)", ascending=False)
-        .head(20)
-        .reset_index(drop=True)
-    )
+    top_df = top_df.sort_values("Total SOH (Cr)", ascending=False)
+    top_df = (top_df if top_n is None else top_df.head(top_n)).reset_index(drop=True)
     # Python's str(), not pandas' .astype(str) -- under pandas 3.x's default
     # string dtype, .astype(str) preserves NaN as a null instead of the
     # literal string "nan" that the original code's `str(cust_name)` (a

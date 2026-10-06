@@ -676,9 +676,10 @@ def compute_recent_advances_status_by_grain(
 # ui/components.py::_excel_bytes, the app's one other Excel writer, so there's
 # a single pinned Excel-writing dependency for the whole project.
 
-_HEADER_FILL = PatternFill("solid", fgColor="1A3660")
+# Same blue header / white text as every other download (ui/components.py).
+_HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=10, name="Calibri")
-_TITLE_FONT = Font(bold=True, size=16, color="1A3660", name="Calibri")
+_TITLE_FONT = Font(bold=True, size=16, color="1F4E78", name="Calibri")
 _SUBTITLE_FONT = Font(italic=True, size=10, color="6B7280", name="Calibri")
 _SECTION_FONT = Font(bold=True, size=12, color="111827", name="Calibri")
 _WARN_FONT = Font(bold=True, size=10, color="92400E", name="Calibri")

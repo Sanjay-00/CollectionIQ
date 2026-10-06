@@ -76,17 +76,13 @@ def test_root_cause_region_diagnosis_reuses_the_scorecard_figures():
     assert "Prev Delinquency%" not in no_prev.columns
 
 
-def test_region_scorecard_shows_prev_and_change_on_screen(monkeypatch):
+def test_unit_table_shows_change_and_counts_on_screen():
     import ui.tabs.portfolio_intelligence as pi
-    from analysis.portfolio_intelligence import compute_region_scorecard
-    captured = []
-    monkeypatch.setattr(pi.st, "markdown", lambda html, **_: captured.append(html))
-    monkeypatch.setattr(pi, "_dl_btn", lambda *a, **k: None)
-    region = compute_region_scorecard(_month([0, 0, 1, 1] * 5), _month([0, 0, 0, 1] * 5))
-    pi._render_region_scorecard(region, has_prev=True)
-    html = "".join(captured)
-    assert "Prev Delinquency%" in html and "25.0%" in html
-    assert "▲ 25.00pp" in html                                 # got worse: red up arrow
+    from analysis.summary import unit_table
+    table = unit_table(_month([0, 0, 1, 1] * 5), _month([0, 0, 0, 1] * 5), "Region")
+    html = pi.units_table_html(table, "Region")
+    assert "Change vs last month" in html and "▲ 25.00 pts" in html     # got worse: red up arrow
+    assert "50.0% <span" in html and "(10)</span>" in html               # the % with its count in one cell
 
 
 def test_root_cause_branch_tables_get_delinquency_and_last_month():

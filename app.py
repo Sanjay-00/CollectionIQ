@@ -33,7 +33,7 @@ from analysis.portfolio_intelligence import (
     compute_risk_indicators, compute_good_bad,
     compute_concentration_treemap, compute_fleet_exposure,
     compute_top_accounts, compute_repossession_list,
-    compute_risk_flag_comparison, compute_npa_sma2_comparison,
+    compute_npa_sma2_comparison,
     compute_good_customers, compute_overdue_demand_scorecard,
     compute_new_advances, compute_new_advances_by_dimension,
 )
@@ -616,7 +616,6 @@ elif active == "📈 Migration":
 
 elif active == "📊 Portfolio Intelligence":
     try:
-        _pi_flag_df = compute_risk_flag_comparison(alerts, alerts_prev)
         render_portfolio_intelligence_tab(
             pulse_kpis=pi_pulse_kpis,
             fig_waterfall=pi_fig_wf,
@@ -627,7 +626,6 @@ elif active == "📊 Portfolio Intelligence":
             product_data=pi_product,
             risk_indicators=pi_risk,
             good_bad=pi_good_bad,
-            flag_df=_pi_flag_df,
             fig_treemap=pi_fig_treemap,
             fleet=pi_fleet,
             top_accounts=pi_top_accounts,
@@ -638,7 +636,7 @@ elif active == "📊 Portfolio Intelligence":
             npa_sma2_cmp=pi_npa_sma2_cmp,
             good_customers=pi_good_customers,
             overdue_demand_scorecard=pi_overdue_demand,
-            df_curr=df_curr,
+            df_curr=df_curr, df_prev=df_prev, data_version=data_version, filter_key=_filter_key,
         )
     except Exception as _e:
         _tab_error("Portfolio Intelligence", _e)

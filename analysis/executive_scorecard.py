@@ -19,7 +19,7 @@ def compute_executive_scorecard(
 
     Columns: Executive (Branch), MNT NAME, Unit, Accounts, Delinquent,
              Delinquency %, [Prev Delinquency %, Δ Delinquency %], SMA-2,
-             SMA-2 %, NPA, NPA %, NPA % (SOH), Strike Rate %, Collection %,
+             SMA-2 %, NPA, NPA %, NPA % (SOH), NPA SOH (Cr), Strike Rate %, Collection %,
              Hard Bucket %, [Roll Fwd %, Roll Bwd %], Total POS (L),
              Total SOH (L), Demand (L), Collected (L), Tier
     Every number comes from utils.unit_metrics (the shared definitions), in
@@ -66,6 +66,7 @@ def compute_executive_scorecard(
     sc["SMA-2 %"] = _ratio1(m["SMA-2"], m["Accounts"]).values
     sc["NPA %"] = _ratio1(m["NPA"], m["Accounts"]).values
     sc["NPA % (SOH)"] = _r1("NPA% (SOH)").values
+    sc["NPA SOH (Cr)"] = m["NPA SOH (Cr)"].values
     sc["NPA"] = m["NPA"].values
     sc["SMA-2"] = m["SMA-2"].values
     sc["Total POS (L)"] = (m["POS"] / 100_000).round(2).values
@@ -127,10 +128,25 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
     # no UI dependency -- append_total_row lives in ui/components.py since
     # every OTHER table's Total row goes through it too, and ui/components.py
     # itself never imports back into analysis/, so this can't cycle.
-    from ui.components import append_total_row, heat_range, heat_style
+    from ui.components import append_total_row, heat_range, heat_style, pct_amount, pct_count
 
+    # A % and the count behind it share one cell ("11.9% (37)"), so the count
+    # columns aren't shown separately (they stay in the frame for the totals).
+    pct_counts = {p: c for p, c in (("Delinquency %", "Delinquent"), ("NPA %", "NPA"), ("SMA-2 %", "SMA-2"))
+                  if p in scorecard_df.columns and c in scorecard_df.columns}
+    # A % by SOH shows the money behind it the same way: "34.6% (₹1.21 Cr)".
+    pct_amounts = {p: a for p, a in (("NPA % (SOH)", "NPA SOH (Cr)"),)
+                   if p in scorecard_df.columns and a in scorecard_df.columns}
     # MNT NAME / Unit are raw copies of what "Executive (Branch)" already shows.
-    headers = [c for c in scorecard_df.columns if c not in ("Tier", "MNT NAME", "Unit")]
+    frame_cols = [c for c in scorecard_df.columns if c not in ("Tier", "MNT NAME", "Unit")]
+    headers = [c for c in frame_cols if c not in pct_counts.values() and c not in pct_amounts.values()]
+
+    def _pct_cell(c, row):
+        if c in pct_counts:
+            return pct_count(row[c], row[pct_counts[c]])
+        if c in pct_amounts:
+            return pct_amount(row[c], row[pct_amounts[c]])
+        return f"{row[c]}%" if c.endswith("%") else row[c]
     header_html = "".join(
         f'<th style="background:#111;color:#FFC000;padding:8px 12px;'
         f'text-align:left;font-size:12px;white-space:nowrap;">{h}</th>'
@@ -143,8 +159,9 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
         "NPA %":          ("NPA", "Accounts", 100),
         "SMA-2 %":        ("SMA-2", "Accounts", 100),
         "Delinquency %":  ("Delinquent", "Accounts", 100),
+        "NPA % (SOH)":    ("NPA SOH (Cr)", "Total SOH (L)", 10_000),   # Cr / L x 100 x 100
     }
-    df_display = append_total_row(scorecard_df[headers], ratio_cols=_ratio_cols)
+    df_display = append_total_row(scorecard_df[frame_cols], ratio_cols=_ratio_cols)
     n_data_rows = len(scorecard_df)
     # Risk columns: red shading by rank within the column, never green.
     risk_cols = ("Roll Fwd %", "NPA", "NPA %", "NPA % (SOH)", "SMA-2", "SMA-2 %", "Delinquent", "Delinquency %")
@@ -153,7 +170,8 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
         if i == n_data_rows:
             cells = "".join(
                 f'<td style="padding:8px 12px;font-size:13px;font-weight:800;'
-                f'border-top:2px solid #FFC000;">{f"{row[c]}%" if "%" in c and row[c] != "" else row[c]}</td>'
+                f'border-top:2px solid #FFC000;">'
+                f'{_pct_cell(c, row) if row[c] != "" else ""}</td>'
                 for c in headers
             )
             rows_html += f'<tr style="border-bottom:1px solid #e5e7eb;background:#fffbea;">{cells}</tr>'
@@ -188,8 +206,8 @@ def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
                 if val is None or pd.isna(val):
                     cells += '<td style="padding:8px 12px;font-size:13px;color:#9ca3af;"> - </td>'
                 else:
-                    unit = "%" if col.endswith("%") else ""
-                    cells += f'<td style="padding:8px 12px;font-size:13px;{heat_style(val, heat[col])}">{val}{unit}</td>'
+                    shown = _pct_cell(col, row)
+                    cells += f'<td style="padding:8px 12px;font-size:13px;{heat_style(val, heat[col])}">{shown}</td>'
             elif col == "Roll Bwd %":
                 if val is None or pd.isna(val):
                     cells += '<td style="padding:8px 12px;font-size:13px;color:#9ca3af;"> - </td>'

@@ -238,7 +238,7 @@ def _render_disbursement_vintage(
     if fig_v.data:
         _chart_card(fig_v)
         st.markdown("<br>", unsafe_allow_html=True)
-    _render_product_table(plot_df.drop(columns=["NPA Count", "SMA-2 Count"], errors="ignore"))
+    _render_product_table(plot_df)   # NPA / SMA-2 counts shown inside their % cells
     _dl_btn(plot_df, "disbursement_vintage.xlsx", "dl_vintage")
 
 
