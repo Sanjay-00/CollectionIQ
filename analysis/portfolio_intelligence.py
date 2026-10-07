@@ -316,7 +316,8 @@ def compute_region_scorecard(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> pd
 # future 4th grain or a rename would need to update in lockstep with nothing
 # enforcing that. Import this dict instead of redefining it.
 OVERDUE_DEMAND_IDENTITY_COLS: dict[str, list[str]] = {
-    "region": [],
+    "zone": [],
+    "region": ["Zone"],
     "branch": ["Region"],
     "executive": ["Branch", "Region"],
 }
@@ -385,7 +386,8 @@ def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.Data
         return pd.DataFrame(rows).sort_values("Overdue Collection %").reset_index(drop=True)
 
     return {
-        "region":    _rows("RegionName", "Region"),
+        "zone":      _rows("Zone", "Zone"),
+        "region":    _rows("RegionName", "Region", extra_cols=[("Zone", "Zone")]),
         "branch":    _rows("Unit", "Branch", extra_cols=[("RegionName", "Region")]),
         "executive": _rows(_EXEC_KEY, "Executive", extra_cols=[("Unit", "Branch"), ("RegionName", "Region")],
                             min_accounts=MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE),

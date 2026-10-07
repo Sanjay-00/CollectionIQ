@@ -574,12 +574,33 @@ OPTIONAL_SECTIONS = {
 
 # ── The report ───────────────────────────────────────────────────────────────
 
+# Every main section, in the order it appears in a report (key -> label). Keys
+# must not repeat an OPTIONAL_SECTIONS key (e.g. "business" is the optional detail).
+MAIN_SECTIONS = {
+    "summary": "Summary", "scoreboard": "Scoreboard", "early_warning": "Early warning",
+    "regions": "Regions", "branches": "Branches", "executives": "Executives",
+    "roll_branch": "Roll rates by branch", "roll_executive": "Roll rates by executive",
+    "attention": "Needs attention", "why": "Why it's happening", "new_business": "New business",
+    "alerts": "Alerts", "priorities": "Priorities", "call_lists": "Call lists", "definitions": "Definitions",
+}
+# What each preset's report holds (the report tab ticks these when a preset is picked).
+PRESET_SECTIONS = {
+    "Regional": ["summary", "scoreboard", "early_warning", "regions", "branches", "roll_branch", "attention",
+                 "why", "new_business", "alerts", "priorities", "definitions"],
+    "Leadership": ["summary", "scoreboard", "early_warning", "regions", "new_business", "priorities", "definitions"],
+    "Branch": ["summary", "scoreboard", "early_warning", "executives", "roll_executive", "priorities",
+               "call_lists", "definitions"],
+}
+
+
 def build_report(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, prev_month: str | None,
                  preset: str = "Regional", filters: dict | None = None,
                  alerts: list | None = None, alerts_prev: list | None = None,
-                 extras: list[str] | tuple = ()) -> dict:
-    """The report model: {title, subtitle, meta, data_notes, blocks}. `extras`:
-    keys of OPTIONAL_SECTIONS to add before the definitions."""
+                 extras: list[str] | tuple = (), sections: list[str] | tuple | None = None) -> dict:
+    """The report model: {title, subtitle, meta, data_notes, blocks}.
+    sections: keys of MAIN_SECTIONS and OPTIONAL_SECTIONS to include (shown in
+    MAIN_SECTIONS order, the optional ones before Definitions); None means the
+    preset's own sections plus `extras` (keys of OPTIONAL_SECTIONS)."""
     from analysis import action_center
     from analysis.summary import biggest_moves
     from utils import compute_metrics
@@ -592,21 +613,33 @@ def build_report(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, 
                    if df_prev is not None and len(df_prev) else None)
     moves = {lvl: biggest_moves(df_curr, df_prev, lvl, 1) for lvl in ("Region", "Branch")}
 
-    blocks = _summary(ac, moves) + _scoreboard(metrics, prev_values) + _early_warning(ac)
-    if preset == "Leadership":
-        blocks += _regions(df_curr, df_prev) + _business(df_curr, curr_month) + _priorities(ac)
-    elif preset == "Regional":
-        blocks += (_regions(df_curr, df_prev) + _branches(df_curr, df_prev)
-                   + _roll_by(df_curr, "branch", "Roll Rates by Branch") + _attention(ac)
-                   + _why(df_curr, df_prev, curr_month) + _business(df_curr, curr_month)
-                   + _alerts(alerts, alerts_prev) + _priorities(ac))
-    else:  # Branch
-        blocks += (_executives(df_curr, df_prev) + _roll_by(df_curr, "executive", "Roll Rates by Executive")
-                   + _priorities(ac) + _call_lists(ac))
-    for key in extras:
-        if key in OPTIONAL_SECTIONS:
-            blocks += OPTIONAL_SECTIONS[key][1](df_curr, df_prev, curr_month)
-    blocks += _definitions()
+    chosen = set(PRESET_SECTIONS.get(preset, PRESET_SECTIONS["Regional"]) + list(extras)
+                 if sections is None else sections)
+    build = {
+        "summary": lambda: _summary(ac, moves),
+        "scoreboard": lambda: _scoreboard(metrics, prev_values),
+        "early_warning": lambda: _early_warning(ac),
+        "regions": lambda: _regions(df_curr, df_prev),
+        "branches": lambda: _branches(df_curr, df_prev),
+        "executives": lambda: _executives(df_curr, df_prev),
+        "roll_branch": lambda: _roll_by(df_curr, "branch", "Roll Rates by Branch"),
+        "roll_executive": lambda: _roll_by(df_curr, "executive", "Roll Rates by Executive"),
+        "attention": lambda: _attention(ac),
+        "why": lambda: _why(df_curr, df_prev, curr_month),
+        "new_business": lambda: _business(df_curr, curr_month),
+        "alerts": lambda: _alerts(alerts, alerts_prev),
+        "priorities": lambda: _priorities(ac),
+        "call_lists": lambda: _call_lists(ac),
+    }
+    blocks = []
+    for key in MAIN_SECTIONS:
+        if key in chosen and key in build:
+            blocks += build[key]()
+    for key, (_, fn) in OPTIONAL_SECTIONS.items():     # detail sections, before the definitions
+        if key in chosen:
+            blocks += fn(df_curr, df_prev, curr_month)
+    if "definitions" in chosen:
+        blocks += _definitions()
 
     scope = " | ".join(f"{k}: {v}" for k, v in filters.items() if v not in (None, "", "All", "None")) or "Whole portfolio"
     return {

@@ -24,13 +24,16 @@ def render_action_lists_tab(lists: list[dict], df_curr: pd.DataFrame) -> None:
 
     overview = pd.DataFrame([{"Group": e["group"], "List": e["name"], "Loans": e["count"], "SOH (Cr)": e["soh_cr"],
                               "Change": None if e["prev"] is None else e["count"] - e["prev"],
-                              "What to do": e["action"]} for e in lists])
+                              "What to do": e["action"],
+                              # more good customers is good news: green arrow when the list grows
+                              "_good_if_up": e["name"] == "Good customers"} for e in lists])
     overview["Group"] = overview["Group"].where(overview["Group"] != overview["Group"].shift(), "")
     st.markdown(html_table(overview, [
         {"key": "Group", "bold": True}, {"key": "List"}, {"key": "Loans", "fmt": "int"},
         {"key": "SOH (Cr)", "label": "SOH", "fmt": "cr"},
-        {"key": "Change", "label": "vs last month", "fmt": "count_change",
-         "help": "Change in the number of loans since last month's file (risk flags only)."},
+        {"key": "Change", "label": "vs last month", "fmt": "count_change", "good_if_up": lambda r: bool(r.get("_good_if_up", False)),
+         "help": "Change in the number of loans since last month's file, same rule. Blank when last "
+                 "month can't be counted the same way (lists that need the bucket from two months ago)."},
         {"key": "What to do"},
     ]), unsafe_allow_html=True)
 

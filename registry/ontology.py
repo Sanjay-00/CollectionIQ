@@ -97,7 +97,7 @@ PRIORITY_RULES = [
     },
     {
         "rank": 2,
-        "label": "Easy Settlements",
+        "label": "Easy to Nil",
         "why": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,}: one call can clear these, quick wins for collection team",
         "conditions": [
             {"column": "Closing Arrears", "op": ">",  "value": 0},
@@ -174,7 +174,7 @@ CONCEPTS: dict[str, dict] = {
         "conditions": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
     },
     "easy_settlement": {
-        "label": "Easy Settlement",
+        "label": "Easy to Nil",
         "description": f"Closing arrears between 0 and ₹{EASY_SETTLEMENT_MAX_ARREARS:,}: one call can clear these.",
         "conditions": [
             {"column": "Closing Arrears", "op": ">", "value": 0},

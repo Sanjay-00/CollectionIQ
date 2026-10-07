@@ -145,7 +145,8 @@ def _render_league(df_curr, df_prev, data_version: int, filter_key: str) -> None
     from analysis.summary import LEAGUE_METRICS
     c1, c2, c3 = st.columns([2, 1, 1])
     metric = c1.selectbox("Metric", list(LEAGUE_METRICS), key="dash_league_metric")
-    grain = c2.selectbox("Level", ["Region", "Branch", "Executive"], index=1, key="dash_league_level")
+    levels = (["Zone"] if "Zone" in df_curr.columns else []) + ["Region", "Branch", "Executive"]
+    grain = c2.selectbox("Level", levels, index=levels.index("Branch"), key="dash_league_level")
     side = c3.radio("Show", ["Worst", "Best"], horizontal=True, key="dash_league_side")
     table, ranked = _cached_league(df_curr, df_prev, data_version, filter_key, metric, grain, side == "Worst")
     if table.empty:

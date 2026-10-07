@@ -47,7 +47,7 @@ _MATRIX_MEASURES = {"Accounts %": ("count_pct", "pct"), "Accounts": ("count", "c
                     "SOH %": ("soh_pct", "pct"), "SOH (₹ Cr)": ("soh", "soh")}
 # A % cell carries what's behind it in brackets: loans for "Accounts %", ₹ Cr for "SOH %".
 _MATRIX_DETAIL = {"count_pct": ("count", "count"), "soh_pct": ("soh", "soh")}
-_GRAIN_TABS = [("By Region", "region"), ("By Branch", "branch"), ("By Executive", "executive")]
+_GRAIN_TABS = [("By Zone", "zone"), ("By Region", "region"), ("By Branch", "branch"), ("By Executive", "executive")]
 # The first two steps are the early slips a manager can still catch cheaply.
 _CATCH_EARLY = set(list(ROLL_STEPS)[:2])
 
@@ -138,7 +138,7 @@ def _with_total(df: pd.DataFrame, id_cols: list[str]) -> pd.DataFrame:
 
 
 def _roll_table_html(df: pd.DataFrame, by_soh: bool) -> str:
-    id_cols = [c for c in ("Region", "Branch", "Executive") if c in df.columns]
+    id_cols = [c for c in ("Zone", "Region", "Branch", "Executive") if c in df.columns]
     id_cols = ([c for c in id_cols if c not in ("Region",)] + (["Region"] if "Region" in id_cols else []))
     labels = [*ROLL_STEPS, "Back to STD"]
     view = _with_total(df, id_cols)
@@ -180,7 +180,8 @@ def _render_where(by: dict) -> None:
         "bucket now, with the numbers behind it. Sorted by new defaulters first. Units below the minimum "
         "size are left out."
     )
-    for tab, (name, grain) in zip(st.tabs([t for t, _ in _GRAIN_TABS]), _GRAIN_TABS):
+    grains = [(t, g) for t, g in _GRAIN_TABS if g != "zone" or not by[g].empty]   # By Zone only when there are zones
+    for tab, (name, grain) in zip(st.tabs([t for t, _ in grains]), grains):
         with tab:
             df = by[grain]
             if df.empty:
@@ -239,12 +240,21 @@ def render_migration_tab(
     # ── Drill-down filters (local to this tab -- narrows the migration view
     # without touching the sidebar's global filter used by every other tab) ──
     section_label("Drill Down")
-    f_col1, f_col2, f_col3 = st.columns(3)
+    has_zone = "Zone" in df_curr.columns
+    cols = st.columns(4 if has_zone else 3)
+    f_col1, f_col2, f_col3 = cols[-3:]
 
+    sel_zone = "All"
+    df_for_region = df_curr
+    if has_zone:
+        with cols[0]:
+            sel_zone = st.selectbox("Zone", _filter_options(df_curr, "Zone"), key="mig_zone")
+        if sel_zone != "All":
+            df_for_region = df_curr[df_curr["Zone"] == sel_zone]
     with f_col1:
-        sel_region = st.selectbox("Region", _filter_options(df_curr, "RegionName"), key="mig_region")
+        sel_region = st.selectbox("Region", _filter_options(df_for_region, "RegionName"), key="mig_region")
 
-    df_for_branch = df_curr if sel_region == "All" else df_curr[df_curr["RegionName"] == sel_region]
+    df_for_branch = df_for_region if sel_region == "All" else df_for_region[df_for_region["RegionName"] == sel_region]
     with f_col2:
         sel_branch = st.selectbox("Branch", _filter_options(df_for_branch, "Unit"), key="mig_branch")
 
@@ -252,13 +262,15 @@ def render_migration_tab(
     with f_col3:
         sel_exec = st.selectbox("Executive", _filter_options(df_for_exec, "MNT NAME"), key="mig_exec")
 
-    has_filter = sel_region != "All" or sel_branch != "All" or sel_exec != "All"
+    has_filter = sel_zone != "All" or sel_region != "All" or sel_branch != "All" or sel_exec != "All"
 
     if has_filter:
         def _apply(df: pd.DataFrame) -> pd.DataFrame:
             # One combined boolean mask, one indexing op -- not up to 3
             # sequential boolean-index copies for the up-to-3 active filters.
             mask = pd.Series(True, index=df.index)
+            if sel_zone != "All" and "Zone" in df.columns:
+                mask &= df["Zone"] == sel_zone
             if sel_region != "All" and "RegionName" in df.columns:
                 mask &= df["RegionName"] == sel_region
             if sel_branch != "All" and "Unit" in df.columns:
@@ -270,16 +282,16 @@ def render_migration_tab(
         df_curr_f = _apply(df_curr)
         df_prev_f = _apply(df_prev) if df_prev is not None else pd.DataFrame()
         if len(df_curr_f) == 0:
-            st.warning("No accounts match this Region / Branch / Executive combination.")
+            st.warning("No accounts match this Zone / Region / Branch / Executive combination.")
             return
         # Combines the sidebar's own filter selection (already baked into
         # df_curr's content, but not otherwise visible to this cache key) with
         # this tab's own local drill-down -- both determine df_curr_f's content.
-        drilldown_key = f"{sidebar_filter_key}|{sel_region}|{sel_branch}|{sel_exec}"
+        drilldown_key = f"{sidebar_filter_key}|{sel_zone}|{sel_region}|{sel_branch}|{sel_exec}"
         rr_matrix, rr_meta = _cached_filtered_roll_rate(df_curr_f, df_prev_f, data_version, drilldown_key)
     else:
         df_curr_f = df_curr
-        drilldown_key = f"{sidebar_filter_key}|All|All|All"
+        drilldown_key = f"{sidebar_filter_key}|All|All|All|All"
 
     flow = _cached_roll_flow(df_curr_f, data_version, drilldown_key)
     if not flow["summary"]:

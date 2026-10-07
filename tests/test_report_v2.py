@@ -162,3 +162,10 @@ def test_percent_cells_carry_their_count_or_crore():
     row = pd.Series({"NPA%": 12.5, "NPA": 5, "NPA% (SOH)": 8.0, "NPA SOH (Cr)": 1.5})
     assert render.cell_text(row, {"key": "NPA%", "fmt": "pct", "count": "NPA"}) == "12.5% (5)"
     assert render.cell_text(row, {"key": "NPA% (SOH)", "fmt": "pct", "amount": "NPA SOH (Cr)"}) == "8.0% (₹1.50 Cr)"
+
+
+def test_section_keys_never_clash():
+    # A main section sharing a key with an optional one would pull both in.
+    from report_agent.story import MAIN_SECTIONS, OPTIONAL_SECTIONS, PRESET_SECTIONS
+    assert not set(MAIN_SECTIONS) & set(OPTIONAL_SECTIONS)
+    assert all(set(v) <= set(MAIN_SECTIONS) for v in PRESET_SECTIONS.values())

@@ -98,6 +98,7 @@ def roll_steps_summary(df: pd.DataFrame, matched: pd.DataFrame | None = None) ->
 
 _GRAINS = {
     # grain: (group columns, identity columns shown, min matched accounts)
+    "zone": (["Zone"], {"Zone": "Zone"}, MIN_ACCOUNTS_DIMENSION_BREAKDOWN),
     "region": (["RegionName"], {"RegionName": "Region"}, MIN_ACCOUNTS_DIMENSION_BREAKDOWN),
     "branch": (["Unit"], {"Unit": "Branch"}, MIN_ACCOUNTS_DIMENSION_BREAKDOWN),
     "executive": (["MNT NAME", "Unit"], {"MNT NAME": "Executive", "Unit": "Branch"}, MIN_ACCOUNTS_EXECUTIVE),
@@ -120,7 +121,7 @@ def roll_steps_by(df: pd.DataFrame, grain: str, matched: pd.DataFrame | None = N
     out = out[out["Matched Accounts"] >= min_n].reset_index()
     if out.empty:
         return out
-    if grain != "region" and "RegionName" in m.columns:
+    if grain not in ("region", "zone") and "RegionName" in m.columns:
         region = m.groupby(cols, sort=True)["RegionName"].first()
         keys = list(zip(*[out[c] for c in cols])) if len(cols) > 1 else list(out[cols[0]])
         out.insert(len(cols), "Region", [region.get(k) for k in keys])

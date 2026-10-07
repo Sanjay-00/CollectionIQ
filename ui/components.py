@@ -254,17 +254,30 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
 TOP_CHOICES = [10, 20, 50, 100, "All"]
 
 
-def list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows") -> pd.DataFrame:
-    """Top X, a branch filter and "top X in each branch", for any list
-    already sorted with the most important rows first."""
-    c1, c2, c3 = st.columns([1, 1.4, 1.6])
+def list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows",
+                  region_col: str = "Region") -> pd.DataFrame:
+    """Top X, region and branch filters and "top X in each branch", for any
+    list already sorted with the most important rows first. The region filter
+    shows only when the list has a region column, and narrows the branches."""
+    has_region = region_col in df.columns
+    if has_region:
+        c1, c_r, c2, c3 = st.columns([1, 1.2, 1.2, 1.4])
+    else:
+        c1, c2, c3 = st.columns([1, 1.4, 1.6])
     n = c1.selectbox("Show top", TOP_CHOICES, index=0, key=f"{key}_n")
-    branches = ["All"] + (sorted(df[branch_col].dropna().astype(str).unique()) if branch_col in df.columns else [])
+    scope = df
+    if has_region:
+        r = c_r.selectbox("Region", ["All"] + sorted(df[region_col].dropna().astype(str).unique()), key=f"{key}_r")
+        if r != "All":
+            scope = df[df[region_col].astype(str) == r]
+    branches = ["All"] + (sorted(scope[branch_col].dropna().astype(str).unique()) if branch_col in df.columns else [])
+    if st.session_state.get(f"{key}_b") not in branches:      # the branch isn't in the region just picked
+        st.session_state[f"{key}_b"] = "All"
     b = c2.selectbox("Branch", branches, key=f"{key}_b")
     c3.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
     each = c3.checkbox(f"Top {n} in each branch" if n != "All" else "Group by branch", key=f"{key}_each",
                        disabled=b != "All" or branch_col not in df.columns)
-    d = df if b == "All" else df[df[branch_col].astype(str) == b]
+    d = scope if b == "All" else scope[scope[branch_col].astype(str) == b]
     if each and b == "All" and branch_col in d.columns:
         d = d.groupby(branch_col, sort=True, group_keys=False).head(n if n != "All" else len(d))
         d = d.sort_values(branch_col, kind="stable")
@@ -661,7 +674,7 @@ def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, ma
     """cols: {"key", "label"?, "fmt": text|int|pct|pct_count|pct_cr|cr|inr|num|pp|count_change|pct_change, or a
     function (value, row) -> trusted HTML, "align"?: "left"/"right" (default: text left, numbers right),
     "count"?: count column for pct_count, "amount"?: ₹ Cr column for pct_cr, "heat"?: True (red shading by rank,
-    lowest = palest), "good_if_up"?: True (a rise is good: green arrows),
+    lowest = palest), "good_if_up"?: True, or row -> bool for a per-row choice (a rise is good: green arrows),
     "help"?: hover text, "bold"?: True}. total: an optional final row (dict).
     max_height: scroll inside the table with the header kept in view.
     highlight: optional row -> bool; True rows get a red edge and a pale red
@@ -685,7 +698,8 @@ def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, ma
             if not is_total and c["key"] in heat:
                 style += heat_style(v, heat[c["key"]])
             if kind in _CHANGE_KINDS and not is_blank(v) and v != "" and float(v) != 0:
-                worse = (float(v) > 0) != bool(c.get("good_if_up"))
+                good_up = c.get("good_if_up")
+                worse = (float(v) > 0) != bool(good_up(r) if callable(good_up) else good_up)
                 style += f'color:{"#dc2626" if worse else "#16a34a"};font-weight:700;'
             tds += f'<td style="{style}">{_fmt_cell(v, kind, r, c.get("count"), c.get("amount"))}</td>'
         rows.append(f'<tr class="{"ht-total" if is_total else ""}">{tds}</tr>')

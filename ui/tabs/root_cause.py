@@ -56,17 +56,6 @@ def _summary_line(total_row: pd.Series, parts: list[tuple[str, str]]) -> None:
     takeaway(f"All branches: {', '.join(bits)}.")
 
 
-def _delinquency_chip(row) -> str:
-    pct = row.get("Delinquency%")
-    if _is_missing(pct):
-        return ""
-    prev = row.get("Δ Delinquency%")
-    move = "" if _is_missing(prev) else f" ({prev:+.2f} pts)"
-    n, d = row.get("Accounts"), row.get("Delinquent Accounts")
-    base = "" if _is_missing(n) or _is_missing(d) else f"{int(d):,} of {int(n):,}, "
-    return f'<div style="font-size:12px;color:#374151;">Delinquent {base}<b>{pct:.1f}%</b>{move}</div>'
-
-
 def _table(df: pd.DataFrame, cols: list[dict], last_row_is_total: bool = False) -> str:
     """The app's shared table (ui.components.html_table); each column's ⓘ
     comes from the glossary unless the spec gives one. last_row_is_total:
@@ -115,77 +104,51 @@ def _why_takeaway(why_df: pd.DataFrame) -> str:
     return text
 
 
+def _driver_cell(v, row) -> str:
+    """'Deep arrears, still paying · 37%' with the driver's own explanation on hover."""
+    if not isinstance(v, str) or not v:
+        return "-"
+    share = row.get("Driver Share %") if hasattr(row, "get") else None
+    tail = "" if share is None or pd.isna(share) else \
+        f' <span style="color:#6b7280;font-weight:400;">· {float(share):.0f}%</span>'
+    return f"{_esc(v)}{tail}{info_icon(DRIVER_HELP.get(v))}"
+
+
 def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
-    section_label("Region Diagnosis: Why Is It Moving?")
-    st.caption(
-        "One row per region: current NPA%/Collection% and MoM movement, plus the single "
-        "driver claiming the largest share of that region's delinquent book. "
-        "Worsening regions are shown first."
-    )
+    section_label("Why It's Moving, Region by Region")
     if why_df.empty:
         st.info("Not enough data to compute region diagnostics.")
         return
-
     takeaway(_why_takeaway(why_df))
+    st.caption("Worsening regions first. Main driver: the cause behind the largest share of the region's "
+               "delinquent loans (its share after the dot).")
     display_cols = ["Region", "Status", "Accounts", "Delinquent Accounts", "Delinquency%", "Prev Delinquency%",
                     "Δ Delinquency%", "NPA%", "Δ NPA%", "Collection%", "Dominant Driver", "Driver Share %"]
-    display_cols = [c for c in display_cols if c in why_df.columns]
-    view = why_df[display_cols].copy()
-
-    for _, row in view.iterrows():
-        badge = _badge(row.get("Status", "-"))
-        delta = row.get("Δ NPA%")
-        delta_txt = f"{delta:+.2f} pts" if delta is not None and pd.notna(delta) else "no prev month"
-        st.markdown(
-            f'<div style="display:flex;align-items:center;gap:14px;padding:10px 14px;'
-            f'border:1px solid #e5e7eb;border-radius:8px;margin-bottom:8px;">'
-            f'<div style="min-width:120px;font-weight:700;font-size:13px;">{_esc(row["Region"])}</div>'
-            f'{badge}'
-            f'{_delinquency_chip(row)}'
-            f'<div style="font-size:12px;color:#374151;">NPA% <b>{row.get("NPA%", 0):.1f}%</b> ({delta_txt})</div>'
-            f'<div style="font-size:12px;color:#374151;">Collection% <b>{row.get("Collection%", 0):.1f}%</b></div>'
-            f'<div style="flex:1;text-align:right;font-size:12px;">'
-            f'<span style="color:#6b7280;">Dominant driver{info_icon(help_for("Dominant Driver"))}:</span> '
-            f'<b style="color:#111827;">{_esc(row.get("Dominant Driver", "-"))}</b>'
-            f'{info_icon(DRIVER_HELP.get(row.get("Dominant Driver")))} '
-            f'<span style="color:#6b7280;">({row.get("Driver Share %", 0):.0f}% of delinquents)</span>'
-            f'</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    with st.expander("View as table"):
-        cols = [
-            {"key": "Region", "align": "left", "bold": True},
-            {"key": "Status", "align": "left", "fmt": lambda v, _r=None: _badge(str(v)) if v else ""},
-            {"key": "Accounts", "fmt": "int"},
-            {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent Accounts", "heat": True},
-            {"key": "Prev Delinquency%", "fmt": "pct", "help": _PREV_DELINQ_HELP},
-            {"key": "Δ Delinquency%", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
-            {"key": "NPA%", "fmt": "pct", "heat": True},
-            {"key": "Δ NPA%", "fmt": "pp"},
-            {"key": "Collection%", "fmt": "pct"},
-            {"key": "Dominant Driver", "align": "left",
-             "fmt": lambda v, _r=None: (_esc(v) if isinstance(v, str) and v else "-") + info_icon(DRIVER_HELP.get(v))},
-            {"key": "Driver Share %", "fmt": "pct"},
-        ]
-        cols = [c for c in cols if c["key"] in view.columns]
-        total = _why_total(df_curr)
-        if total:
-            view = pd.concat([view, pd.DataFrame([total])], ignore_index=True)
-        st.markdown(_table(view, cols, last_row_is_total=bool(total)), unsafe_allow_html=True)
+    view = why_df[[c for c in display_cols if c in why_df.columns]].copy()
+    cols = [
+        {"key": "Region", "align": "left", "bold": True},
+        {"key": "Status", "align": "left", "fmt": lambda v, _r=None: _badge(str(v)) if v else ""},
+        {"key": "Accounts", "fmt": "int"},
+        {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent Accounts", "heat": True},
+        {"key": "Prev Delinquency%", "label": "Last month", "fmt": "pct", "help": _PREV_DELINQ_HELP},
+        {"key": "Δ Delinquency%", "label": "Change", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
+        {"key": "NPA%", "label": "NPA", "fmt": "pct", "heat": True},
+        {"key": "Δ NPA%", "label": "NPA change", "fmt": "pp"},
+        {"key": "Collection%", "label": "Collection", "fmt": "pct"},
+        {"key": "Dominant Driver", "label": "Main driver", "align": "left", "fmt": _driver_cell},
+    ]
+    cols = [c for c in cols if c["key"] in view.columns]
+    total = _why_total(df_curr)
+    if total:
+        view = pd.concat([view, pd.DataFrame([total])], ignore_index=True)
+    st.markdown(_table(view, cols, last_row_is_total=bool(total)), unsafe_allow_html=True)
     _dl_btn(why_df, "region_why_diagnosis.xlsx", "dl_root_cause_why")
 
 
 def _render_insurance_split(ins_df: pd.DataFrame) -> None:
-    section_label("Insurance-vs-Installment Split, by Branch", margin_top="24px")
-    st.caption(
-        "Among delinquent accounts: Insurance-Only means the customer is current on the "
-        "loan itself (installment arrears ≤ 0) but an unpaid insurance/expense charge is "
-        "creating the delinquency: fixable with a cash/WCL adjustment, not a credit "
-        "problem. Both = genuine shortfall on both legs (colored by severity). "
-        "Sorted by highest Insurance-Only share first."
-    )
+    section_label("Insurance or Instalment: What's Unpaid, by Branch")
+    st.caption("Shares of each branch's delinquent loans. Insurance-only: the EMI is paid, only an insurance "
+               "or expense charge is due (a cash or WCL adjustment clears it). Highest insurance-only first.")
     if ins_df.empty:
         st.info("Not enough data to compute the insurance split.")
         return
@@ -221,12 +184,9 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
 
 
 def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
-    section_label("Deep Arrears: Still Paying vs Not Paying, by Branch", margin_top="24px")
-    st.caption(
-        f"Every delinquent loan in one of four groups, by how far behind it is today "
-        f"({HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs = hard) and whether the customer has paid anything in "
-        f"the last 3 months. Hover the ⓘ on each column for what to do with that group."
-    )
+    section_label("Paying or Not: Delinquent Loans in Four Groups, by Branch")
+    st.caption(f"By how far behind the loan is ({HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs = hard) and whether anything "
+               "was paid in the last 3 months. Hover the ⓘ on a column for what to do with that group.")
     if cs_df.empty:
         st.info("Not enough data to compute the paying vs not paying split.")
         return
@@ -345,7 +305,7 @@ def _render_status_table(status_df: pd.DataFrame, grain_label: str) -> None:
             "ARREARS / EMI columns, and the LCC needs running loans from the cohort start onward."
         )
         return
-    label_cols = [c for c in status_df.columns if c in ("Region", "Branch", "Executive")]
+    label_cols = [c for c in status_df.columns if c in ("Zone", "Region", "Branch", "Executive")]
     count_cols = [c for c in status_df.columns if c not in label_cols and c != "Running Loans" and not c.endswith(" %")]
     cols = [{"key": lc, "align": "left", "bold": lc == label_cols[0]} for lc in label_cols]
     cols.append({"key": "Running Loans", "fmt": "int", "bold": True})
@@ -357,11 +317,17 @@ def _render_status_table(status_df: pd.DataFrame, grain_label: str) -> None:
 
 
 def _render_status_by_grain(df_curr: pd.DataFrame, daily_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    zone_status = compute_recent_advances_status_by_grain(df_curr, daily_df, grain="zone")
     region_status = compute_recent_advances_status_by_grain(df_curr, daily_df, grain="region")
     branch_status = compute_recent_advances_status_by_grain(df_curr, daily_df, grain="branch")
     executive_status = compute_recent_advances_status_by_grain(df_curr, daily_df, grain="executive")
 
-    tab_r, tab_b, tab_e = st.tabs(["By Region", "By Branch", "By Executive"])
+    if not zone_status.empty:
+        tab_z, tab_r, tab_b, tab_e = st.tabs(["By Zone", "By Region", "By Branch", "By Executive"])
+        with tab_z:
+            _render_status_table(zone_status, "Zone")
+    else:
+        tab_r, tab_b, tab_e = st.tabs(["By Region", "By Branch", "By Executive"])
     with tab_r:
         _render_status_table(region_status, "Region")
     with tab_b:
@@ -491,6 +457,8 @@ def render_root_cause_tab(
     recent_by_region_soh: pd.DataFrame | None = None,
     recent_by_branch_count: pd.DataFrame | None = None,
     recent_by_branch_soh: pd.DataFrame | None = None,
+    recent_by_zone_count: pd.DataFrame | None = None,
+    recent_by_zone_soh: pd.DataFrame | None = None,
 ) -> None:
     recent_bucket_df = recent_bucket_df if recent_bucket_df is not None else pd.DataFrame()
     recent_by_region_count = recent_by_region_count if recent_by_region_count is not None else pd.DataFrame()
@@ -498,17 +466,11 @@ def render_root_cause_tab(
     recent_by_branch_count = recent_by_branch_count if recent_by_branch_count is not None else pd.DataFrame()
     recent_by_branch_soh = recent_by_branch_soh if recent_by_branch_soh is not None else pd.DataFrame()
 
-    header_col, dl_col = st.columns([4, 1])
+    header_col, dl_col = st.columns([4, 1], vertical_alignment="center")
     with header_col:
-        st.markdown("""
-        <div class="ai-panel">
-          <div class="ai-title">Root Cause Diagnostics</div>
-          <div class="ai-subtitle">
-            Not just "what the numbers are", but why Collection%/NPA%/SMA-2% are moving,
-            region by region and branch by branch, so mitigation can follow.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div style="font-size:13.5px;color:#374151;">Why delinquency, NPA and collection are '
+                    'moving, region by region and branch by branch, so the fix can follow.</div>',
+                    unsafe_allow_html=True)
     with dl_col:
         # Read now (page render), used when the button is clicked.
         _daily_match = st.session_state.get("rc_daily_match") or {}
@@ -517,7 +479,7 @@ def render_root_cause_tab(
         _executive_status = st.session_state.get("rc_executive_status", pd.DataFrame())
         if not why_df.empty:
             st.download_button(
-                "⬇ Download Report (Excel)",
+                "⬇ Root Cause workbook",
                 data=lambda: _cached_workbook_bytes(
                     why_df, insurance_split_df, chronic_shock_df, contamination, curr_month,
                     recent_summary or {}, recent_bucket_df,
@@ -544,6 +506,8 @@ def render_root_cause_tab(
         st.caption(f"Loans agreed from {(recent_summary or {}).get('cohort_start', 'the configured cutoff')} onward.")
         _render_recent_advances_summary(recent_summary or {})
         _render_recent_advances_bucket(recent_bucket_df)
+        if recent_by_zone_count is not None and not recent_by_zone_count.empty:
+            _render_recent_advances_by_group(recent_by_zone_count, recent_by_zone_soh, "Zone", group_col="Zone")
         _render_recent_advances_by_group(recent_by_region_count, recent_by_region_soh, "Region", group_col="RegionName")
         _render_recent_advances_by_group(recent_by_branch_count, recent_by_branch_soh, "Branch", group_col="Unit")
         if df_curr is not None:

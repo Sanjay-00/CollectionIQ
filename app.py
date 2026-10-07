@@ -308,9 +308,10 @@ def _cached_roll_rate(_df_c, _df_p, data_version: int, filter_key: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
-def _cached_action_lists(_df_c, _alerts_c, _alerts_p, data_version: int, filter_key: str, curr_month: str) -> list:
+def _cached_action_lists(_df_c, _df_p, _alerts_c, _alerts_p, data_version: int, filter_key: str,
+                         curr_month: str, prev_month: str | None) -> list:
     from analysis.action_lists import build_lists
-    return build_lists(_df_c, curr_month, _alerts_c, _alerts_p)
+    return build_lists(_df_c, curr_month, _alerts_c, _alerts_p, df_prev=_df_p, prev_as_of=prev_month)
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -324,6 +325,8 @@ def _cached_business(_df_c, data_version: int, filter_key: str, curr_month: str)
 def _cached_root_cause(_df_c, _df_p, data_version: int, filter_key: str, curr_month: str) -> dict:
     df_clean, contamination = clean_contaminated_flags(_df_c)
     region_df = compute_region_scorecard(_df_c, _df_p)   # the same region figures Portfolio Intelligence shows
+    by_zone = (compute_recent_advances_bucket_by_group(df_clean, group_col="Zone") if "Zone" in df_clean.columns
+               else (pd.DataFrame(), pd.DataFrame()))
     by_region = compute_recent_advances_bucket_by_group(df_clean, group_col="RegionName")
     by_branch = compute_recent_advances_bucket_by_group(df_clean, group_col="Unit")
     return {
@@ -333,6 +336,7 @@ def _cached_root_cause(_df_c, _df_p, data_version: int, filter_key: str, curr_mo
         "contamination": contamination,
         "recent_summary": compute_recent_advances_summary(df_clean),
         "recent_bucket_df": compute_recent_advances_bucket_summary(df_clean),
+        "recent_by_zone_count": by_zone[0], "recent_by_zone_soh": by_zone[1],
         "recent_by_region_count": by_region[0], "recent_by_region_soh": by_region[1],
         "recent_by_branch_count": by_branch[0], "recent_by_branch_soh": by_branch[1],
     }
@@ -418,7 +422,8 @@ try:
 
     elif active == "🎯 Action Lists":
         render_action_lists_tab(
-            _cached_action_lists(df_curr, _alerts(), _alerts_prev(), data_version, _filter_key, curr_month), df_curr)
+            _cached_action_lists(df_curr, df_prev, _alerts(), _alerts_prev(), data_version, _filter_key,
+                                 curr_month, prev_month), df_curr)
 
     elif active == "📈 Migration":
         render_migration_tab(df_curr, df_prev, *_roll_rate(), data_version, _filter_key)

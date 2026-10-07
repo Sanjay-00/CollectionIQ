@@ -65,7 +65,7 @@ def render_landing() -> None:
     _FEATURES = [
         ("#FFBF00", "DASHBOARD",              "Collection %, POS, demand, strike rate and NPA with month-on-month movement."),
         ("#111111", "SCORECARD",              "Every field executive ranked by collection efficiency, strike rate and roll rates."),
-        ("#FFBF00", "SMART ALERTS",           "Flagged non-starters, co-lending risk, easy settlements and insurance-driven arrears."),
+        ("#FFBF00", "SMART ALERTS",           "Flagged non-starters, co-lending risk, easy to nil loans and insurance-driven arrears."),
         ("#111111", "MIGRATION",              "Bucket migration matrix with roll-forward / roll-backward rates between two periods."),
         ("#FFBF00", "PORTFOLIO INTELLIGENCE", "Pulse KPIs, risk indicators, concentration map, repossession and good-customer lists."),
         ("#111111", "BUSINESS",               "New advances this month, trend over time, and by region/branch/executive breakdown."),

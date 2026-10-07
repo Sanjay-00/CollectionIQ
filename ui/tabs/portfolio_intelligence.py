@@ -37,7 +37,8 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
         "counts against this month's own EMI demand. 100% means nothing was outstanding on "
         "that side to begin with, not that nothing was collected."
     )
-    levels = [(lb, k) for lb, k in (("Region", "region"), ("Branch", "branch"), ("Executive", "executive"))
+    levels = [(lb, k) for lb, k in (("Zone", "zone"), ("Region", "region"), ("Branch", "branch"),
+                                    ("Executive", "executive"))
               if not (scorecard_data or {}).get(k, pd.DataFrame()).empty]
     if not levels:
         st.info("No data available.")
@@ -228,17 +229,19 @@ def _units_takeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
 
 def _view_units(c, p, data_version, filter_key) -> None:
     a, b = st.columns([1, 2])
-    level = a.radio("Show", ["Region", "Branch"], horizontal=True, key="pi_level")
+    levels = (["Zone"] if "Zone" in c.columns else []) + ["Region", "Branch"]
+    level = a.radio("Show", levels, horizontal=True, key="pi_level")
     sort = b.selectbox("Sort by", list(_SORTS), key="pi_units_sort")
     df = _cached_units(c, p, data_version, filter_key, level)
     if df.empty:
-        st.info("No region/branch columns in this file.")
+        st.info(f"No {level.lower()} column in this file.")
         return
     col, asc = _SORTS[sort]
     df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
     takeaway(_units_takeaway(df, level, col))
     total = _total_row(level, _cached_totals(c, p, data_version, filter_key))
-    st.markdown(units_table_html(df, level, total, extra=["Region"] if level == "Branch" else []), unsafe_allow_html=True)
+    above = {"Region": ["Zone"], "Branch": ["Region"]}.get(level, [])      # the level above, when shown
+    st.markdown(units_table_html(df, level, total, extra=[x for x in above if x in df.columns]), unsafe_allow_html=True)
     _dl_btn(_with_total_row(df, total), f"{level.lower()}_table.xlsx", f"dl_pi_units_{level}")
     if level == "Branch":
         with st.expander("Chart: Collection % vs NPA % by branch (bubble = SOH)"):

@@ -10,12 +10,13 @@ from analysis import roll_flow as rf
 from config import ACTION_MIN_ACCOUNTS, DASHBOARD_TOP_N
 from utils import _unit_key, unit_metrics
 
-_GRAIN = {  # grain: (group columns, display name column)
+_GRAIN = {  # grain: (group columns, display name column); hierarchy Zone > Region > Branch > Executive
+    "Zone": (["Zone"], "Zone"),
     "Region": (["RegionName"], "Region"),
     "Branch": (["Unit"], "Branch"),
     "Executive": (["MNT NAME", "Unit"], "Executive"),
 }
-_MIN = {"Region": 1, "Branch": ACTION_MIN_ACCOUNTS["branch"], "Executive": ACTION_MIN_ACCOUNTS["executive"]}
+_MIN = {"Zone": 1, "Region": 1, "Branch": ACTION_MIN_ACCOUNTS["branch"], "Executive": ACTION_MIN_ACCOUNTS["executive"]}
 
 # League-table metrics: label -> (source column, a higher value is worse).
 # "New defaulters %" comes from the roll analysis (needs last month's file).
@@ -49,10 +50,13 @@ def _units(df: pd.DataFrame, grain: str) -> pd.DataFrame:
         return m
     m["_key"] = list(zip(*[m[c].map(_unit_key) for c in cols]))
     m["Name"] = [f"{n} ({u})" for n, u in zip(m["MNT NAME"], m["Unit"])] if grain == "Executive" else m[cols[0]].astype(str)
-    if grain != "Region" and "RegionName" in df.columns:
-        region = df.groupby(cols)["RegionName"].first()
+    # The level above: a region shows its Zone; a branch or executive its Region.
+    parent = {"Region": ("Zone", "Zone"), "Branch": ("RegionName", "Region"), "Executive": ("RegionName", "Region")}
+    if grain in parent and parent[grain][0] in df.columns:
+        src, label = parent[grain]
+        first = df.groupby(cols)[src].first()
         keys = list(zip(*[m[c] for c in cols])) if len(cols) > 1 else list(m[cols[0]])
-        m["Region"] = [region.get(k) for k in keys]
+        m[label] = [first.get(k) for k in keys]
     return m
 
 
@@ -139,15 +143,16 @@ def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.D
     now = _units(df_curr, grain)
     if now.empty:
         return pd.DataFrame()
-    floor = {"Region": 1, "Branch": MIN_ACCOUNTS_DIMENSION_BREAKDOWN, "Executive": MIN_ACCOUNTS_EXECUTIVE}[grain]
+    floor = {"Zone": 1, "Region": 1, "Branch": MIN_ACCOUNTS_DIMENSION_BREAKDOWN, "Executive": MIN_ACCOUNTS_EXECUTIVE}[grain]
     now = now[now["Accounts"] >= floor]
     prev = _units(df_prev, grain)
     before = prev.set_index("_key")[["Delinquency%", "NPA%"]].to_dict("index") if not prev.empty else {}
     out = pd.DataFrame({grain: now["Name"].values})
     if grain == "Executive":
         out["Branch"] = now["Unit"].astype(str).values
-    if grain != "Region" and "Region" in now.columns:
-        out["Region"] = now["Region"].values
+    for label in ("Zone", "Region"):           # the level above, when there is one
+        if label in now.columns and label != grain:
+            out[label] = now[label].values
     for col in ("Accounts", "Delinquent", "Delinquency%"):
         out[col] = now[col].values
     p = [before.get(k) for k in now["_key"]]

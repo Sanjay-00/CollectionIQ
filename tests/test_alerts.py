@@ -103,7 +103,7 @@ class TestRunAllAlerts:
         # (one per alert function) into one check against the real pipeline output.
         expected_severity = {
             "Non Starters": "critical",
-            "Easy Settlements": "medium",
+            "Easy to Nil": "medium",
             "Co-lending Loans at Risk": "critical",
             "Insurance-Driven Delinquency": "high",
             "High Arrears: Loan at Risk": "critical",

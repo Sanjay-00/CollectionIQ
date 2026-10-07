@@ -49,37 +49,66 @@ def _entry(group: str, name: str, action: str, loans: pd.DataFrame, soh: pd.Seri
             "count": count, "soh_cr": soh_cr, "prev": prev}
 
 
-def build_lists(df_curr: pd.DataFrame, as_of, alerts: list, alerts_prev: list | None = None) -> list[dict]:
+def _loan_count(loans: pd.DataFrame) -> int:
+    return int(loans["Loan No"].nunique()) if "Loan No" in loans.columns else len(loans)
+
+
+def _prev_counts(df_prev: pd.DataFrame | None, prev_as_of) -> dict:
+    """Last month's size of each list, by name, from last month's file with the
+    same rules. A list whose rule needs the bucket from the month before
+    (new defaulters, the SMA lists that leave them out, the slips) is only
+    counted when last month's file carries prev_bucket; otherwise it is left
+    out, so the screen shows "-" rather than a count built on another rule."""
+    if df_prev is None or df_prev.empty or "Loan No" not in df_prev.columns or "curr_bucket" not in df_prev.columns:
+        return {}
+    has_roll = rf.has_roll_data(df_prev)
+    needs_roll = {"New defaulters", "SMA-2: last chance before NPA", "SMA-1: stop the slide",
+                  "1-30 DPD: bring them current"}
+    ids = df_prev["Loan No"]
+    out = {name: int(ids[mask.fillna(False)].nunique()) for name, _, mask in _focus_groups(df_prev)
+           if has_roll or name not in needs_roll}
+    if has_roll:
+        for label, from_bucket in list(ROLL_STEPS.items())[1:]:
+            out[label] = _loan_count(rf.loans_that_rolled(df_prev, from_bucket))
+    out["Repossession candidates"] = _loan_count(compute_repossession_list(df_prev, as_of=prev_as_of))
+    out["Good customers"] = _loan_count(compute_good_customers(df_prev))
+    return out
+
+
+def build_lists(df_curr: pd.DataFrame, as_of, alerts: list, alerts_prev: list | None = None,
+                df_prev: pd.DataFrame | None = None, prev_as_of=None) -> list[dict]:
     """All lists in display order. `alerts` / `alerts_prev`: smart_alerts.run_all_alerts
-    for this month and last month (the app caches them)."""
+    for this month and last month (the app caches them). `df_prev` / `prev_as_of`:
+    last month's file and month, for each list's count last month."""
     if df_curr.empty or "Loan No" not in df_curr.columns:
         return []
     soh = to_num(df_curr, "SOH", fill=0).groupby(df_curr["Loan No"]).first()
+    prev = _prev_counts(df_prev, prev_as_of)
     out = []
 
     actions = {name: action for name, action, _ in _focus_groups(df_curr)}
     for t in call_lists(df_curr):
-        out.append(_entry(GROUPS[0], t["name"], actions.get(t["name"], ""), t["loans"], soh))
+        out.append(_entry(GROUPS[0], t["name"], actions.get(t["name"], ""), t["loans"], soh, prev.get(t["name"])))
 
     if rf.has_roll_data(df_curr):
         for label, from_bucket in list(ROLL_STEPS.items())[1:]:   # STD → behind = "New defaulters" above
             out.append(_entry(GROUPS[1], label, _SLIP_ACTION.get(label, ""),
-                              rf.loans_that_rolled(df_curr, from_bucket), soh))
+                              rf.loans_that_rolled(df_curr, from_bucket), soh, prev.get(label)))
 
-    prev = {a["title"]: a["count"] for a in (alerts_prev or [])}
+    prev_alerts = {a["title"]: a["count"] for a in (alerts_prev or [])}
     for a in alerts:
         if a["title"] in _SAME_AS_CALL_LIST or not a["count"]:
             continue
-        out.append(_entry(GROUPS[2], a["title"], a.get("action", ""), a["df"], soh, prev.get(a["title"])))
+        out.append(_entry(GROUPS[2], a["title"], a.get("action", ""), a["df"], soh, prev_alerts.get(a["title"])))
 
     repo = compute_repossession_list(df_curr, as_of=as_of)
     out.append(_entry(GROUPS[3], "Repossession candidates",
                       "SMA-2 or NPA, agreed recently (the vehicle still has value); seized-and-sold left out.",
-                      repo, soh))
+                      repo, soh, prev.get("Repossession candidates")))
     out.append(_entry(GROUPS[3], "Good customers",
                       "Most of the tenure done and everything paid: offer a top-up or a new loan "
                       "(lowest SOH first: the easiest to refinance).",
-                      compute_good_customers(df_curr), soh, smallest_first=True))
+                      compute_good_customers(df_curr), soh, prev.get("Good customers"), smallest_first=True))
     return [e for e in out if e["count"]]
 
 

@@ -62,7 +62,7 @@ from investigator.steps import (
 )
 from investigator.suggestions import suggest_mechanism_steps
 from registry.semantic_model import resolve_dimension
-from ui.components import _dl_btn, _safe_df
+from ui.components import _dl_btn, _esc, _safe_df
 from ui.query_answer import render_clarification, render_query_result, run_ai_query
 
 _NEW_CHAT_TITLE = "New chat"
@@ -108,7 +108,7 @@ _SUGGESTIONS = {
 _ALERT_TITLE_TO_STEP: dict[str, tuple[str, dict]] = {
     "Non Starters": ("concept_filter", {"concept": "non_starter"}),
     "Insurance-Driven Delinquency": ("concept_filter", {"concept": "insurance_driven_delinquency"}),
-    "Easy Settlements": ("concept_filter", {"concept": "easy_settlement"}),
+    "Easy to Nil": ("concept_filter", {"concept": "easy_settlement"}),
     "Recent Advances at Risk": ("concept_filter", {"concept": "recent_advance_high_bucket"}),
     "Co-lending Loans at Risk": ("concept_filter", {"concept": "colending_at_risk"}),
     "High Arrears: Loan at Risk": ("high_arrears_at_risk", {}),
@@ -1254,10 +1254,8 @@ def _render_header() -> None:
                     )
                 else:
                     chosen_id = active_id
-                if st.button(
+                if not on_empty_thread and st.button(
                     "New chat", key="investigator_new_chat", icon=":material/add_circle:",
-                    disabled=on_empty_thread,
-                    help="You're already starting a fresh conversation" if on_empty_thread else None,
                 ):
                     new_id = _new_thread()
                     st.session_state["investigator_active_thread"] = new_id
@@ -1283,26 +1281,26 @@ def _render_header() -> None:
 
 
 def _render_proactive_opener(df_curr: pd.DataFrame, alerts_curr: list | None, memory: EntityMemory) -> bool:
-    """Shows up to 3 active smart alerts (already computed once by app.py's
-    own cached run_all_alerts call, reused here -- never a second pass over
-    the whole DataFrame) as the FIRST thing a new/empty thread sees, each
-    with a one-click "analyse further" straight into concept_filter -- ZERO
-    Gemini calls, since a clicked alert already names its own concept
-    exactly (same "known answer, skip the LLM" precedent as _HELP_TRIGGER
-    above). A genuinely clean portfolio (nothing active) renders nothing
-    here, silently -- the plain suggestion pills below are the fallback,
-    not a message insisting something's wrong when it isn't. Returns
-    whether anything was actually rendered, so the caller can adapt the
-    suggestion pills' own caption ("Or try asking:" vs "Try asking:")."""
+    """Up to 3 active smart alerts (app.py's cached run, never re-run here) as
+    compact cards, each with a one-click "Analyse" straight into its step --
+    no Gemini call, since a clicked alert already names its own concept.
+    A clean portfolio shows nothing. Returns whether anything was shown."""
     flags = _top_active_alerts(alerts_curr)
     if not flags:
         return False
-    with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
-        st.markdown("Here's what moved most this month, before you even ask:")
-        for i, flag in enumerate(flags):
-            st.markdown(f"**{flag.get('icon', '')} {flag['title']}**: {flag['count']} accounts. {flag.get('subtitle', '')}")
+    st.markdown('<div style="font-size:13px;font-weight:700;color:#374151;margin:14px 0 6px 0;">'
+                "What moved most this month</div>", unsafe_allow_html=True)
+    for col, (i, flag) in zip(st.columns(len(flags)), enumerate(flags)):
+        with col, st.container(border=True, key=f"ask_flag_card_{i}"):
+            soh = float(flag.get("pos") or 0) / 1e7
+            st.markdown(
+                f'<div style="font-size:13px;font-weight:700;color:#111827;">{flag.get("icon", "")} {_esc(flag["title"])}</div>'
+                f'<div style="font-size:24px;font-weight:800;color:#111827;margin-top:2px;">{flag["count"]:,}'
+                f'<span style="font-size:12px;font-weight:600;color:#6b7280;"> loans · ₹{soh:,.2f} Cr</span></div>'
+                f'<div style="font-size:12px;color:#6b7280;min-height:34px;">{_esc(flag.get("subtitle", ""))}</div>',
+                unsafe_allow_html=True)
             mapping = _ALERT_TITLE_TO_STEP.get(flag["title"])
-            if mapping and st.button(f"Analyse further: {flag['title']}", key=f"proactive_{i}"):
+            if mapping and st.button("Analyse", key=f"proactive_{i}", width="stretch"):
                 step_type, params = mapping
                 drill_df = STEP_REGISTRY[step_type](df_curr, **params)
                 entity_type, entity_value = _derive_entity_key(step_type, params, None)
@@ -1424,6 +1422,18 @@ def render_investigator_tab(
         .st-key-investigator_header_card [data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important; row-gap: 8px !important;
         }
+        /* The settings button: dark like its header, not a white box. */
+        .st-key-investigator_settings button {
+            background: #161b22 !important; color: #e6edf3 !important; border: 1px solid #2d333b !important;
+        }
+        .st-key-investigator_settings button svg { fill: #e6edf3 !important; color: #e6edf3 !important; }
+        .st-key-investigator_header_card .stButton button {
+            background: #161b22 !important; color: #e6edf3 !important; border: 1px solid #2d333b !important;
+        }
+        /* The "what moved most" cards. */
+        [class*="st-key-ask_flag_card_"] { background: #ffffff !important; border-radius: 12px !important; }
+        /* Nothing hides behind the chat box pinned to the bottom. */
+        [data-testid="stMainBlockContainer"] { padding-bottom: 140px !important; }
         .st-key-investigator_header_card [data-testid="stButtonGroup"] button:hover,
         .st-key-investigator_suggestions_wrap [data-testid="stButtonGroup"] button:hover {
             background: #2a2a2a !important; color: #d0d0d0 !important; border-color: #555 !important;
@@ -1468,13 +1478,13 @@ def render_investigator_tab(
                     st.warning(t.get("text", ""))
 
     if not turns:
-        had_alerts = _render_proactive_opener(df_curr, alerts_curr, memory)
         with st.container(key="investigator_suggestions_wrap"):
-            st.caption("Or try asking:" if had_alerts else "Try asking:")
+            st.caption("Try asking:")
             suggestion = st.pills(
                 "Suggestions", list(_SUGGESTIONS), label_visibility="collapsed",
                 key="investigator_suggestions",
             )
+        _render_proactive_opener(df_curr, alerts_curr, memory)
         if suggestion:
             _process_new_question(_SUGGESTIONS[suggestion], df_curr, df_prev, memory, as_of=curr_month,
                                   query_ctx=query_ctx)

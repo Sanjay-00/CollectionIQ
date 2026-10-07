@@ -32,7 +32,7 @@ _KNOWN_COLS = set(CRITICAL_COLS) | set(REQUIRED_COLS) | _DERIVED_COLS
 # Which concept each priority tier corresponds to (consistency guard).
 _PRIORITY_TO_CONCEPT = {
     "Non Starters":                  "non_starter",
-    "Easy Settlements":              "easy_settlement",
+    "Easy to Nil":                   "easy_settlement",
     "Recent Advances: High Bucket": "recent_advance_high_bucket",
     "Insurance-Driven Delinquency":  "insurance_driven_delinquency",
     "Co-lending at Risk":            "colending_at_risk",

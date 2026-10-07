@@ -164,7 +164,7 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
     Accounts This Month descending. Same identity-column convention as
     OVERDUE_DEMAND_IDENTITY_COLS: a branch row carries its Region, an
     executive row carries its Branch and Region."""
-    empty = {"region": pd.DataFrame(), "branch": pd.DataFrame(), "executive": pd.DataFrame()}
+    empty = {"zone": pd.DataFrame(), "region": pd.DataFrame(), "branch": pd.DataFrame(), "executive": pd.DataFrame()}
     if df_curr.empty or "Ag_Date" not in df_curr.columns:
         return empty
 
@@ -265,7 +265,8 @@ def compute_new_advances_by_dimension(df_curr: pd.DataFrame, as_of=None) -> dict
         return pd.DataFrame(rows).sort_values("Accounts This Month", ascending=False).reset_index(drop=True)
 
     return {
-        "region":    _rows("RegionName", "Region"),
+        "zone":      _rows("Zone", "Zone"),
+        "region":    _rows("RegionName", "Region", extra_cols=[("Zone", "Zone")]),
         "branch":    _rows("Unit", "Branch", extra_cols=[("RegionName", "Region")]),
         # Deliberately NO materiality floor here (min_accounts=0, every
         # executive with >=1 new advance shows up) -- unlike the Overdue vs

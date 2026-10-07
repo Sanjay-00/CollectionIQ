@@ -411,7 +411,8 @@ def compute_recent_advances_bucket_by_group(
     if graded.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    group_cols = [group_col] + (["RegionName"] if "RegionName" in graded.columns and group_col != "RegionName" else [])
+    # A branch row also shows its Region (a zone or region row needs nothing above it here).
+    group_cols = [group_col] + (["RegionName"] if "RegionName" in graded.columns and group_col == "Unit" else [])
     # Only the columns read below: filtering ~100 columns per group and bucket was the cost.
     graded = graded[[*group_cols, "_bucket", *[c for c in ("Loan No", "SOH") if c in graded.columns]]]
 
@@ -627,6 +628,7 @@ def compute_recent_advances_daily_match(
 
 
 _GRAIN_SPECS: dict[str, dict] = {
+    "zone":      {"master_cols": ["Zone"],              "out_cols": ["Zone"]},
     "region":    {"master_cols": ["RegionName"],        "out_cols": ["Region"]},
     "branch":    {"master_cols": ["Unit", "RegionName"], "out_cols": ["Branch", "Region"]},
     # Executive = (name, branch): the same name recurs across branches

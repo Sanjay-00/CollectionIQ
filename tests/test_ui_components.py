@@ -433,6 +433,16 @@ def test_top_x_in_each_branch(monkeypatch):
     assert out["SOH"].tolist() == [10, 9, 5, 4]
 
 
+def test_region_filter_narrows_the_list(monkeypatch):
+    import ui.components as comp
+    df = pd.DataFrame({"Region": ["N", "N", "S", "S"], "Branch": ["A", "B", "C", "D"], "SOH": [4, 3, 2, 1]})
+    picks = {"pi_r_n": "All", "pi_r_r": "S", "pi_r_b": "All"}
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
+    monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
+    out = comp.list_controls("pi_r", df, "Branch")
+    assert set(out["Region"]) == {"S"} and len(out) == 2
+
+
 class _Fake:
     """Stands in for a Streamlit column: selectbox returns a preset, the
     'each branch' checkbox is ticked."""

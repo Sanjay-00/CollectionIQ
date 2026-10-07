@@ -265,7 +265,8 @@ class TestComputeOverdueDemandScorecard:
 
     def test_branch_and_executive_grains_present(self):
         result = compute_overdue_demand_scorecard(self._dfs())
-        assert set(result.keys()) == {"region", "branch", "executive"}
+        assert set(result.keys()) == {"zone", "region", "branch", "executive"}
+        assert result["zone"].empty                 # this test book has no Zone column
         assert not result["branch"].empty
         assert not result["executive"].empty
 

@@ -79,7 +79,8 @@ def _view_this_month(data: dict) -> None:
 # ── View 2: where it came from ───────────────────────────────────────────────
 
 def _view_by_unit(dimension_data: dict, month: dict) -> None:
-    levels = [(lb, k) for lb, k in (("Region", "region"), ("Branch", "branch"), ("Executive", "executive"))
+    levels = [(lb, k) for lb, k in (("Zone", "zone"), ("Region", "region"), ("Branch", "branch"),
+                                    ("Executive", "executive"))
               if not dimension_data.get(k, pd.DataFrame()).empty]
     if not levels:
         st.info("No new advances by region, branch or executive in this view.")
@@ -99,7 +100,7 @@ def _view_by_unit(dimension_data: dict, month: dict) -> None:
             total.update({"Prev Accounts": month["prev_accounts"], "Accounts MoM %": month.get("accounts_mom_pct"),
                           "Funded MoM %": month.get("funded_mom_pct")})
     up = {"good_if_up": True, "help": "Change against the same unit's own new loans last month."}
-    cols = [{"key": label, "bold": True}, *[{"key": c} for c in ("Branch", "Region") if c in df.columns and c != label],
+    cols = [{"key": label, "bold": True}, *[{"key": c} for c in ("Branch", "Region", "Zone") if c in df.columns and c != label],
             {"key": "Accounts This Month", "label": "New loans", "fmt": "int"},
             {"key": "Prev Accounts", "label": "Last month", "fmt": "int"},
             {"key": "Accounts MoM %", "label": "Change", "fmt": "pct_change", **up},

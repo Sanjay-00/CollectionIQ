@@ -1590,7 +1590,7 @@ PRIORITY_MENU_CATEGORIES: list[dict] = [
     {"label": "Fleet Owners with High POS",     "kind": "fleet_defaulters",                                    "default_n": 10},
     {"label": "Co-lending at Risk",             "kind": "concept", "concept": "colending_at_risk",             "default_n": 10},
     {"label": "Insurance-Only Delinquency",     "kind": "concept", "concept": "insurance_driven_delinquency",  "default_n": 10},
-    {"label": "Easy Settlement",                "kind": "concept", "concept": "easy_settlement",               "default_n": 10},
+    {"label": "Easy to Nil",                    "kind": "concept", "concept": "easy_settlement",               "default_n": 10},
     {"label": "Recent Advances: High Bucket",  "kind": "concept", "concept": "recent_advance_high_bucket",    "default_n": 10},
     {"label": "No Collection 3 Months",         "kind": "concept", "concept": "no_collection_3m",              "default_n": 10},
 ]

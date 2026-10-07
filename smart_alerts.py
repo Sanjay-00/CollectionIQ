@@ -96,7 +96,7 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
     mask = (closing > 0) & (closing < EASY_SETTLEMENT_MAX_ARREARS)
     subset = df[mask]
     return {
-        "title": "Easy Settlements",
+        "title": "Easy to Nil",
         "subtitle": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,}: quick wins",
         "severity": "medium",
         "count": account_count(subset),

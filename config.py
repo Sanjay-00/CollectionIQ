@@ -87,7 +87,7 @@ DATE_COLUMN_MIN_PARSED_SHARE = 0.5
 #  Smart Alert thresholds ────────────────────────────────────────────────────
 # Tune these to adjust sensitivity without touching business logic code.
 
-# Easy Settlements: closing arrears below this are considered quick wins
+# Easy to Nil: closing arrears below this are considered quick wins
 EASY_SETTLEMENT_MAX_ARREARS = 1_000          # ₹
 
 # Insurance-only delinquency: EMI fully paid (no installment arrears) but the

@@ -650,7 +650,7 @@ the FULL combined priority list across every category AT ONCE, with no
 menu ("give me the whole priority list," "everything, all tiers combined")
 -- NOT for a plain "which loans should I focus on" (use priority_menu
 above for that instead). A fixed 7-tier business framework (non-starters,
-easy settlements, high-risk recent advances, insurance-driven delinquency,
+easy to nil loans (also called easy settlements), high-risk recent advances, insurance-driven delinquency,
 co-lending risk, chronic non-collection, then NPA), each loan claimed under
 its SINGLE highest-priority tier only (deduplicated: distinct from
 priority_menu's independent-per-category counts). Optionally scope_col/
