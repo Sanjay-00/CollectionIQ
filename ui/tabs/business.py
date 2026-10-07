@@ -46,6 +46,18 @@ def _month_total(data: dict, accounts: str, label_col: str) -> dict:
 
 # ── View 1: this month ───────────────────────────────────────────────────────
 
+def _vs_last_month(data: dict, pct, prev_text: str, neutral: bool = False) -> str:
+    """A card's change line: "▲ 9.5% vs last month (137 loans)". More new
+    business is green; `neutral` (average ticket) keeps the arrow grey. Empty
+    when there's no last month to compare with."""
+    if not data.get("has_prev") or pct is None:
+        return ""
+    if round(pct, 1) == 0:
+        return f'<span class="kpi-mom-neutral">● no change</span> vs last month ({prev_text})'
+    cls = "kpi-mom-neutral" if neutral else ("kpi-mom-up" if pct > 0 else "kpi-mom-down")
+    return f'<span class="{cls}">{"▲" if pct > 0 else "▼"} {abs(pct):.1f}%</span> vs last month ({prev_text})'
+
+
 def _view_this_month(data: dict) -> None:
     if not data or not data.get("accounts"):
         st.info("No new advances in this reporting month (loans whose agreement date falls in it).")
@@ -58,9 +70,19 @@ def _view_this_month(data: dict) -> None:
         line += (f" Last month: {data['prev_accounts']:,} loans, ₹{data['prev_funded_cr']:,.2f} Cr "
                  f"(loans {move(data.get('accounts_mom_pct'))}, money {move(data.get('funded_mom_pct'))}).")
     takeaway(line)
-    cards = (_static_kpi_card_html("New Advances", f"{data['accounts']:,}", "Loans agreed this month")
-             + _static_kpi_card_html("Funded", f"&#8377;{data['funded_cr']:,.2f} Cr", "Total loan amount")
-             + _static_kpi_card_html("Average Ticket", f"&#8377;{data['avg_ticket_l']:,.2f} L", "Loan amount per loan"))
+    prev_ticket_l = (data["prev_funded_cr"] * 100 / data["prev_accounts"]) if data.get("prev_accounts") else None
+    cards = (_static_kpi_card_html("New Advances", f"{data['accounts']:,}",
+                                   _vs_last_month(data, data.get("accounts_mom_pct"), f"{data['prev_accounts']:,} loans")
+                                   or "Loans agreed this month")
+             + _static_kpi_card_html("Funded", f"&#8377;{data['funded_cr']:,.2f} Cr",
+                                     _vs_last_month(data, data.get("funded_mom_pct"),
+                                                    f"&#8377;{data['prev_funded_cr']:,.2f} Cr")
+                                     or "Total loan amount")
+             + _static_kpi_card_html("Average Ticket", f"&#8377;{data['avg_ticket_l']:,.2f} L",
+                                     _vs_last_month(data, (data["avg_ticket_l"] - prev_ticket_l) / prev_ticket_l * 100
+                                                    if prev_ticket_l else None,
+                                                    f"&#8377;{prev_ticket_l or 0:,.2f} L", neutral=True)
+                                     or "Loan amount per loan"))
     st.markdown(f'<div class="kpi-row">{cards}</div>', unsafe_allow_html=True)
 
     seg = data.get("segment", pd.DataFrame())
