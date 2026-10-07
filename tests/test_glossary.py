@@ -35,9 +35,9 @@ def test_info_icon_escapes_and_is_empty_without_text():
 
 
 def test_root_cause_table_headers_carry_definitions():
-    from ui.tabs.root_cause import _html_table
+    from ui.tabs.root_cause import _table
     df = pd.DataFrame({"Unit": ["A"], "Insurance-Only %": [40.0], "SMA-2": [1]})
-    html = _html_table(df, [{"key": "Unit"}, {"key": "Insurance-Only %"}, {"key": "SMA-2"}])
+    html = _table(df, [{"key": "Unit"}, {"key": "Insurance-Only %"}, {"key": "SMA-2"}])
     assert html.count("&#9432;") == 1                      # only the app-specific term
     assert "cash or WCL adjustment" in html
 

@@ -10,20 +10,23 @@ import pandas as pd
 import streamlit as st
 
 from ui.components import (
-    _dl_btn, _safe_df, _chart_card, append_total_row, _esc, heat_range, heat_style, html_table, pct_count,
-    section_label, takeaway,
+    _dl_btn, _safe_df, _chart_card, _esc, html_table, section_label, takeaway, list_controls,
 )
-from config import (
-    FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS, GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
-    LARGE_CUSTOMER_MIN_SOH_CR,
-)
+from config import FLEET_MIN_LOANS, LARGE_CUSTOMER_MIN_SOH_CR
 
-VIEWS = ["Regions & Branches", "Executives", "Segments", "Exposure", "Action Lists"]
+VIEWS = ["Regions & Branches", "Executives", "Segments", "Exposure"]
 VIEW_KEY = "pi_view"
-_TOP_CHOICES = [10, 20, 50, 100, "All"]
 
 
 # ── Kept helpers (also used by the Business tab) ─────────────────────────────
+
+def _collection_cell(v, _row=None) -> str:
+    """A collection % in green (90%+), amber (60%+) or red."""
+    if v is None or v == "" or pd.isna(v):
+        return '<span style="color:#9ca3af;">-</span>'
+    color = "#16a34a" if v >= 90 else ("#d97706" if v >= 60 else "#dc2626")
+    return f'<span style="color:{color};font-weight:700;">{float(v):.1f}%</span>'
+
 
 def _render_overdue_demand(scorecard_data: dict) -> None:
     from analysis.portfolio_intelligence import compute_overdue_demand_chart, OVERDUE_DEMAND_IDENTITY_COLS
@@ -34,179 +37,37 @@ def _render_overdue_demand(scorecard_data: dict) -> None:
         "counts against this month's own EMI demand. 100% means nothing was outstanding on "
         "that side to begin with, not that nothing was collected."
     )
-
-    if not scorecard_data:
+    levels = [(lb, k) for lb, k in (("Region", "region"), ("Branch", "branch"), ("Executive", "executive"))
+              if not (scorecard_data or {}).get(k, pd.DataFrame()).empty]
+    if not levels:
         st.info("No data available.")
         return
-
-    dim_tabs_avail = []
-    if not scorecard_data.get("region", pd.DataFrame()).empty:    dim_tabs_avail.append(("Region",    "Region",    "region"))
-    if not scorecard_data.get("branch", pd.DataFrame()).empty:    dim_tabs_avail.append(("Branch",    "Branch",    "branch"))
-    if not scorecard_data.get("executive", pd.DataFrame()).empty: dim_tabs_avail.append(("Executive", "Executive", "executive"))
-
-    if not dim_tabs_avail:
-        st.info("No dimension data found.")
-        return
-
-    _IDENTITY_COLS = OVERDUE_DEMAND_IDENTITY_COLS
-    _PCT_COLS = {"Overdue Collection %", "Month Demand Collection %", "Overall Collection %"}
-    _CR_COLS = {"Overdue (Cr)", "Overdue Collection (Cr)", "Month Demand (Cr)", "Month Demand Collection (Cr)", "Overall Collection (Cr)"}
-
-    dim_sub = st.tabs([t[0] for t in dim_tabs_avail])
-    for tab, (label, col, key) in zip(dim_sub, dim_tabs_avail):
+    for tab, (label, key) in zip(st.tabs([lb for lb, _ in levels]), levels):
         with tab:
             df = scorecard_data[key]
-            _chart_card(compute_overdue_demand_chart(df, col, label))
-
-            identity_cols = _IDENTITY_COLS.get(key, [])
-            show_cols = [
-                col, *identity_cols, "Accounts",
-                "Overdue (Cr)", "Overdue Collection (Cr)", "Overdue Collection %",
-                "Month Demand (Cr)", "Month Demand Collection (Cr)", "Month Demand Collection %",
-                "Overall Collection (Cr)", "Overall Collection %",
-            ]
-            show_cols = [c for c in show_cols if c in df.columns]
-            th = "".join(
-                f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
-                f'text-align:{"left" if c in (col, *identity_cols) else "center"};white-space:nowrap;">{c}</th>'
-                for c in show_cols
-            )
-            rows_html = ""
-            _ratio_cols = {
-                "Overdue Collection %": ("Overdue Collection (Cr)", "Overdue (Cr)"),
-                "Month Demand Collection %": ("Month Demand Collection (Cr)", "Month Demand (Cr)"),
-            }
-            df_display = append_total_row(df[show_cols], ratio_cols=_ratio_cols)
-            n_data_rows = len(df)
-            for i, row in df_display.iterrows():
-                if i == n_data_rows:
-                    cells = "".join(
-                        f'<td style="padding:6px 10px;font-size:12px;font-weight:800;border-top:2px solid #FFC000;'
-                        f'text-align:{"left" if c in (col, *identity_cols) else "center"};">'
-                        f'{f"{row[c]:.2f}%" if c in _PCT_COLS and row[c] != "" else _esc(row[c])}</td>'
-                        for c in show_cols
-                    )
-                    rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
-                    continue
-                cells = ""
-                for c in show_cols:
-                    val = row[c]
-                    align = "left" if c in (col, *identity_cols) else "center"
-                    style = f"padding:6px 10px;font-size:12px;text-align:{align};"
-                    if c == col:
-                        cells += f'<td style="{style}font-weight:700;">{_esc(val)}</td>'
-                    elif c in identity_cols:
-                        cells += f'<td style="{style}">{_esc(val) if val is not None else " - "}</td>'
-                    elif c in _PCT_COLS:
-                        color = "#16a34a" if val >= 90 else ("#d97706" if val >= 60 else "#dc2626")
-                        cells += f'<td style="{style}color:{color};font-weight:700;">{val:.2f}%</td>'
-                    elif c in _CR_COLS:
-                        cells += f'<td style="{style}">₹{val:.2f}Cr</td>'
-                    else:
-                        cells += f'<td style="{style}">{int(val):,}</td>'
-                rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
-
-            st.markdown(
-                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e5e7eb;">'
-                f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-                f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-                f'</table></div>',
-                unsafe_allow_html=True,
-            )
+            _chart_card(compute_overdue_demand_chart(df, label, label))
+            identity = OVERDUE_DEMAND_IDENTITY_COLS.get(key, [])
+            sums = {c: round(float(df[c].sum()), 2) for c in (
+                "Overdue (Cr)", "Overdue Collection (Cr)", "Month Demand (Cr)", "Month Demand Collection (Cr)",
+                "Overall Collection (Cr)") if c in df.columns}
+            ratio = lambda num, den: round(sums[num] / sums[den] * 100, 2) if sums.get(den) else None  # noqa: E731
+            total = {label: "Total", "Accounts": int(df["Accounts"].sum()), **sums,
+                     "Overdue Collection %": ratio("Overdue Collection (Cr)", "Overdue (Cr)"),
+                     "Month Demand Collection %": ratio("Month Demand Collection (Cr)", "Month Demand (Cr)")}
+            cols = [{"key": label, "bold": True}, *[{"key": c} for c in identity],
+                    {"key": "Accounts", "fmt": "int"},
+                    {"key": "Overdue (Cr)", "label": "Overdue", "fmt": "cr"},
+                    {"key": "Overdue Collection (Cr)", "label": "Overdue collected", "fmt": "cr"},
+                    {"key": "Overdue Collection %", "label": "Overdue %", "fmt": _collection_cell},
+                    {"key": "Month Demand (Cr)", "label": "Month demand", "fmt": "cr"},
+                    {"key": "Month Demand Collection (Cr)", "label": "Demand collected", "fmt": "cr"},
+                    {"key": "Month Demand Collection %", "label": "Demand %", "fmt": _collection_cell},
+                    {"key": "Overall Collection (Cr)", "label": "Collected in all", "fmt": "cr"},
+                    {"key": "Overall Collection %", "label": "Overall %", "fmt": _collection_cell,
+                     "help": "The unit's Collection %: collected / this month's net demand (blank in the Total row)."}]
+            st.markdown(html_table(df, [c for c in cols if c["key"] in df.columns], total=total,
+                                   max_height=480 if len(df) > 15 else None), unsafe_allow_html=True)
             _dl_btn(df, f"overdue_demand_{key}.xlsx", f"dl_overdue_demand_{key}")
-
-
-def _render_product_table(df: pd.DataFrame, npa_col: str = "NPA%") -> None:
-    if df.empty:
-        return
-    # A % and its count share one cell ("11.9% (37)"); the count columns
-    # aren't shown on their own.
-    counts = {p: c for p, c in ((npa_col, "NPA Count"), ("SMA-2%", "SMA-2 Count")) if p in df.columns and c in df.columns}
-    headers = [c for c in df.columns if c not in counts.values()]
-    # position:sticky keeps the header row visible while scrolling a long
-    # table (e.g. Sourcing Channel routinely has 1,000+ rows on a real file)
-    # -- needs its own background since sticky content scrolls underneath it.
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:6px 10px;font-size:11px;'
-        f'text-align:{"left" if i == 0 else "right"};white-space:nowrap;'
-        f'position:sticky;top:0;z-index:1;">{h}</th>'
-        for i, h in enumerate(headers)
-    )
-    rows_html = ""
-    df_display = append_total_row(df)
-    n_data_rows = len(df)
-    heat = {c: heat_range(df[c].tolist()) for c in (npa_col, "NPA% (SOH)", "SMA-2%") if c in df.columns}
-    for i, row in df_display.iterrows():
-        if i == n_data_rows:
-            cells = "".join(
-                f'<td style="padding:6px 10px;font-size:12px;text-align:{"left" if j == 0 else "right"};'
-                f'font-weight:800;border-top:2px solid #FFC000;">'
-                f'{f"{row[c]:,}" if isinstance(row[c], (int, float)) and row[c] != "" else _esc(row[c])}</td>'
-                for j, c in enumerate(headers)
-            )
-            rows_html += f'<tr style="background:#fffbea;">{cells}</tr>'
-            continue
-        cells = ""
-        for i2, col in enumerate(headers):
-            val = row[col]
-            align = "left" if i2 == 0 else "right"
-            style = f"padding:6px 10px;font-size:12px;text-align:{align};"
-            if col in heat:
-                shown = pct_count(val, row.get(counts[col])) if col in counts else f"{val:.1f}%"
-                cells += f'<td style="{style}{heat_style(val, heat[col])}">{shown}</td>'
-            elif isinstance(val, float) and "%" in col:
-                cells += f'<td style="{style}">{val:.1f}%</td>'
-            elif isinstance(val, float) and any(k in col for k in ("SOH", "Loan", "Avg")):
-                cells += f'<td style="{style}">₹{val:.2f}</td>'
-            elif isinstance(val, float):
-                cells += f'<td style="{style}">{val:.2f}</td>'
-            elif isinstance(val, int):
-                cells += f'<td style="{style}">{val:,}</td>'
-            else:
-                cells += f'<td style="{style}">{_esc(val)}</td>'
-        rows_html += f'<tr style="border-bottom:1px solid #f0f0f0;">{cells}</tr>'
-
-    st.markdown(
-        f'<div style="overflow-x:auto;overflow-y:auto;max-height:520px;'
-        f'border-radius:8px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-        f'</table></div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
-    """Roll monthly cohorts up to Quarter / Half-Year / Year / Financial Year
-    and recompute NPA% + SMA-2%. Uses analysis/portfolio_intelligence.py's
-    _period_label/_period_sort_key -- the SAME definitions the New Advances
-    Trend chart's own rollup (roll_new_advances_trend) uses, so the Business
-    tab's two granularity pickers can't silently diverge into two different
-    "Quarterly"/"Financial Year" meanings."""
-    from analysis.new_business import _period_label, _period_sort_key
-
-    if granularity == "Monthly" or df.empty:
-        return df
-
-    df = df.copy()
-    df["_period"] = df["Disbursement Month"].apply(lambda m: _period_label(m, granularity))
-
-    agg = (
-        df.groupby("_period", sort=False)
-        .agg(
-            Accounts=("Accounts", "sum"),
-            **{"NPA Count":   ("NPA Count",   "sum")},
-            **{"SMA-2 Count": ("SMA-2 Count", "sum")},
-            **{"SOH (Cr)":    ("SOH (Cr)",    "sum")},
-        )
-        .reset_index()
-        .rename(columns={"_period": "Disbursement Month"})
-    )
-    agg["NPA%"]   = (agg["NPA Count"]   / agg["Accounts"] * 100).round(2)
-    agg["SMA-2%"] = (agg["SMA-2 Count"] / agg["Accounts"] * 100).round(2)
-
-    agg["_sk"] = agg["Disbursement Month"].apply(_period_sort_key)
-    return agg.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
 
 
 # ── Cached data for the views (one entry per filter selection) ───────────────
@@ -271,18 +132,6 @@ def _cached_treemap(_c, data_version: int, filter_key: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
-def _cached_repossession(_c, data_version: int, filter_key: str, curr_month: str) -> pd.DataFrame:
-    from analysis.exposure import compute_repossession_list
-    return compute_repossession_list(_c, as_of=curr_month)
-
-
-@st.cache_data(show_spinner=False, max_entries=16)
-def _cached_good_customers(_c, data_version: int, filter_key: str) -> pd.DataFrame:
-    from analysis.exposure import compute_good_customers
-    return compute_good_customers(_c)
-
-
-@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_fleet(_c, data_version: int, filter_key: str) -> dict:
     from analysis.exposure import compute_fleet_exposure
     return compute_fleet_exposure(_c, top_n=None)
@@ -301,26 +150,6 @@ def _move(v) -> str:
     if v is None or pd.isna(v):
         return ""
     return "unchanged" if v == 0 else f"{'up' if v > 0 else 'down'} {abs(v):.1f} pts"
-
-
-def _list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows") -> pd.DataFrame:
-    """Top X, a branch filter and "top X in each branch", for any list
-    already sorted with the most important rows first."""
-    c1, c2, c3 = st.columns([1, 1.4, 1.6])
-    n = c1.selectbox("Show top", _TOP_CHOICES, index=0, key=f"{key}_n")
-    branches = ["All"] + (sorted(df[branch_col].dropna().astype(str).unique()) if branch_col in df.columns else [])
-    b = c2.selectbox("Branch", branches, key=f"{key}_b")
-    c3.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
-    each = c3.checkbox(f"Top {n} in each branch" if n != "All" else "Group by branch", key=f"{key}_each",
-                       disabled=b != "All" or branch_col not in df.columns)
-    d = df if b == "All" else df[df[branch_col].astype(str) == b]
-    if each and b == "All" and branch_col in d.columns:
-        d = d.groupby(branch_col, sort=True, group_keys=False).head(n if n != "All" else len(d))
-        d = d.sort_values(branch_col, kind="stable")
-    elif n != "All":
-        d = d.head(n)
-    st.caption(f"Showing {len(d):,} of {len(df):,} {noun}.")
-    return d
 
 
 _RENAME = {"RegionName": "Region", "Unit": "Branch", "MNT NAME": "Executive", "curr_bucket": "Bucket",
@@ -377,7 +206,7 @@ def units_table_html(df: pd.DataFrame, name: str, total: dict | None = None, ext
     return html_table(df, cols, total=total, max_height=560 if len(df) > 15 else None)
 
 
-def _unitstakeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
+def _units_takeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
     top = df.iloc[0]
     noun = name.lower() + ("es" if name == "Branch" else "s")
     text = f"<b>{_esc(top[name])}</b> is first on this list: delinquency {top['Delinquency%']:.1f}% " \
@@ -401,7 +230,7 @@ def _view_units(c, p, data_version, filter_key) -> None:
         return
     col, asc = _SORTS[sort]
     df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
-    takeaway(_unitstakeaway(df, level, col))
+    takeaway(_units_takeaway(df, level, col))
     total = _total_row(level, _cached_totals(c, p, data_version, filter_key))
     st.markdown(units_table_html(df, level, total, extra=["Region"] if level == "Branch" else []), unsafe_allow_html=True)
     _dl_btn(_with_total_row(df, total), f"{level.lower()}_table.xlsx", f"dl_pi_units_{level}")
@@ -417,6 +246,25 @@ def _view_units(c, p, data_version, filter_key) -> None:
 
 # ── View 2: Executives ───────────────────────────────────────────────────────
 
+_EXEC_SORTS = {
+    "Collection % (best first)": ("Collection%", False),
+    "Strike % (best first)": ("Strike%", False),
+    "Strike % (lowest first)": ("Strike%", True),
+    "Most rolled forward": ("Slipped", False),
+    "Most rescued": ("Rescued", False),
+}
+_TIER_LABEL = {"top": "Top 25%", "mid": "Middle", "bottom": "Bottom 25%"}
+_TIER_BY = {"Collection%": "collection %", "Strike%": "strike rate"}
+
+
+def _tier_note(df: pd.DataFrame, tier_by: str) -> str:
+    if "Tier" not in df.columns or df.empty:
+        return ""
+    n = df["Tier"].value_counts()
+    return (f" By {_TIER_BY[tier_by]}: <b>{int(n.get(_TIER_LABEL['top'], 0)):,}</b> in the top quarter, "
+            f"<b>{int(n.get(_TIER_LABEL['bottom'], 0)):,}</b> in the bottom quarter (marked red).")
+
+
 def _view_executives(c, p, data_version, filter_key) -> None:
     df = _cached_units(c, p, data_version, filter_key, "Executive")
     if df.empty:
@@ -424,14 +272,22 @@ def _view_executives(c, p, data_version, filter_key) -> None:
         return
     a, b = st.columns([1, 2])
     branch = a.selectbox("Branch", ["All"] + sorted(df["Branch"].astype(str).unique()), key="pi_exec_branch")
-    sorts = {**_SORTS, "Most rolled forward": ("Slipped", False), "Most rescued": ("Rescued", False)}
+    sorts = {**_SORTS, **_EXEC_SORTS}
     sort = b.selectbox("Sort by", [k for k in sorts if sorts[k][0] in df.columns], key="pi_exec_sort")
     if branch != "All":
         df = df[df["Branch"].astype(str) == branch]
     col, asc = sorts[sort]
     df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
-    takeaway(_unitstakeaway(df, "Executive", col))
-    cols = unit_columns("Executive", ["Branch", "Region"])
+    # Tier: quarter of the executives listed, by strike rate when sorted by it, else by collection.
+    tier_by = "Strike%" if col == "Strike%" else "Collection%"
+    if tier_by in df.columns and len(df):
+        from analysis.executive_scorecard import quartile_tier
+        df["Tier"] = quartile_tier(df[tier_by]).map(_TIER_LABEL)
+    takeaway(_units_takeaway(df, "Executive", col) + _tier_note(df, tier_by))
+    cols = [*unit_columns("Executive", ["Branch", "Region"])[:3],
+            {"key": "Tier", "help": f"Quarter of the executives listed, by {_TIER_BY[tier_by]}: "
+                                    "top 25%, middle, bottom 25% (marked red)."},
+            *unit_columns("Executive", ["Branch", "Region"])[3:]]
     if "Rescued" in df.columns:
         cols.append({"key": "Rescued", "label": "Rescued", "fmt": "int",
                      "help": "Loans moved from SMA-1/SMA-2/NPA to a better bucket since last month."})
@@ -440,7 +296,8 @@ def _view_executives(c, p, data_version, filter_key) -> None:
     if total and "Rescued" in df.columns:
         total["Rescued"] = t.get("Rescued")
     st.markdown(html_table(df, [x for x in cols if x["key"] in df.columns], total=total,
-                           max_height=560 if len(df) > 15 else None), unsafe_allow_html=True)
+                           max_height=560 if len(df) > 15 else None,
+                           highlight=lambda row: row.get("Tier") == _TIER_LABEL["bottom"]), unsafe_allow_html=True)
     st.caption("Executives with fewer than the minimum number of loans are left out (config.MIN_ACCOUNTS_EXECUTIVE).")
     _dl_btn(_with_total_row(df, total), "executives.xlsx", "dl_pi_exec")
 
@@ -518,7 +375,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
         if _BUCKET_FILTERS[flt]:
             df = df[df["curr_bucket"].isin(_BUCKET_FILTERS[flt])]
         df = df.rename(columns=_RENAME)
-        view = _list_controls("pi_top_loans", df, "Branch", "delinquent loans")
+        view = list_controls("pi_top_loans", df, "Branch", "delinquent loans")
         book = float(pd.to_numeric(c.get("SOH"), errors="coerce").sum()) if "SOH" in c.columns else 0.0
         soh = float(view["SOH"].sum())
         takeaway(f"These {len(view):,} loans hold <b>₹{soh / 1e7:,.2f} Cr</b> SOH "
@@ -535,7 +392,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
         takeaway(f"<b>{fl['count']:,}</b> fleet operators (customers with {FLEET_MIN_LOANS}+ loans) hold "
                   f"<b>₹{fl['total_soh_cr']:,.2f} Cr</b> SOH; {fl['npa_operators']:,} of them have at least one NPA loan.")
         df = fl["top_df"].rename(columns={"Unit": "Branch"})
-        view = _list_controls("pi_fleet", df, "Branch", "fleet operators")
+        view = list_controls("pi_fleet", df, "Branch", "fleet operators")
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
         if fl.get("excluded_blank_mobile_loans"):
             st.caption(f"{fl['excluded_blank_mobile_loans']:,} loans with no mobile number can't be grouped by customer.")
@@ -636,46 +493,6 @@ def _view_large_customers(c, data_version, filter_key) -> None:
     _dl_btn(lv, "large_customer_loans.xlsx", "dl_pi_cust_loans")
 
 
-# ── View 5: Action lists ─────────────────────────────────────────────────────
-
-def _view_actions(df_curr, curr_month, data_version, filter_key) -> None:
-    what = st.radio("List", ["Repossession candidates", "Good customers"], horizontal=True, key="pi_act_what")
-    if what == "Repossession candidates":
-        repo_df = _cached_repossession(df_curr, data_version, filter_key, curr_month)
-        if repo_df is None or repo_df.empty:
-            st.info("No repossession candidates.")
-            return
-        sorts = {"Largest SOH": ("SOH", False), "Worst payers (lowest LCC%)": ("LCC%", True),
-                 "Most recent loans": ("Ag_Date", False)}
-        sort = st.selectbox("Sort by", [k for k, v in sorts.items() if v[0] in repo_df.columns], key="pi_repo_sort")
-        col, asc = sorts[sort]
-        df = repo_df.sort_values(col, ascending=asc, kind="stable").rename(columns=_RENAME)
-        takeaway(f"<b>{len(df):,}</b> SMA-2/NPA loans agreed in the last {REPOSSESSION_WINDOW_MONTHS} months "
-                  f"(seized-and-sold excluded), <b>₹{df['SOH'].sum() / 1e7:,.2f} Cr</b> SOH: "
-                  f"the vehicle still has value.")
-        view = _list_controls("pi_repo", df, "Branch", "loans")
-        st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view.rename(columns={"Branch": "Unit", "Region": "RegionName", "Executive": "MNT NAME",
-                                     "Bucket": "curr_bucket", "Customer": "Cust Name", "Mobile": "Cust Mob No"}),
-                "repossession_candidates.xlsx", "dl_pi_repo", full_source=df_curr)
-    else:
-        good_df = _cached_good_customers(df_curr, data_version, filter_key)
-        if good_df is None or good_df.empty:
-            st.info("No good customers by these rules.")
-            return
-        sorts = {"Lowest SOH (easiest to refinance)": ("SOH", True),
-                 "Most of the tenure done": ("Tenure Completed %", False)}
-        sort = st.selectbox("Sort by", [k for k, v in sorts.items() if v[0] in good_df.columns], key="pi_good_sort")
-        col, asc = sorts[sort]
-        df = good_df.sort_values(col, ascending=asc, kind="stable").rename(columns=_RENAME)
-        takeaway(f"<b>{len(df):,}</b> customers have finished {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ of their tenure "
-                  f"and paid everything due (LCC {GOOD_CUSTOMER_MIN_LCC_PCT}%+): candidates for a top-up or a new loan.")
-        view = _list_controls("pi_good", df, "Branch", "customers")
-        st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
-        _dl_btn(view.rename(columns={"Branch": "Unit", "Region": "RegionName", "Customer": "Cust Name"}),
-                "good_customers.xlsx", "dl_pi_good", full_source=df_curr)
-
-
 # ── The tab ──────────────────────────────────────────────────────────────────
 
 def render_portfolio_intelligence_tab(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str,
@@ -692,7 +509,5 @@ def render_portfolio_intelligence_tab(df_curr: pd.DataFrame, df_prev: pd.DataFra
         _view_executives(df_curr, df_prev, data_version, filter_key)
     elif view == "Segments":
         _view_segments(df_curr, data_version, filter_key)
-    elif view == "Exposure":
-        _view_exposure(df_curr, data_version, filter_key)
     else:
-        _view_actions(df_curr, curr_month, data_version, filter_key)
+        _view_exposure(df_curr, data_version, filter_key)

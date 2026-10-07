@@ -96,7 +96,6 @@ def test_call_lists_show_the_columns_that_prove_each_group():
     new = lists["New defaulters"]
     assert {"Last Month Bucket", "Bucket Now"} <= set(new.columns)
     assert new["SOH"].is_monotonic_decreasing
-    assert ac.unique_call_count(list(ac.call_lists(df))) == len(set().union(*[set(t["Loan No"]) for t in lists.values()]))
 
 
 def test_hotspot_branch_is_flagged_with_reasons_in_words():

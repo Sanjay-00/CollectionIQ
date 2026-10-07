@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, expand_to_all_columns, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export, compute_overdue_demand_pct, normalize_truncated_names
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, expand_to_all_columns, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, compute_overdue_demand_pct, normalize_truncated_names
 from helpers import make_df
 
 
@@ -874,49 +874,6 @@ class TestLoadAndValidateSegmentNormalization:
         result_df, errs = load_and_validate.__wrapped__(buf)
         assert errs == []
         assert (result_df["SegmentName"] == "Passenger Commercial").all()
-
-
-class TestBuildHtmlExportEscaping:
-    """Regression: build_html_export interpolates filter values and the
-    scorecard's free-text 'Executive (Branch)' column into raw f-string HTML,
-    same bug class report_agent/render.py guards against.
-    A manually-entered name like "RAJESH & SONS <TRANSPORT>" must not break
-    the surrounding table markup, and the file is offered as a raw download."""
-
-    def _metrics(self):
-        keys = ["Month Demand", "Total Collection", "Collection %", "Strike %",
-                 "NPA %", "Hard Bucket %", "Count", "SOH", "LCC%", "CMD %"]
-        return {k: (1.0, 0.0) for k in keys}
-
-    def test_filter_values_are_escaped(self):
-        import plotly.graph_objects as go
-
-        html_out = build_html_export(
-            make_df([]), make_df([]), self._metrics(),
-            go.Figure(), go.Figure(), go.Figure(),
-            filters={"Branch": "RAJESH & SONS <TRANSPORT>"},
-            curr_month="Jan-2026",
-        )
-        assert "RAJESH & SONS <TRANSPORT>" not in html_out
-        assert "RAJESH &amp; SONS &lt;TRANSPORT&gt;" in html_out
-
-    def test_scorecard_executive_name_is_escaped(self):
-        import plotly.graph_objects as go
-
-        scorecard_df = pd.DataFrame([{
-            "Executive (Branch)": "A & B <script>alert(1)</script>",
-            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
-            "Tier": "top",
-        }])
-        html_out = build_html_export(
-            make_df([]), make_df([]), self._metrics(),
-            go.Figure(), go.Figure(), go.Figure(),
-            filters={}, scorecard_df=scorecard_df,
-        )
-        assert "<script>alert(1)</script>" not in html_out
-        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
-        # Table structure survives - matching open/close tags around the row.
-        assert html_out.count("<tr") == html_out.count("</tr>")
 
 
 class TestCountAgreedAfterMonth:

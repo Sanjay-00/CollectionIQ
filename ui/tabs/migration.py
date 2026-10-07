@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.components import (
-    _chart_card, _empty_state, heat_range, heat_style, _dl_btn, _safe_df, _esc, html_table, section_label, takeaway,
+    _chart_card, _empty_state, heat_range, heat_style, _dl_btn, _esc, html_table, section_label, takeaway,
 )
 from ui.glossary import help_for, info_icon
 from config import ROLL_STEPS
@@ -61,7 +61,6 @@ def _cached_roll_flow(_df: pd.DataFrame, data_version: int, drilldown_key: str) 
         "summary": rf.roll_steps_summary(_df),
         "matrix": {m: rf.migration_matrix(_df, m) for m, _ in _MATRIX_MEASURES.values()},
         "by": {g: rf.roll_steps_by(_df, g) for _, g in _GRAIN_TABS},
-        "loans": {label: rf.loans_that_rolled(_df, b) for label, b in ROLL_STEPS.items()},
     }
 
 
@@ -207,21 +206,16 @@ def _render_matrix(flow: dict, rr_matrix: pd.DataFrame, buckets: pd.DataFrame) -
             st.markdown(_bucket_summary_table_html(buckets), unsafe_allow_html=True)
 
 
-def _render_call_list(loans: dict) -> None:
+def _render_call_list(summary: dict) -> None:
+    """The loans behind each step are lists on the Action Lists tab."""
+    from ui.components import TAB_LABELS, goto_tab_button
     section_label("Loans To Call First", "20px")
-    st.caption("The loans behind each step, largest SOH first, with the executive to follow up.")
-    labels = list(ROLL_STEPS)
-    for tab, label in zip(st.tabs([f"{lb} ({len(loans[lb]):,})" for lb in labels]), labels):
-        with tab:
-            df = loans[label]
-            if df.empty:
-                st.caption("No loans made this move.")
-                continue
-            soh_cr = df["SOH"].sum() / 1e7 if "SOH" in df.columns else 0.0
-            st.caption(f"{len(df):,} loans, ₹{soh_cr:,.2f} Cr SOH today.")
-            st.dataframe(_safe_df(df), use_container_width=True, hide_index=True, height=360)
-            slug = label.split(" ")[0].lower().replace("-", "")
-            _dl_btn(df, f"call_list_{slug}.xlsx", f"dl_call_{slug}")
+    first = next(iter(ROLL_STEPS))          # STD → behind is the "New defaulters" list there
+    parts = [f"{'New defaulters' if lb == first else _esc(lb)} <b>{summary[lb]['n']:,}</b>" for lb in ROLL_STEPS]
+    st.markdown(f'<div style="font-size:13px;color:#374151;">The loans behind each step, largest SOH first, '
+                f'are on the Action Lists tab: {", ".join(parts)}.</div>', unsafe_allow_html=True)
+    tab = next(t for t in TAB_LABELS if t.endswith("Action Lists"))
+    goto_tab_button(tab, "go_mig_lists", "Open them in Action Lists →", state={"al_pick": "New defaulters"})
 
 
 def render_migration_tab(
@@ -296,4 +290,4 @@ def render_migration_tab(
     _render_early_warning(flow["summary"])
     _render_where(flow["by"])
     _render_matrix(flow, rr_matrix, buckets)
-    _render_call_list(flow["loans"])
+    _render_call_list(flow["summary"])

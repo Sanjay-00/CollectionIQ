@@ -124,6 +124,9 @@ MIN_ACCOUNTS_PRODUCT_SEGMENT = 1
 
 # Sourcing channel and disbursement-vintage cohort breakdowns
 MIN_ACCOUNTS_SOURCE_VINTAGE = 10
+# The Business tab's vintage summary only names a disbursement period holding
+# at least this % of the loans shown (a dozen old loans at 100% NPA is noise).
+VINTAGE_HIGHLIGHT_MIN_SHARE_PCT = 2
 
 # Overdue vs Month Demand Collection breakdown (Section 2b / report) -- executive
 # grain only. An executive with a handful of loans can swing to 0% or 100% on a

@@ -66,18 +66,16 @@ class TestEsc:
         assert _esc(3.14) == 3.14
         assert _esc(None) is None
 
-    def test_scorecard_table_escapes_executive_names(self):
+    def test_executive_table_escapes_executive_names(self):
         # End-to-end: a malicious/awkward MNT NAME must not survive into the
-        # rendered scorecard HTML as live markup.
-        from analysis.executive_scorecard import build_scorecard_table_html
+        # rendered executive table (Portfolio Intelligence) as live markup.
+        from ui.tabs.portfolio_intelligence import units_table_html
 
         df = pd.DataFrame([{
-            "Rank": 1,
-            "Executive (Branch)": 'EVIL <img src=x onerror=alert(1)> & CO (PUNE)',
-            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
-            "NPA": 0, "SMA-2": 1, "Tier": "top",
+            "Executive": 'EVIL <img src=x onerror=alert(1)> & CO', "Branch": "PUNE",
+            "Accounts": 10, "Collection%": 95.0, "Strike%": 80.0,
         }])
-        out = build_scorecard_table_html(df)
+        out = units_table_html(df, "Executive", extra=["Branch"])
         assert "<img" not in out
         assert "&lt;img" in out
 
@@ -344,55 +342,33 @@ class TestLoadAndConcatMissingOptionalCols:
         assert "CoLending_Loans" in result_df.attrs["missing_optional_cols"]
 
 
-class TestMomCellColoring:
-    """Regression: append_total_row leaves a %-named column with no
-    ratio_cols entry (e.g. Accounts MoM %/Funded MoM % on Section 3's Total
-    row -- see ui/tabs/business.py::_render_new_advances_by_dimension) as the
-    string "" rather than a number, since it has no numerator/denominator to
-    recompute a portfolio-wide ratio from. _color_mom_cell's `val >= 0`
-    crashed the whole Business tab the moment that Total row reached it
-    (str vs int comparison), caught live via a real screenshot of the error."""
+class TestMomChangeCells:
+    """Month-on-month change in the shared table (Business tab). A Total row
+    can carry "" for a % it can't sum; that once crashed the whole Business
+    tab, so it must render as a blank, and a rise is green (more business is
+    good), a fall red."""
 
-    def test_blank_string_from_total_row_does_not_raise(self):
-        from ui.tabs.business import _color_mom_cell
-        assert _color_mom_cell("") == ""
+    def _html(self, rows, total=None):
+        from ui.components import html_table
+        return html_table(pd.DataFrame(rows), [
+            {"key": "Branch"}, {"key": "Funded (Cr)", "fmt": "cr"},
+            {"key": "Accounts MoM %", "fmt": "pct_change", "good_if_up": True}], total=total)
 
-    def test_nan_is_still_blank(self):
-        from ui.tabs.business import _color_mom_cell
-        assert _color_mom_cell(float("nan")) == ""
+    def test_blank_and_missing_values_render_as_a_dash(self):
+        html = self._html([{"Branch": "A", "Funded (Cr)": 0.11, "Accounts MoM %": None}],
+                          total={"Branch": "Total", "Funded (Cr)": 0.11, "Accounts MoM %": ""})
+        assert html.count('color:#9ca3af;">-</span>') == 2
 
-    def test_positive_value_is_green_negative_is_red(self):
-        from ui.tabs.business import _color_mom_cell
-        assert "059669" in _color_mom_cell(12.5)
-        assert "dc2626" in _color_mom_cell(-3.2)
+    def test_rise_is_green_fall_is_red(self):
+        html = self._html([{"Branch": "A", "Funded (Cr)": 1.0, "Accounts MoM %": 9.49},
+                           {"Branch": "B", "Funded (Cr)": 1.0, "Accounts MoM %": -3.2}])
+        assert "▲ 9.5%" in html and "▼ 3.2%" in html
+        a, b = html.split("▲ 9.5%")[0].rsplit("<td", 1)[1], html.split("▼ 3.2%")[0].rsplit("<td", 1)[1]
+        assert "#16a34a" in a and "#dc2626" in b
 
-    def test_style_mom_columns_renders_without_raising_on_a_total_row(self):
-        from ui.components import append_total_row
-        from ui.tabs.business import _style_mom_columns
-        df = pd.DataFrame([
-            {"Branch": "BR1", "Accounts This Month": 5, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
-            {"Branch": "BR2", "Accounts This Month": 3, "Accounts MoM %": None, "Funded MoM %": 20.0},
-        ])
-        totaled = append_total_row(df)
-        assert totaled.iloc[-1]["Accounts MoM %"] == ""  # the exact shape that used to crash
-        styled = _style_mom_columns(totaled, ["Accounts MoM %", "Funded MoM %"])
-        styled.to_html()  # must not raise
-
-    def test_float_columns_display_at_two_decimals_not_pandas_default_six(self):
-        # Regression: wrapping a frame in a pandas Styler (needed for the
-        # per-cell MoM coloring above) hands rendering over to pandas, whose
-        # Styler defaults every float column to 6 decimal places regardless
-        # of the value's own already-rounded precision -- e.g. a Funded (Cr)
-        # value of 0.11 rendered as "0.110000". Caught live via a real
-        # screenshot of Section 3's table on real data. precision=2 in
-        # _style_mom_columns must keep this from regressing.
-        from ui.tabs.business import _style_mom_columns
-        df = pd.DataFrame([
-            {"Branch": "BR1", "Funded (Cr)": 0.11, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
-        ])
-        html = _style_mom_columns(df, ["Accounts MoM %", "Funded MoM %"]).to_html()
-        assert "0.110000" not in html
-        assert "0.11" in html
+    def test_amounts_show_two_decimals(self):
+        html = self._html([{"Branch": "A", "Funded (Cr)": 0.11, "Accounts MoM %": 1.0}])
+        assert "₹0.11 Cr" in html and "0.110000" not in html
 
 
 def test_every_table_on_screen_goes_through_safe_df():
@@ -438,12 +414,12 @@ def test_percent_by_soh_and_its_crore_share_one_cell():
 
 
 def test_top_x_in_each_branch(monkeypatch):
-    import ui.tabs.portfolio_intelligence as pi
+    import ui.components as comp
     df = pd.DataFrame({"Branch": ["A"] * 5 + ["B"] * 5, "SOH": list(range(10, 0, -1))})
     picks = {"pi_t_n": 2, "pi_t_b": "All"}
-    monkeypatch.setattr(pi.st, "columns", lambda spec: [_Fake(picks)] * 3)
-    monkeypatch.setattr(pi.st, "caption", lambda *a, **k: None)
-    out = pi._list_controls("pi_t", df, "Branch")
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * 3)
+    monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
+    out = comp.list_controls("pi_t", df, "Branch")
     assert out.groupby("Branch").size().to_dict() == {"A": 2, "B": 2}      # top 2 from EACH branch
     assert out["SOH"].tolist() == [10, 9, 5, 4]
 

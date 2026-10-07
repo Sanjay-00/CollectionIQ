@@ -251,6 +251,29 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+TOP_CHOICES = [10, 20, 50, 100, "All"]
+
+
+def list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows") -> pd.DataFrame:
+    """Top X, a branch filter and "top X in each branch", for any list
+    already sorted with the most important rows first."""
+    c1, c2, c3 = st.columns([1, 1.4, 1.6])
+    n = c1.selectbox("Show top", TOP_CHOICES, index=0, key=f"{key}_n")
+    branches = ["All"] + (sorted(df[branch_col].dropna().astype(str).unique()) if branch_col in df.columns else [])
+    b = c2.selectbox("Branch", branches, key=f"{key}_b")
+    c3.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
+    each = c3.checkbox(f"Top {n} in each branch" if n != "All" else "Group by branch", key=f"{key}_each",
+                       disabled=b != "All" or branch_col not in df.columns)
+    d = df if b == "All" else df[df[branch_col].astype(str) == b]
+    if each and b == "All" and branch_col in d.columns:
+        d = d.groupby(branch_col, sort=True, group_keys=False).head(n if n != "All" else len(d))
+        d = d.sort_values(branch_col, kind="stable")
+    elif n != "All":
+        d = d.head(n)
+    st.caption(f"Showing {len(d):,} of {len(df):,} {noun}.")
+    return d
+
+
 def takeaway(text: str) -> None:
     """The one-line yellow summary at the top of a view (text may hold <b>)."""
     st.markdown(f'<div style="border-left:4px solid #FFC000;background:#fffbea;padding:8px 12px;'
@@ -269,11 +292,6 @@ def _chart_card(fig) -> None:
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
     st.plotly_chart(fig, width='stretch')
     st.markdown('</div>', unsafe_allow_html=True)
-
-
-def _divider(margin: str = "24px 0") -> None:
-    """Standard horizontal section divider."""
-    st.markdown(f'<div style="border-top:1px solid #e5e7eb;margin:{margin};"></div>', unsafe_allow_html=True)
 
 
 def _empty_state(icon: str, title: str, sub: str) -> None:
@@ -410,7 +428,7 @@ def _is_blank(v) -> bool:
 
 # The app's tabs, in order (app.py's tab bar). Shared so a "See details"
 # button can switch to a tab by its exact label.
-TAB_LABELS = ["🗂️ Dashboard", "👤 Scorecard", "🚨 Alerts", "📈 Migration", "📊 Portfolio Intelligence",
+TAB_LABELS = ["🗂️ Dashboard", "🎯 Action Lists", "📈 Migration", "📊 Portfolio Intelligence",
               "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
 TAB_KEY = "_active_section"
 
@@ -562,9 +580,9 @@ def _static_kpi_card_html(
 
 def pct_count(pct, count, decimals: int = 1) -> str:
     """'11.9% (37)' as HTML (the count in grey). '-' when the % is missing."""
-    if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+    if pct is None or pct == "" or (isinstance(pct, float) and pd.isna(pct)):
         return '<span style="color:#9ca3af;">-</span>'
-    tail = "" if count is None or (isinstance(count, float) and pd.isna(count)) else \
+    tail = "" if count is None or count == "" or (isinstance(count, float) and pd.isna(count)) else \
         f' <span style="color:#6b7280;font-weight:400;">({int(count):,})</span>'
     return f"{float(pct):.{decimals}f}%{tail}"
 
@@ -572,9 +590,10 @@ def pct_count(pct, count, decimals: int = 1) -> str:
 def pct_amount(pct, cr, decimals: int = 1) -> str:
     """'34.6% (₹121.40 Cr)' as HTML (the amount in grey): a % by SOH with the
     money behind it, as pct_count does for a % by count."""
-    if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+    if pct is None or pct == "" or (isinstance(pct, float) and pd.isna(pct)):
         return '<span style="color:#9ca3af;">-</span>'
-    tail = "" if cr is None or (isinstance(cr, float) and pd.isna(cr)) else         f' <span style="color:#6b7280;font-weight:400;">(₹{float(cr):,.2f} Cr)</span>'
+    tail = "" if cr is None or cr == "" or (isinstance(cr, float) and pd.isna(cr)) else \
+        f' <span style="color:#6b7280;font-weight:400;">(₹{float(cr):,.2f} Cr)</span>'
     return f"{float(pct):.{decimals}f}%{tail}"
 
 
@@ -583,13 +602,14 @@ def is_blank(v) -> bool:
     return v is None or (not isinstance(v, str) and pd.isna(v))
 
 
-_NUMBER_KINDS = ("int", "pct", "num", "cr", "inr", "rs_cr", "pp", "count_change")
+_NUMBER_KINDS = ("int", "pct", "num", "cr", "inr", "rs_cr", "pp", "count_change", "pct_change")
+_CHANGE_KINDS = ("pp", "count_change", "pct_change")     # coloured: red when worse, green when better
 
 
 def format_value(v, kind: str) -> str:
     """One value as plain text, by kind: int "1,234" | pct "12.3%" | num "1.23"
     | cr "₹1.23 Cr" | inr "₹1,234" | rs_cr (rupees shown in crore) | pp
-    "▲ 0.25 pts" | count_change "▲ 12"; "-" when blank. The one formatter
+    "▲ 0.25 pts" | count_change "▲ 12" | pct_change "▲ 9.5%" (a relative change); "-" when blank. The one formatter
     behind the on-screen tables and the report (HTML, PDF)."""
     if is_blank(v):
         return "-"
@@ -611,26 +631,36 @@ def format_value(v, kind: str) -> str:
     if kind == "count_change":
         v = int(v)
         return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):,}"
+    if kind == "pct_change":
+        v = float(v)
+        return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):.1f}%"
     if isinstance(v, (pd.Timestamp, datetime.date)):
         return pd.Timestamp(v).strftime("%Y-%m-%d")
     return str(v)
 
 
 def _fmt_cell(v, kind: str, row=None, count_key: str | None = None, amount_key: str | None = None) -> str:
+    if callable(kind):              # trusted HTML from code (a badge, an icon)
+        return kind(v, row)
     if kind == "pct_count":
         return pct_count(v, row.get(count_key) if row is not None and count_key else None)
     if kind == "pct_cr":
         return pct_amount(v, row.get(amount_key) if row is not None and amount_key else None)
-    if is_blank(v):
-        return '<span style="color:#9ca3af;">-</span>'
+    if is_blank(v) or (kind in _NUMBER_KINDS and isinstance(v, str) and not v.strip()):
+        return '<span style="color:#9ca3af;">-</span>'   # "" = a Total-row cell that can't be summed
     if kind in _NUMBER_KINDS:
         return format_value(v, kind)
     return _esc(v)
 
 
+def _align(c: dict) -> str:
+    return c.get("align") or ("left" if c.get("fmt", "text") == "text" else "right")
+
+
 def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, max_height: int | None = None,
                highlight=None) -> str:
-    """cols: {"key", "label"?, "fmt": text|int|pct|pct_count|pct_cr|cr|inr|num|pp|count_change,
+    """cols: {"key", "label"?, "fmt": text|int|pct|pct_count|pct_cr|cr|inr|num|pp|count_change|pct_change, or a
+    function (value, row) -> trusted HTML, "align"?: "left"/"right" (default: text left, numbers right),
     "count"?: count column for pct_count, "amount"?: ₹ Cr column for pct_cr, "heat"?: True (red shading by rank,
     lowest = palest), "good_if_up"?: True (a rise is good: green arrows),
     "help"?: hover text, "bold"?: True}. total: an optional final row (dict).
@@ -639,7 +669,7 @@ def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, ma
     tint (e.g. a customer with a loan behind on payment)."""
     heat = {c["key"]: heat_range(df[c["key"]].tolist()) for c in cols if c.get("heat") and c["key"] in df.columns}
     head = "".join(
-        f'<th style="text-align:{"left" if c.get("fmt", "text") == "text" else "right"};">{_esc(c.get("label", c["key"]))}'
+        f'<th style="text-align:{_align(c)};">{_esc(c.get("label", c["key"]))}'
         f'{_info(c.get("help"))}</th>' for c in cols)
     rows = []
     frames = [(r, False) for _, r in df.iterrows()] + ([(pd.Series(total), True)] if total else [])
@@ -648,14 +678,14 @@ def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, ma
         flagged = not is_total and highlight is not None and bool(highlight(r))
         for i, c in enumerate(cols):
             kind, v = c.get("fmt", "text"), r.get(c["key"])
-            style = f'text-align:{"left" if kind == "text" else "right"};'
+            style = f'text-align:{_align(c)};'
             if flagged:
                 style += "background:#fff1f2;" + ("box-shadow:inset 4px 0 0 #dc2626;" if i == 0 else "")
             if c.get("bold"):
                 style += "font-weight:700;"
             if not is_total and c["key"] in heat:
                 style += heat_style(v, heat[c["key"]])
-            if kind in ("pp", "count_change") and v is not None and not pd.isna(v) and float(v) != 0:
+            if kind in _CHANGE_KINDS and not is_blank(v) and v != "" and float(v) != 0:
                 worse = (float(v) > 0) != bool(c.get("good_if_up"))
                 style += f'color:{"#dc2626" if worse else "#16a34a"};font-weight:700;'
             tds += f'<td style="{style}">{_fmt_cell(v, kind, r, c.get("count"), c.get("amount"))}</td>'

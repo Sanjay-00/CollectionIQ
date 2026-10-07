@@ -20,7 +20,7 @@ from config import (
 # Single definition of what Monthly/Quarterly/Half-Yearly/Yearly/Financial Year
 # MEAN, so the Business tab's two granularity pickers (Disbursement Vintage,
 # New Advances Trend) can never silently diverge into two different
-# "Quarterly" definitions -- see ui/tabs/portfolio_intelligence.py::_roll_vintage
+# "Quarterly" definitions -- see roll_vintage
 # and roll_new_advances_trend below, both callers of these two helpers.
 
 
@@ -319,7 +319,7 @@ def compute_new_advances_trend(df_curr: pd.DataFrame, as_of=None, months: int | 
 def roll_new_advances_trend(trend_df: pd.DataFrame, granularity: str) -> pd.DataFrame:
     """Roll the monthly new-advances trend up to Quarter / Half-Year / Year /
     Financial Year and recompute Avg Ticket -- shares _period_label/
-    _period_sort_key with ui/tabs/portfolio_intelligence.py's _roll_vintage,
+    _period_sort_key with roll_vintage,
     so the two granularity pickers in the Business tab mean the exact same
     thing."""
     if granularity == "Monthly" or trend_df.empty:
@@ -338,6 +338,35 @@ def roll_new_advances_trend(trend_df: pd.DataFrame, granularity: str) -> pd.Data
     agg["Avg Ticket (L)"] = agg["Avg Ticket (L)"].where(agg["Accounts"] > 0, 0.0)
 
     agg["_sk"] = agg["Month"].apply(_period_sort_key)
+    return agg.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
+
+
+def roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
+    """Roll monthly cohorts up to Quarter / Half-Year / Year / Financial Year
+    and recompute NPA% + SMA-2%, with the same _period_label/_period_sort_key
+    as roll_new_advances_trend, so the Business tab's two granularity pickers
+    always mean the same "Quarterly"/"Financial Year"."""
+    if granularity == "Monthly" or df.empty:
+        return df
+
+    df = df.copy()
+    df["_period"] = df["Disbursement Month"].apply(lambda m: _period_label(m, granularity))
+
+    agg = (
+        df.groupby("_period", sort=False)
+        .agg(
+            Accounts=("Accounts", "sum"),
+            **{"NPA Count":   ("NPA Count",   "sum")},
+            **{"SMA-2 Count": ("SMA-2 Count", "sum")},
+            **{"SOH (Cr)":    ("SOH (Cr)",    "sum")},
+        )
+        .reset_index()
+        .rename(columns={"_period": "Disbursement Month"})
+    )
+    agg["NPA%"]   = (agg["NPA Count"]   / agg["Accounts"] * 100).round(2)
+    agg["SMA-2%"] = (agg["SMA-2 Count"] / agg["Accounts"] * 100).round(2)
+
+    agg["_sk"] = agg["Disbursement Month"].apply(_period_sort_key)
     return agg.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
 
 

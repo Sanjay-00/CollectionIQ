@@ -1,20 +1,13 @@
 """
-Root Cause tab  -  WHY collection%/NPA%/SMA-2% are moving, region by region and
-branch by branch. Zero AI calls. Built on top of Portfolio Intelligence's own
-region scorecard (region_df) rather than recomputing it.
-
-Tables here match the rest of the app's own convention (see
-ui/tabs/portfolio_intelligence.py): a raw HTML <table>, black header with
-amber (#FFC000) text, and red heat-map shading (ui/components.py::heat_style)
-on risk columns: palest = lowest in the column, red = highest, never green --
-never a plain st.dataframe grid.
+Root Cause tab: WHY delinquency, NPA and collection are moving, region by
+region and branch by branch. One question per view (VIEWS), each with a
+one-line takeaway and one table in the app's shared format
+(ui.components.html_table). Zero AI calls.
 """
 import pandas as pd
 import streamlit as st
 
-from ui.components import (
-    _dl_btn, _divider, append_total_row, _esc, heat_range, heat_style, pct_amount, pct_count, section_label,
-)
+from ui.components import _dl_btn, append_total_row, _esc, html_table, section_label, takeaway
 from ui.glossary import DRIVER_HELP, help_for, info_icon
 from config import HARD_BUCKET_ARREARS_EMI_MIN
 from analysis.root_cause import (
@@ -25,6 +18,8 @@ from analysis.root_cause import (
 
 _STATUS_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706", "-": "#9ca3af"}
 _STATUS_ICON  = {"Improving": "🟢", "Worsening": "🔴", "Stable": "🟡", "-": "⚪"}
+
+VIEWS = ["Why, by region", "Insurance vs installment", "Paying vs not paying", "Recent advances"]
 
 # Buckets that are a risk (everything except STD) get heat shading.
 _RISK_BUCKETS = ("0-1", "1-2", "2-3", "NPA")
@@ -39,33 +34,8 @@ def _badge(status: str) -> str:
     )
 
 
-# ── Shared value formatters (used as `fmt` in the _html_table column specs) ──
-
 def _is_missing(v) -> bool:
     return v is None or (isinstance(v, float) and pd.isna(v)) or v == ""
-
-
-def _fmt_text(v, _row=None) -> str:
-    return "-" if _is_missing(v) else _esc(v)
-
-
-def _fmt_int(v, _row=None) -> str:
-    return "-" if _is_missing(v) else f"{int(v):,}"
-
-
-def _fmt_pct(decimals: int = 1):
-    def _f(v, _row=None) -> str:
-        return "-" if _is_missing(v) else f"{float(v):.{decimals}f}%"
-    return _f
-
-
-def _fmt_pp(v, _row=None) -> str:
-    """Change in percentage points: red ▲ when worse, green ▼ when better."""
-    if _is_missing(v):
-        return "-"
-    color = "#dc2626" if v > 0.1 else ("#16a34a" if v < -0.1 else "#6b7280")
-    arrow = "▲" if v > 0.1 else ("▼" if v < -0.1 else "")
-    return f'<span style="color:{color};font-weight:700;">{arrow} {abs(float(v)):.2f}pp</span>'
 
 
 _PREV_DELINQ_HELP = "Delinquency % in last month's file (loans with any EMI or charge overdue)."
@@ -83,8 +53,7 @@ def _summary_line(total_row: pd.Series, parts: list[tuple[str, str]]) -> None:
                 f"<b>{int(total_row['Delinquent Accounts']):,}</b> delinquent (<b>{float(total_row['Delinquency%']):.1f}%</b>)"]
     bits += [f"{_esc(label)} <b>{float(total_row[key]):.1f}%</b>" for label, key in parts
              if key in total_row and not _is_missing(total_row[key])]
-    st.markdown(f'<div style="font-size:13px;color:#374151;margin:4px 0 8px;">All branches: {", ".join(bits)}</div>',
-                unsafe_allow_html=True)
+    takeaway(f"All branches: {', '.join(bits)}.")
 
 
 def _delinquency_chip(row) -> str:
@@ -92,72 +61,22 @@ def _delinquency_chip(row) -> str:
     if _is_missing(pct):
         return ""
     prev = row.get("Δ Delinquency%")
-    move = "" if _is_missing(prev) else f" ({prev:+.2f}pp)"
+    move = "" if _is_missing(prev) else f" ({prev:+.2f} pts)"
     n, d = row.get("Accounts"), row.get("Delinquent Accounts")
     base = "" if _is_missing(n) or _is_missing(d) else f"{int(d):,} of {int(n):,}, "
     return f'<div style="font-size:12px;color:#374151;">Delinquent {base}<b>{pct:.1f}%</b>{move}</div>'
 
 
-def _fmt_cr(v, _row=None) -> str:
-    return "-" if _is_missing(v) else f"₹{float(v):,.2f}Cr"
-
-
-# ── Shared HTML table builder (matches ui/tabs/portfolio_intelligence.py) ────
-
-def _html_table(df: pd.DataFrame, cols: list[dict], last_row_is_total: bool = False) -> str:
-    """cols: list of {"key", "label"?, "align"? ("left"/"right", default
-    right), "fmt"?: (val, row) -> str, "color"?: (val, row) -> str|None,
-    "bold"?: bool, "heat"?: True | str}. "heat" shades the cell red by its
-    rank in the column (True = this column's values, a string = another
-    column's, e.g. a count shaded by its "... %"). When last_row_is_total,
-    that row (the caller's own Grand Total / Total row) renders bold with an
-    amber top border and is never shaded: an aggregate isn't a peer to rank."""
-    th = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:7px 12px;font-size:11px;'
-        f'text-align:{c.get("align", "right")};white-space:nowrap;">{_esc(c.get("label", c["key"]))}'
-        f'{info_icon(c.get("help", help_for(c["key"])), color="#fde68a")}</th>'
-        for c in cols
-    )
-    n = len(df)
-    peers = df.iloc[:-1] if last_row_is_total and n else df
-    ranges = {}
-    for c in cols:
-        src = c["key"] if c.get("heat") is True else c.get("heat")
-        if src and src in df.columns:
-            ranges[c["key"]] = (src, heat_range(peers[src].tolist()))
-    rows_html = ""
-    for i, (_, row) in enumerate(df.iterrows()):
-        is_total = last_row_is_total and i == n - 1
-        cells = ""
-        for c in cols:
-            val = row.get(c["key"])
-            align = c.get("align", "right")
-            fmt = c.get("fmt", _fmt_text)
-            display = fmt(val, row)
-            color = None if is_total else (c["color"](val, row) if c.get("color") else None)
-            style = f"padding:7px 12px;font-size:12px;text-align:{align};"
-            heat = ""
-            if not is_total and c["key"] in ranges:
-                src, rng = ranges[c["key"]]
-                heat = heat_style(row.get(src), rng)
-            if heat:
-                style += heat
-            elif color:
-                style += f"color:{color};font-weight:600;"
-            elif c.get("bold"):
-                style += "font-weight:700;"
-            if is_total:
-                style += "font-weight:800;border-top:2px solid #FFC000;"
-            cells += f'<td style="{style}">{display}</td>'
-        row_bg = "#fffbea" if is_total else "#fff"
-        border = "" if is_total else "border-bottom:1px solid #f0f0f0;"
-        rows_html += f'<tr style="background:{row_bg};{border}">{cells}</tr>'
-    return (
-        f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-        f'</table></div>'
-    )
+def _table(df: pd.DataFrame, cols: list[dict], last_row_is_total: bool = False) -> str:
+    """The app's shared table (ui.components.html_table); each column's ⓘ
+    comes from the glossary unless the spec gives one. last_row_is_total:
+    the frame's last row is its Total row."""
+    cols = [{**c, "help": c.get("help") or help_for(c["key"])} for c in cols]
+    if last_row_is_total and len(df):
+        # append_total_row repeats a text column's own name in the Total row; show it blank.
+        total = {k: ("" if isinstance(v, str) and v == k else v) for k, v in df.iloc[-1].to_dict().items()}
+        return html_table(df.iloc[:-1], cols, total=total)
+    return html_table(df, cols)
 
 
 def _render_contamination_notice(contamination: dict) -> None:
@@ -185,6 +104,17 @@ def _why_total(df_curr: pd.DataFrame | None) -> dict | None:
             "NPA%": float(t["NPA%"]), "Collection%": float(t["Collection%"])}
 
 
+def _why_takeaway(why_df: pd.DataFrame) -> str:
+    """How many regions got worse, and the driver behind most of them."""
+    n = len(why_df)
+    worse = int((why_df.get("Status") == "Worsening").sum()) if "Status" in why_df.columns else 0
+    text = f"<b>{worse}</b> of {n} regions are worsening." if "Status" in why_df.columns else f"{n} regions."
+    if "Dominant Driver" in why_df.columns and why_df["Dominant Driver"].notna().any():
+        top = why_df["Dominant Driver"].value_counts()
+        text += f" The most common driver is <b>{_esc(top.index[0])}</b> ({int(top.iloc[0])} of {n} regions)."
+    return text
+
+
 def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
     section_label("Region Diagnosis: Why Is It Moving?")
     st.caption(
@@ -196,6 +126,7 @@ def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None)
         st.info("Not enough data to compute region diagnostics.")
         return
 
+    takeaway(_why_takeaway(why_df))
     display_cols = ["Region", "Status", "Accounts", "Delinquent Accounts", "Delinquency%", "Prev Delinquency%",
                     "Δ Delinquency%", "NPA%", "Δ NPA%", "Collection%", "Dominant Driver", "Driver Share %"]
     display_cols = [c for c in display_cols if c in why_df.columns]
@@ -204,7 +135,7 @@ def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None)
     for _, row in view.iterrows():
         badge = _badge(row.get("Status", "-"))
         delta = row.get("Δ NPA%")
-        delta_txt = f"{delta:+.2f}pp" if delta is not None and pd.notna(delta) else "no prev month"
+        delta_txt = f"{delta:+.2f} pts" if delta is not None and pd.notna(delta) else "no prev month"
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:14px;padding:10px 14px;'
             f'border:1px solid #e5e7eb;border-radius:8px;margin-bottom:8px;">'
@@ -226,23 +157,23 @@ def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None)
     with st.expander("View as table"):
         cols = [
             {"key": "Region", "align": "left", "bold": True},
-            {"key": "Status", "align": "left", "fmt": lambda v, _r=None: _badge(str(v))},
-            {"key": "Accounts", "fmt": _fmt_int},
-            {"key": "Delinquency%", "label": "Delinquent", "fmt": _pct_and("Delinquent Accounts"), "heat": True},
-            {"key": "Prev Delinquency%", "fmt": _fmt_pct(1), "help": _PREV_DELINQ_HELP},
-            {"key": "Δ Delinquency%", "fmt": _fmt_pp, "help": _DELTA_DELINQ_HELP},
-            {"key": "NPA%", "fmt": _fmt_pct(1), "heat": True},
-            {"key": "Δ NPA%", "fmt": _fmt_pp},
-            {"key": "Collection%", "fmt": _fmt_pct(1)},
+            {"key": "Status", "align": "left", "fmt": lambda v, _r=None: _badge(str(v)) if v else ""},
+            {"key": "Accounts", "fmt": "int"},
+            {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent Accounts", "heat": True},
+            {"key": "Prev Delinquency%", "fmt": "pct", "help": _PREV_DELINQ_HELP},
+            {"key": "Δ Delinquency%", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
+            {"key": "NPA%", "fmt": "pct", "heat": True},
+            {"key": "Δ NPA%", "fmt": "pp"},
+            {"key": "Collection%", "fmt": "pct"},
             {"key": "Dominant Driver", "align": "left",
-             "fmt": lambda v, _r=None: _fmt_text(v) + info_icon(DRIVER_HELP.get(v))},
-            {"key": "Driver Share %", "fmt": _fmt_pct(0)},
+             "fmt": lambda v, _r=None: (_esc(v) if isinstance(v, str) and v else "-") + info_icon(DRIVER_HELP.get(v))},
+            {"key": "Driver Share %", "fmt": "pct"},
         ]
         cols = [c for c in cols if c["key"] in view.columns]
         total = _why_total(df_curr)
         if total:
             view = pd.concat([view, pd.DataFrame([total])], ignore_index=True)
-        st.markdown(_html_table(view, cols, last_row_is_total=bool(total)), unsafe_allow_html=True)
+        st.markdown(_table(view, cols, last_row_is_total=bool(total)), unsafe_allow_html=True)
     _dl_btn(why_df, "region_why_diagnosis.xlsx", "dl_root_cause_why")
 
 
@@ -272,22 +203,21 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
     cols = [
         {"key": "Unit", "align": "left", "bold": True},
         {"key": "RegionName", "align": "left", "label": "Region"},
-        {"key": "Accounts", "fmt": _fmt_int},
-        {"key": "Delinquency%", "label": "Delinquent", "fmt": _pct_and("Delinquent Accounts"), "heat": True},
-        {"key": "Prev Delinquency%", "fmt": _fmt_pct(1), "help": _PREV_DELINQ_HELP},
-        {"key": "Δ Delinquency%", "fmt": _fmt_pp, "help": _DELTA_DELINQ_HELP},
+        {"key": "Accounts", "fmt": "int"},
+        {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent Accounts", "heat": True},
+        {"key": "Prev Delinquency%", "fmt": "pct", "help": _PREV_DELINQ_HELP},
+        {"key": "Δ Delinquency%", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
         # Shares of the DELINQUENT loans (each with its count).
-        {"key": "Insurance-Only %", "label": "Insurance-Only", "fmt": _pct_and("Insurance-Only")},
-        {"key": "Installment-Only %", "label": "Installment-Only", "fmt": _pct_and("Installment-Only")},
+        {"key": "Insurance-Only %", "label": "Insurance-Only", "fmt": "pct_count", "count": "Insurance-Only"},
+        {"key": "Installment-Only %", "label": "Installment-Only", "fmt": "pct_count", "count": "Installment-Only"},
         # "Both" = genuine shortfall on both legs -- the most severe of the three, shaded accordingly.
-        {"key": "Both %", "label": "Both", "fmt": _pct_and("Both"), "heat": True},
-        {"key": "Other %", "label": "Other", "fmt": _pct_and("Other")},
+        {"key": "Both %", "label": "Both", "fmt": "pct_count", "count": "Both", "heat": True},
+        {"key": "Other %", "label": "Other", "fmt": "pct_count", "count": "Other"},
     ]
     cols = [c for c in cols if c["key"] in view.columns]
     _summary_line(view.iloc[-1], [("Insurance-Only", "Insurance-Only %"), ("Installment-Only", "Installment-Only %"), ("Both", "Both %"), ("Other", "Other %")])
-    with st.expander(f"Show branch table ({len(ins_df)} branches)"):
-        st.markdown(_html_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
-        _dl_btn(ins_df, "insurance_vs_installment_split.xlsx", "dl_root_cause_insurance")
+    st.markdown(_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
+    _dl_btn(ins_df, "insurance_vs_installment_split.xlsx", "dl_root_cause_insurance")
 
 
 def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
@@ -307,21 +237,20 @@ def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
     cols = [
         {"key": "Unit", "align": "left", "bold": True},
         {"key": "RegionName", "align": "left", "label": "Region"},
-        {"key": "Accounts", "fmt": _fmt_int},
-        {"key": "Delinquency%", "label": "Delinquent", "fmt": _pct_and("Delinquent Accounts"), "heat": True},
-        {"key": "Prev Delinquency%", "fmt": _fmt_pct(1), "help": _PREV_DELINQ_HELP},
-        {"key": "Δ Delinquency%", "fmt": _fmt_pp, "help": _DELTA_DELINQ_HELP},
+        {"key": "Accounts", "fmt": "int"},
+        {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent Accounts", "heat": True},
+        {"key": "Prev Delinquency%", "fmt": "pct", "help": _PREV_DELINQ_HELP},
+        {"key": "Δ Delinquency%", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
         # Shares of the DELINQUENT loans (each with its count).
-        {"key": f"{HARD_NOT_PAYING} %", "label": HARD_NOT_PAYING, "fmt": _pct_and(HARD_NOT_PAYING), "heat": True},
-        {"key": f"{HARD_STILL_PAYING} %", "label": HARD_STILL_PAYING, "fmt": _pct_and(HARD_STILL_PAYING), "heat": True},
-        {"key": f"{WAS_SILENT} %", "label": WAS_SILENT, "fmt": _pct_and(WAS_SILENT)},
-        {"key": f"{EARLY_DELINQUENCY} %", "label": EARLY_DELINQUENCY, "fmt": _pct_and(EARLY_DELINQUENCY)},
+        {"key": f"{HARD_NOT_PAYING} %", "label": HARD_NOT_PAYING, "fmt": "pct_count", "count": HARD_NOT_PAYING, "heat": True},
+        {"key": f"{HARD_STILL_PAYING} %", "label": HARD_STILL_PAYING, "fmt": "pct_count", "count": HARD_STILL_PAYING, "heat": True},
+        {"key": f"{WAS_SILENT} %", "label": WAS_SILENT, "fmt": "pct_count", "count": WAS_SILENT},
+        {"key": f"{EARLY_DELINQUENCY} %", "label": EARLY_DELINQUENCY, "fmt": "pct_count", "count": EARLY_DELINQUENCY},
     ]
     cols = [c for c in cols if c["key"] in view.columns]
     _summary_line(view.iloc[-1], [(g, f"{g} %") for g in ARREARS_GROUPS])
-    with st.expander(f"Show branch table ({len(cs_df)} branches)"):
-        st.markdown(_html_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
-        _dl_btn(cs_df, "deep_arrears_paying_vs_not_paying.xlsx", "dl_root_cause_chronic_shock")
+    st.markdown(_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
+    _dl_btn(cs_df, "deep_arrears_paying_vs_not_paying.xlsx", "dl_root_cause_chronic_shock")
 
 
 def _render_recent_advances_summary(summary: dict) -> None:
@@ -358,11 +287,11 @@ def _render_recent_advances_bucket(bucket_df: pd.DataFrame) -> None:
     )
     cols = [
         {"key": "Bucket", "align": "left", "bold": True},
-        {"key": "Count %", "label": "Loans", "fmt": _pct_and("Count")},
-        {"key": "SOH %", "label": "SOH", "fmt": _pct_cr("SOH (Cr)")},
+        {"key": "Count %", "label": "Loans", "fmt": "pct_count", "count": "Count"},
+        {"key": "SOH %", "label": "SOH", "fmt": "pct_cr", "amount": "SOH (Cr)"},
     ]
     cols = [c for c in cols if c["key"] in bucket_df.columns]
-    st.markdown(_html_table(bucket_df, cols), unsafe_allow_html=True)
+    st.markdown(_table(bucket_df, cols), unsafe_allow_html=True)
     _dl_btn(bucket_df, "recent_advances_bucket_split.xlsx", "dl_root_cause_recent_bucket")
 
 
@@ -380,12 +309,12 @@ def _render_recent_advances_by_group(count_df: pd.DataFrame, soh_df: pd.DataFram
                 cols.append({"key": "RegionName", "align": "left", "label": "Region"})
             for bucket in ("STD", "0-1", "1-2", "2-3", "NPA"):
                 if f"{bucket} %" in count_df.columns:
-                    cols.append({"key": f"{bucket} %", "label": bucket, "fmt": _pct_and(bucket),
+                    cols.append({"key": f"{bucket} %", "label": bucket, "fmt": "pct_count", "count": bucket,
                                  "heat": bucket in _RISK_BUCKETS})
             if "Total Count" in count_df.columns:
-                cols.append({"key": "Total Count", "fmt": _fmt_int, "bold": True})
+                cols.append({"key": "Total Count", "fmt": "int", "bold": True})
             ratio = {f"{b} %": (b, "Total Count") for b in ("STD", "0-1", "1-2", "2-3", "NPA") if b in count_df.columns}
-            st.markdown(_html_table(append_total_row(count_df, ratio_cols=ratio), cols, last_row_is_total=True),
+            st.markdown(_table(append_total_row(count_df, ratio_cols=ratio), cols, last_row_is_total=True),
                         unsafe_allow_html=True)
             _dl_btn(count_df, f"recent_advances_by_{label.lower()}_count.xlsx", f"dl_root_cause_recent_{label.lower()}_count")
     with tab_soh:
@@ -399,28 +328,14 @@ def _render_recent_advances_by_group(count_df: pd.DataFrame, soh_df: pd.DataFram
                 if f"{bucket} %" in soh_df.columns:   # "34.6% (₹1.21 Cr)": the money in brackets
                     amount = f"{bucket} (Cr)" if f"{bucket} (Cr)" in soh_df.columns else None
                     cols.append({"key": f"{bucket} %", "label": bucket, "heat": bucket in _RISK_BUCKETS,
-                                 "fmt": _pct_cr(amount) if amount else _fmt_pct(1)})
+                                 "fmt": "pct_cr" if amount else "pct", "amount": amount})
             if "Total SOH (Cr)" in soh_df.columns:
-                cols.append({"key": "Total SOH (Cr)", "fmt": _fmt_cr, "bold": True})
+                cols.append({"key": "Total SOH (Cr)", "fmt": "cr", "bold": True})
             ratio = {f"{b} %": (f"{b} (Cr)", "Total SOH (Cr)") for b in ("STD", "0-1", "1-2", "2-3", "NPA")
                      if f"{b} (Cr)" in soh_df.columns}
-            st.markdown(_html_table(append_total_row(soh_df, ratio_cols=ratio), cols, last_row_is_total=True),
+            st.markdown(_table(append_total_row(soh_df, ratio_cols=ratio), cols, last_row_is_total=True),
                         unsafe_allow_html=True)
             _dl_btn(soh_df, f"recent_advances_by_{label.lower()}_soh.xlsx", f"dl_root_cause_recent_{label.lower()}_soh")
-
-
-def _pct_and(count_key: str):
-    """A % cell with its count in brackets: '7.5% (150)' -- the app-wide format."""
-    def _f(v, row) -> str:
-        return pct_count(None if _is_missing(v) else v, row.get(count_key))
-    return _f
-
-
-def _pct_cr(amount_key: str):
-    """A % by SOH with its ₹ Cr in brackets: '34.6% (₹1.21 Cr)'."""
-    def _f(v, row) -> str:
-        return pct_amount(None if _is_missing(v) else v, row.get(amount_key))
-    return _f
 
 
 def _render_status_table(status_df: pd.DataFrame, grain_label: str) -> None:
@@ -433,11 +348,11 @@ def _render_status_table(status_df: pd.DataFrame, grain_label: str) -> None:
     label_cols = [c for c in status_df.columns if c in ("Region", "Branch", "Executive")]
     count_cols = [c for c in status_df.columns if c not in label_cols and c != "Running Loans" and not c.endswith(" %")]
     cols = [{"key": lc, "align": "left", "bold": lc == label_cols[0]} for lc in label_cols]
-    cols.append({"key": "Running Loans", "fmt": _fmt_int, "bold": True})
+    cols.append({"key": "Running Loans", "fmt": "int", "bold": True})
     for c in count_cols:
         # Every status column is a risk: its share of Running Loans (count), shaded.
-        cols.append({"key": f"{c} %", "label": c, "fmt": _pct_and(c), "heat": True})
-    st.markdown(_html_table(status_df, cols, last_row_is_total=True), unsafe_allow_html=True)
+        cols.append({"key": f"{c} %", "label": c, "fmt": "pct_count", "count": c, "heat": True})
+    st.markdown(_table(status_df, cols, last_row_is_total=True), unsafe_allow_html=True)
     _dl_btn(status_df, f"recent_advances_delinquency_by_{grain_label.lower()}.xlsx", f"dl_root_cause_{grain_label.lower()}_status")
 
 
@@ -446,14 +361,13 @@ def _render_status_by_grain(df_curr: pd.DataFrame, daily_df: pd.DataFrame) -> tu
     branch_status = compute_recent_advances_status_by_grain(df_curr, daily_df, grain="branch")
     executive_status = compute_recent_advances_status_by_grain(df_curr, daily_df, grain="executive")
 
-    with st.expander("Show by region, branch and executive"):
-        tab_r, tab_b, tab_e = st.tabs(["By Region", "By Branch", "By Executive"])
-        with tab_r:
-            _render_status_table(region_status, "Region")
-        with tab_b:
-            _render_status_table(branch_status, "Branch")
-        with tab_e:
-            _render_status_table(executive_status, "Executive")
+    tab_r, tab_b, tab_e = st.tabs(["By Region", "By Branch", "By Executive"])
+    with tab_r:
+        _render_status_table(region_status, "Region")
+    with tab_b:
+        _render_status_table(branch_status, "Branch")
+    with tab_e:
+        _render_status_table(executive_status, "Executive")
     return region_status, branch_status, executive_status
 
 
@@ -484,7 +398,7 @@ def _render_match_notes(match: dict) -> None:
                 f"from this LCC extract. By branch on the list: {by_branch}"
             )
             st.markdown(
-                _html_table(pd.DataFrame({"Loan No": match["missing_from_lcc_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
+                _table(pd.DataFrame({"Loan No": match["missing_from_lcc_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
                 unsafe_allow_html=True,
             )
     if match["in_view_not_counted_count"]:
@@ -497,7 +411,7 @@ def _render_match_notes(match: dict) -> None:
                 "than RUN. If the list shows a later date, the LCC date may have day and month swapped."
             )
             st.markdown(
-                _html_table(pd.DataFrame({"Loan No": match["in_view_not_counted_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
+                _table(pd.DataFrame({"Loan No": match["in_view_not_counted_loan_nos"]}), [{"key": "Loan No", "align": "left"}]),
                 unsafe_allow_html=True,
             )
 
@@ -618,23 +532,19 @@ def render_root_cause_tab(
             )
 
     _render_contamination_notice(contamination)
-    _render_why_table(why_df, df_curr)
-    _divider()
-    _render_insurance_split(insurance_split_df)
-    _divider()
-    _render_chronic_shock_split(chronic_shock_df)
-    _divider()
-
-    section_label("Recent Advances Cohort", margin_top="24px")
-    st.caption(f"Loans agreed from {(recent_summary or {}).get('cohort_start', 'the configured cutoff')} onward.")
-    _render_recent_advances_summary(recent_summary or {})
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    with st.expander("Show bucket tables (whole cohort, by region, by branch)"):
+    view = st.segmented_control("View", VIEWS, default=VIEWS[0], key="rc_view", label_visibility="collapsed") or VIEWS[0]
+    if view == VIEWS[0]:
+        _render_why_table(why_df, df_curr)
+    elif view == VIEWS[1]:
+        _render_insurance_split(insurance_split_df)
+    elif view == VIEWS[2]:
+        _render_chronic_shock_split(chronic_shock_df)
+    else:
+        section_label("Recent Advances Cohort")
+        st.caption(f"Loans agreed from {(recent_summary or {}).get('cohort_start', 'the configured cutoff')} onward.")
+        _render_recent_advances_summary(recent_summary or {})
         _render_recent_advances_bucket(recent_bucket_df)
-        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
         _render_recent_advances_by_group(recent_by_region_count, recent_by_region_soh, "Region", group_col="RegionName")
         _render_recent_advances_by_group(recent_by_branch_count, recent_by_branch_soh, "Branch", group_col="Unit")
-
-    if df_curr is not None:
-        _divider()
-        _render_daily_match(df_curr, df_all)
+        if df_curr is not None:
+            _render_daily_match(df_curr, df_all)

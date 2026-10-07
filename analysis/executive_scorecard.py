@@ -1,9 +1,8 @@
-﻿"""
+"""
 Field Executive Performance Scorecard
 Groups by MNT NAME and computes per-executive collection metrics.
 Performance tiers are quartile-based (relative to the dataset) - not hardcoded thresholds.
 """
-import html
 
 import pandas as pd
 
@@ -75,14 +74,14 @@ def compute_executive_scorecard(
     sc["Collected (L)"] = (m["Collected"] / 100_000).round(2).values
 
     sc = sc.sort_values("Collection %", ascending=False, kind="stable")
-    sc["Tier"] = _quartile_tier(sc["Collection %"])
+    sc["Tier"] = quartile_tier(sc["Collection %"])
     sc = sc.reset_index(drop=True)
     on = {"MNT NAME": "MNT NAME", "Unit": "Unit"} if "Unit" in df.columns else {"MNT NAME": "MNT NAME"}
     sc = attach_prev_delinquency(sc, df_prev, on, pct_col="Delinquency %", fuzzy="MNT NAME", decimals=1)
     return sc[order_unit_columns(sc.columns, ["Executive (Branch)", "MNT NAME", "Unit"])]
 
 
-def _quartile_tier(series: pd.Series) -> pd.Series:
+def quartile_tier(series: pd.Series) -> pd.Series:
     """top = >= 75th percentile, bottom = <= 25th percentile, mid = everyone else -
     relative to this dataset, not a hardcoded threshold."""
     q75 = series.quantile(0.75)
@@ -105,138 +104,13 @@ def rank_by_metric(scorecard_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
 
     Returns an independent re-sorted copy - does NOT change compute_executive_scorecard's
     own Collection%-based ranking/Tier, so existing Collection%-ranked consumers
-    (the default Scorecard tab view, report_agent's executive_rankings section,
-    AI Query's executive_rankings view) are unaffected unless they explicitly opt in.
+    (report_agent's executive_rankings section, AI Query's executive_rankings
+    view) are unaffected unless they explicitly opt in.
     """
     if scorecard_df is None or scorecard_df.empty or metric_col not in scorecard_df.columns:
         return scorecard_df
     ranked = scorecard_df.sort_values(metric_col, ascending=False).copy()
-    ranked["Tier"] = _quartile_tier(ranked[metric_col])
+    ranked["Tier"] = quartile_tier(ranked[metric_col])
     return ranked.reset_index(drop=True)
 
 
-def build_scorecard_table_html(scorecard_df: pd.DataFrame) -> str:
-    """Returns a fully inline-CSS HTML table with color-coded performance tiers."""
-    TIER_STYLE = {
-        "top":    ("border-left:4px solid #16a34a;background:#f0fdf4;", "#16a34a"),
-        "mid":    ("border-left:4px solid #d97706;background:#fff;",    "#d97706"),
-        "bottom": ("border-left:4px solid #dc2626;background:#fff5f5;", "#dc2626"),
-    }
-    TIER_LABEL = {"top": "TOP", "mid": "MID", "bottom": "LOW"}
-
-    # Local import (not module-level): analysis/ is otherwise pure pandas,
-    # no UI dependency -- append_total_row lives in ui/components.py since
-    # every OTHER table's Total row goes through it too, and ui/components.py
-    # itself never imports back into analysis/, so this can't cycle.
-    from ui.components import append_total_row, heat_range, heat_style, pct_amount, pct_count
-
-    # A % and the count behind it share one cell ("11.9% (37)"), so the count
-    # columns aren't shown separately (they stay in the frame for the totals).
-    pct_counts = {p: c for p, c in (("Delinquency %", "Delinquent"), ("NPA %", "NPA"), ("SMA-2 %", "SMA-2"))
-                  if p in scorecard_df.columns and c in scorecard_df.columns}
-    # A % by SOH shows the money behind it the same way: "34.6% (₹1.21 Cr)".
-    pct_amounts = {p: a for p, a in (("NPA % (SOH)", "NPA SOH (Cr)"),)
-                   if p in scorecard_df.columns and a in scorecard_df.columns}
-    # MNT NAME / Unit are raw copies of what "Executive (Branch)" already shows.
-    frame_cols = [c for c in scorecard_df.columns if c not in ("Tier", "MNT NAME", "Unit")]
-    headers = [c for c in frame_cols if c not in pct_counts.values() and c not in pct_amounts.values()]
-
-    def _pct_cell(c, row):
-        if c in pct_counts:
-            return pct_count(row[c], row[pct_counts[c]])
-        if c in pct_amounts:
-            return pct_amount(row[c], row[pct_amounts[c]])
-        return f"{row[c]}%" if c.endswith("%") else row[c]
-    header_html = "".join(
-        f'<th style="background:#111;color:#FFC000;padding:8px 12px;'
-        f'text-align:left;font-size:12px;white-space:nowrap;">{h}</th>'
-        for h in headers
-    )
-
-    rows_html = ""
-    _ratio_cols = {
-        "Collection %":   ("Collected (L)", "Demand (L)", 100),
-        "NPA %":          ("NPA", "Accounts", 100),
-        "SMA-2 %":        ("SMA-2", "Accounts", 100),
-        "Delinquency %":  ("Delinquent", "Accounts", 100),
-        "NPA % (SOH)":    ("NPA SOH (Cr)", "Total SOH (L)", 10_000),   # Cr / L x 100 x 100
-    }
-    df_display = append_total_row(scorecard_df[frame_cols], ratio_cols=_ratio_cols)
-    n_data_rows = len(scorecard_df)
-    # Risk columns: red shading by rank within the column, never green.
-    risk_cols = ("Roll Fwd %", "NPA", "NPA %", "NPA % (SOH)", "SMA-2", "SMA-2 %", "Delinquent", "Delinquency %")
-    heat = {c: heat_range(scorecard_df[c].tolist()) for c in risk_cols if c in headers}
-    for i, row in df_display.iterrows():
-        if i == n_data_rows:
-            cells = "".join(
-                f'<td style="padding:8px 12px;font-size:13px;font-weight:800;'
-                f'border-top:2px solid #FFC000;">'
-                f'{_pct_cell(c, row) if row[c] != "" else ""}</td>'
-                for c in headers
-            )
-            rows_html += f'<tr style="border-bottom:1px solid #e5e7eb;background:#fffbea;">{cells}</tr>'
-            continue
-        tier = row.get("Tier", "mid")
-        row_style, tier_color = TIER_STYLE.get(tier, TIER_STYLE["mid"])
-        tier_badge = (
-            f'<span style="background:{tier_color};color:#fff;font-size:10px;'
-            f'font-weight:700;padding:2px 7px;border-radius:10px;">'
-            f'{TIER_LABEL.get(tier, tier)}</span>'
-        )
-        cells = ""
-        for col in headers:
-            val = row[col]
-            if col == "Executive (Branch)":
-                # MNT NAME/Unit are manually-typed LCC fields -- escape so an
-                # &, <, > in a real name can't break the table markup (same
-                # rule as report_agent/render.py and ui/components.py's _esc).
-                cells += (
-                    f'<td style="padding:8px 12px;font-size:13px;font-weight:600;">'
-                    f'{html.escape(str(val))} &nbsp;{tier_badge}</td>'
-                )
-            elif col == "Collection %":
-                coll_color = "#16a34a" if val > 100 else "#d97706" if val >= 90 else "#dc2626"
-                coll_bg    = "rgba(22,163,74,0.08)" if val > 100 else "rgba(217,119,6,0.08)" if val >= 90 else "rgba(220,38,38,0.08)"
-                cells += (
-                    f'<td style="padding:8px 12px;font-size:13px;font-weight:800;color:{coll_color};'
-                    f'background:{coll_bg};border-radius:4px;">'
-                    f'{val}%</td>'
-                )
-            elif col in heat:
-                if val is None or pd.isna(val):
-                    cells += '<td style="padding:8px 12px;font-size:13px;color:#9ca3af;"> - </td>'
-                else:
-                    shown = _pct_cell(col, row)
-                    cells += f'<td style="padding:8px 12px;font-size:13px;{heat_style(val, heat[col])}">{shown}</td>'
-            elif col == "Roll Bwd %":
-                if val is None or pd.isna(val):
-                    cells += '<td style="padding:8px 12px;font-size:13px;color:#9ca3af;"> - </td>'
-                else:
-                    color = "#16a34a" if val >= 10 else "#d97706" if val >= 5 else "#6b7280"
-                    cells += f'<td style="padding:8px 12px;font-size:13px;color:{color};font-weight:600;">{val}%</td>'
-            elif col == "Strike Rate %":
-                cells += f'<td style="padding:8px 12px;font-size:13px;">{val}%</td>'
-            elif col == "Prev Delinquency %":
-                shown = " - " if val is None or pd.isna(val) else f"{val}%"
-                cells += f'<td style="padding:8px 12px;font-size:13px;color:#6b7280;">{shown}</td>'
-            elif col == "Δ Delinquency %":
-                if val is None or pd.isna(val):
-                    cells += '<td style="padding:8px 12px;font-size:13px;color:#9ca3af;"> - </td>'
-                else:
-                    # Positive = more of the book behind than last month (worse).
-                    color = "#dc2626" if val > 0.1 else ("#16a34a" if val < -0.1 else "#6b7280")
-                    arrow = "▲" if val > 0.1 else ("▼" if val < -0.1 else "-")
-                    cells += f'<td style="padding:8px 12px;font-size:13px;font-weight:700;color:{color};">{arrow} {abs(val):.2f}pp</td>'
-            else:
-                cells += f'<td style="padding:8px 12px;font-size:13px;">{html.escape(val) if isinstance(val, str) else val}</td>'
-        rows_html += (
-            f'<tr style="{row_style}border-bottom:1px solid #e5e7eb;">{cells}</tr>'
-        )
-
-    return (
-        f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
-        f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
-        f'<thead><tr>{header_html}</tr></thead>'
-        f'<tbody>{rows_html}</tbody>'
-        f'</table></div>'
-    )

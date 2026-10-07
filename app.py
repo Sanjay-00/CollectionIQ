@@ -25,8 +25,7 @@ from analysis.root_cause import (
     compute_recent_advances_bucket_by_group,
 )
 from ui.tabs.dashboard import render_dashboard_tab
-from ui.tabs.scorecard import render_scorecard_tab
-from ui.tabs.alerts import render_alerts_tab
+from ui.tabs.action_lists import render_action_lists_tab
 from ui.tabs.migration import render_migration_tab
 from ui.tabs.portfolio_intelligence import render_portfolio_intelligence_tab
 from ui.tabs.root_cause import render_root_cause_tab
@@ -308,6 +307,12 @@ def _cached_roll_rate(_df_c, _df_p, data_version: int, filter_key: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
+def _cached_action_lists(_df_c, _alerts_c, _alerts_p, data_version: int, filter_key: str, curr_month: str) -> list:
+    from analysis.action_lists import build_lists
+    return build_lists(_df_c, curr_month, _alerts_c, _alerts_p)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_business(_df_c, data_version: int, filter_key: str, curr_month: str):
     return (compute_new_advances(_df_c, as_of=curr_month),
             compute_new_advances_by_dimension(_df_c, as_of=curr_month),
@@ -404,19 +409,13 @@ try:
     if active == "🗂️ Dashboard":
         render_dashboard_tab(
             df_curr, df_prev, _cached_metrics(df_curr, df_prev, data_version, _filter_key), curr_month,
-            sel_region, sel_branch, sel_status, _alerts(), _scorecard(), _roll_rate()[1],
+            sel_region, sel_branch, sel_status, _alerts(),
             data_version=data_version, segment=_seg_t, date_from=sel_date_from, alerts_prev=_alerts_prev(),
         )
 
-    elif active == "👤 Scorecard":
-        render_scorecard_tab(df_curr, _scorecard())
-
-    elif active == "🚨 Alerts":
-        alerts = _alerts()
-        n_alerts = sum(1 for a in alerts if a["count"] > 0)
-        if n_alerts:
-            st.caption(f"🚨 {n_alerts} alert{'s' if n_alerts > 1 else ''} active")
-        render_alerts_tab(df_curr, alerts)
+    elif active == "🎯 Action Lists":
+        render_action_lists_tab(
+            _cached_action_lists(df_curr, _alerts(), _alerts_prev(), data_version, _filter_key, curr_month), df_curr)
 
     elif active == "📈 Migration":
         render_migration_tab(df_curr, df_prev, *_roll_rate(), data_version, _filter_key)
@@ -435,8 +434,7 @@ try:
         render_business_tab(
             new_advances=new_advances, df_curr=df_curr, curr_month=curr_month,
             dimension_data=new_advances_by_dim, vintage_df=vintage_df,
-            data_version=data_version, region=sel_region, branch=sel_branch, status=sel_status, segment=_seg_t,
-            date_from=sel_date_from,
+            data_version=data_version, filter_key=_filter_key,
         )
 
     elif active == "🤖 AI Query":

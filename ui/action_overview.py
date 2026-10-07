@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from config import DASHBOARD_TOP_N
-from ui.components import _dl_btn, _esc, _safe_df, goto_tab_button, heat_range, heat_style, pct_amount, pct_count
+from ui.components import _esc, goto_tab_button, heat_range, heat_style, pct_amount, pct_count
 from ui.glossary import help_for, info_icon
 
 _TONE = {"bad": ("#dc2626", "#fef2f2"), "good": ("#16a34a", "#f0fdf4"), "info": ("#d97706", "#fffbeb")}
@@ -16,7 +16,7 @@ _TONE = {"bad": ("#dc2626", "#fef2f2"), "good": ("#16a34a", "#f0fdf4"), "info": 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_action(_df_c: pd.DataFrame, _df_p: pd.DataFrame, data_version: int, filter_key: str) -> dict:
     from analysis.action_center import build
-    return build(_df_c, _df_p)
+    return build(_df_c, _df_p, with_calls=False)   # the lists themselves are on Action Lists
 
 
 def _label(text: str, top: str = "0px") -> None:
@@ -101,26 +101,6 @@ def _attention_cards(units: dict) -> str:
     return html
 
 
-def _render_call_lists(lists: list[dict], unique: int) -> None:
-    with st.expander(f"Call lists ({unique:,} loans; a loan can be in more than one list)", expanded=False):
-        if not lists:
-            st.caption("No loans need a call.")
-            return
-        st.caption("Each list shows the columns that prove why the loan is on it (e.g. for insurance-only: "
-                   "installment arrears 0, expense arrears above the threshold). Largest SOH first.")
-        execs = sorted({str(e) for t in lists if "Executive" in t["loans"].columns for e in t["loans"]["Executive"].dropna()})
-        pick = st.selectbox("Executive", ["All", *execs], key="action_call_exec")
-        tabs = st.tabs([f'{t["name"]} ({len(t["loans"]):,})' for t in lists])
-        for tab, (i, t) in zip(tabs, enumerate(lists, start=1)):
-            with tab:
-                view = t["loans"] if pick == "All" else t["loans"][t["loans"]["Executive"].astype(str) == pick]
-                if view.empty:
-                    st.caption("No loans for this executive in this list.")
-                    continue
-                st.dataframe(_safe_df(view), use_container_width=True, hide_index=True, height=380)
-                _dl_btn(view, f"call_list_{i}.xlsx", f"dl_action_calls_{i}")
-
-
 def _render_moves(moves: dict) -> None:
     """Worse / better: biggest delinquency moves by region and branch."""
     def side(title: str, color: str, key: str) -> str:
@@ -161,8 +141,6 @@ def _render_early_warning(r: dict) -> None:
     st.markdown(_grid(tiles, len(tiles)), unsafe_allow_html=True)
 
 
-
-
 def _render_league(df_curr, df_prev, data_version: int, filter_key: str) -> None:
     from analysis.summary import LEAGUE_METRICS
     c1, c2, c3 = st.columns([2, 1, 1])
@@ -183,7 +161,8 @@ def _render_league(df_curr, df_prev, data_version: int, filter_key: str) -> None
             f' <span style="color:#6b7280;font-size:11px;">(was {int(prank)})</span>')
         region = f'<td>{_esc(r["Region"])}</td>' if "Region" in table.columns else ""
         shade = heat_style(r["Now"], rng) if rng else ""
-        delq = "" if metric == "Delinquency %" else             f'<td style="text-align:right;color:#374151;">{pct_count(r["Delinquency %"], r["Delinquent"])}</td>'
+        delq = "" if metric == "Delinquency %" else \
+            f'<td style="text-align:right;color:#374151;">{pct_count(r["Delinquency %"], r["Delinquent"])}</td>'
         amount = r.get("Amount (Cr)")
         now_cell = pct_amount(r["Now"], amount) if amount is not None and not pd.isna(amount)             else pct_count(r["Now"], r["Count"])
         rows += (f'<tr><td style="text-align:center;">{int(r["Rank"])}{rank_move}</td>'
@@ -284,7 +263,7 @@ def render_summary(df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: i
     _header("New Business", tab["Business"], "go_business")
     _render_business(sm["business"])
 
-    _header("Risk Alerts", tab["Alerts"], "go_alerts")
+    _header("Risk Alerts", tab["Action Lists"], "go_alerts", state={"al_pick": "High Arrears: Loan at Risk"})
     _render_alerts(alert_snapshot(alerts, alerts_prev))
 
     _header("What To Do First", None, "")
@@ -298,5 +277,5 @@ def render_summary(df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: i
                 st.markdown(_attention_cards(r["attention"]["branch"]), unsafe_allow_html=True)
             with tab_e:
                 st.markdown(_attention_cards(r["attention"]["executive"]), unsafe_allow_html=True)
-    from analysis.action_center import unique_call_count
-    _render_call_lists(r["calls"], unique_call_count(r["calls"]))
+    goto_tab_button(tab["Action Lists"], "go_call_lists", "Open the call lists in Action Lists →",
+                    state={"al_pick": "Quick wins: insurance charge only"})

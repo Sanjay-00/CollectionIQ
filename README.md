@@ -68,79 +68,21 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 ![Dashboard](docs/screenshots/02-dashboard.png)
 &nbsp;
 
-**Executive Scorecard: Every field executive ranked by collection %, strike rate, NPA count and roll rates**
-
-![Scorecard](docs/screenshots/03-scorecard.png)
+**Action Lists: every loan-level list in one place (call this week, slipped this month, risk flags, repossession and good customers), each once, with what to do, SOH, change vs last month and a full-column download**
 &nbsp;
 
-**Smart Alerts: automatic risk flags with SOH exposure and recommended actions**
-
-![Alerts](docs/screenshots/04-alerts.png)
-&nbsp;
-
-**Bucket Migration: who slipped this month (new defaulters, 1-30 → SMA-1 and onward) by loans and by SOH, where it's happening, and the loans to call first**
+**Bucket Migration: a one-line summary, who slipped this month (new defaulters, 1-30 → SMA-1 and onward) by loans and by SOH, where it's happening, and the bucket-to-bucket matrix**
 
 ![Migration](docs/screenshots/05-migration.png)
 &nbsp;
 
-**Portfolio Intelligence: Pulse KPIs, region/branch scorecards, risk indicators, fleet exposure, and more, across 8 sections**
-
-![Portfolio Pulse: headline KPIs, bucket distribution, roll rates](docs/screenshots/06-portfolio-intelligence-1.png)
+**Portfolio Intelligence: one question at a time: Regions & Branches, Executives (Top 25% / Middle / Bottom 25% tiers by collection or strike rate), Segments, and Exposure (large customers over ₹2 Cr with their delinquent loans, largest delinquent loans, fleet operators, concentration map)**
 &nbsp;
 
-<table>
-<tr>
-<td width="50%">
-
-**Who Needs Attention: NPA & SMA-2 comparison by branch**
-
-![Who Needs Attention](docs/screenshots/07-portfolio-intelligence-2.png)
-
-</td>
-<td width="50%">
-
-**The Honest Mirror: good/bad verdict + risk flag deep dive**
-
-![Honest Mirror](docs/screenshots/08-portfolio-intelligence-3.png)
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-**Sourcing & Product Analysis + is the risk profile changing?**
-
-![Sourcing and Risk Profile](docs/screenshots/09-portfolio-intelligence-4.png)
-
-</td>
-<td width="50%">
-
-**Concentration & Exposure Map + top at-risk accounts**
-
-![Concentration Map](docs/screenshots/10-portfolio-intelligence-5.png)
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-**Repossession Priority List**
-
-![Repossession List](docs/screenshots/11-portfolio-intelligence-6.png)
-
-</td>
-<td width="50%">
-
-**Good Customers: refinance & relationship candidates**
-
-![Good Customers](docs/screenshots/12-portfolio-intelligence-7.png)
-
-</td>
-</tr>
-</table>
+**Root Cause: why it's moving, in four views: the dominant driver per region, insurance vs installment arrears, paying vs not paying, and the recent-advances cohort (with today's due-date-missed list)**
 &nbsp;
 
-**Business: New advances (originations), trend and by-dimension breakdowns, disbursement vintage**
+**Business: new advances this month, by region / branch / executive against last month, the trend, and disbursement vintage**
 
 ![New Advances This Month](docs/screenshots/13-business-1.png)
 &nbsp;
@@ -220,13 +162,13 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 
 **Automated Priority Action List** : Seven-tier business priority framework ranks accounts by impact. Non-starters, easy settlements, insurance arrears, co-lending risk, and NPA accounts each get their own actionable tier.
 
-**Field Executive Performance Scorecard** : Every executive ranked by collection %, strike rate, NPA count, SMA-2 count, and bucket roll rates using quartile-based tiers relative to the current portfolio. Toggle the ranking metric between Collection % and Strike % to see who's actually current on installment obligation this month, not just who collected the most.
+**Executive Tiers** : In Portfolio Intelligence → Executives, every executive is placed in the top 25%, middle or bottom 25% of the executives listed, by collection % (or by strike rate when sorted by it, to see who's current on this month's instalment, not just who collected the most). The bottom quarter is marked red.
 
-**Dashboard Summary** : The first tab reads like a monthly review: KPIs against last month, the regions and branches that moved most, early-warning slips with a next-month forecast, a league table for any metric (worst or best, with last month's rank), new business, alert counts, and a "what to do first" list with call lists that show the columns proving why each loan is on them. Every section links to its detail tab.
+**Dashboard Summary** : The first tab reads like a monthly review: KPIs against last month, the regions and branches that moved most, early-warning slips with a next-month forecast, a league table for any metric (worst or best, with last month's rank), new business, alert counts, and a "what to do first" summary whose lists open in Action Lists. Every section links to its detail tab.
 
-**Roll Analysis by Count and SOH** : Two months of data show which loans moved between DPD buckets, measured both by number of loans and by last month's SOH, so a few large loans slipping are never hidden. The early steps get the most attention: new defaulters (STD last month, behind now) and 1-30 DPD loans slipping to SMA-1, by region, branch and executive, with the loans to call.
+**Roll Analysis by Count and SOH** : Two months of data show which loans moved between DPD buckets, measured both by number of loans and by last month's SOH, so a few large loans slipping are never hidden. The early steps get the most attention: new defaulters (STD last month, behind now) and 1-30 DPD loans slipping to SMA-1, by region, branch and executive; the loans behind each step are lists in Action Lists.
 
-**6 Smart Risk Alerts** : Pure pandas, no LLM, always accurate:
+**6 Smart Risk Alerts** : Pure pandas, no LLM, always accurate. Their loans are in Action Lists ("Risk flags"); Non Starters and Insurance-Driven Delinquency are the same loans as two "Call this week" lists, so they appear once, there:
 
 | Alert | Severity | What It Catches |
 |---|---|---|
@@ -368,7 +310,7 @@ flowchart LR
     KPI --> DF[("💾 In-Memory\nDataFrame")]
     DF --> QP2["Query Pipeline"]
     DF --> RP2["Dashboard and Report"]
-    DF --> DB["Dashboard\nKPIs · Charts · Alerts · Scorecard"]
+    DF --> DB["Dashboard\nKPIs · Summary · Action Lists"]
 
     classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
     classDef neutral fill:#E7EAF0,stroke:#5B6B7F,color:#37414F,stroke-width:1.4px;
@@ -420,6 +362,7 @@ CollectionIQ/
 │   ├── roll_flow.py                # Roll steps by count and SOH, by region/branch/executive
 │   ├── root_cause.py               # Why delinquency moves: insurance split, paying vs not
 │   ├── action_center.py            # Findings, focus list, forecast, needs attention, call lists
+│   ├── action_lists.py             # Every loan-level list for the Action Lists tab, each once
 │   └── summary.py                  # Dashboard summary: moves, league tables, business, alerts
 │
 ├── ui/
@@ -454,7 +397,7 @@ CollectionIQ/
 | AI Models | Google Gemini 2.5 Flash-Lite | The query pipeline, the Investigator, and the optional report wording |
 | Agent Orchestration | LangGraph | Stateful multi-agent graph with conditional routing, fast-path views, and clarification |
 | Data Processing | Pandas | Filtering, aggregation, bucketing, KPI computation |
-| Charts | Plotly | Interactive charts in the app and the dashboard HTML export |
+| Charts | Plotly | Interactive charts in the app |
 | Report Formats | reportlab · openpyxl | The monthly report as PDF, and its Excel annex |
 | AI SDK | google-genai | Gemini API via one shared client: per-request timeout, exponential-backoff retry on transient errors only (rate limits, server/network failures), fail-fast on permanent ones |
 | Report Delivery | Python smtplib | SMTP email with the HTML report as body and attachment |

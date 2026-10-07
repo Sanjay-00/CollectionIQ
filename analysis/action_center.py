@@ -272,12 +272,6 @@ def call_lists(df: pd.DataFrame) -> list[dict]:
     return out
 
 
-def unique_call_count(lists: list[dict]) -> int:
-    """Distinct loans across every call list (a loan can be in several)."""
-    ids = [t["loans"]["Loan No"] for t in lists if "Loan No" in t["loans"].columns]
-    return int(pd.concat(ids).nunique()) if ids else 0
-
-
 # ── Needs attention: branches / executives, with reasons in words ────────────
 
 def attention(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str, ctx: dict | None = None) -> dict:
@@ -355,8 +349,10 @@ def _context(df: pd.DataFrame, df_prev: pd.DataFrame | None = None) -> dict:
     }
 
 
-def build(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
-    """Everything the action overview shows, in one call."""
+def build(df_curr: pd.DataFrame, df_prev: pd.DataFrame, with_calls: bool = True) -> dict:
+    """Everything the action overview shows, in one call. with_calls=False
+    skips the call lists (the Dashboard links to Action Lists instead; the
+    report's annex still uses them)."""
     ctx = _context(df_curr, df_prev)
     return {
         "pulse": pulse(df_curr, df_prev, ctx),
@@ -364,7 +360,7 @@ def build(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
         "outlook": next_month_outlook(df_curr, ctx["rates"]),
         "focus": focus_first(df_curr, ctx["rates"]),
         "attention": {g: attention(df_curr, df_prev, g, ctx) for g in ("branch", "executive")},
-        "calls": call_lists(df_curr),
+        "calls": call_lists(df_curr) if with_calls else [],
         "roll_summary": ctx["summary"],
         "has_prev": rf.has_roll_data(df_curr) and df_prev is not None and len(df_prev) > 0,
     }

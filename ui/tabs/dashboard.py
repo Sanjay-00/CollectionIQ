@@ -2,8 +2,8 @@
 import pandas as pd
 import streamlit as st
 
-from utils import build_branch_bar_chart, build_closing_pc_chart, build_html_export, build_status_bar_chart, fmt_value
-from ui.components import _kpi_card_html, _divider
+from utils import fmt_value
+from ui.components import _kpi_card_html
 from ui.action_overview import render_summary
 
 _KIND = {
@@ -11,8 +11,8 @@ _KIND = {
     "Strike %": "pct", "NPA %": "pct", "NPA % (SOH)": "pct", "Hard Bucket %": "pct", "SMA-2 %": "pct",
     "Count": "count", "SOH": "money", "LCC%": "pct", "CMD %": "pct", "Delinquency %": "pct",
 }
-# Scoreboard rows. CMD % stays in the HTML export but off the screen until
-# its business definition is confirmed.
+# Scoreboard rows. CMD % is computed (utils.compute_metrics) but not shown
+# until its business definition is confirmed.
 _KPI_COLLECTIONS = ["Month Demand", "Total Collection", "Collection %", "Strike %", "LCC%"]
 _KPI_RISK        = ["Count", "SOH", "Delinquency %", "SMA-2 %", "NPA %", "NPA % (SOH)", "Hard Bucket %"]
 _INVERSE_MOM     = {"NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Delinquency %"}
@@ -47,8 +47,6 @@ def render_dashboard_tab(
     sel_branch: str,
     sel_status: str,
     alerts: list,
-    scorecard_df,
-    rr_meta: dict | None,
     data_version: int = 0,
     segment: tuple = (),
     date_from=None,
@@ -63,27 +61,3 @@ def render_dashboard_tab(
     # ── Summary of the whole portfolio, each section linking to its tab ──────
     filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(segment))}|{date_from}"
     render_summary(df_curr, df_prev, data_version, filter_key, curr_month, alerts, alerts_prev or [])
-
-    # ── HTML export ─────────────────────────────────────────────────────────
-    _divider("24px 0 16px 0")
-    col_dl, _ = st.columns([1, 3])
-    with col_dl:
-        filters_applied = {
-            "Region": sel_region, "Branch": sel_branch,
-            "Loan Status": sel_status, "Year Month": str(curr_month),
-        }
-        # Built on click, charts included: they live only in this export.
-        def _export() -> bytes:
-            return build_html_export(
-                df_curr, df_prev, metrics,
-                build_status_bar_chart(df_curr), build_branch_bar_chart(df_curr), build_closing_pc_chart(df_curr),
-                filters_applied, curr_month=curr_month, alerts=alerts,
-                scorecard_df=scorecard_df, roll_rate_meta=rr_meta,
-            ).encode("utf-8")
-        st.download_button(
-            label="⬇  Download Dashboard as HTML",
-            data=_export,
-            file_name=f"collectioniq_dashboard_{curr_month}.html",
-            mime="text/html",
-            width='stretch',
-        )

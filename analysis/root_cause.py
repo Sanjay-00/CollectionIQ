@@ -232,7 +232,7 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
                                 view; blank mobile numbers never count)
       - recent_vintage_share:  Ag_Date within RECENT_ADVANCES_MONTHS of the
                                 reporting month (as_of), same window as the
-                                Alerts tab and AI Query
+                                Action Lists tab and AI Query
     This is the one-page deliverable for a manager: not a pile of charts, a
     single "here's why, specifically" table, per region.
     """
