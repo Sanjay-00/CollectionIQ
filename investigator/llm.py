@@ -634,7 +634,7 @@ should my team work on today," "which loans to prioritise," or similar --
 this is now the DEFAULT for this kind of question. Returns COUNTS per
 priority category (Non Starter, NPA Accounts, High Closing Arrears, Fleet
 Owners with High POS, Co-lending at Risk, Insurance-Only Delinquency, Easy
-Settlement, Recent Advances: High Bucket, No Collection 3 Months) instead
+to Nil, Recent Advances: High Bucket, No Collection 3 Months) instead
 of dumping every loan at once: the human picks ONE category to drill
 into next (as a typed follow-up naming that category, which routes to
 concept_filter/fleet_defaulters/top_closing_arrears directly). Each
