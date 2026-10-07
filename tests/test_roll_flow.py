@@ -94,3 +94,20 @@ def test_where_table_total_row_is_sum_over_sum():
     total = _with_total(df, ["Branch"]).iloc[-1]
     assert total["Branch"] == "Total" and total["STD → Behind | %"] == 2.0    # 10 of 500, not the 40% average
     assert total["STD → Behind | SOH %"] == 10.0
+
+
+def test_one_roll_engine_counts_a_transferred_loan_where_it_is_now():
+    """A loan that moved from branch A to B since last month: in B's view it
+    rolled (STD -> SMA-1) under B, the branch that owns it today. The headline
+    matrix (compute_roll_rate_matrix) and the roll steps agree on that."""
+    from analysis.roll_rate import compute_roll_rate_matrix
+    prev = pd.DataFrame({"Loan No": ["T1", "B1"], "Unit": ["A", "B"], "curr_bucket": ["STD", "STD"]})
+    curr = pd.DataFrame({"Loan No": ["T1", "B1", "N1"], "Unit": ["B", "B", "B"],
+                         "curr_bucket": ["SMA-1", "STD", "STD"], "SOH": [1.0, 1.0, 1.0]})
+    curr = curr.merge(prev[["Loan No", "curr_bucket"]].rename(columns={"curr_bucket": "prev_bucket"}),
+                      on="Loan No", how="left")            # what app.py attaches (whole previous file)
+    view_c, view_p = curr[curr["Unit"] == "B"], prev[prev["Unit"] == "B"]
+    matrix, meta = compute_roll_rate_matrix(view_c, view_p)
+    assert meta["matched_count"] == 2 and matrix.loc["STD", "SMA-1"] == 1
+    assert meta["new_entries"] == 1                       # N1 only: T1 existed last month (in branch A)
+    assert rf.roll_steps_summary(view_c)["STD → Behind"]["n"] == 1

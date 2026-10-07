@@ -11,7 +11,7 @@ import streamlit as st
 
 from ui.components import (
     _dl_btn, _safe_df, _chart_card, append_total_row, _esc, heat_range, heat_style, html_table, pct_count,
-    section_label,
+    section_label, takeaway,
 )
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS, GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
@@ -297,12 +297,6 @@ def _with_total_row(df: pd.DataFrame, total: dict | None) -> pd.DataFrame:
     return pd.concat([df, pd.DataFrame([{k: v for k, v in total.items() if k in df.columns}])], ignore_index=True)
 
 
-def _takeaway(text: str) -> None:
-    st.markdown(f'<div style="border-left:4px solid #FFC000;background:#fffbea;padding:8px 12px;'
-                f'border-radius:6px;font-size:13.5px;color:#111827;margin:4px 0 10px 0;">{text}</div>',
-                unsafe_allow_html=True)
-
-
 def _move(v) -> str:
     if v is None or pd.isna(v):
         return ""
@@ -383,7 +377,7 @@ def units_table_html(df: pd.DataFrame, name: str, total: dict | None = None, ext
     return html_table(df, cols, total=total, max_height=560 if len(df) > 15 else None)
 
 
-def _units_takeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
+def _unitstakeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
     top = df.iloc[0]
     noun = name.lower() + ("es" if name == "Branch" else "s")
     text = f"<b>{_esc(top[name])}</b> is first on this list: delinquency {top['Delinquency%']:.1f}% " \
@@ -407,7 +401,7 @@ def _view_units(c, p, data_version, filter_key) -> None:
         return
     col, asc = _SORTS[sort]
     df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
-    _takeaway(_units_takeaway(df, level, col))
+    takeaway(_unitstakeaway(df, level, col))
     total = _total_row(level, _cached_totals(c, p, data_version, filter_key))
     st.markdown(units_table_html(df, level, total, extra=["Region"] if level == "Branch" else []), unsafe_allow_html=True)
     _dl_btn(_with_total_row(df, total), f"{level.lower()}_table.xlsx", f"dl_pi_units_{level}")
@@ -436,7 +430,7 @@ def _view_executives(c, p, data_version, filter_key) -> None:
         df = df[df["Branch"].astype(str) == branch]
     col, asc = sorts[sort]
     df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
-    _takeaway(_units_takeaway(df, "Executive", col))
+    takeaway(_unitstakeaway(df, "Executive", col))
     cols = unit_columns("Executive", ["Branch", "Region"])
     if "Rescued" in df.columns:
         cols.append({"key": "Rescued", "label": "Rescued", "fmt": "int",
@@ -480,7 +474,7 @@ def _view_segments(c, data_version, filter_key) -> None:
     top = df.iloc[0]
     where = "".join(f" in {_esc(top[k])}" for k in ("Branch",) if k in df.columns) + \
         (f" ({_esc(top['Executive'])})" if "Executive" in df.columns else "")
-    _takeaway(f"<b>{_esc(top['Name'])}</b>{where} is first on this list: NPA {top['NPA%']:.1f}% "
+    takeaway(f"<b>{_esc(top['Name'])}</b>{where} is first on this list: NPA {top['NPA%']:.1f}% "
               f"({int(top['NPA']):,} of {int(top['Accounts']):,} loans), delinquency {top['Delinquency%']:.1f}%.")
     cols = [{"key": "Name", "label": dim, "bold": True},
             *([{"key": "Branch"}] if "Branch" in df.columns else []),
@@ -527,7 +521,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
         view = _list_controls("pi_top_loans", df, "Branch", "delinquent loans")
         book = float(pd.to_numeric(c.get("SOH"), errors="coerce").sum()) if "SOH" in c.columns else 0.0
         soh = float(view["SOH"].sum())
-        _takeaway(f"These {len(view):,} loans hold <b>₹{soh / 1e7:,.2f} Cr</b> SOH "
+        takeaway(f"These {len(view):,} loans hold <b>₹{soh / 1e7:,.2f} Cr</b> SOH "
                   f"({soh / book * 100 if book else 0:.1f}% of the whole book); "
                   f"{int((view['Bucket'] == 'NPA').sum()):,} of them are already NPA.")
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
@@ -538,7 +532,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
         if not fl.get("count"):
             st.info(f"No fleet operators (customers with {FLEET_MIN_LOANS}+ loans, matched by mobile number).")
             return
-        _takeaway(f"<b>{fl['count']:,}</b> fleet operators (customers with {FLEET_MIN_LOANS}+ loans) hold "
+        takeaway(f"<b>{fl['count']:,}</b> fleet operators (customers with {FLEET_MIN_LOANS}+ loans) hold "
                   f"<b>₹{fl['total_soh_cr']:,.2f} Cr</b> SOH; {fl['npa_operators']:,} of them have at least one NPA loan.")
         df = fl["top_df"].rename(columns={"Unit": "Branch"})
         view = _list_controls("pi_fleet", df, "Branch", "fleet operators")
@@ -600,7 +594,7 @@ def _view_large_customers(c, data_version, filter_key) -> None:
         return
 
     total = _customer_total(cust)
-    _takeaway(f"<b>{len(cust):,}</b> customers with ₹{min_cr:,.2f} Cr or more exposure hold "
+    takeaway(f"<b>{len(cust):,}</b> customers with ₹{min_cr:,.2f} Cr or more exposure hold "
               f"<b>₹{total['Exposure (Cr)']:,.2f} Cr</b>. <b>{int(cust['Has Delinquent Loan'].sum()):,}</b> of them "
               f"have a loan behind on payment, with <b>₹{total['Delinquent SOH (Cr)']:,.2f} Cr</b> SOH on those "
               f"loans; they are marked in red.")
@@ -656,7 +650,7 @@ def _view_actions(df_curr, curr_month, data_version, filter_key) -> None:
         sort = st.selectbox("Sort by", [k for k, v in sorts.items() if v[0] in repo_df.columns], key="pi_repo_sort")
         col, asc = sorts[sort]
         df = repo_df.sort_values(col, ascending=asc, kind="stable").rename(columns=_RENAME)
-        _takeaway(f"<b>{len(df):,}</b> SMA-2/NPA loans agreed in the last {REPOSSESSION_WINDOW_MONTHS} months "
+        takeaway(f"<b>{len(df):,}</b> SMA-2/NPA loans agreed in the last {REPOSSESSION_WINDOW_MONTHS} months "
                   f"(seized-and-sold excluded), <b>₹{df['SOH'].sum() / 1e7:,.2f} Cr</b> SOH: "
                   f"the vehicle still has value.")
         view = _list_controls("pi_repo", df, "Branch", "loans")
@@ -674,7 +668,7 @@ def _view_actions(df_curr, curr_month, data_version, filter_key) -> None:
         sort = st.selectbox("Sort by", [k for k, v in sorts.items() if v[0] in good_df.columns], key="pi_good_sort")
         col, asc = sorts[sort]
         df = good_df.sort_values(col, ascending=asc, kind="stable").rename(columns=_RENAME)
-        _takeaway(f"<b>{len(df):,}</b> customers have finished {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ of their tenure "
+        takeaway(f"<b>{len(df):,}</b> customers have finished {GOOD_CUSTOMER_MIN_TENURE_PCT}%+ of their tenure "
                   f"and paid everything due (LCC {GOOD_CUSTOMER_MIN_LCC_PCT}%+): candidates for a top-up or a new loan.")
         view = _list_controls("pi_good", df, "Branch", "customers")
         st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)

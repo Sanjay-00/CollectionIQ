@@ -1,4 +1,4 @@
-﻿"""
+"""
 Bucket Migration / Roll-Rate Analysis
 Pure pandas - no LLM dependency.
 Requires both current and previous month DataFrames matched on Loan No.
@@ -6,6 +6,7 @@ Requires both current and previous month DataFrames matched on Loan No.
 import pandas as pd
 import plotly.graph_objects as go
 
+from analysis import roll_flow
 from utils import BUCKET_ORDER, BUCKET_SCORE
 
 # Exclude NA bucket from migration analysis  -  not a meaningful delinquency state
@@ -36,6 +37,18 @@ def compute_roll_rate_matrix(
 
     new_entries = len(curr_keys - prev_keys)
     exits       = len(prev_keys - curr_keys)
+
+    if bucket_col == "curr_bucket" and roll_flow.has_roll_data(df_curr):
+        # Last month's bucket already rides on each loan (app.py), so use the
+        # same engine as the early warning and roll tables: every loan in this
+        # view is counted where it sits now, including one that moved here
+        # from another branch since last month. "New this month" is then a
+        # loan that wasn't in last month's file at all.
+        matrix = roll_flow.migration_matrix(df_curr, "count").astype(int)
+        no_history = df_curr.loc[df_curr["prev_bucket"].isna(), key_col].dropna()
+        meta = {"matched_count": int(matrix.values.sum()), "new_entries": int(no_history.nunique()),
+                "exits": exits, **compute_roll_rate_kpis(matrix)}
+        return matrix, meta
 
     prev_slim = df_prev[[key_col, bucket_col]].rename(columns={bucket_col: "prev_bucket"})
     curr_slim = df_curr[[key_col, bucket_col]].rename(columns={bucket_col: "curr_bucket"})

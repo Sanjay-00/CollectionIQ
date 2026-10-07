@@ -2,8 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.components import (
-    _static_kpi_card_html, _chart_card, _empty_state, heat_range, heat_style, _dl_btn, _safe_df, _esc,
-    html_table,
+    _chart_card, _empty_state, heat_range, heat_style, _dl_btn, _safe_df, _esc, html_table, section_label, takeaway,
 )
 from ui.glossary import help_for, info_icon
 from config import ROLL_STEPS
@@ -19,17 +18,8 @@ def _filter_options(df: pd.DataFrame, col: str) -> list[str]:
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def _cached_filtered_roll_rate(_df_curr_f: pd.DataFrame, _df_prev_f: pd.DataFrame, data_version: int, drilldown_key: str):
-    """Same cached-recompute pattern app.py's own `_cached_roll_rate` uses for
-    the unfiltered case -- without this, a drill-down filter recomputes the
-    full roll-rate matrix (a set-build + merge over every matched account) on
-    EVERY Streamlit rerun, including reruns triggered by unrelated widgets
-    elsewhere on the page, not just when the filter selection actually changes.
-
-    _df_curr_f/_df_prev_f are underscore-prefixed (never hashed by Streamlit --
-    hashing the full sliced DataFrame every rerun was the actual cost this
-    cache was meant to avoid); data_version + drilldown_key (which already
-    captures both the sidebar's filter selection AND this tab's own local
-    Region/Branch/Executive drill-down) are the cheap, explicit stand-ins."""
+    """The roll matrix for one drill-down selection, computed once per
+    selection (drilldown_key holds both the sidebar filters and this tab's)."""
     from analysis.roll_rate import compute_roll_rate_matrix
     return compute_roll_rate_matrix(_df_curr_f, _df_prev_f)
 
@@ -96,9 +86,22 @@ def _step_card(label: str, d: dict, from_bucket: str) -> str:
     )
 
 
+def _summary_line(rr_meta: dict, buckets: pd.DataFrame, matrix: pd.DataFrame) -> str:
+    """The tab in one sentence: how many loans got worse / better, how many
+    became NPA, with the loans behind each %."""
+    n = rr_meta["matched_count"]
+    worse = int(buckets["Roll Fwd"].sum()) if not buckets.empty else 0
+    better = int(buckets["Roll Bwd"].sum()) if not buckets.empty else 0
+    pre_npa = [b for b in matrix.index if b != "NPA"]
+    formed = int(matrix.loc[pre_npa, "NPA"].sum()) if pre_npa and "NPA" in matrix.columns else 0
+    return (f"Of <b>{n:,}</b> loans in both months, <b>{rr_meta['roll_forward_rate']:.1f}%</b> ({worse:,}) moved to a "
+            f"worse bucket and <b>{rr_meta['roll_backward_rate']:.1f}%</b> ({better:,}) to a better one; "
+            f"<b>{rr_meta['npa_formation_rate']:.1f}%</b> of the loans that weren't NPA ({formed:,}) became NPA. "
+            f"{rr_meta['new_entries']:,} loans are new this month and {rr_meta['exits']:,} closed or left this view.")
+
+
 def _render_early_warning(summary: dict) -> None:
-    st.markdown('<div class="section-label" style="margin-top:8px;">Early Warning: Who Slipped This Month</div>',
-                unsafe_allow_html=True)
+    section_label("Early Warning: Who Slipped This Month", "8px")
     st.caption(
         "Loans in each bucket last month that are in a worse bucket now, by number of loans and by "
         "last month's SOH. New defaulters and 1-30 DPD loans slipping further are the cheapest to bring "
@@ -171,8 +174,7 @@ def _roll_table_html(df: pd.DataFrame, by_soh: bool) -> str:
 
 
 def _render_where(by: dict) -> None:
-    st.markdown('<div class="section-label" style="margin-top:20px;">Where It\'s Happening</div>',
-                unsafe_allow_html=True)
+    section_label("Where It's Happening", "20px")
     by_soh = st.radio("Measure roll rates by", ["Accounts", "SOH"], horizontal=True, key="mig_where_measure") == "SOH"
     st.caption(
         "Each cell: % of the loans (or of last month's SOH) in that bucket last month that are in a worse "
@@ -189,9 +191,24 @@ def _render_where(by: dict) -> None:
             _dl_btn(df, f"roll_rates_by_{grain}.xlsx", f"dl_roll_{grain}")
 
 
+def _render_matrix(flow: dict, rr_matrix: pd.DataFrame, buckets: pd.DataFrame) -> None:
+    from analysis.roll_rate import build_roll_rate_heatmap
+    section_label("Bucket to Bucket", "20px")
+    measure = st.radio("Show matrix as", list(_MATRIX_MEASURES), horizontal=True, key="mig_matrix_measure")
+    m_key, kind = _MATRIX_MEASURES[measure]
+    d_key, d_kind = _MATRIX_DETAIL.get(m_key, (None, "count"))
+    _chart_card(build_roll_rate_heatmap(flow["matrix"][m_key], kind,
+                                        detail=flow["matrix"][d_key] if d_key else None, detail_kind=d_kind))
+    st.caption("Rows: last month's bucket. Columns: this month's."
+               + (" Each row adds to 100%: of what was in that bucket last month, where it is now."
+                  if measure.endswith("%") else ""))
+    if not buckets.empty and buckets["Accounts"].sum():
+        with st.expander("Each bucket: rolled forward, stayed, rolled back"):
+            st.markdown(_bucket_summary_table_html(buckets), unsafe_allow_html=True)
+
+
 def _render_call_list(loans: dict) -> None:
-    st.markdown('<div class="section-label" style="margin-top:20px;">Loans To Call First</div>',
-                unsafe_allow_html=True)
+    section_label("Loans To Call First", "20px")
     st.caption("The loans behind each step, largest SOH first, with the executive to follow up.")
     labels = list(ROLL_STEPS)
     for tab, label in zip(st.tabs([f"{lb} ({len(loans[lb]):,})" for lb in labels]), labels):
@@ -223,11 +240,11 @@ def render_migration_tab(
         )
         return
 
-    from analysis.roll_rate import compute_bucket_roll_summary, build_roll_rate_heatmap
+    from analysis.roll_rate import compute_bucket_roll_summary
 
     # ── Drill-down filters (local to this tab -- narrows the migration view
     # without touching the sidebar's global filter used by every other tab) ──
-    st.markdown('<div class="section-label">Drill Down</div>', unsafe_allow_html=True)
+    section_label("Drill Down")
     f_col1, f_col2, f_col3 = st.columns(3)
 
     with f_col1:
@@ -271,54 +288,12 @@ def render_migration_tab(
         drilldown_key = f"{sidebar_filter_key}|All|All|All"
 
     flow = _cached_roll_flow(df_curr_f, data_version, drilldown_key)
-    if flow["summary"]:
-        _render_early_warning(flow["summary"])
-
-    # ── KPI row ──────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-label" style="margin-top:20px;">Overall Roll Rates</div>', unsafe_allow_html=True)
-    rr_kpis = [
-        ("Roll-Forward Rate",  rr_meta["roll_forward_rate"],  "%", "#dc2626", "Accounts that worsened bucket"),
-        ("Roll-Backward Rate", rr_meta["roll_backward_rate"], "%", "#16a34a", "Delinquent accounts returned to STD"),
-        ("NPA Formation",      rr_meta["npa_formation_rate"], "%", "#991b1b", "Non-NPA accounts that became NPA"),
-        ("Matched Accounts",   rr_meta["matched_count"],      "",  "#111827", "Accounts in both months"),
-    ]
-    for col, (label, val, unit, color, tip) in zip(st.columns(4), rr_kpis):
-        with col:
-            st.markdown(
-                _static_kpi_card_html(label, f"{val:,.1f}{unit}", tip, color=color, value_style="font-size:24px;"),
-                unsafe_allow_html=True,
-            )
-
-    # ── Heatmap ──────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-label" style="margin-top:20px;">Bucket Migration Matrix</div>', unsafe_allow_html=True)
-    measure = st.radio("Show matrix as", list(_MATRIX_MEASURES), horizontal=True, key="mig_matrix_measure")
-    m_key, kind = _MATRIX_MEASURES[measure]
-    if flow["summary"]:
-        d_key, d_kind = _MATRIX_DETAIL.get(m_key, (None, "count"))
-        _chart_card(build_roll_rate_heatmap(flow["matrix"][m_key], kind,
-                                            detail=flow["matrix"][d_key] if d_key else None, detail_kind=d_kind))
-    else:
-        _chart_card(build_roll_rate_heatmap(rr_matrix))
-    if measure.endswith("%"):
-        st.caption("Each row adds to 100%: of what was in that bucket last month, where it is now.")
-    st.caption(
-        f"{rr_meta['matched_count']:,} matched accounts | "
-        f"{rr_meta['new_entries']:,} new this month | "
-        f"{rr_meta['exits']:,} closed/exited"
-    )
-
-    # ── Bucket-wise Roll Forward / Stable / Roll Backward % table ─────────────
-    st.markdown('<div class="section-label" style="margin-top:20px;">Bucket-wise Roll Rates</div>', unsafe_allow_html=True)
-    bucket_summary = compute_bucket_roll_summary(rr_matrix)
-    if bucket_summary.empty or bucket_summary["Accounts"].sum() == 0:
-        st.caption("No matched accounts for this selection.")
-    else:
-        st.markdown(_bucket_summary_table_html(bucket_summary), unsafe_allow_html=True)
-        st.caption(
-            "Per previous-month bucket: % that rolled forward (worsened), stayed stable, "
-            "or rolled backward (improved) this month."
-        )
-
-    if flow["summary"]:
-        _render_where(flow["by"])
-        _render_call_list(flow["loans"])
+    if not flow["summary"]:
+        st.info("No loan in this view is in both months' files, so there's nothing to compare.")
+        return
+    buckets = compute_bucket_roll_summary(rr_matrix)
+    takeaway(_summary_line(rr_meta, buckets, rr_matrix))
+    _render_early_warning(flow["summary"])
+    _render_where(flow["by"])
+    _render_matrix(flow, rr_matrix, buckets)
+    _render_call_list(flow["loans"])

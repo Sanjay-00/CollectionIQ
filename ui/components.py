@@ -251,6 +251,13 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def takeaway(text: str) -> None:
+    """The one-line yellow summary at the top of a view (text may hold <b>)."""
+    st.markdown(f'<div style="border-left:4px solid #FFC000;background:#fffbea;padding:8px 12px;'
+                f'border-radius:6px;font-size:13.5px;color:#111827;margin:4px 0 10px 0;">{text}</div>',
+                unsafe_allow_html=True)
+
+
 def section_label(title: str, margin_top: str = "0px") -> None:
     """The yellow section heading used across the tabs."""
     st.markdown(f'<div class="section-label" style="margin-top:{margin_top};">{title}</div>',
