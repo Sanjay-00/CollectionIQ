@@ -1,7 +1,7 @@
 """Risk columns are shaded pale pink -> red by rank in the column, never green."""
 import pandas as pd
 
-from ui.components import heat_bg, heat_range, heat_style, heat_styler
+from ui.components import heat_bg, heat_range, heat_style
 
 GREENS = ("#16a34a", "#dcfce7", "#86efac", "#f0fdf4", "63BE7B")
 
@@ -70,8 +70,3 @@ def test_executive_scorecard_risk_columns_not_green():
     assert 'color:#16a34a;">0<' not in html                   # zeros are plain, not green
 
 
-def test_styler_shades_risk_columns_but_not_total():
-    df = pd.DataFrame({"Branch": ["A", "B", "Total"], "NPA%": [1.0, 4.0, 2.5], "Collection%": [90.0, 80.0, 85.0]})
-    html = heat_styler(df, ["NPA%"]).to_html()
-    assert "#f87171" in html and "#fef2f2" in html
-    assert html.count("background:") == 2                     # A and B only

@@ -10,12 +10,16 @@ from analysis.portfolio_intelligence import (
     compute_good_bad,
     compute_product_analysis,
     compute_risk_indicators,
+    compute_overdue_demand_scorecard,
+)
+from analysis.exposure import (
     compute_fleet_exposure,
     compute_top_accounts,
     compute_repossession_list,
     compute_good_customers,
+)
+from analysis.new_business import (
     build_vintage_chart,
-    compute_overdue_demand_scorecard,
     compute_new_advances,
     compute_new_advances_by_dimension,
     compute_new_advances_trend,
@@ -23,6 +27,8 @@ from analysis.portfolio_intelligence import (
     compute_new_advances_trend_chart,
 )
 import analysis.portfolio_intelligence as pi
+import analysis.new_business as new_business
+from utils import unit_metrics
 from helpers import make_df
 
 
@@ -142,19 +148,23 @@ class TestComputePulseKpis:
 # ── compute_region_scorecard ─────────────────────────────────────────────────
 
 class TestRollRatesNaBucketNotComparable:
-    """Regression: analysis.portfolio_intelligence._roll_rates() -- shared by the
-    region scorecard, branch quadrant, and NPA/SMA-2 comparison -- used to treat
-    "NA" (Arrears/EMI missing/unparseable that period) as a real, ordered bucket
-    scoring -1, lower than every real bucket. A loan moving from "NA" to STD (the
-    healthiest real bucket) was miscounted as "rolled forward" purely from that
-    score gap. Confirmed on real production data."""
+    """Regression: "NA" (Arrears/EMI missing/unparseable that period) is not a
+    real bucket, so a loan moving from "NA" to STD must never count as rolled
+    forward or back. Checked on the shared engine (utils.unit_metrics) that
+    every region / branch / executive roll rate comes from."""
+
+    @staticmethod
+    def _rates(grp):
+        m = unit_metrics(grp, []).iloc[0]
+        fwd, bwd = m["Roll Fwd%"], m["Roll Bwd%"]
+        return (None if pd.isna(fwd) else fwd), (None if pd.isna(bwd) else bwd)
 
     def test_na_to_std_is_not_counted_as_roll_forward(self):
         grp = make_df([
             {"prev_bucket": "NA", "curr_bucket": "STD"},
             {"prev_bucket": "NA", "curr_bucket": "STD"},
         ])
-        assert pi._roll_rates(grp) == (None, None)
+        assert self._rates(grp) == (None, None)
 
     def test_mixed_na_and_real_transitions(self):
         grp = make_df([
@@ -162,7 +172,7 @@ class TestRollRatesNaBucketNotComparable:
             {"prev_bucket": "SMA-2", "curr_bucket": "NPA"},  # real roll-forward
             {"prev_bucket": "NPA", "curr_bucket": "STD"},    # real roll-backward
         ])
-        fwd, bwd = pi._roll_rates(grp)
+        fwd, bwd = self._rates(grp)
         # Denominator must be 2 (the 2 real comparisons), not 3.
         assert fwd == 50.0
         assert bwd == 50.0
@@ -968,15 +978,6 @@ class TestComputeProductAnalysis:
     # rather than hardcoding the value, so retuning the constant doesn't
     # break these tests -- only the behavior they assert.
 
-    def test_segment_below_min_n_excluded(self):
-        from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
-        if MIN_ACCOUNTS_PRODUCT_SEGMENT <= 1:
-            pytest.skip("threshold is 1 -- no below-threshold group can exist")
-        curr = make_df([{"SegmentName": "TINY", "curr_bucket": "STD"}
-                        for _ in range(MIN_ACCOUNTS_PRODUCT_SEGMENT - 1)])
-        out = compute_product_analysis(curr)
-        assert "segment" not in out or "TINY" not in out.get("segment", pd.DataFrame()).get("Segment", [])
-
     def test_segment_at_threshold_included(self):
         from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
         curr = make_df([{"SegmentName": "TINY", "curr_bucket": "STD"}
@@ -1366,14 +1367,14 @@ class TestBuildVintageChartThresholds:
         # Tightening the critical threshold to 5 should reclassify the 6.0%
         # cohort (previously "watch") as critical - proving the chart reads
         # the live config value rather than a baked-in 10/5.
-        monkeypatch.setattr(pi, "VINTAGE_CHART_CRITICAL_PCT", 5)
+        monkeypatch.setattr(new_business, "VINTAGE_CHART_CRITICAL_PCT", 5)
         fig = build_vintage_chart(self._vintage_df())
         npa_trace = next(t for t in fig.data if t.name == "NPA %")
         assert list(npa_trace.marker.color) == ["#16a34a", "#991b1b", "#991b1b"]
 
     def test_annotation_text_reflects_configured_thresholds(self, monkeypatch):
-        monkeypatch.setattr(pi, "VINTAGE_CHART_CRITICAL_PCT", 15)
-        monkeypatch.setattr(pi, "VINTAGE_CHART_WATCH_PCT", 8)
+        monkeypatch.setattr(new_business, "VINTAGE_CHART_CRITICAL_PCT", 15)
+        monkeypatch.setattr(new_business, "VINTAGE_CHART_WATCH_PCT", 8)
         fig = build_vintage_chart(self._vintage_df())
         annotations = [a.text for a in fig.layout.annotations]
         assert any("15%" in a for a in annotations)

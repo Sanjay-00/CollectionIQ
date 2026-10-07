@@ -47,22 +47,16 @@ def _step_flags(m: pd.DataFrame) -> pd.DataFrame:
     """Per loan: for each step, is it in the step's base (was in the from-bucket
     last month) and did it roll (moved to a worse bucket)? Plus the cure step
     (was behind last month, STD now). Counts and last-month SOH for each."""
-    f = pd.DataFrame(index=m.index)
-    f["_n"] = 1
-    f["_soh"] = m["_prev_soh"]
-    for label, from_bucket in ROLL_STEPS.items():
-        base = m["prev_bucket"] == from_bucket
-        rolled = base & m["_worse"]
-        f[f"{label}|base"] = base.astype(int)
-        f[f"{label}|base_soh"] = m["_prev_soh"].where(base, 0.0)
-        f[f"{label}|n"] = rolled.astype(int)
-        f[f"{label}|soh"] = m["_prev_soh"].where(rolled, 0.0)
-    behind = m["prev_bucket"] != "STD"
-    f[f"{CURED}|base"] = behind.astype(int)
-    f[f"{CURED}|base_soh"] = m["_prev_soh"].where(behind, 0.0)
-    f[f"{CURED}|n"] = m["_cured"].astype(int)
-    f[f"{CURED}|soh"] = m["_prev_soh"].where(m["_cured"], 0.0)
-    return f
+    soh = m["_prev_soh"]
+    cols = {"_n": pd.Series(1, index=m.index), "_soh": soh}
+    steps = [(label, m["prev_bucket"] == b, (m["prev_bucket"] == b) & m["_worse"]) for label, b in ROLL_STEPS.items()]
+    steps.append((CURED, m["prev_bucket"] != "STD", m["_cured"]))
+    for label, base, rolled in steps:
+        cols[f"{label}|base"] = base.astype(int)
+        cols[f"{label}|base_soh"] = soh.where(base, 0.0)
+        cols[f"{label}|n"] = rolled.astype(int)
+        cols[f"{label}|soh"] = soh.where(rolled, 0.0)
+    return pd.DataFrame(cols, index=m.index)   # built in one go: adding columns one by one is slow
 
 
 def step_labels() -> list[str]:
@@ -72,9 +66,7 @@ def step_labels() -> list[str]:
 
 def _summarise(sums: pd.DataFrame) -> pd.DataFrame:
     """Raw sums -> per step: base loans/SOH, rolled loans/SOH and both %."""
-    out = pd.DataFrame(index=sums.index)
-    out["Matched Accounts"] = sums["_n"].astype(int)
-    out["Matched SOH (Cr)"] = (sums["_soh"] / 1e7).round(2)
+    out = {"Matched Accounts": sums["_n"].astype(int), "Matched SOH (Cr)": (sums["_soh"] / 1e7).round(2)}
     for label in step_labels():
         out[f"{label} | Base"] = sums[f"{label}|base"].astype(int)
         out[f"{label} | Base SOH (Cr)"] = (sums[f"{label}|base_soh"] / 1e7).round(2)
@@ -82,14 +74,15 @@ def _summarise(sums: pd.DataFrame) -> pd.DataFrame:
         out[f"{label} | SOH (Cr)"] = (sums[f"{label}|soh"] / 1e7).round(2)
         out[f"{label} | %"] = _pct_col(sums[f"{label}|n"], sums[f"{label}|base"])
         out[f"{label} | SOH %"] = _pct_col(sums[f"{label}|soh"], sums[f"{label}|base_soh"])
-    return out
+    return pd.DataFrame(out, index=sums.index)
 
 
-def roll_steps_summary(df: pd.DataFrame) -> dict | None:
+def roll_steps_summary(df: pd.DataFrame, matched: pd.DataFrame | None = None) -> dict | None:
     """Portfolio-wide (or drill-down slice) numbers for the early-warning
     cards: {step: {base, base_soh_cr, n, soh_cr, pct, soh_pct}}. None when
-    there's no previous month to compare with."""
-    m = _matched(df)
+    there's no previous month to compare with. `matched`: _matched(df), if
+    the caller already has it."""
+    m = _matched(df) if matched is None else matched
     if m.empty:
         return None
     row = _summarise(_step_flags(m).sum().to_frame().T).iloc[0]
@@ -111,13 +104,14 @@ _GRAINS = {
 }
 
 
-def roll_steps_by(df: pd.DataFrame, grain: str) -> pd.DataFrame:
+def roll_steps_by(df: pd.DataFrame, grain: str, matched: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per region / branch / executive (this month's labels) with every
     step's base, rolled count and SOH and both %. Executives are name + branch.
     Branch and executive rows carry their Region. Sorted with the most new
-    defaulters (by %) first -- the earliest, most fixable slip."""
+    defaulters (by %) first -- the earliest, most fixable slip. `matched`:
+    _matched(df), if the caller already has it."""
     cols, identity, min_n = _GRAINS[grain]
-    m = _matched(df)
+    m = _matched(df) if matched is None else matched
     if m.empty or not set(cols) <= set(m.columns):
         return pd.DataFrame()
     flags = _step_flags(m)

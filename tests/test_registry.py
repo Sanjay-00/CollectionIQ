@@ -1,4 +1,4 @@
-﻿"""Registry foundation tests (Phase 0 of the v2 architecture).
+"""Registry foundation tests (Phase 0 of the v2 architecture).
 
 These lock in two things:
 1. ZERO BEHAVIOR CHANGE  -  migrating PRIORITY_RULES into registry/ontology.py must
@@ -42,21 +42,6 @@ _PRIORITY_TO_CONCEPT = {
 
 
 class TestZeroBehaviorChange:
-    def test_priority_rules_reexported_identically(self):
-        # The migrated registry list IS what agents.domain_expert exposes  -  no copy,
-        # no drift. execute_priority_mode imports it lazily from domain_expert.
-        from agents.domain_expert import PRIORITY_RULES as DE_RULES
-        assert DE_RULES is PRIORITY_RULES
-
-    def test_priority_text_unchanged(self):
-        # The generated prompt section must still list all 7 tiers in rank order
-        # with their exact labels  -  this is the text the LLM sees.
-        from agents.domain_expert import _build_priority_text
-        text = _build_priority_text()
-        for r in PRIORITY_RULES:
-            assert f"Priority {r['rank']} - {r['label']}" in text
-        assert text.count("Priority ") == len(PRIORITY_RULES) == 7
-
     def test_priority_mode_still_imports(self):
         # Guard the lazy import path used by the executor at runtime.
         from agents.data_executor import execute_priority_mode  # noqa: F401
@@ -257,3 +242,22 @@ class TestViewsIntegrity:
             assert spec["fn"].startswith("analysis."), f"view {name}: fn '{spec['fn']}' is not under analysis."
             module_path = spec["fn"].rsplit(".", 1)[0]
             importlib.import_module(module_path)  # raises if it doesn't exist
+
+
+def test_every_view_can_be_computed_on_demand():
+    # app.py precomputes only the scorecard and roll matrix for AI Query; every
+    # other view must be answerable straight from the data.
+    import graph
+    from analysis.roll_rate import compute_roll_rate_matrix
+    from registry.views import VIEWS
+    from tests.test_action_center import _book, _prev
+    c = _book()
+    p = _prev(c)
+    rr_meta = compute_roll_rate_matrix(c, p)[1]
+    failed = {}
+    for name, spec in VIEWS.items():
+        try:
+            graph._call_view_fn(name, spec, c, p, {}, rr_meta)
+        except Exception as e:      # noqa: BLE001 -- collect every failure
+            failed[name] = repr(e)
+    assert failed == {}

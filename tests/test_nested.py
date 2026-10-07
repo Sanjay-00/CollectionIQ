@@ -1,4 +1,4 @@
-﻿"""Nested aggregation tests (Step 2 of IR-2).
+"""Nested aggregation tests (Step 2 of IR-2).
 
 The compiler derives a multi-pass plan (intermediate grain -> filter -> terminal
 grain) from the grain lattice. The IR-2 the LLM emits contains NO step list, no
@@ -372,7 +372,7 @@ class TestEntitySemiJoinCompositeKey:
         assert err == ""
         # A blank MNT NAME never matches any qualifying (name, branch) pair --
         # excluded, consistent with how a blank Cust Mob No is already excluded
-        # elsewhere (analysis/portfolio_intelligence.py's compute_fleet_exposure).
+        # elsewhere (analysis/exposure.py's compute_fleet_exposure).
         assert "BLANK-0" not in set(out["Loan No"])
 
 

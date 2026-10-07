@@ -1,4 +1,4 @@
-﻿"""CollectionIQ knowledge registry  -  the deterministic source of truth the v2
+"""CollectionIQ knowledge registry  -  the deterministic source of truth the v2
 compiler reads instead of the LLM re-deriving business logic from prose.
 
 Three coherent layers (see the architecture design of record):
@@ -13,8 +13,7 @@ Three coherent layers (see the architecture design of record):
 
 Status: this is the live, sole vocabulary source for agents/logical_planner.py's
 prompt (via build_catalog()/build_views_catalog()) and for compiler/core.py's
-lowering -- not an additive/inert scaffold. PRIORITY_RULES is also re-exported
-from agents.domain_expert for back-compat with that module's still-live helpers.
+lowering -- not an additive/inert scaffold.
 """
 
 from registry.semantic_model import (

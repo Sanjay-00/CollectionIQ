@@ -2,7 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from utils import build_html_export, fmt_value
+from utils import build_branch_bar_chart, build_closing_pc_chart, build_html_export, build_status_bar_chart, fmt_value
 from ui.components import _kpi_card_html, _divider
 from ui.action_overview import render_summary
 
@@ -49,9 +49,6 @@ def render_dashboard_tab(
     alerts: list,
     scorecard_df,
     rr_meta: dict | None,
-    fig_status,
-    fig_branch,
-    fig_closing,
     data_version: int = 0,
     segment: tuple = (),
     date_from=None,
@@ -75,10 +72,11 @@ def render_dashboard_tab(
             "Region": sel_region, "Branch": sel_branch,
             "Loan Status": sel_status, "Year Month": str(curr_month),
         }
-        # Built on click (the charts live only in this export now).
+        # Built on click, charts included: they live only in this export.
         def _export() -> bytes:
             return build_html_export(
-                df_curr, df_prev, metrics, fig_status, fig_branch, fig_closing,
+                df_curr, df_prev, metrics,
+                build_status_bar_chart(df_curr), build_branch_bar_chart(df_curr), build_closing_pc_chart(df_curr),
                 filters_applied, curr_month=curr_month, alerts=alerts,
                 scorecard_df=scorecard_df, roll_rate_meta=rr_meta,
             ).encode("utf-8")

@@ -60,9 +60,8 @@ def test_same_name_in_two_branches_is_two_executives_everywhere(monkeypatch):
     import analysis.portfolio_intelligence as pi
     from analysis.executive_scorecard import compute_executive_scorecard
     monkeypatch.setattr(pi, "MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE", 1)   # its own stricter floor
-    from analysis.portfolio_intelligence import (
-        compute_new_advances_by_dimension, compute_npa_sma2_comparison, compute_overdue_demand_scorecard,
-    )
+    from analysis.portfolio_intelligence import compute_npa_sma2_comparison, compute_overdue_demand_scorecard
+    from analysis.new_business import compute_new_advances_by_dimension
     df = _book().assign(Ag_Date=pd.Timestamp("2026-08-05"))
     assert set(compute_executive_scorecard(df)["Executive (Branch)"]) >= {"RAHUL (MAHAD)", "RAHUL (PEN)"}
     assert set(compute_npa_sma2_comparison(df, df.iloc[0:0])["executive"]["MNT NAME"]) >= {"RAHUL (MAHAD)", "RAHUL (PEN)"}
@@ -134,7 +133,7 @@ class TestInsuranceOnly:
 
 
 def test_repossession_list_skips_seized_and_sold():
-    from analysis.portfolio_intelligence import compute_repossession_list
+    from analysis.exposure import compute_repossession_list
     assert "S&S" in config.REPOSSESSION_EXCLUDE_STATUSES
     df = make_df([
         {"Loan No": "RUN1", "curr_bucket": "NPA", "Loan Status": "RUN", "Ag_Date": pd.Timestamp("2026-01-01")},
@@ -183,7 +182,8 @@ def test_tables_survive_an_empty_view():
     from analysis.executive_scorecard import compute_executive_scorecard
     empty = _book().iloc[0:0]
     assert unit_metrics(empty, ["RegionName"]).empty
-    pi.compute_concentration_treemap(empty)
+    from analysis.exposure import compute_concentration_treemap
+    compute_concentration_treemap(empty)
     pi.compute_branch_quadrant(empty)
     pi.compute_npa_sma2_comparison(empty, empty)
     assert compute_executive_scorecard(empty).empty

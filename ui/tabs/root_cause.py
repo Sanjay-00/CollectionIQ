@@ -12,7 +12,9 @@ never a plain st.dataframe grid.
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _divider, append_total_row, _esc, heat_range, heat_style, pct_amount, pct_count
+from ui.components import (
+    _dl_btn, _divider, append_total_row, _esc, heat_range, heat_style, pct_amount, pct_count, section_label,
+)
 from ui.glossary import DRIVER_HELP, help_for, info_icon
 from config import HARD_BUCKET_ARREARS_EMI_MIN
 from analysis.root_cause import (
@@ -26,13 +28,6 @@ _STATUS_ICON  = {"Improving": "🟢", "Worsening": "🔴", "Stable": "🟡", "-"
 
 # Buckets that are a risk (everything except STD) get heat shading.
 _RISK_BUCKETS = ("0-1", "1-2", "2-3", "NPA")
-
-
-def _section(title: str, margin_top: str = "0px") -> None:
-    st.markdown(
-        f'<div class="section-label" style="margin-top:{margin_top};">{title}</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def _badge(status: str) -> str:
@@ -191,7 +186,7 @@ def _why_total(df_curr: pd.DataFrame | None) -> dict | None:
 
 
 def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None) -> None:
-    _section("Region Diagnosis: Why Is It Moving?")
+    section_label("Region Diagnosis: Why Is It Moving?")
     st.caption(
         "One row per region: current NPA%/Collection% and MoM movement, plus the single "
         "driver claiming the largest share of that region's delinquent book. "
@@ -252,7 +247,7 @@ def _render_why_table(why_df: pd.DataFrame, df_curr: pd.DataFrame | None = None)
 
 
 def _render_insurance_split(ins_df: pd.DataFrame) -> None:
-    _section("Insurance-vs-Installment Split, by Branch", margin_top="24px")
+    section_label("Insurance-vs-Installment Split, by Branch", margin_top="24px")
     st.caption(
         "Among delinquent accounts: Insurance-Only means the customer is current on the "
         "loan itself (installment arrears ≤ 0) but an unpaid insurance/expense charge is "
@@ -296,7 +291,7 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
 
 
 def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
-    _section("Deep Arrears: Still Paying vs Not Paying, by Branch", margin_top="24px")
+    section_label("Deep Arrears: Still Paying vs Not Paying, by Branch", margin_top="24px")
     st.caption(
         f"Every delinquent loan in one of four groups, by how far behind it is today "
         f"({HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs = hard) and whether the customer has paid anything in "
@@ -511,7 +506,7 @@ def _render_daily_match(df_curr: pd.DataFrame, df_all: pd.DataFrame | None = Non
     """Optional: upload today's due-date-missed list to see, per region/branch/
     executive, how many running recent loans are delinquent and in which bucket.
     Returns the match dict (also stashed in session_state) for the Excel export."""
-    _section("Recent Advances: Delinquency Status from Today's Due-Date-Missed List", margin_top="24px")
+    section_label("Recent Advances: Delinquency Status from Today's Due-Date-Missed List", margin_top="24px")
     st.caption(
         "Running Loans = loans agreed from the cohort start onward that are still running in the LCC. "
         "Delinquent = those same loans found on the uploaded list (matched by Loan No), split into "
@@ -630,7 +625,7 @@ def render_root_cause_tab(
     _render_chronic_shock_split(chronic_shock_df)
     _divider()
 
-    _section("Recent Advances Cohort", margin_top="24px")
+    section_label("Recent Advances Cohort", margin_top="24px")
     st.caption(f"Loans agreed from {(recent_summary or {}).get('cohort_start', 'the configured cutoff')} onward.")
     _render_recent_advances_summary(recent_summary or {})
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)

@@ -21,15 +21,19 @@ from agents.data_executor import _COL_COMPARE_OPS, _build_mask
 from analysis.executive_scorecard import compute_executive_scorecard, rank_by_metric
 from analysis.portfolio_intelligence import (
     _branch_aggregates,
+    compute_overdue_demand_scorecard,
+    compute_product_analysis,
+)
+from analysis.exposure import (
     compute_fleet_exposure,
     compute_good_customers,
+    compute_repossession_list,
+    compute_top_accounts,
+)
+from analysis.new_business import (
     compute_new_advances,
     compute_new_advances_by_dimension,
     compute_new_advances_trend,
-    compute_overdue_demand_scorecard,
-    compute_product_analysis,
-    compute_repossession_list,
-    compute_top_accounts,
     roll_new_advances_trend,
 )
 from analysis.roll_rate import VALID_BUCKETS, compute_roll_rate_matrix
@@ -464,7 +468,7 @@ def new_advances_summary(
 ) -> pd.DataFrame:
     """One scope's own new-business KPIs this reporting month (accounts,
     funded amount, avg ticket size) vs last month -- reuses
-    analysis/portfolio_intelligence.py::compute_new_advances directly, the
+    analysis/new_business.py::compute_new_advances directly, the
     SAME KPI computation the Business tab's own headline cards use, so these
     numbers can never drift into a second, independently-computed
     definition here. Never gated by curr_bucket -- a fresh advance counts
@@ -521,7 +525,7 @@ def new_advances_by_dimension(
     month -- the ranked-breakdown counterpart to new_advances_summary above
     (which only ever answers ONE scope's own totals), the same relationship
     dimension_breakdown has to entity_summary elsewhere in this module.
-    Reuses analysis/portfolio_intelligence.py::compute_new_advances_by_dimension
+    Reuses analysis/new_business.py::compute_new_advances_by_dimension
     directly -- the SAME table the Business tab's own Section 3 renders, so
     these numbers can never drift into a second, independently-computed
     definition here. Already sorted Accounts-This-Month-descending by that
@@ -619,7 +623,7 @@ def top_accounts(
     Arrears value, ANY status, not restricted to delinquent) and from
     high_arrears_at_risk (a RATIO -- Inst+Exp+BC arrears vs loan amount,
     "potential write-off," not a plain SOH ranking). Reuses
-    analysis/portfolio_intelligence.py::compute_top_accounts directly, the
+    analysis/exposure.py::compute_top_accounts directly, the
     SAME function the older AI Query tool's registered view and the report's
     top_accounts section both already use, so this can never drift into a
     second, independently-computed definition. Only the ranked table is
@@ -663,7 +667,7 @@ def new_advances_trend(
     docstring -- at least 2 years of trend from one file, no df_prev
     needed), the same reason new_advances_summary/new_advances_by_dimension
     above don't need a previous file either. Reuses
-    analysis/portfolio_intelligence.py::compute_new_advances_trend +
+    analysis/new_business.py::compute_new_advances_trend +
     roll_new_advances_trend directly -- the SAME two functions the Business
     tab's own Section 2 chart/table render from. months=None means "all
     history" (that function's own convention); granularity is "Monthly"
@@ -705,7 +709,7 @@ def fleet_exposure(
     portfolio concentration) -- distinct from fleet_defaulters (loan-level,
     delinquency-filtered ONLY, hand-rolled separately because that use case
     genuinely needs raw loan rows scoped to defaulters, not an aggregate).
-    This one reuses analysis/portfolio_intelligence.py::compute_fleet_exposure's
+    This one reuses analysis/exposure.py::compute_fleet_exposure's
     own customer-level "top_df" aggregate directly -- ALL fleet operators
     (>= FLEET_MIN_LOANS distinct loans) regardless of delinquency status,
     ranked by Total SOH -- the SAME table the report's fleet_exposure
@@ -742,7 +746,7 @@ def repossession_list(
     AND still within the collateral-value window (Ag_Date within the last
     REPOSSESSION_WINDOW_MONTHS, config.py -- an older loan's collateral has
     typically depreciated too far to be worth repossessing). Reuses
-    analysis/portfolio_intelligence.py::compute_repossession_list directly,
+    analysis/exposure.py::compute_repossession_list directly,
     the SAME function the report's own repossession section uses, so this
     can never drift into a second, independently-computed definition. That
     function deliberately returns unsorted rows and leaves ordering to its
@@ -784,7 +788,7 @@ def good_customers(
     management -- a business-development question, distinct from every
     other step in this module (all of which answer collection risk or
     origination volume, never "who should we proactively re-approach").
-    Reuses analysis/portfolio_intelligence.py::compute_good_customers
+    Reuses analysis/exposure.py::compute_good_customers
     directly -- the SAME criteria (tenure completed >= GOOD_CUSTOMER_MIN_TENURE_PCT,
     LCC% >= GOOD_CUSTOMER_MIN_LCC_PCT, config.py) and the SAME sort (lowest
     SOH first -- the easiest refinance targets) the report's own
@@ -1192,7 +1196,7 @@ def non_paying_customers(
 def customer_loan_book(df: pd.DataFrame, cust_mob_no: str, all_columns: bool = False) -> pd.DataFrame:
     """Every loan for one customer (by Cust Mob No). A blank/missing mobile
     number never matches -- same exclusion rule
-    analysis/portfolio_intelligence.py::compute_fleet_exposure already
+    analysis/exposure.py::compute_fleet_exposure already
     applies, for the same reason (a blank key would otherwise group unrelated
     customers together). all_columns=True returns every source column
     instead of the curated audit subset -- see non_paying_customers'

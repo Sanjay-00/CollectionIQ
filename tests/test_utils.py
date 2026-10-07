@@ -36,6 +36,40 @@ def _build_upload(overrides: dict, n: int = 3) -> io.BytesIO:
     return buf
 
 
+class TestExcelReader:
+    """Files are read with calamine (about 5x faster than openpyxl); if
+    calamine can't read a file, the old per-format reader takes over."""
+
+    def test_calamine_and_openpyxl_read_the_same(self):
+        upload = _build_upload({"Ag_Date": pd.to_datetime(["2025-11-06", "2025-12-01", "2026-01-15"])})
+        fast = pd.read_excel(upload, engine="calamine")
+        upload.seek(0)
+        slow = pd.read_excel(upload, engine="openpyxl")
+        pd.testing.assert_frame_equal(fast, slow)
+
+    def test_falls_back_when_calamine_fails(self, monkeypatch):
+        import utils
+        real = pd.read_excel
+        used = []
+
+        def fake(file, engine=None, **kw):
+            used.append(engine)
+            if engine == "calamine":
+                raise ValueError("calamine cannot read this file")
+            return real(file, engine=engine, **kw)
+
+        monkeypatch.setattr(utils.pd, "read_excel", fake)
+        df, errs = load_and_validate.__wrapped__(_build_upload({}))
+        assert errs == [] and len(df) == 3
+        assert used[:2] == ["calamine", "openpyxl"]
+
+    def test_unreadable_file_reports_an_error(self):
+        bad = io.BytesIO(b"not an excel file")
+        bad.name = "broken.xlsx"
+        df, errs = load_and_validate.__wrapped__(bad)
+        assert df is None and errs and errs[0].startswith("Could not read file")
+
+
 class TestLoadAndValidateColumnOrder:
     """Regression: different regional files (or a re-exported sheet) can hand
     back the same ~85 columns in a different order. Without reordering to the
@@ -531,7 +565,7 @@ class TestComputeMetrics:
     def test_lcc_pct_uses_cum_coll_inst_exp_not_total_cum_collection(self):
         # Deliberately make "Total Cum Collection" (a broader figure, includes BC)
         # differ from "Cum Coll (Inst+Exp)" -- the documented LCC% numerator
-        # (agents/domain_expert.py, registry/ontology.py's lcc_pct METRIC). LCC%
+        # (registry/ontology.py's lcc_pct METRIC). LCC%
         # must be computed off Cum Coll (Inst+Exp), never Total Cum Collection.
         df = make_df([{
             "Cum Coll (Inst+Exp)":   80_000.0,

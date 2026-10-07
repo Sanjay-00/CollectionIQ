@@ -7,10 +7,14 @@ own tab instead of living inside Portfolio Intelligence.
 import pandas as pd
 import streamlit as st
 
-from ui.components import _dl_btn, _safe_df, _static_kpi_card_html, _chart_card, _divider, append_total_row
-from ui.tabs.portfolio_intelligence import _section, _render_product_table, _roll_vintage
-from analysis.portfolio_intelligence import (
-    compute_new_advances_trend, roll_new_advances_trend, compute_new_advances_trend_chart,
+from ui.components import (
+    _dl_btn, _safe_df, _static_kpi_card_html, _chart_card, _divider, append_total_row, section_label,
+)
+from ui.tabs.portfolio_intelligence import _render_product_table, _roll_vintage
+from analysis.new_business import (
+    compute_new_advances_trend,
+    roll_new_advances_trend,
+    compute_new_advances_trend_chart,
     build_vintage_chart,
 )
 from config import NEW_ADVANCES_TREND_DEFAULT_MONTHS, NEW_ADVANCES_TREND_MONTH_OPTIONS
@@ -99,7 +103,7 @@ def _cached_vintage_rollup(
 # ── Section 1: New Advances This Month ────────────────────────────────────────
 
 def _render_new_advances(data: dict) -> None:
-    _section("Section 1: New Advances This Month")
+    section_label("Section 1: New Advances This Month")
     st.caption(
         "Loans whose Agreement Date falls in this reporting month: new business funded, "
         "regardless of that loan's current collection status."
@@ -149,7 +153,7 @@ def _render_new_advances_trend(
     df_curr: pd.DataFrame, curr_month: str,
     data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None,
 ) -> None:
-    _section("Section 2: New Advances Trend", margin_top="24px")
+    section_label("Section 2: New Advances Trend", margin_top="24px")
     st.caption(
         "Accounts + funded amount by disbursement month, across this file's full Ag_Date history: "
         "not just this reporting month. No previous month file needed."
@@ -190,7 +194,7 @@ def _render_new_advances_trend(
 # ── Section 3: New Advances by Region / Branch / Executive ───────────────────
 
 def _render_new_advances_by_dimension(data: dict) -> None:
-    _section("Section 3: New Advances by Region / Branch / Executive", margin_top="24px")
+    section_label("Section 3: New Advances by Region / Branch / Executive", margin_top="24px")
     st.caption("This month's new advances at each grain, with MoM vs that same entity's own advances last month.")
 
     dim_tabs_avail = []
@@ -219,7 +223,7 @@ def _render_disbursement_vintage(
     vintage_df: pd.DataFrame,
     data_version: int, region: str, branch: str, status: str, segment: tuple, date_from=None,
 ) -> None:
-    _section("Section 4: Disbursement Vintage", margin_top="24px")
+    section_label("Section 4: Disbursement Vintage", margin_top="24px")
     st.caption(
         "Rising NPA% on older cohorts = expected ageing. "
         "Spike on a specific month = sourcing quality issue that month: collections can't fix it, credit can stop repeating it."

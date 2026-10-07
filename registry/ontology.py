@@ -4,8 +4,7 @@ Everything here is LIVE: the AI Query compiler, the priority framework and the
 Investigator all read these definitions, so editing one changes real answers.
 
 - PRIORITY_RULES  -  the 7-tier business priority framework. This is the canonical
-  home (agents.domain_expert re-exports it); agents.data_executor.execute_priority_mode
-  and the prompt's generated priority section both read it.
+  home; agents.data_executor.execute_priority_mode reads it.
 
 - CONCEPTS  -  named, deterministic business rules the compiler expands. Each
   concept is referenced by name in the logical IR; the compiler expands it to its

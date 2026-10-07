@@ -283,7 +283,7 @@ class TestNewAdvancesSummary:
     """Business VOLUME (originations), not collection performance -- a
     different axis entirely from every other step in this module, matching
     the dashboard's own Business tab Section 1. Reuses
-    analysis/portfolio_intelligence.py::compute_new_advances directly, so
+    analysis/new_business.py::compute_new_advances directly, so
     these numbers can never drift from what the Business tab itself shows."""
 
     def _adv_row(self, month: str, unit: str = "MAHAD", amount: float = 200_000.0):
@@ -325,7 +325,7 @@ class TestNewAdvancesByDimension:
     """WHICH region/branch/executive originated the most new business --
     the ranked-breakdown counterpart to new_advances_summary, same
     relationship dimension_breakdown has to entity_summary. Reuses
-    analysis/portfolio_intelligence.py::compute_new_advances_by_dimension
+    analysis/new_business.py::compute_new_advances_by_dimension
     directly, the SAME table the Business tab's Section 3 renders."""
 
     def _adv_row(self, unit: str, exec_name: str, mob: str):
@@ -412,7 +412,7 @@ class TestProductAnalysis:
 class TestTopAccounts:
     """Largest single exposures among DELINQUENT accounts by SOH -- distinct
     from top_closing_arrears (any status) and high_arrears_at_risk (a
-    ratio). Reuses analysis/portfolio_intelligence.py::compute_top_accounts
+    ratio). Reuses analysis/exposure.py::compute_top_accounts
     directly."""
 
     def test_ranks_delinquent_accounts_by_soh_descending(self):
@@ -508,7 +508,7 @@ class TestNewAdvancesTrend:
 class TestFleetExposure:
     """"Which customers hold multiple loans" (relationship/cross-sell) --
     distinct from fleet_defaulters (loan-level, delinquency-filtered ONLY).
-    Reuses analysis/portfolio_intelligence.py::compute_fleet_exposure's own
+    Reuses analysis/exposure.py::compute_fleet_exposure's own
     "top_df" aggregate directly -- ALL fleet operators regardless of
     delinquency status, ranked by Total SOH."""
 
@@ -551,7 +551,7 @@ class TestFleetExposure:
 class TestRepossessionList:
     """Accounts eligible for repossession -- SMA-2/NPA AND still within the
     collateral-value window. Reuses
-    analysis/portfolio_intelligence.py::compute_repossession_list directly."""
+    analysis/exposure.py::compute_repossession_list directly."""
 
     def _loan(self, bucket: str, months_old: int, soh: float = 100_000.0, unit: str = "MAHAD"):
         return {
@@ -604,7 +604,7 @@ class TestRepossessionList:
 class TestGoodCustomers:
     """Loyal / high-quality customers eligible for refinance -- a business-
     development question, distinct from every other step in this module.
-    Reuses analysis/portfolio_intelligence.py::compute_good_customers
+    Reuses analysis/exposure.py::compute_good_customers
     directly (tenure completed >= 70%, LCC% >= 100%, sorted lowest SOH
     first)."""
 

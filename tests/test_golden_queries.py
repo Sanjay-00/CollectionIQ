@@ -848,12 +848,12 @@ class TestPriorityModeKeepsPriorityColumn:
         # a loan matching both a rank-1 and a rank-7 rule still lands under
         # rank 1 (its true highest priority), not whichever rule came first
         # in an out-of-order list.
-        import agents.domain_expert as domain_expert
-        rules = list(domain_expert.PRIORITY_RULES)
+        import registry.ontology as ontology
+        rules = list(ontology.PRIORITY_RULES)
         rank1 = next(r for r in rules if r["rank"] == 1)
         rank7 = next(r for r in rules if r["rank"] == 7)
         scrambled = [rank7, rank1] + [r for r in rules if r["rank"] not in (1, 7)]
-        monkeypatch.setattr(domain_expert, "PRIORITY_RULES", scrambled)
+        monkeypatch.setattr(ontology, "PRIORITY_RULES", scrambled)
 
         # A Non Starter (rank 1: Non Starters) that's also NPA (rank 7: NPA
         # Accounts) -- matches both tiers, must be claimed by rank 1.

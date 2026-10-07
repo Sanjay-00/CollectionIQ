@@ -393,8 +393,7 @@ CollectionIQ/
 │   ├── logical_planner.py          # Query to declarative intent (IR-1), the live planner
 │   ├── data_executor.py            # Priority framework, KPI/ranking computation
 │   ├── plan_executor.py            # Composable step-plan engine + plan validator
-│   ├── insight_generator.py        # AI observations on query results
-│   └── domain_expert.py            # Priority framework text and snapshot-date context
+│   └── insight_generator.py        # AI observations on query results
 │
 ├── investigator/
 │   ├── llm.py                      # Routes each chat turn to one step (Gemini) + optional narration
@@ -412,7 +411,10 @@ CollectionIQ/
 │   └── views.py                    # Fast-path pre-built view catalog
 │
 ├── analysis/
-│   ├── portfolio_intelligence.py   # Region/branch/product tables, fleet, top accounts, and more
+│   ├── portfolio_intelligence.py   # Region/branch/executive tables, segments, risk signals, overdue vs demand
+│   ├── new_business.py             # New advances, their trend, disbursement vintage
+│   ├── exposure.py                 # Large customers, fleet operators, top accounts, concentration,
+│   │                               #   repossession candidates, good customers
 │   ├── executive_scorecard.py      # Per-executive KPIs with quartile tier ranking
 │   ├── roll_rate.py                # Bucket migration matrix and roll-rate KPIs
 │   ├── roll_flow.py                # Roll steps by count and SOH, by region/branch/executive
@@ -457,7 +459,7 @@ CollectionIQ/
 | AI SDK | google-genai | Gemini API via one shared client: per-request timeout, exponential-backoff retry on transient errors only (rate limits, server/network failures), fail-fast on permanent ones |
 | Report Delivery | Python smtplib | SMTP email with the HTML report as body and attachment |
 | Observability | LangSmith | Query tracing and result quality feedback |
-| Excel Formats | openpyxl · xlrd · pyxlsb | Handles .xlsx, .xls, and .xlsb with serial-date correction |
+| Excel Formats | python-calamine · openpyxl · xlrd · pyxlsb | Reads .xlsx, .xls and .xlsb with calamine (about 5x faster), falling back to the per-format reader; serial-date correction |
 | Date Handling | python-dateutil | Relative date resolution for time-based queries |
 
 The domain knowledge layer, NBFC terminology, loan status values, strike rate definition, SOH calculation, priority framework, and insurance delinquency logic, is embedded in the agent system prompts and verified against real portfolio data. The AI understands the difference between a RUN account, a MAT account, and an S&S account without any fine-tuning. Business context is injected at query time, making it straightforward to extend with new domain rules.

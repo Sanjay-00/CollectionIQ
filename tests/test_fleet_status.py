@@ -75,7 +75,7 @@ class TestCustomerLoanCount:
 
 class TestEveryFleetViewAgrees:
     def test_portfolio_fleet_exposure_under_branch_filter(self):
-        from analysis.portfolio_intelligence import compute_fleet_exposure
+        from analysis.exposure import compute_fleet_exposure
         out = compute_fleet_exposure(_branch_a(_book()))
         assert out["count"] == 1                                   # Ramesh stays a fleet operator
         assert out["top_df"]["Loans"].tolist() == [2]              # his loans in this view

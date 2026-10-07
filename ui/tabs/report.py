@@ -26,8 +26,6 @@ def render_report_tab(
     sel_region: str,
     sel_branch: str,
     sel_status: str,
-    scorecard_df=None,
-    rr_meta: dict | None = None,
 ) -> None:
     from report_agent.story import OPTIONAL_SECTIONS, PRESETS
 

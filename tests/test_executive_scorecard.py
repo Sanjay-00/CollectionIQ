@@ -93,9 +93,8 @@ class TestRollRateNoPriorMatchIsNoneNotZero:
     is no basis to compute a roll rate at all. This used to fabricate 0.0% for both
     Roll Fwd % and Roll Bwd %, which reads as "verified: nothing got worse" -- a
     different, false claim from the true state "not enough history to say".
-    analysis/portfolio_intelligence.py::_roll_rates() already returns None for the
-    identical situation at the region/branch grain; this brings the executive
-    scorecard's own inline roll-rate calc back in line with it."""
+    The shared engine (utils.unit_metrics) leaves it blank (NaN) at the
+    region/branch grain; the executive scorecard must say "no data" too."""
 
     def _new_exec_df(self):
         rows = [{

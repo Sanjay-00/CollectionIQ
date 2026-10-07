@@ -1,4 +1,4 @@
-﻿import re
+import re
 import threading
 import uuid as _uuid
 from typing import Any, Callable, Optional, TypedDict
@@ -81,7 +81,7 @@ _MAX_REPAIRS = 1
 def _trace_metadata(fields: dict) -> None:
     """Attach observability metadata to the CURRENT LangSmith run (the
     @traceable-wrapped node function this is called from), same established
-    pattern as agents/domain_expert.py's/agents/insight_generator.py's token-
+    pattern as gemini_client.add_token_usage's token-
     usage recording. Only the 2 Gemini-call functions were traced before this
     pass -- graph.py's own nodes (view matching, compiler repair, executor)
     had zero visibility: no way to see which view matched, whether a fast-path
@@ -726,9 +726,8 @@ def view_node(state: QueryState) -> QueryState:
 def _call_view_fn(name: str, spec: dict, df_curr, df_prev, call_params: dict, rr_meta=None):
     """Resolve and invoke a VIEWS entry's analysis/ function, supplying whichever
     inputs it declares (df_curr / df_prev / rr_meta, in order) plus any accepted
-    params. A view with no fresh-callable inputs (e.g. good_bad_summary, which
-    composes from OTHER views' outputs) will TypeError here on a cache miss --
-    caught by view_node's try/except and treated as a normal fall-through."""
+    params. A failure here is caught by view_node's try/except and treated as
+    a normal fall-through."""
     fn = resolve_view_fn(name)
     args = []
     for inp in spec.get("inputs") or []:

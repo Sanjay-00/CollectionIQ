@@ -3,7 +3,7 @@ upload (matched by mobile), the delinquent ones are flagged, and the loan
 list puts each customer's delinquent loans first."""
 import pandas as pd
 
-from analysis.customer_exposure import large_customers
+from analysis.exposure import large_customers
 from utils import CUSTOMER_SOH, add_customer_loan_count
 
 CR = 1e7

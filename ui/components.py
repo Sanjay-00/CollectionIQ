@@ -1,5 +1,6 @@
 """Shared UI helpers used across multiple tab modules."""
 
+import datetime
 import hashlib
 import html
 import re
@@ -248,6 +249,12 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].astype(str).replace({"nan": "", "None": ""})
     return df
+
+
+def section_label(title: str, margin_top: str = "0px") -> None:
+    """The yellow section heading used across the tabs."""
+    st.markdown(f'<div class="section-label" style="margin-top:{margin_top};">{title}</div>',
+                unsafe_allow_html=True)
 
 
 def _chart_card(fig) -> None:
@@ -564,29 +571,53 @@ def pct_amount(pct, cr, decimals: int = 1) -> str:
     return f"{float(pct):.{decimals}f}%{tail}"
 
 
-def _fmt_cell(v, kind: str, row=None, count_key: str | None = None, amount_key: str | None = None) -> str:
-    if kind == "pct_count":
-        return pct_count(v, row.get(count_key) if row is not None and count_key else None)
-    if kind == "pct_cr":
-        return pct_amount(v, row.get(amount_key) if row is not None and amount_key else None)
-    if v is None or (not isinstance(v, str) and pd.isna(v)):
-        return '<span style="color:#9ca3af;">-</span>'
+def is_blank(v) -> bool:
+    """None / NaN / NA (an empty string is a value, not a blank)."""
+    return v is None or (not isinstance(v, str) and pd.isna(v))
+
+
+_NUMBER_KINDS = ("int", "pct", "num", "cr", "inr", "rs_cr", "pp", "count_change")
+
+
+def format_value(v, kind: str) -> str:
+    """One value as plain text, by kind: int "1,234" | pct "12.3%" | num "1.23"
+    | cr "₹1.23 Cr" | inr "₹1,234" | rs_cr (rupees shown in crore) | pp
+    "▲ 0.25 pts" | count_change "▲ 12"; "-" when blank. The one formatter
+    behind the on-screen tables and the report (HTML, PDF)."""
+    if is_blank(v):
+        return "-"
     if kind == "int":
         return f"{int(v):,}"
     if kind == "pct":
         return f"{float(v):.1f}%"
+    if kind == "num":
+        return f"{float(v):.2f}"
     if kind == "cr":
         return f"₹{float(v):,.2f} Cr"
     if kind == "inr":
         return f"₹{round(float(v)):,}"
-    if kind == "num":
-        return f"{float(v):.2f}"
+    if kind == "rs_cr":
+        return f"₹{float(v) / 1e7:,.2f} Cr"
     if kind == "pp":
         v = float(v)
         return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):.2f} pts"
     if kind == "count_change":
         v = int(v)
         return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):,}"
+    if isinstance(v, (pd.Timestamp, datetime.date)):
+        return pd.Timestamp(v).strftime("%Y-%m-%d")
+    return str(v)
+
+
+def _fmt_cell(v, kind: str, row=None, count_key: str | None = None, amount_key: str | None = None) -> str:
+    if kind == "pct_count":
+        return pct_count(v, row.get(count_key) if row is not None and count_key else None)
+    if kind == "pct_cr":
+        return pct_amount(v, row.get(amount_key) if row is not None and amount_key else None)
+    if is_blank(v):
+        return '<span style="color:#9ca3af;">-</span>'
+    if kind in _NUMBER_KINDS:
+        return format_value(v, kind)
     return _esc(v)
 
 
@@ -673,23 +704,6 @@ def heat_style(val, rng: tuple[float, float] | None) -> str:
     """Inline CSS for a shaded cell ("" when unshaded)."""
     bg = heat_bg(val, rng)
     return f"background:{bg};color:{HEAT_TEXT};font-weight:600;" if bg else ""
-
-
-def heat_styler(df: pd.DataFrame, cols, last_row_is_total: bool = True):
-    """A pandas Styler (for st.dataframe) shading `cols` the same way; the
-    Total row is left unshaded and out of the ranking. Applies _safe_df."""
-    df = _safe_df(df)
-    peers = df.iloc[:-1] if last_row_is_total and len(df) else df
-    ranges = {c: heat_range(peers[c].tolist()) for c in cols if c in df.columns}
-
-    def _col(s: pd.Series) -> list[str]:
-        out = [heat_style(v, ranges[s.name]) for v in s]
-        if last_row_is_total and out:
-            out[-1] = ""
-        return out
-
-    floats = [c for c in df.columns if pd.api.types.is_float_dtype(df[c])]
-    return df.style.apply(_col, subset=list(ranges)).format(precision=2, subset=floats, na_rep="")
 
 
 def _send_feedback(run_id: str, score: float) -> None:

@@ -1,24 +1,7 @@
-﻿import os
+import os
 from langsmith import traceable
 from config import GEMINI_MODEL
-from gemini_client import call_gemini_with_retry as _call_gemini_with_retry, make_client
-
-
-def _add_token_usage(response) -> None:
-    try:
-        from langsmith.run_helpers import get_current_run_tree
-        rt = get_current_run_tree()
-        if rt is None:
-            return
-        um = getattr(response, "usage_metadata", None)
-        if um:
-            rt.add_metadata({
-                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
-                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
-                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
-            })
-    except Exception:
-        pass
+from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry, make_client
 
 SYSTEM_PROMPT = """You are a senior credit risk analyst at an NBFC (Non-Banking Financial Company).
 Generate concise, actionable observations from loan portfolio query results.

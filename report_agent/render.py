@@ -13,41 +13,13 @@ from io import BytesIO
 
 import pandas as pd
 
-from ui.components import heat_bg, heat_range
+from ui.components import format_value as fmt, heat_bg, heat_range, is_blank as _blank
 
 YELLOW, INK, MUTED = "#FFC000", "#111827", "#4b5563"
 _TONE = {"bad": "#dc2626", "good": "#16a34a", "info": "#d97706", "plain": "#9ca3af"}
 
 
-# ── Cell formatting (shared) ─────────────────────────────────────────────────
-
-def _blank(v) -> bool:
-    return v is None or (isinstance(v, float) and pd.isna(v)) or (not isinstance(v, str) and pd.isna(v))
-
-
-def fmt(v, kind: str) -> str:
-    if _blank(v):
-        return "-"
-    if kind == "int":
-        return f"{int(v):,}"
-    if kind == "pct":
-        return f"{float(v):.1f}%"
-    if kind == "num":
-        return f"{float(v):.2f}"
-    if kind == "cr":
-        return f"₹{float(v):,.2f} Cr"
-    if kind == "inr":
-        return f"₹{round(float(v)):,}"
-    if kind == "rs_cr":
-        return f"₹{float(v) / 1e7:,.2f} Cr"
-    if kind == "pp":
-        return "no change" if float(v) == 0 else f"{'▲' if v > 0 else '▼'} {abs(float(v)):.2f} pts"
-    if kind == "count_change":
-        return "no change" if int(v) == 0 else f"{'▲' if v > 0 else '▼'} {abs(int(v)):,}"
-    if isinstance(v, (pd.Timestamp, datetime.date)):
-        return pd.Timestamp(v).strftime("%Y-%m-%d")
-    return str(v)
-
+# ── Cell formatting: ui.components.format_value, shared with the on-screen tables ──
 
 def cell_text(row, col: dict) -> str:
     """The text of one cell; a % column with a "count" reads "11.9% (37)" and

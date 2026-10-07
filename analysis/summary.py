@@ -165,9 +165,25 @@ def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.D
     return out.reset_index(drop=True)
 
 
+def portfolio_total(df_curr: pd.DataFrame, df_prev: pd.DataFrame | None) -> dict:
+    """Every loan in view as one unit (sum over sum, never an average of rows):
+    all of unit_metrics' columns, plus last month's delinquency and the change
+    when last month's file is there. {} when there are no loans. The Total row
+    of every region / branch / executive table, on screen and in the report."""
+    m = unit_metrics(df_curr, [])
+    if m.empty:
+        return {}
+    t = m.iloc[0].to_dict()
+    pm = unit_metrics(df_prev, []) if df_prev is not None and len(df_prev) else pd.DataFrame()
+    if not pm.empty:
+        t["Prev Delinquency%"] = float(pm.iloc[0]["Delinquency%"])
+        t["Δ Delinquency%"] = round(t["Delinquency%"] - t["Prev Delinquency%"], 2)
+    return t
+
+
 def business_snapshot(df_curr: pd.DataFrame, as_of) -> dict:
     """This month's new loans vs last month, with the top segments and branches."""
-    from analysis.portfolio_intelligence import compute_new_advances, compute_new_advances_by_dimension
+    from analysis.new_business import compute_new_advances, compute_new_advances_by_dimension
     adv = compute_new_advances(df_curr, as_of=as_of)
     by = compute_new_advances_by_dimension(df_curr, as_of=as_of).get("branch", pd.DataFrame())
     seg = adv.get("segment", pd.DataFrame())

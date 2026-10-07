@@ -1,4 +1,4 @@
-﻿"""Compiler core  -  logical IR (IR-1) -> physical step-plan (IR-2).
+"""Compiler core  -  logical IR (IR-1) -> physical step-plan (IR-2).
 
 IR-1 (what the LLM emits; flat and declarative):
     {
@@ -20,7 +20,6 @@ a loud error (routes to repair/clarification), never a silent wrong plan.
 """
 import re
 
-import pandas as pd
 
 from registry.ontology import CONCEPTS, METRICS, ENTITY_CONCEPTS
 from registry.semantic_model import ENTITIES, DIMENSIONS, entity_key, resolve_dimension, is_coarser

@@ -57,33 +57,6 @@ def _grid(cards: list[str], cols: int = 2) -> str:
             f'{"".join(cards)}</div>')
 
 
-def _pulse_html(pulse: list[dict]) -> str:
-    chips = ""
-    for x in pulse:
-        if x["change"] is None:
-            move = '<span style="color:#6b7280;">no last month</span>'
-        elif x["change"] == 0:
-            move = '<span style="color:#6b7280;">unchanged</span>'
-        else:
-            color = "#dc2626" if x["worse"] else "#16a34a"
-            move = (f'<span style="color:{color};font-weight:700;">'
-                    f'{"▲" if x["change"] > 0 else "▼"} {abs(x["change"]):.2f} pts</span>')
-        chips += (f'<div style="border:1px solid #e5e7eb;border-radius:8px;padding:6px 12px;background:#fff;">'
-                  f'<span style="font-size:11px;color:#6b7280;font-weight:600;">{_esc(x["label"])}</span> '
-                  f'<span style="font-size:15px;font-weight:800;color:#111827;">{x["now"]:.1f}%</span> {move}</div>')
-    return f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">{chips}</div>'
-
-
-def _headline_cards(items: list[dict]) -> list[str]:
-    cards = []
-    for h in items:
-        line, bg = _TONE[h["tone"]]
-        cards.append(f'<div style="border-left:4px solid {line};background:{bg};border-radius:6px;padding:8px 12px;">'
-                     f'<div style="font-size:13.5px;font-weight:700;color:#111827;">{_esc(h["title"])}</div>'
-                     f'<div style="font-size:12px;color:#374151;margin-top:2px;">{_esc(h["detail"])}</div></div>')
-    return cards
-
-
 def _focus_table(focus: list[dict]) -> str:
     th = "".join(f'<th style="text-align:{a};">{h}</th>' for h, a in
                  (("#", "center"), ("Group", "left"), ("Loans", "right"), ("SOH", "right"),
@@ -106,16 +79,6 @@ def _focus_table(focus: list[dict]) -> str:
     return (f'{css}<div style="overflow-x:auto;border-radius:10px;border:1px solid #e5e7eb;">'
             f'<table class="ac-tbl" style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
             f'<thead><tr>{th}</tr></thead><tbody>{rows}</tbody></table></div>')
-
-
-def _outlook_card(title: str, x: dict, help_text: str) -> str:
-    return (
-        f'<div style="border:1px solid #e5e7eb;border-top:4px solid #dc2626;border-radius:10px;padding:10px 14px;background:#fff;">'
-        f'<div style="font-size:12px;font-weight:700;color:#374151;">{title}{info_icon(help_text)}</div>'
-        f'<div style="font-size:24px;font-weight:800;color:#111827;">about {x["n"]:,}'
-        f'<span style="font-size:12px;font-weight:600;color:#6b7280;"> loans (likely {x["low"]:,} to {x["high"]:,})</span></div>'
-        f'<div style="font-size:12px;color:#374151;">about ₹{x["soh"] / 1e7:,.2f} Cr SOH</div></div>'
-    )
 
 
 def _attention_cards(units: dict) -> str:
@@ -198,7 +161,6 @@ def _render_early_warning(r: dict) -> None:
     st.markdown(_grid(tiles, len(tiles)), unsafe_allow_html=True)
 
 
-_LEAGUE_FMT = {"Collection %", "Strike %"}
 
 
 def _render_league(df_curr, df_prev, data_version: int, filter_key: str) -> None:

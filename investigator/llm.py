@@ -29,7 +29,7 @@ from typing import Iterator
 
 import pandas as pd
 
-from agents.domain_expert import _add_token_usage, _call_gemini_with_retry
+from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry
 from config import GEMINI_MODEL, MAX_QUERY_CHARS, PII_COLUMNS, PLANNER_TEMPERATURE
 from gemini_client import make_client
 from investigator.state import EntityMemory

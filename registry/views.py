@@ -70,7 +70,7 @@ VIEWS: dict[str, dict] = {
             "SOH and how many are already NPA. Use for 'top N delinquent/at-risk "
             "customers/accounts by SOH/exposure/outstanding'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_top_accounts",
+        "fn": "analysis.exposure.compute_top_accounts",
         "inputs": ["df_curr"],
         "params": {"n": {"type": "int", "default": 20}},
         "requires": [],
@@ -86,7 +86,7 @@ VIEWS: dict[str, dict] = {
             "count / NPA-operator summary. Use for 'fleet customers/operators', "
             "'multi-loan customers', 'customers with multiple vehicles'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_fleet_exposure",
+        "fn": "analysis.exposure.compute_fleet_exposure",
         "inputs": ["df_curr"],
         "params": {},
         "requires": [],
@@ -213,7 +213,7 @@ VIEWS: dict[str, dict] = {
             "18 months) already in SMA-2 or NPA. Use for 'repossession list', "
             "'accounts to repossess', 'vehicles to seize'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_repossession_list",
+        "fn": "analysis.exposure.compute_repossession_list",
         "inputs": ["df_curr"],
         "params": {},
         "requires": [],
@@ -229,7 +229,7 @@ VIEWS: dict[str, dict] = {
             "tenure completed >=70% and LCC%=100 (no lifetime shortfall). Use for 'good "
             "customers', 'refinance candidates', 'loyal customers'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_good_customers",
+        "fn": "analysis.exposure.compute_good_customers",
         "inputs": ["df_curr"],
         "params": {},
         "requires": [],
@@ -309,7 +309,7 @@ VIEWS: dict[str, dict] = {
             "region', 'which region originated the most loans this month', "
             "'disbursement volume by region'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_new_advances_by_dimension",
+        "fn": "analysis.new_business.compute_new_advances_by_dimension",
         "inputs": ["df_curr"],
         "params": {},
         "requires": [],
@@ -331,7 +331,7 @@ VIEWS: dict[str, dict] = {
             "branch', 'which branch originated the most loans this month', "
             "'disbursement volume by branch'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_new_advances_by_dimension",
+        "fn": "analysis.new_business.compute_new_advances_by_dimension",
         "inputs": ["df_curr"],
         "params": {},
         "requires": [],
@@ -352,7 +352,7 @@ VIEWS: dict[str, dict] = {
             "originations. Use for 'new business by executive', 'new advances by "
             "executive', 'which executive sourced the most loans this month'."
         ),
-        "fn": "analysis.portfolio_intelligence.compute_new_advances_by_dimension",
+        "fn": "analysis.new_business.compute_new_advances_by_dimension",
         "inputs": ["df_curr"],
         "params": {},
         "requires": [],
@@ -456,14 +456,12 @@ VIEWS: dict[str, dict] = {
             "A synthesized narrative of the top improving ('good') and top concerning "
             "('bad') signals across regions, branches, executives, and risk indicators "
             "this period. Use for 'what's good and bad this month', 'portfolio "
-            "narrative summary'. Only available from the cached dashboard computation."
+            "narrative summary'."
         ),
-        # No fresh-callable inputs: compute_good_bad composes from OTHER views'
-        # outputs (region/branch/exec DataFrames + risk indicators), not raw
-        # df_curr/df_prev. A cache miss safely TypeErrors and falls through --
-        # see _call_view_fn in graph.py.
-        "fn": "analysis.portfolio_intelligence.compute_good_bad",
-        "inputs": [],
+        # good_bad_summary builds the region/branch/executive/risk tables that
+        # compute_good_bad composes from, so this view is computed on demand.
+        "fn": "analysis.portfolio_intelligence.good_bad_summary",
+        "inputs": ["df_curr", "df_prev", "rr_meta"],
         "params": {},
         "requires": [],
         "filterable": False,

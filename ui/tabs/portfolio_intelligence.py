@@ -11,6 +11,7 @@ import streamlit as st
 
 from ui.components import (
     _dl_btn, _safe_df, _chart_card, append_total_row, _esc, heat_range, heat_style, html_table, pct_count,
+    section_label,
 )
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS, GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
@@ -24,17 +25,10 @@ _TOP_CHOICES = [10, 20, 50, 100, "All"]
 
 # ── Kept helpers (also used by the Business tab) ─────────────────────────────
 
-def _section(title: str, margin_top: str = "0px") -> None:
-    st.markdown(
-        f'<div class="section-label" style="margin-top:{margin_top};">{title}</div>',
-        unsafe_allow_html=True,
-    )
-
-
 def _render_overdue_demand(scorecard_data: dict) -> None:
     from analysis.portfolio_intelligence import compute_overdue_demand_chart, OVERDUE_DEMAND_IDENTITY_COLS
 
-    _section("Overdue vs Month Demand Collection", margin_top="6px")
+    section_label("Overdue vs Month Demand Collection", margin_top="6px")
     st.caption(
         "A payment clears last month's carried-over overdue FIRST; only what's left over "
         "counts against this month's own EMI demand. 100% means nothing was outstanding on "
@@ -189,7 +183,7 @@ def _roll_vintage(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
     Trend chart's own rollup (roll_new_advances_trend) uses, so the Business
     tab's two granularity pickers can't silently diverge into two different
     "Quarterly"/"Financial Year" meanings."""
-    from analysis.portfolio_intelligence import _period_label, _period_sort_key
+    from analysis.new_business import _period_label, _period_sort_key
 
     if granularity == "Monthly" or df.empty:
         return df
@@ -227,18 +221,12 @@ def _cached_units(_c, _p, data_version: int, filter_key: str, grain: str) -> pd.
 def _cached_totals(_c, _p, data_version: int, filter_key: str, branch: str = "All") -> dict:
     """The Total row: the whole view (or one branch) as one unit -- sum over
     sum, never an average of rows -- with its own change against last month."""
-    from utils import _unit_key, unit_metrics
+    from analysis.summary import portfolio_total
+    from utils import _unit_key
     if branch != "All":
         _c = _c[_c["Unit"].astype(str) == branch]
         _p = _p[_p["Unit"].map(_unit_key) == _unit_key(branch)] if len(_p) and "Unit" in _p.columns else _p
-    m = unit_metrics(_c, [])
-    if m.empty:
-        return {}
-    t = m.iloc[0].to_dict()
-    pm = unit_metrics(_p, []) if _p is not None and len(_p) else pd.DataFrame()
-    if not pm.empty:
-        t["Δ Delinquency%"] = round(t["Delinquency%"] - float(pm.iloc[0]["Delinquency%"]), 2)
-    return t
+    return portfolio_total(_c, _p)
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -253,19 +241,50 @@ def _cached_segments(_c, data_version: int, filter_key: str, dim_col: str, break
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_delinquent(_c, data_version: int, filter_key: str) -> pd.DataFrame:
-    from analysis.portfolio_intelligence import compute_top_accounts
+    from analysis.exposure import compute_top_accounts
     return compute_top_accounts(_c, n=len(_c))[0]
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_large_customers(_c, data_version: int, filter_key: str, min_cr: float) -> dict:
-    from analysis.customer_exposure import large_customers
+    from analysis.exposure import large_customers
     return large_customers(_c, min_cr)
+
+
+# Each view computes its own charts and lists, only when it's open.
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_quadrant(_c, _p, data_version: int, filter_key: str):
+    from analysis.portfolio_intelligence import compute_branch_quadrant
+    return compute_branch_quadrant(_c, _p)[1]
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_overdue(_c, data_version: int, filter_key: str) -> dict:
+    from analysis.portfolio_intelligence import compute_overdue_demand_scorecard
+    return compute_overdue_demand_scorecard(_c)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_treemap(_c, data_version: int, filter_key: str):
+    from analysis.exposure import compute_concentration_treemap
+    return compute_concentration_treemap(_c)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_repossession(_c, data_version: int, filter_key: str, curr_month: str) -> pd.DataFrame:
+    from analysis.exposure import compute_repossession_list
+    return compute_repossession_list(_c, as_of=curr_month)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_good_customers(_c, data_version: int, filter_key: str) -> pd.DataFrame:
+    from analysis.exposure import compute_good_customers
+    return compute_good_customers(_c)
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_fleet(_c, data_version: int, filter_key: str) -> dict:
-    from analysis.portfolio_intelligence import compute_fleet_exposure
+    from analysis.exposure import compute_fleet_exposure
     return compute_fleet_exposure(_c, top_n=None)
 
 
@@ -378,7 +397,7 @@ def _units_takeaway(df: pd.DataFrame, name: str, sort_col: str) -> str:
     return text
 
 
-def _view_units(c, p, data_version, filter_key, fig_quadrant, overdue) -> None:
+def _view_units(c, p, data_version, filter_key) -> None:
     a, b = st.columns([1, 2])
     level = a.radio("Show", ["Region", "Branch"], horizontal=True, key="pi_level")
     sort = b.selectbox("Sort by", list(_SORTS), key="pi_units_sort")
@@ -392,10 +411,11 @@ def _view_units(c, p, data_version, filter_key, fig_quadrant, overdue) -> None:
     total = _total_row(level, _cached_totals(c, p, data_version, filter_key))
     st.markdown(units_table_html(df, level, total, extra=["Region"] if level == "Branch" else []), unsafe_allow_html=True)
     _dl_btn(_with_total_row(df, total), f"{level.lower()}_table.xlsx", f"dl_pi_units_{level}")
-    if level == "Branch" and fig_quadrant is not None:
+    if level == "Branch":
         with st.expander("Chart: Collection % vs NPA % by branch (bubble = SOH)"):
-            _chart_card(fig_quadrant)
+            _chart_card(_cached_quadrant(c, p, data_version, filter_key))
             st.caption("Top-left (high NPA, low collection) needs action first. Dashed lines = portfolio middle.")
+    overdue = _cached_overdue(c, data_version, filter_key)
     if overdue:
         with st.expander("Collections detail: overdue vs this month's demand"):
             _render_overdue_demand(overdue)
@@ -490,7 +510,7 @@ _BUCKET_FILTERS = {"All delinquent": None, "SMA-1 and worse": ["SMA-1", "SMA-2",
                    "SMA-2 and worse": ["SMA-2", "NPA"], "NPA only": ["NPA"]}
 
 
-def _view_exposure(c, data_version, filter_key, fig_treemap) -> None:
+def _view_exposure(c, data_version, filter_key) -> None:
     what = st.radio("Show", ["Large customers", "Largest delinquent loans", "Fleet operators", "Concentration map"],
                     horizontal=True, key="pi_exp_what")
     if what == "Large customers":
@@ -527,7 +547,7 @@ def _view_exposure(c, data_version, filter_key, fig_treemap) -> None:
             st.caption(f"{fl['excluded_blank_mobile_loans']:,} loans with no mobile number can't be grouped by customer.")
         _dl_btn(view, "fleet_operators.xlsx", "dl_pi_fleet")
     else:
-        _chart_card(fig_treemap)
+        _chart_card(_cached_treemap(c, data_version, filter_key))
         st.caption("Box size = SOH; colour = NPA % (pale = lower, dark red = higher). Click a region to see its branches.")
 
 
@@ -624,9 +644,10 @@ def _view_large_customers(c, data_version, filter_key) -> None:
 
 # ── View 5: Action lists ─────────────────────────────────────────────────────
 
-def _view_actions(repo_df, good_df, df_curr) -> None:
+def _view_actions(df_curr, curr_month, data_version, filter_key) -> None:
     what = st.radio("List", ["Repossession candidates", "Good customers"], horizontal=True, key="pi_act_what")
     if what == "Repossession candidates":
+        repo_df = _cached_repossession(df_curr, data_version, filter_key, curr_month)
         if repo_df is None or repo_df.empty:
             st.info("No repossession candidates.")
             return
@@ -644,6 +665,7 @@ def _view_actions(repo_df, good_df, df_curr) -> None:
                                      "Bucket": "curr_bucket", "Customer": "Cust Name", "Mobile": "Cust Mob No"}),
                 "repossession_candidates.xlsx", "dl_pi_repo", full_source=df_curr)
     else:
+        good_df = _cached_good_customers(df_curr, data_version, filter_key)
         if good_df is None or good_df.empty:
             st.info("No good customers by these rules.")
             return
@@ -662,27 +684,21 @@ def _view_actions(repo_df, good_df, df_curr) -> None:
 
 # ── The tab ──────────────────────────────────────────────────────────────────
 
-def render_portfolio_intelligence_tab(
-    region_df=None, branch_df=None, fig_quadrant=None, exec_recovery_df=None, product_data=None,
-    fig_treemap=None, fleet=None, top_accounts=None, has_prev: bool = False, rr_meta=None,
-    repo_df=None, npa_sma2_cmp=None, good_customers=None, top_accounts_summary=None,
-    overdue_demand_scorecard=None, df_curr=None, df_prev=None, data_version: int = 0, filter_key: str = "",
-    **_unused,
-) -> None:
-    """One view at a time (VIEWS). The overview, alerts and early warning that
-    used to sit here live on the Dashboard, Alerts and Migration tabs."""
+def render_portfolio_intelligence_tab(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str,
+                                      data_version: int = 0, filter_key: str = "") -> None:
+    """One view at a time (VIEWS); each view computes only what it shows."""
     df_prev = df_prev if df_prev is not None else pd.DataFrame()
-    if not has_prev:
+    if df_prev.empty:
         st.caption("Last month's file isn't loaded, so changes and roll rates are blank.")
     view = st.segmented_control("View", VIEWS, default=VIEWS[0], key=VIEW_KEY, label_visibility="collapsed")
     view = view or VIEWS[0]
     if view == "Regions & Branches":
-        _view_units(df_curr, df_prev, data_version, filter_key, fig_quadrant, overdue_demand_scorecard)
+        _view_units(df_curr, df_prev, data_version, filter_key)
     elif view == "Executives":
         _view_executives(df_curr, df_prev, data_version, filter_key)
     elif view == "Segments":
         _view_segments(df_curr, data_version, filter_key)
     elif view == "Exposure":
-        _view_exposure(df_curr, data_version, filter_key, fig_treemap)
+        _view_exposure(df_curr, data_version, filter_key)
     else:
-        _view_actions(repo_df, good_customers, df_curr)
+        _view_actions(df_curr, curr_month, data_version, filter_key)

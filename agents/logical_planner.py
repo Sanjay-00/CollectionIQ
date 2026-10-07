@@ -1,4 +1,4 @@
-﻿"""IR-1 Planner (Gemini)  -  the v2 semantic layer / live query pipeline entry-point.
+"""IR-1 Planner (Gemini)  -  the v2 semantic layer / live query pipeline entry-point.
 
 Phase 3: this module is now the SOLE LLM entry-point for query understanding.
 It replaces the Domain Expert, Plan Critic, and Query Parser from the legacy pipeline.
@@ -23,11 +23,7 @@ from gemini_client import make_client
 from registry.ontology import CONCEPTS, METRICS, AMBIGUOUS_TERMS
 from registry.semantic_model import DIMENSIONS
 from registry.views import VIEWS, _METRIC_DIRECTION
-from agents.domain_expert import (
-    _call_gemini_with_retry,
-    _add_token_usage,
-    build_snapshot_context,
-)
+from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry
 
 
 @lru_cache(maxsize=1)
@@ -495,14 +491,6 @@ RISK FLAG:
 
 Return ONLY valid JSON. Use a single hyphen (-); never an em/en dash ( -  or  - ).
 """
-
-
-_IR1_KEYS = (
-    "intent", "query_title", "risk_flag", "description",
-    "needs_clarification", "clarification_question", "clarification_options",
-    "view", "filters", "dimensions", "measures", "entity_filters",
-    "metrics", "having", "order_by", "limit", "display_columns", "time",
-)
 
 
 def _coerce_dim(d) -> str:

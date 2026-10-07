@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 
 from utils import CUTOFF_PLACEHOLDER, resolve_dynamic_values
 
@@ -210,7 +210,7 @@ def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
 def execute_priority_mode(df: pd.DataFrame, as_of=None) -> tuple[pd.DataFrame, str]:
     """Run all priority rules in ranked order, combine results with a Priority column.
     as_of is the file's reporting month (anchors the "recent advances" tier)."""
-    from agents.domain_expert import PRIORITY_RULES
+    from registry.ontology import PRIORITY_RULES
 
     all_rows = []
     seen_loans = set()

@@ -48,20 +48,17 @@ def table(title: str, df: pd.DataFrame, columns: list[dict], note: str = "",
 def _unit_total(c: pd.DataFrame, p: pd.DataFrame | None, name_col: str, label: str = "Total") -> dict | None:
     """Every loan in view as one Total row (sum over sum), with last month's
     delinquency and the change -- matching the unit tables' columns."""
-    from utils import unit_metrics
-    m = unit_metrics(c, [])
-    if m.empty:
+    from analysis.summary import portfolio_total
+    t = portfolio_total(c, p)
+    if not t:
         return None
-    t = m.iloc[0]
     row = {name_col: label, "Accounts": int(t["Accounts"]), "Delinquent": int(t["Delinquent"]),
            "Delinquency%": float(t["Delinquency%"]), "SMA-2": int(t["SMA-2"]), "SMA-2%": float(t["SMA-2%"]),
            "NPA": int(t["NPA"]), "NPA%": float(t["NPA%"]), "NPA% (SOH)": float(t["NPA% (SOH)"]),
            "NPA SOH (Cr)": float(t["NPA SOH (Cr)"]),
            "Collection%": float(t["Collection%"]), "Strike%": float(t["Strike%"])}
-    pm = unit_metrics(p, []) if p is not None and len(p) else pd.DataFrame()
-    if not pm.empty:
-        row["Prev Delinquency%"] = float(pm.iloc[0]["Delinquency%"])
-        row["Δ Delinquency%"] = round(row["Delinquency%"] - row["Prev Delinquency%"], 2)
+    if "Prev Delinquency%" in t:
+        row["Prev Delinquency%"], row["Δ Delinquency%"] = t["Prev Delinquency%"], t["Δ Delinquency%"]
     return row
 
 
@@ -455,7 +452,7 @@ def _x_overdue(c, p, m) -> list[dict]:
 
 
 def _x_business(c, p, m) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_new_advances_by_dimension, compute_new_advances_trend
+    from analysis.new_business import compute_new_advances_by_dimension, compute_new_advances_trend
     by = compute_new_advances_by_dimension(c, as_of=m).get("region", pd.DataFrame())
     trend = compute_new_advances_trend(c, as_of=m, months=12)
     blocks = [heading("New Business Detail")]
@@ -485,7 +482,7 @@ def _x_products(c, p, m) -> list[dict]:
 
 
 def _x_top_accounts(c, p, m) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_top_accounts
+    from analysis.exposure import compute_top_accounts
     df, summ = compute_top_accounts(c, n=50)
     if df.empty:
         return []
@@ -496,7 +493,7 @@ def _x_top_accounts(c, p, m) -> list[dict]:
 
 
 def _x_fleet(c, p, m) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_fleet_exposure
+    from analysis.exposure import compute_fleet_exposure
     from config import FLEET_MIN_LOANS
     fl = compute_fleet_exposure(c)
     if not fl.get("count"):
@@ -508,7 +505,7 @@ def _x_fleet(c, p, m) -> list[dict]:
 
 
 def _x_repossession(c, p, m) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_repossession_list
+    from analysis.exposure import compute_repossession_list
     from config import REPOSSESSION_BUCKETS, REPOSSESSION_EXCLUDE_STATUSES, REPOSSESSION_WINDOW_MONTHS
     df = compute_repossession_list(c, as_of=m)
     if df.empty:
@@ -523,7 +520,7 @@ def _x_repossession(c, p, m) -> list[dict]:
 
 
 def _x_good(c, p, m) -> list[dict]:
-    from analysis.portfolio_intelligence import compute_good_customers
+    from analysis.exposure import compute_good_customers
     from config import GOOD_CUSTOMER_MIN_LCC_PCT, GOOD_CUSTOMER_MIN_TENURE_PCT
     df = compute_good_customers(c)
     if df.empty:

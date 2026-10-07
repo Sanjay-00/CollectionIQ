@@ -104,6 +104,8 @@ def compute_insurance_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.Dat
 
     rows = []
     group_cols = [group_col] + (["RegionName"] if "RegionName" in df.columns and group_col != "RegionName" else [])
+    # Only the columns the loop reads (copying ~100 per branch was the cost).
+    delinquent = delinquent[[*group_cols, *[c for c in delinquent.columns if c == "Loan No" or c.startswith("_")]]]
     for keys, grp in delinquent.groupby(group_cols, sort=False):
         keys = keys if isinstance(keys, tuple) else (keys,)
         n = account_count(grp)
@@ -187,6 +189,8 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
 
     rows = []
     group_cols = [group_col] + (["RegionName"] if "RegionName" in df.columns and group_col != "RegionName" else [])
+    # Only the columns the loop reads (copying ~100 per branch was the cost).
+    delinquent = delinquent[[*group_cols, *[c for c in delinquent.columns if c == "Loan No" or c.startswith("_")]]]
     for keys, grp in delinquent.groupby(group_cols, sort=False):
         keys = keys if isinstance(keys, tuple) else (keys,)
         n = account_count(grp)
@@ -408,6 +412,8 @@ def compute_recent_advances_bucket_by_group(
         return pd.DataFrame(), pd.DataFrame()
 
     group_cols = [group_col] + (["RegionName"] if "RegionName" in graded.columns and group_col != "RegionName" else [])
+    # Only the columns read below: filtering ~100 columns per group and bucket was the cost.
+    graded = graded[[*group_cols, "_bucket", *[c for c in ("Loan No", "SOH") if c in graded.columns]]]
 
     count_rows, soh_rows = [], []
     for keys, grp in graded.groupby(group_cols, sort=False):

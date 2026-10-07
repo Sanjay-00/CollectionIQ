@@ -33,7 +33,7 @@ on its own (see _executive_row's iloc[0] fallback).
 from __future__ import annotations
 
 from investigator.state import EntityMemory
-from investigator.steps import METRIC_DIRECTION, distinct_executive_matches
+from investigator.steps import distinct_executive_matches
 
 # Which metric columns each step type can actually produce -- known
 # statically from each step's own implementation (investigator/steps.py),

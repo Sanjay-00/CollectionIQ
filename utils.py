@@ -1,4 +1,4 @@
-﻿import datetime
+import datetime
 import html
 import re
 import warnings
@@ -625,19 +625,31 @@ def _reorder_to_template(df: pd.DataFrame) -> pd.DataFrame:
 # object this app caches). 16 covers a multi-file regional upload (curr + prev)
 # with room to spare; older uploads' frames get LRU-evicted instead of living
 # in the server process forever.
+def _fallback_engine(fname: str) -> str:
+    return "pyxlsb" if fname.endswith(".xlsb") else "xlrd" if fname.endswith(".xls") else "openpyxl"
+
+
+def _read_excel(file, sheet_name=0) -> tuple[pd.DataFrame, str]:
+    """Read one sheet. calamine (Rust) is ~5x faster than openpyxl and reads
+    .xlsx/.xls/.xlsb into the same values and dtypes; the per-format engine is
+    the fallback if calamine is missing or can't open a file. Returns the
+    frame and the engine that worked (reused for the "LCC" sheet retry)."""
+    fname = getattr(file, "name", "").lower()
+    engines = ["calamine", _fallback_engine(fname)]
+    for i, engine in enumerate(engines):
+        try:
+            if hasattr(file, "seek"):
+                file.seek(0)
+            return pd.read_excel(file, engine=engine, sheet_name=sheet_name), engine
+        except Exception:
+            if i == len(engines) - 1:
+                raise
+
+
 @__import__("streamlit").cache_data(show_spinner=False, max_entries=16)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
-        fname = getattr(file, "name", "").lower()
-        if fname.endswith(".xlsb"):
-            engine = "pyxlsb"
-        elif fname.endswith(".xls"):
-            engine = "xlrd"
-        else:
-            engine = "openpyxl"
-        if hasattr(file, "seek"):
-            file.seek(0)
-        df = pd.read_excel(file, engine=engine, sheet_name=0)
+        df, engine = _read_excel(file)
     except Exception as e:
         return None, [f"Could not read file: {e}"]
 
@@ -939,8 +951,9 @@ def loan_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 def _round_each(s: pd.Series, decimals: int) -> pd.Series:
     """Python's round() per value (NaN kept), like _safe_pct: pandas' .round()
-    can differ by 0.01 on exact ties such as 5.975."""
-    return s.map(lambda v: v if pd.isna(v) else round(float(v), decimals)).astype(float)
+    can differ by 0.01 on exact ties such as 5.975. (round(nan) is nan.)"""
+    values = s.to_numpy(dtype=float, na_value=np.nan).tolist()
+    return pd.Series([round(v, decimals) for v in values], index=s.index, name=s.name, dtype=float)
 
 
 def _pct_col(num: pd.Series, den: pd.Series, decimals: int = 2) -> pd.Series:
@@ -971,8 +984,7 @@ def unit_metrics(df: pd.DataFrame, by: list[str], min_accounts: int = 0,
     g = f.groupby(keys, sort=True)
     s = g.sum(numeric_only=True)
     n = g["_id"].nunique()
-    out = pd.DataFrame(index=s.index)
-    out["Accounts"] = n.astype(int)
+    out = {"Accounts": n.astype(int)}   # a dict, made a frame once at the end (adding columns one by one is slow)
     for name, flag in (("Delinquent", "delinquent"), ("SMA-1", "sma1"), ("SMA-2", "sma2"), ("NPA", "npa"),
                        ("Hard Bucket", "hard"), ("Not Paying 3M+", "not_paying_3m"),
                        ("Insurance-Only", "insurance_only")):
@@ -995,6 +1007,7 @@ def unit_metrics(df: pd.DataFrame, by: list[str], min_accounts: int = 0,
         out["Rescued"] = s["rescued"].astype(int)
         out["Slipped"] = s["roll_fwd"].astype(int)
         out["_roll_valid"] = s["roll_valid"].astype(int)
+    out = pd.DataFrame(out, index=s.index)
     out = out[out["Accounts"] >= min_accounts]
     out.index.names = by or ["_all"]
     return out.reset_index() if by else out.reset_index(drop=True)
@@ -1033,15 +1046,6 @@ def compute_hard_bucket_pct(df: pd.DataFrame) -> float:
     return 0.0 if m is None else float(m["Hard Bucket%"])
 
 
-def compute_delinquency_count(df: pd.DataFrame) -> int:
-    """Accounts with any arrears: Arrears/EMI > 0 (view of unit_metrics). Matches
-    registry/ontology.py's CONCEPTS["delinquent"] row filter."""
-    if "Arrears / EMI" not in df.columns:
-        return 0
-    m = portfolio_metrics(df)
-    return 0 if m is None else int(m["Delinquent"])
-
-
 def compute_delinquency_pct(df: pd.DataFrame) -> float:
     """% of accounts with any arrears (view of unit_metrics). See
     compute_strike_pct re: the AI Query path."""
@@ -1054,6 +1058,26 @@ def compute_delinquency_pct(df: pd.DataFrame) -> float:
 def _unit_key(v) -> str:
     """Join key for a manually typed label ("Pune " and "PUNE" are one unit)."""
     return str(v).strip().upper()
+
+
+# An executive is name + branch (two same-named people in different branches
+# are two executives); _EXEC_KEY holds that pair in one column.
+_EXEC_KEY = "_exec_key"
+_EXEC_SEP = "\x1f"
+
+
+def _with_exec_key(df: pd.DataFrame) -> pd.DataFrame:
+    """Add one column identifying an executive as name + branch (never the
+    name alone), so two same-named people in different branches stay two
+    rows in every executive table."""
+    if "MNT NAME" not in df.columns:
+        return df
+    unit = df["Unit"].astype(str) if "Unit" in df.columns else ""
+    return df.assign(**{_EXEC_KEY: df["MNT NAME"].astype(str) + _EXEC_SEP + unit})
+
+
+def _exec_name(key) -> str:
+    return str(key).split(_EXEC_SEP, 1)[0]
 
 
 def delinquency_by(df: pd.DataFrame, cols: list[str]) -> dict[tuple, tuple[int, int]]:
@@ -1175,15 +1199,12 @@ def compute_metrics(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
             pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
             for c in ("Cum Due-Inst", "Cum Due-Exp")if c in df.columns
         )
-        # LCC% = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) -- matches the
-        # documented business definition (agents/domain_expert.py) and the AI Query
-        # path's lcc_pct METRIC (registry/ontology.py). "Total Cum Collection" is a
+        # LCC% = Cum Coll (Inst+Exp) / (Cum Due-Inst + Cum Due-Exp) -- the same
+        # definition as the AI Query path's lcc_pct METRIC (registry/ontology.py). "Total Cum Collection" is a
         # broader figure (includes BC/other components) and is the wrong numerator.
         lcc_avg = _safe_pct(to_num(df, "Cum Coll (Inst+Exp)", fill=0).sum(), _cum_due)
         lcc_avg = round(lcc_avg, 2) if not pd.isna(lcc_avg) else 0.0
-        # Capped at 100 -- matches the documented definition (agents/domain_expert.py:
-        # "LCC% = ... Capped at 100, max value is 100") and the AI Query path's
-        # lcc_pct METRIC (registry/ontology.py, cap=100). A customer who has paid
+        # Capped at 100, like the AI Query path's lcc_pct METRIC (registry/ontology.py, cap=100). A customer who has paid
         # ahead of cumulative dues can otherwise push this over 100%.
         lcc_avg = min(lcc_avg, 100.0)
         # CMD% = Total Cum Collection / Cum Coll (Inst+Exp) -- deliberately a

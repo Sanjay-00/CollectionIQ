@@ -16,7 +16,7 @@ from config import (
     ACTION_COLLECTION_GAP_PP, ACTION_HEADLINES_MAX, ACTION_HOTSPOT_MULTIPLE, ACTION_MIN_ACCOUNTS,
     ACTION_MIN_ROLLED, ACTION_RANGE_Z, ACTION_RISING_PP, ACTION_TOP_N, INSURANCE_EXP_ARREARS_MIN,
 )
-from utils import BUCKET_SCORE, insurance_only_mask, is_yes, to_num, unit_metrics
+from utils import BUCKET_SCORE, insurance_only_mask, is_yes, loan_flags, to_num, unit_metrics
 
 _GRAIN_COLS = {"region": ["RegionName"], "branch": ["Unit"], "executive": ["MNT NAME", "Unit"]}
 _WORSE_THAN = {b: [c for c in rf.VALID_BUCKETS if BUCKET_SCORE[c] > BUCKET_SCORE[b]] for b in rf.VALID_BUCKETS}
@@ -113,12 +113,14 @@ _PULSE = (  # (label, unit_metrics column, a rise is bad)
 )
 
 
-def pulse(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dict]:
+def pulse(df_curr: pd.DataFrame, df_prev: pd.DataFrame, ctx: dict | None = None) -> list[dict]:
     """The headline rates now vs last month: {label, now, prev, change, worse}."""
-    now = unit_metrics(df_curr, [])
+    ctx = ctx or {}
+    now = unit_metrics(df_curr, [], flags=ctx.get("flags"))
     if now.empty:
         return []
-    prev = unit_metrics(df_prev, []) if df_prev is not None and len(df_prev) else pd.DataFrame()
+    prev = (unit_metrics(df_prev, [], flags=ctx.get("flags_prev"))
+            if df_prev is not None and len(df_prev) else pd.DataFrame())
     n, p = now.iloc[0], (prev.iloc[0] if not prev.empty else None)
     out = []
     for label, col, rise_is_bad in _PULSE:
@@ -250,7 +252,10 @@ def call_lists(df: pd.DataFrame) -> list[dict]:
     groups = [(name, mask.fillna(False)) for name, _, mask in _focus_groups(df)]
     out = []
     for name, mask in groups:
-        hit = df[mask]
+        cols = [c for c in [*_IDENTITY, *EVIDENCE_COLS[name]] if c in df.columns]
+        # Only the columns the table shows (plus SOH to sort by): filtering
+        # all ~100 columns of the file first was most of the cost.
+        hit = df.loc[mask, list(dict.fromkeys([*cols, *(["SOH"] if "SOH" in df.columns else [])]))]
         if hit.empty:
             continue
         also = pd.Series("", index=hit.index)
@@ -259,7 +264,6 @@ def call_lists(df: pd.DataFrame) -> list[dict]:
                 flag = omask.loc[hit.index]
                 also = also.where(~flag, also + "; " + other)
         also = also.str.lstrip("; ")
-        cols = [c for c in [*_IDENTITY, *EVIDENCE_COLS[name]] if c in hit.columns]
         table = hit[cols].assign(**{"Also In": also}).assign(SOH=to_num(hit, "SOH"))
         table = table.sort_values("SOH", ascending=False).rename(columns=_RENAME).reset_index(drop=True)
         ident = [_RENAME.get(c, c) for c in _IDENTITY if c in hit.columns]
@@ -283,13 +287,13 @@ def attention(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str, ctx: dic
     cols = _GRAIN_COLS[grain]
     if not set(cols) <= set(df_curr.columns):
         return {"worst": [], "improving": []}
-    m = unit_metrics(df_curr, cols)
+    ctx = ctx or _context(df_curr, df_prev)
+    m = unit_metrics(df_curr, cols, flags=ctx["flags"])
     if m.empty:
         return {"worst": [], "improving": []}
-    port = unit_metrics(df_curr, []).iloc[0]
-    prev = (unit_metrics(df_prev, cols).set_index(cols)["Delinquency%"].to_dict()
+    port = unit_metrics(df_curr, [], flags=ctx["flags"]).iloc[0]
+    prev = (unit_metrics(df_prev, cols, flags=ctx["flags_prev"]).set_index(cols)["Delinquency%"].to_dict()
             if df_prev is not None and len(df_prev) and set(cols) <= set(df_prev.columns) else {})
-    ctx = ctx or _context(df_curr)
     roll = ctx["roll_by"][grain]
     roll_port = ctx["summary"] or {}
     id_names = {"RegionName": "Region", "Unit": "Branch", "MNT NAME": "Executive"}
@@ -334,23 +338,28 @@ def _unit_name(key, cols) -> str:
     return f"{key[0]} ({key[1]})" if len(cols) > 1 else str(key)
 
 
-def _context(df: pd.DataFrame) -> dict:
-    """The roll inputs every section shares, computed once."""
+def _context(df: pd.DataFrame, df_prev: pd.DataFrame | None = None) -> dict:
+    """What every section shares, computed once: the per-loan flags (both
+    months) and the roll inputs."""
     has_roll = rf.has_roll_data(df)
     moved = rf._matched(df)
+    has_prev = df_prev is not None and len(df_prev) > 0
     return {
+        "flags": loan_flags(df) if len(df) else None,
+        "flags_prev": loan_flags(df_prev) if has_prev else None,
         "moved": moved,
-        "summary": rf.roll_steps_summary(df),
+        "summary": rf.roll_steps_summary(df, moved),
         "rates": transition_rates(df, moved),
-        "roll_by": {g: (rf.roll_steps_by(df, g) if has_roll else pd.DataFrame()) for g in ("branch", "executive")},
+        "roll_by": {g: (rf.roll_steps_by(df, g, moved) if has_roll else pd.DataFrame())
+                    for g in ("branch", "executive")},
     }
 
 
 def build(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> dict:
     """Everything the action overview shows, in one call."""
-    ctx = _context(df_curr)
+    ctx = _context(df_curr, df_prev)
     return {
-        "pulse": pulse(df_curr, df_prev),
+        "pulse": pulse(df_curr, df_prev, ctx),
         "headlines": headlines(df_curr, df_prev, ctx),
         "outlook": next_month_outlook(df_curr, ctx["rates"]),
         "focus": focus_first(df_curr, ctx["rates"]),

@@ -21,6 +21,24 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_CLIENT_CODES = {408, 429}
 
 
+def add_token_usage(response) -> None:
+    """Attach Gemini token counts to the active LangSmith run, if tracing."""
+    try:
+        from langsmith.run_helpers import get_current_run_tree
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        um = getattr(response, "usage_metadata", None)
+        if um:
+            rt.add_metadata({
+                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
+                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
+            })
+    except Exception:
+        pass
+
+
 def make_client(api_key: str):
     """A Gemini client with this app's standard per-request timeout."""
     return genai.Client(

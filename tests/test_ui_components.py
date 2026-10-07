@@ -406,7 +406,7 @@ def test_every_table_on_screen_goes_through_safe_df():
         text = f.read_text(encoding="utf-8-sig")
         for m in re.finditer(r"^\s*st\.dataframe\(\s*([A-Za-z_][\w.]*)", text, re.MULTILINE):
             arg = m.group(1)
-            if arg not in ("_safe_df", "styled_df", "heat_styler"):   # both apply _safe_df
+            if arg not in ("_safe_df", "styled_df"):   # styled_df applies _safe_df
                 raw.append(f"{f.relative_to(root)}: {m.group(0)}")
     assert raw == []
 
