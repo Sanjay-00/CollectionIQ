@@ -1,16 +1,16 @@
-"""Regression coverage for the skip_insights opt-out (graph.py, ui/tabs/ai_query.py).
+"""Regression coverage for the skip_insights opt-out (graph.py, ui/query_answer.py).
 
 Two independent contracts, each previously untested:
 1. graph.py::analyze_node must not call the Insight Generator's Gemini call
    (generate_insights) at all when skip_insights=True - the checkbox is
    framed to the user as "off by default: skips the 2nd Gemini call", so a
    silent call would both cost money/latency and contradict the UI copy.
-2. ui/tabs/ai_query.py's AI-result cache key includes skip_insights, so a
+2. ui/query_answer.py's AI-result cache key includes skip_insights, so a
    query cached WITHOUT the AI summary must not be served back once the user
    turns the checkbox on and re-asks the identical question (or vice versa).
 """
 import graph
-from ui.tabs.ai_query import _ai_cache_get, _ai_cache_put, _AI_CACHE_MAX_ENTRIES
+from ui.query_answer import _ai_cache_get, _ai_cache_put, _AI_CACHE_MAX_ENTRIES
 
 
 class TestAnalyzeNodeSkipInsights:

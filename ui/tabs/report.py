@@ -26,6 +26,7 @@ def render_report_tab(
     sel_region: str,
     sel_branch: str,
     sel_status: str,
+    sel_zone: str = "All",
 ) -> None:
     from report_agent.story import OPTIONAL_SECTIONS, PRESETS
 
@@ -48,7 +49,7 @@ def render_report_tab(
     use_ai = st.checkbox("Add an AI-written opening paragraph (optional)", value=False, key="rpt2_ai",
                          help="Gemini rewrites the summary sentences into a paragraph. Every number it uses is "
                               "checked against the data; if any doesn't match, the paragraph is dropped.")
-    filters = {"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status}
+    filters = {"Zone": sel_zone, "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status}
 
     if preset == "Branch" and sel_branch in ("All", "", None):
         st.info("Pick one branch in the sidebar's Branch filter for a single Branch report, "

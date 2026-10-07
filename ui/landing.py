@@ -105,8 +105,8 @@ def render_landing() -> None:
                 # Region/Branch/Status selection left over from a real upload
                 # earlier in this session could otherwise silently carry over
                 # onto the sample data.
-                for _k in ["ai_result", "rpt2", "rpt2_packs", "_last_filter_key",
-                           "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key",
+                for _k in ["rpt2", "rpt2_packs", "_last_filter_key",
+                           "_sel_branch", "_prev_region", "_prev_zone", "sel_zone_key", "sel_region_key", "sel_status_key",
                            "sel_date_from_key"]:
                     st.session_state.pop(_k, None)
                 st.session_state["df_curr_raw"]       = _dc

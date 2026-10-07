@@ -889,3 +889,12 @@ class TestCountAgreedAfterMonth:
         from utils import count_agreed_after_month
         assert count_agreed_after_month(pd.DataFrame({"Ag_Date": ["2030-01-01"]}), None) == 0
         assert count_agreed_after_month(pd.DataFrame(), "2026-08") == 0
+
+
+class TestZoneFilter:
+    def test_zone_narrows_and_is_optional(self):
+        df = make_df([{"Zone": "Z1", "RegionName": "R1"}, {"Zone": "Z2", "RegionName": "R2"}, {"Zone": 3, "RegionName": "R3"}])
+        assert len(apply_filters(df, "All", "All", "All")) == 3                     # zone defaults to All
+        assert apply_filters(df, "All", "All", "All", zone="Z1")["RegionName"].tolist() == ["R1"]
+        assert apply_filters(df, "All", "All", "All", zone="3")["RegionName"].tolist() == ["R3"]   # numeric zones
+        assert apply_filters(df, "R2", "All", "All", zone="Z1").empty               # region outside the zone

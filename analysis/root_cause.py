@@ -415,17 +415,22 @@ def compute_recent_advances_bucket_by_group(
     # Only the columns read below: filtering ~100 columns per group and bucket was the cost.
     graded = graded[[*group_cols, "_bucket", *[c for c in ("Loan No", "SOH") if c in graded.columns]]]
 
+    # Each (group, bucket) slice once, up front: the same rows in the same
+    # order as filtering each group by bucket, without ~3,000 filters on a big book.
+    has_soh = "SOH" in graded.columns
+    by_bucket = {}
+    for keys, sub in graded.groupby([*group_cols, "_bucket"], sort=False):
+        by_bucket[keys] = (account_count(sub), to_num(sub, "SOH").sum() if has_soh else 0.0)
+
     count_rows, soh_rows = [], []
     for keys, grp in graded.groupby(group_cols, sort=False):
         keys = keys if isinstance(keys, tuple) else (keys,)
         n_total = account_count(grp)
-        soh_total = to_num(grp, "SOH").sum() if "SOH" in grp.columns else 0.0
+        soh_total = to_num(grp, "SOH").sum() if has_soh else 0.0
         count_row = dict(zip(group_cols, keys))
         soh_row = dict(zip(group_cols, keys))
         for bucket in _RECENT_BUCKET_ORDER:
-            sub = grp[grp["_bucket"] == bucket]
-            n = account_count(sub)
-            soh = to_num(sub, "SOH").sum() if "SOH" in sub.columns else 0.0
+            n, soh = by_bucket.get((*keys, bucket), (0, 0.0))
             count_row[bucket] = n
             count_row[f"{bucket} %"] = _safe_div(n, n_total)
             soh_row[f"{bucket} (Cr)"] = round(soh / 1e7, 2)

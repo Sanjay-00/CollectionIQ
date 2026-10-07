@@ -2,8 +2,9 @@ import pandas as pd
 import streamlit as st
 
 
-def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str, str, list, "pd.Timestamp | None"]:
-    """Render sidebar filter controls. Returns (sel_region, sel_branch, sel_status, sel_segment, sel_date_from)."""
+def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str, str, str, list, "pd.Timestamp | None"]:
+    """Render sidebar filter controls. Returns (sel_zone, sel_region, sel_branch, sel_status, sel_segment,
+    sel_date_from). Zone, Region and Branch narrow each other top-down (BU > Zone > Region > Branch)."""
     with st.sidebar:
         st.markdown('<div class="filter-header">⚙ FILTERS</div>', unsafe_allow_html=True)
 
@@ -14,7 +15,22 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         </div>
         """, unsafe_allow_html=True)
 
-        regions = ["All"] + sorted(df_curr_raw["RegionName"].dropna().unique().tolist())
+        # Zone (only when the file has one): picking it narrows Region and Branch.
+        sel_zone = "All"
+        df_for_region = df_curr_raw
+        if "Zone" in df_curr_raw.columns and df_curr_raw["Zone"].dropna().nunique() > 0:
+            zones = ["All"] + sorted(df_curr_raw["Zone"].dropna().astype(str).unique().tolist())
+            sel_zone = st.selectbox("Zone", zones, key="sel_zone_key")
+            if st.session_state.get("_prev_zone") != sel_zone:      # a new zone: Region and Branch start at All
+                st.session_state["_prev_zone"] = sel_zone
+                st.session_state["sel_region_key"] = "All"
+                st.session_state["_sel_branch"] = "All"
+            if sel_zone != "All":
+                df_for_region = df_curr_raw[df_curr_raw["Zone"].astype(str) == sel_zone]
+
+        regions = ["All"] + sorted(df_for_region["RegionName"].dropna().unique().tolist())
+        if st.session_state.get("sel_region_key") not in regions:
+            st.session_state["sel_region_key"] = "All"
         sel_region = st.selectbox("Region", regions, key="sel_region_key")
 
         # Reset branch when region changes
@@ -22,7 +38,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
             st.session_state["_sel_branch"] = "All"
             st.session_state["_prev_region"] = sel_region
 
-        df_for_branch = df_curr_raw if sel_region == "All" else df_curr_raw[df_curr_raw["RegionName"] == sel_region]
+        df_for_branch = df_for_region if sel_region == "All" else df_for_region[df_for_region["RegionName"] == sel_region]
         branches = ["All"] + sorted(df_for_branch["Unit"].dropna().unique().tolist())
         default_branch = st.session_state.get("_sel_branch", "All")
         branch_idx = branches.index(default_branch) if default_branch in branches else 0
@@ -52,8 +68,10 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         if _seg_col:
             # Count segments on the same filtered slice the analysis table uses
             _df_seg = df_curr_raw
-            if sel_status != "All" and "Loan Status" in df_curr_raw.columns:
-                _df_seg = df_curr_raw[df_curr_raw["Loan Status"] == sel_status]
+            if sel_zone != "All":
+                _df_seg = _df_seg[_df_seg["Zone"].astype(str) == sel_zone]
+            if sel_status != "All" and "Loan Status" in _df_seg.columns:
+                _df_seg = _df_seg[_df_seg["Loan Status"] == sel_status]
             if sel_region != "All" and "RegionName" in _df_seg.columns:
                 _df_seg = _df_seg[_df_seg["RegionName"] == sel_region]
             if sel_branch != "All" and "Unit" in _df_seg.columns:
@@ -91,7 +109,7 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
         st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
         if st.button("Clear cache & reload", width='stretch', key="clear_cache_btn"):
             st.cache_data.clear()
-            # _ai_query_cache was missing here -- ui/tabs/ai_query.py's exact
+            # _ai_query_cache was missing here -- ui/query_answer.py's exact
             # -repeat query cache (keyed on query text + data_version + filter_key
             # + skip_insights) is a plain session_state dict, NOT an
             # st.cache_data-wrapped function, so st.cache_data.clear() above
@@ -101,10 +119,11 @@ def render_sidebar(df_curr_raw: pd.DataFrame, curr_month: str) -> tuple[str, str
             # asked in this session -- including a stale, since-fixed answer
             # from before a pipeline bug fix, with the button's own promise
             # ("clear cache & reload") not actually being honored for this cache.
-            for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "rpt2", "rpt2_packs",
+            for _k in ["df_curr_raw", "df_prev_raw", "rpt2", "rpt2_packs",
                        "_last_filter_key", "_sample_loaded", "_sel_branch", "_prev_region",
-                       "_ai_query_cache", "sel_region_key", "sel_status_key", "sel_date_from_key"]:
+                       "_ai_query_cache", "sel_zone_key", "_prev_zone", "sel_region_key", "sel_status_key",
+                       "sel_date_from_key"]:
                 st.session_state.pop(_k, None)
             st.rerun()
 
-    return sel_region, sel_branch, sel_status, sel_segment, sel_date_from
+    return sel_zone, sel_region, sel_branch, sel_status, sel_segment, sel_date_from

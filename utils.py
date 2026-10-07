@@ -618,10 +618,6 @@ def _reorder_to_template(df: pd.DataFrame) -> pd.DataFrame:
     return df[known_order + extra_cols]
 
 
-# max_entries=16: each entry is a FULL parsed raw frame (the heaviest single
-# object this app caches). 16 covers a multi-file regional upload (curr + prev)
-# with room to spare; older uploads' frames get LRU-evicted instead of living
-# in the server process forever.
 def _fallback_engine(fname: str) -> str:
     return "pyxlsb" if fname.endswith(".xlsb") else "xlrd" if fname.endswith(".xls") else "openpyxl"
 
@@ -643,7 +639,11 @@ def _read_excel(file, sheet_name=0) -> tuple[pd.DataFrame, str]:
                 raise
 
 
-@__import__("streamlit").cache_data(show_spinner=False, max_entries=16)
+# max_entries=4: each entry is a whole parsed file (about 110 MB per 100,000
+# loans), and once loaded the frames live in the session anyway. 4 covers this
+# month's and last month's files plus a re-upload; the cache is shared by every
+# session on the server, so a bigger limit only crowds memory.
+@__import__("streamlit").cache_data(show_spinner=False, max_entries=4)
 def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     try:
         df, engine = _read_excel(file)
@@ -765,9 +765,12 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     return df, []
 
 
-def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = (), date_from=None) -> pd.DataFrame:
+def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segment: tuple = (), date_from=None,
+                  zone: str = "All") -> pd.DataFrame:
     if len(df.columns) == 0:
         return df
+    if zone != "All" and "Zone" in df.columns:
+        df = df[df["Zone"].astype(str) == str(zone)]      # compared as text, as the sidebar lists it
     if region != "All" and "RegionName" in df.columns:
         df = df[df["RegionName"] == region]
     if branch != "All" and "Unit" in df.columns:

@@ -1,4 +1,4 @@
-﻿"""Semantic Data Model  -  the STRUCTURE layer of the registry.
+"""Semantic Data Model  -  the STRUCTURE layer of the registry.
 
 CollectionIQ operates over a single denormalised in-memory DataFrame: Loan,
 Customer, Executive, Branch and Region are all columns on the SAME table. So the
@@ -71,6 +71,12 @@ DIMENSIONS: dict[str, list[str]] = {
     "bu":         ["BU"],
     "executive":  ["MNT NAME", "Unit"],
     "customer":   ["Cust Mob No"],
+    # Loan attributes a manager groups by ("NPA count by segment and fuel type").
+    "segment":    ["SegmentName"],
+    "fuel":       ["FUEL_TYPE"],
+    "source":     ["SRC Name"],
+    "make":       ["Make"],
+    "status":     ["Loan Status"],
 }
 
 

@@ -615,11 +615,15 @@ def compile_logical(ir: dict, columns, as_of=None) -> tuple[list, list]:
     ir_dims = [] if ir.get("intent") == "loan_table" else (ir.get("dimensions") or [])
     dims_raw = ir_dims
     group_by: list[str] = []
+    by_folded = {str(c).casefold().replace(" ", "_"): c for c in columns}
     for d in dims_raw:
         if d in DIMENSIONS:
             group_by.extend(resolve_dimension(d))
         elif d in columns:
             group_by.append(d)
+        elif str(d).casefold().replace(" ", "_") in by_folded:
+            # A real column in another case/spacing ("fuel_type" for FUEL_TYPE).
+            group_by.append(by_folded[str(d).casefold().replace(" ", "_")])
         else:
             errs.append(
                 f"unknown dimension alias '{d}': valid aliases are "

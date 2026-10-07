@@ -687,7 +687,7 @@ def _out_of_scope_ir(message: str, options: list[str] | None = None) -> dict:
     for both genuinely off-topic input and input we couldn't safely process
     (oversized, or the model broke JSON format under adversarial/gibberish
     input). Never invents a fabricated query or leaks a raw exception.
-    `options` defaults to a fixed, safe example pair -- ui/tabs/ai_query.py
+    `options` defaults to a fixed, safe example pair -- ui/query_answer.py
     runs a clicked option as a FRESH query (never appended to the original
     nonsense text as an "interpretation"), since these are standalone
     examples, not clarifying details about the same original query."""
@@ -741,7 +741,7 @@ def plan_logical(
     repair_context = f"[REPAIR: {repair_feedback}] " if repair_feedback else ""
 
     # A clarification follow-up query carries its own resolved interpretation
-    # IN THE TEXT ITSELF -- ui/tabs/ai_query.py appends "(interpretation: X)"
+    # IN THE TEXT ITSELF -- ui/query_answer.py appends "(interpretation: X)"
     # when a user clicks a clarification option. Detected here via the query
     # TEXT, deliberately NOT via allow_clarification: that flag is ALSO set
     # False by the unrelated compiler repair loop above (graph.py's one-shot

@@ -30,7 +30,6 @@ from ui.tabs.migration import render_migration_tab
 from ui.tabs.portfolio_intelligence import render_portfolio_intelligence_tab
 from ui.tabs.root_cause import render_root_cause_tab
 from ui.tabs.business import render_business_tab
-from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.investigator import render_investigator_tab
 from ui.tabs.report import render_report_tab
 
@@ -118,8 +117,8 @@ if generate and curr_file:
     # defaulting to "All". Popping the widget keys here forces every filter
     # back to "All" on every fresh upload, not just when the old value
     # happens to be absent from the new file.
-    for _k in ["df_curr_raw", "df_prev_raw", "ai_result", "rpt2", "rpt2_packs", "_last_filter_key",
-               "_sample_loaded", "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key",
+    for _k in ["df_curr_raw", "df_prev_raw", "rpt2", "rpt2_packs", "_last_filter_key",
+               "_sample_loaded", "_sel_branch", "_prev_region", "_prev_zone", "sel_zone_key", "sel_region_key", "sel_status_key",
                "sel_date_from_key"]:
         st.session_state.pop(_k, None)
 
@@ -255,26 +254,28 @@ if not st.session_state.get("_sample_loaded"):
         st.stop()
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
-sel_region, sel_branch, sel_status, sel_segment, sel_date_from = render_sidebar(df_curr_raw, curr_month)
+sel_zone, sel_region, sel_branch, sel_status, sel_segment, sel_date_from = render_sidebar(df_curr_raw, curr_month)
 
 # Cache keys: data_version stands for "which upload" and _filter_key for "which
 # filters", so the cached functions below take their DataFrames underscore-
 # prefixed (never hashed) and stay cheap to look up on every rerun.
 data_version = st.session_state.get("_data_version", 0)
 _seg_t = tuple(sel_segment)
-_filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}|{sel_date_from}"
+_filter_key = f"{sel_zone}|{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(sel_segment))}|{sel_date_from}"
 
 
 # ── Cached computations ───────────────────────────────────────────────────────
 # Each runs only when a tab that shows it is open, and once per upload x filter
 # combination. max_entries bounds the server-wide cache (it's shared by every
 # session), so old combinations are evicted instead of piling up in memory.
-@st.cache_data(show_spinner=False, max_entries=16)
+# The filter cache holds whole frames (this month + last month per filter
+# combination), so it keeps only the last 6; a re-filter takes a fraction of a second.
+@st.cache_data(show_spinner=False, max_entries=6)
 def _cached_filter(_df_c: pd.DataFrame, _df_p_raw: pd.DataFrame, data_version: int,
-                   region: str, branch: str, status: str, segment: tuple, date_from):
+                   region: str, branch: str, status: str, segment: tuple, date_from, zone: str = "All"):
     # Filter first, then copy: copying the whole upload before filtering doubled memory for nothing.
-    df = apply_filters(_df_c, region, branch, status, segment, date_from).copy()
-    df_p = apply_filters(_df_p_raw, region, branch, status, segment, date_from).copy()
+    df = apply_filters(_df_c, region, branch, status, segment, date_from, zone=zone).copy()
+    df_p = apply_filters(_df_p_raw, region, branch, status, segment, date_from, zone=zone).copy()
     if len(_df_p_raw) > 0 and "Loan No" in df.columns and "curr_bucket" in _df_p_raw.columns:
         # Last month's bucket and a few amounts (renamed prev_*) ride along on
         # each loan, for roll analysis and month-over-month changes.
@@ -338,11 +339,11 @@ def _cached_root_cause(_df_c, _df_p, data_version: int, filter_key: str, curr_mo
 
 
 df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, data_version, sel_region, sel_branch, sel_status,
-                                   _seg_t, sel_date_from)
+                                   _seg_t, sel_date_from, sel_zone)
 
 # Clear AI/report results when filters change
 if st.session_state.get("_last_filter_key") != _filter_key:
-    for _k in ("ai_result", "rpt2", "rpt2_packs", "investigator_threads", "investigator_active_thread"):
+    for _k in ("rpt2", "rpt2_packs", "investigator_threads", "investigator_active_thread"):
         st.session_state.pop(_k, None)
     st.session_state["_last_filter_key"] = _filter_key
 
@@ -370,7 +371,7 @@ def _roll_rate() -> tuple:
 
 # ── Active filter bar ─────────────────────────────────────────────────────────
 active_filters = {k: v for k, v in {
-    "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
+    "Zone": sel_zone, "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status,
     "Segment": ", ".join(sel_segment) if sel_segment else "All",
     "Loan Date": f"On/after {sel_date_from}" if sel_date_from else "All",
 }.items() if v != "All"}
@@ -410,7 +411,9 @@ try:
         render_dashboard_tab(
             df_curr, df_prev, _cached_metrics(df_curr, df_prev, data_version, _filter_key), curr_month,
             sel_region, sel_branch, sel_status, _alerts(),
-            data_version=data_version, segment=_seg_t, date_from=sel_date_from, alerts_prev=_alerts_prev(),
+            prev_metrics=(_cached_metrics(df_prev, df_prev.iloc[0:0], data_version, _filter_key + "|prev")
+                          if len(df_prev) else None),
+            data_version=data_version, filter_key=_filter_key, alerts_prev=_alerts_prev(),
         )
 
     elif active == "🎯 Action Lists":
@@ -437,30 +440,26 @@ try:
             data_version=data_version, filter_key=_filter_key,
         )
 
-    elif active == "🤖 AI Query":
-        # The reporting dates of each file, so the AI can resolve "on 20th June"
-        # to this month's or last month's bucket.
+    elif active == "🤖 Ask AI":
+        # One chat: drill-down questions run the Investigator's steps, list /
+        # count questions the AI Query engine (ui/query_answer.py).
         _snapshot_dates = {"curr": curr_month_input.strftime("%Y-%m-%d")}
         if prev_month and len(df_prev_raw) > 0:
             _snapshot_dates["prev"] = prev_month_input.strftime("%Y-%m-%d")
         rr_matrix, rr_meta = _roll_rate()
-        # Views not listed here are computed on demand by the AI's view layer
-        # (registry/views.py) with the same function, so the numbers match.
-        precomputed_views = {"scorecard_df": _scorecard(), "rr_matrix": (rr_matrix, rr_meta)}
-        render_ai_query_tab(
-            df_curr, _snapshot_dates, df_prev=df_prev, precomputed_views=precomputed_views,
-            alerts_curr=_alerts(), alerts_prev=_alerts_prev(), rr_meta=rr_meta,
-            data_version=data_version, filter_key=_filter_key,
-        )
-
-    elif active == "🕵️ Investigator":
         render_investigator_tab(
             df_curr, df_prev, data_version=data_version, filter_key=_filter_key,
             alerts_curr=_alerts(), curr_month=curr_month,
+            query_ctx={
+                "snapshot_dates": _snapshot_dates, "alerts_prev": _alerts_prev(), "rr_meta": rr_meta,
+                # Views not listed here are computed on demand by the engine's view
+                # layer (registry/views.py) with the same function, so numbers match.
+                "precomputed_views": {"scorecard_df": _scorecard(), "rr_matrix": (rr_matrix, rr_meta)},
+            },
         )
 
     elif active == "📋 Report":
-        render_report_tab(df_curr, df_prev, curr_month, prev_month, sel_region, sel_branch, sel_status)
+        render_report_tab(df_curr, df_prev, curr_month, prev_month, sel_region, sel_branch, sel_status, sel_zone)
 
 except Exception as _e:
     _tab_error(active.split(" ", 1)[-1], _e)

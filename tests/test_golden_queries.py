@@ -526,7 +526,7 @@ class TestClarificationFollowupContext:
     """Regression guard for a real conflict caught before it shipped: the
     "use the clarified metric for sort_by/highlight_metrics" instruction is
     keyed off the query TEXT containing "(interpretation:" (the marker
-    ui/tabs/ai_query.py appends when a clarification option is clicked), NOT
+    ui/query_answer.py appends when a clarification option is clicked), NOT
     off allow_clarification=False -- that flag is ALSO set False by the
     unrelated compiler repair loop (graph.py's one-shot retry on a validation
     error), which must never receive clarification-specific instructions

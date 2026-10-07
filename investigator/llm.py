@@ -38,6 +38,10 @@ from registry.ontology import CONCEPTS
 from registry.semantic_model import resolve_dimension
 
 STEP_TYPES = sorted(STEP_REGISTRY.keys())
+# Not a step: the route for a list / filter / custom-grouping question the
+# steps don't cover. The chat answers it with the AI Query engine
+# (graph.run_query) using params["question"].
+PORTFOLIO_QUERY = "portfolio_query"
 
 logger = logging.getLogger(__name__)
 
@@ -675,6 +679,20 @@ accounts, most first. Only use this as a follow-up on an EXISTING
 priority_accounts result already in entity memory (source_entities names
 it): never call this as the first step of a question. Params:
   {"source_entities": [{"entity_type": "priority_accounts", "entity_value": "portfolio"}]}
+
+portfolio_query: use this when NO step above fits and the question is a
+LIST, FILTER, COUNT, SUM or custom GROUPING over the loans: "show loans with
+arrears above 2 EMI agreed since November 2025," "customers who haven't paid
+for 3 months in Pune," "count of NPA loans by segment and fuel type,"
+"branches with previous and current NPA count, biggest drop first," "total
+SOH of co-lending loans by region." It is answered by a general query engine
+that can filter on any column and group/sort any way. NEVER use it for a
+"why" / drill-down / performance question a step above answers
+(dimension_breakdown, entity_summary, roll rates, vintage and the rest stay
+first choice). Put the question in params.question, rewritten to stand on
+its own: resolve every reference from entity memory ("its loans" after
+discussing branch PUNE -> "PUNE branch's loans"). Params:
+  {"question": "Show all loans in PUNE branch with Arrears / EMI above 2 agreed from November 2025 onward"}
 """.strip()
 
 
@@ -748,7 +766,7 @@ def _normalize_turn_response(raw_text: str) -> dict:
         )
 
     step_type = parsed.get("step_type")
-    if step_type is not None and step_type not in STEP_REGISTRY:
+    if step_type is not None and step_type not in STEP_REGISTRY and step_type != PORTFOLIO_QUERY:
         return _fallback_turn_result(
             f"I'm not sure how to answer that yet (unrecognized step '{step_type}')."
         )

@@ -306,11 +306,10 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
     )
 
 
-# max_entries=64: one entry per distinct table rendered behind a download
-# button (~20+ per full tab walk, x filter combinations). Excel bytes are
-# smaller than the DataFrames upstream, so the limit is looser -- but still
-# bounded, since by default st.cache_data keeps every entry forever.
-@st.cache_data(show_spinner=False, max_entries=64)
+# max_entries=24: one entry per download actually clicked (downloads are
+# built on click). A full-column loan list can be tens of MB, and the cache is
+# shared by every session, so it stays bounded.
+@st.cache_data(show_spinner=False, max_entries=24)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
     out = _dateonly(df)
@@ -429,7 +428,7 @@ def _is_blank(v) -> bool:
 # The app's tabs, in order (app.py's tab bar). Shared so a "See details"
 # button can switch to a tab by its exact label.
 TAB_LABELS = ["🗂️ Dashboard", "🎯 Action Lists", "📈 Migration", "📊 Portfolio Intelligence",
-              "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
+              "🔎 Root Cause", "💼 Business", "🤖 Ask AI", "📋 Report"]
 TAB_KEY = "_active_section"
 
 
@@ -461,7 +460,7 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame
     Streamlit reruns the ENTIRE script (all 7 tabs, not just the active one --
     tabs are only CSS-hidden when inactive, their code still executes) on
     every single interaction anywhere in the app, e.g. clicking "Run Query" in
-    the AI Query tab. Without caching, that meant every one of this app's ~20
+    the Ask AI tab. Without caching, that meant every one of this app's ~20
     _dl_btn call sites re-ran an uncached openpyxl df.to_excel() -- cell-by-cell,
     not vectorized -- on every rerun, regardless of whether the underlying
     table had changed.

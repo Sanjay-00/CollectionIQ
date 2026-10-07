@@ -1,5 +1,10 @@
 """
-Investigator tab: a bounded, human-gated root-cause drill-down assistant,
+Ask AI tab: one chat for both kinds of question. List / filter / custom-
+grouping questions are answered by the AI Query engine (ui/query_answer.py,
+graph.run_query) when the router picks "portfolio_query"; everything below
+describes the drill-down side (the Investigator's steps).
+
+Investigator: a bounded, human-gated root-cause drill-down assistant,
 presented as a chat thread (st.chat_message/st.chat_input) rather than a
 form -- chosen over a React rewrite because the actual complaint it fixes
 ("feels like a form, not a conversation") is fully addressable inside
@@ -45,7 +50,7 @@ from config import INVESTIGATOR_MAX_THREADS
 from investigator.branch_recipients import get_branch_recipients
 from investigator.email_draft import draft_priority_email
 from investigator.guardrails import validate_and_correct
-from investigator.llm import narrate_step_stream, parse_turn
+from investigator.llm import PORTFOLIO_QUERY, narrate_step_stream, parse_turn
 from investigator.state import EntityMemory
 from investigator.steps import (
     METRIC_DIRECTION,
@@ -58,6 +63,7 @@ from investigator.steps import (
 from investigator.suggestions import suggest_mechanism_steps
 from registry.semantic_model import resolve_dimension
 from ui.components import _dl_btn, _safe_df
+from ui.query_answer import render_clarification, render_query_result, run_ai_query
 
 _NEW_CHAT_TITLE = "New chat"
 _TITLE_MAX_CHARS = 40
@@ -65,15 +71,15 @@ _USER_AVATAR = ":material/person:"
 _ASSISTANT_AVATAR = ":material/query_stats:"
 _HELP_TRIGGER = "what can you help me with"
 _HELP_RESPONSE = (
-    "I'm the Investigator. Ask me why a number moved, such as Collection%, "
-    "NPA%, or Hard Bucket%, and I'll drill down one level at a time: "
-    "BU → Zone → Region → Branch → Executive → Customer, sorted worst first. "
-    "Click **Analyse further** at any point to go one level deeper, or just "
-    "type a follow-up (\"meanwhile, how is Rahul in Pune doing\" works too, "
-    "since I keep track of everyone we've discussed this session, not just "
-    "the last one). Every table is the exact underlying data, downloadable "
-    "for audit. I only route your question to the right calculation; I "
-    "never compute the numbers myself."
+    "Ask me two kinds of question. **Why a number moved** (Collection%, NPA%, "
+    "Hard Bucket%...): I drill down one level at a time, BU → Zone → Region → "
+    "Branch → Executive → Customer, worst first; click **Analyse further** to "
+    "go a level deeper, or type a follow-up (\"meanwhile, how is Rahul in Pune "
+    "doing\" works too: I keep track of everyone we've discussed). **Any list "
+    "or count** (\"loans above 2 EMI agreed since November 2025\", \"NPA count "
+    "by segment\"): I build it with the query engine and show the table, KPI "
+    "cards and an Excel download. Every number is computed from your file, "
+    "never by the AI itself; the AI only decides which calculation to run."
 )
 
 # Deliberately generic -- no branch/region/executive name is hardcoded here.
@@ -86,6 +92,9 @@ _SUGGESTIONS = {
     "Summary of my regions": "how are my regions performing",
     "Which branch needs attention?": "which branch is underperforming and why",
     "Who's dragging down collection%?": "who are the bottom performers by collection percent",
+    "Customers not paying for 3 months": "Show customers who haven't paid for last 3 months",
+    "Biggest NPA drop vs last month": "Give me all branches with previous NPA count and current NPA count, "
+                                      "sorted descending with the biggest reduction on top",
 }
 
 # smart_alerts.py::run_all_alerts's own alert "title" -> (step_type, params)
@@ -1038,9 +1047,37 @@ def _maybe_set_thread_title(question: str) -> None:
         thread["title"] = title[:_TITLE_MAX_CHARS] + ("..." if len(title) > _TITLE_MAX_CHARS else "")
 
 
+def _answer_with_query(query: str, df_curr: pd.DataFrame, query_ctx: dict | None,
+                       allow_clarification: bool = True) -> None:
+    """A list / filter / custom-grouping question: answered by the AI Query
+    engine and stored as its own chat message (the result, not a re-run)."""
+    result = run_ai_query(query, df_curr, query_ctx or {}, allow_clarification=allow_clarification,
+                          skip_insights=not st.session_state.get("ask_query_summary", False))
+    turns = _get_turns()
+    turns.append({"role": "assistant", "kind": "query", "question": query, "result": result})
+    _render_query_turn(result, df_curr, len(turns) - 1, latest=True)
+
+
+def _render_query_turn(result: dict, df_curr: pd.DataFrame, index: int, latest: bool) -> None:
+    """latest: only the newest message's clarification keeps its option
+    buttons (an older one has been answered further down the chat)."""
+    key = f"askq_{_sanitize_key(_get_active_thread_id())}_{index}"
+    if result.get("needs_clarification"):
+        picked = render_clarification(result, key, show_options=latest)
+        if picked:
+            out_of_scope = result.get("query_title") == "Out of Scope"
+            st.session_state["_ask_pending"] = (picked, not out_of_scope)
+            st.rerun()
+        return
+    render_query_result(result, df_curr, key)
+
+
 def _process_new_question(
     question: str, df_curr: pd.DataFrame, df_prev: pd.DataFrame, memory: EntityMemory, as_of=None,
+    query_ctx: dict | None = None, direct: tuple | None = None,
 ) -> None:
+    """direct=(question, allow_clarification): a clarification the user picked,
+    answered straight by the query engine (no routing call)."""
     turns = _get_turns()
     _maybe_set_thread_title(question)
     turns.append({"role": "user", "text": question})
@@ -1048,6 +1085,9 @@ def _process_new_question(
         st.write(question)
 
     with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
+        if direct is not None:
+            _answer_with_query(direct[0], df_curr, query_ctx, allow_clarification=direct[1])
+            return
         if question.strip().lower() == _HELP_TRIGGER:
             # Answered directly, no Gemini call at all -- "what can you help
             # me with" is a question about the TOOL, not the portfolio data,
@@ -1073,22 +1113,29 @@ def _process_new_question(
                 turns.append({"role": "assistant", "text": text})
                 return
 
-            status.write(f"Running: {turn['step_type']}")
-            try:
-                result_df = _execute_step(turn["step_type"], turn["params"], df_curr, df_prev, memory, as_of=as_of)
-            except (KeyError, ValueError) as e:
-                status.update(label="Couldn't run that", state="error", expanded=True)
-                text = f"I couldn't run that: {e}"
-                st.warning(text)
-                turns.append({"role": "assistant", "text": text})
-                return
-
-            status.update(label=f"Done: {turn['step_type']}", state="complete")
+            query = None
+            if turn["step_type"] == PORTFOLIO_QUERY:
+                # A list / count question: the query engine answers it below.
+                query = (turn.get("params") or {}).get("question") or question
+                status.update(label="Building a custom answer", state="complete")
+            else:
+                status.write(f"Running: {turn['step_type']}")
+                try:
+                    result_df = _execute_step(turn["step_type"], turn["params"], df_curr, df_prev, memory, as_of=as_of)
+                except (KeyError, ValueError) as e:
+                    status.update(label="Couldn't run that", state="error", expanded=True)
+                    text = f"I couldn't run that: {e}"
+                    st.warning(text)
+                    turns.append({"role": "assistant", "text": text})
+                    return
+                status.update(label=f"Done: {turn['step_type']}", state="complete")
+        if query is not None:
+            _answer_with_query(query, df_curr, query_ctx)
+            return
 
         # Outside the status block -- the "thinking" indicator has
         # collapsed, and the actual chat content (streamed narrative, then
-        # the table) renders as the message body, same shape ai_query.py's
-        # own st.status(...) -> results-below pattern already uses.
+        # the table) renders as the message body.
         narrative = ""
         if result_df is not None and not result_df.empty and st.session_state.get("investigator_narrate"):
             narrative = st.write_stream(narrate_step_stream(turn["step_type"], result_df))
@@ -1147,7 +1194,7 @@ def _render_header() -> None:
         with st.container(horizontal=True, vertical_alignment="center"):
             st.markdown(
                 "<div style='font-size:20px;font-weight:800;color:#FFC000;'>"
-                "🕵️ Investigator</div>",
+                "🤖 Ask AI</div>",
                 unsafe_allow_html=True,
             )
             with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center", gap="small"):
@@ -1222,7 +1269,13 @@ def _render_header() -> None:
                              "observation above the table. Off by default to keep "
                              "answers instant and cheap.",
                     )
-        st.caption("Ask anything about your portfolio. AI only routes the question; every table is exact source data, downloadable for audit.")
+                    st.toggle(
+                        "AI summary under list answers", key="ask_query_summary", value=False,
+                        help="Adds one extra Gemini call to write bullet-point observations "
+                             "under a list or count answer. Off by default.",
+                    )
+        st.caption("Ask why a number moved, or for any list or count. The AI only picks the calculation; "
+                   "every table is exact source data, downloadable for audit.")
 
     if chosen_id != active_id:
         st.session_state["investigator_active_thread"] = chosen_id
@@ -1261,8 +1314,13 @@ def _render_proactive_opener(df_curr: pd.DataFrame, alerts_curr: list | None, me
 
 def render_investigator_tab(
     df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: int = 0, filter_key: str = "",
-    alerts_curr: list | None = None, curr_month: str | None = None,
+    alerts_curr: list | None = None, curr_month: str | None = None, query_ctx: dict | None = None,
 ) -> None:
+    """The Ask AI tab: one chat for drill-down questions (the Investigator's
+    steps) and list / count questions (the AI Query engine, ui/query_answer.py).
+    query_ctx: what the query engine needs (see run_ai_query)."""
+    query_ctx = {"df_prev": df_prev, "alerts_curr": alerts_curr, "data_version": data_version,
+                 "filter_key": filter_key, **(query_ctx or {})}
     # st.chat_input is a native widget with no styling of its own -- it
     # renders on secondaryBackgroundColor (.streamlit/config.toml: "#1a1a1a",
     # near-black) but inherits the app-wide textColor ("#000000", black) for
@@ -1271,7 +1329,7 @@ def render_investigator_tab(
     # OTHER native-widget/default-text element on this app's WHITE main
     # background, so changing it globally would break readability
     # elsewhere. Matches this app's existing convention of hand-styling
-    # light text on its own dark panels (e.g. ui/tabs/ai_query.py's #e6edf3
+    # light text on its own dark panels (e.g. ui/query_answer.py's #e6edf3
     # on dark cards) rather than fighting the global theme.
     st.markdown(
         """<style>
@@ -1317,7 +1375,7 @@ def render_investigator_tab(
             fill: #1a1a1a !important;
         }
 
-        /* Match the AI Query tab's dark panel look (ui/tabs/ai_query.py's
+        /* The dark panel look of the query answers (ui/query_answer.py's
            #0d1117/#21262d/#FFC000 palette) instead of the default white
            bordered card, scoped via st.container(key=...)'s "st-key-*"
            class so nothing else on this page is affected. */
@@ -1402,6 +1460,8 @@ def render_investigator_tab(
                         )
                     else:
                         st.info("This result is no longer available.")
+                elif t.get("kind") == "query":
+                    _render_query_turn(t["result"], df_curr, i, latest=(i == last_assistant_idx))
                 elif t.get("kind") == "info":
                     st.markdown(t.get("text", ""))
                 else:
@@ -1416,12 +1476,17 @@ def render_investigator_tab(
                 key="investigator_suggestions",
             )
         if suggestion:
-            _process_new_question(_SUGGESTIONS[suggestion], df_curr, df_prev, memory, as_of=curr_month)
+            _process_new_question(_SUGGESTIONS[suggestion], df_curr, df_prev, memory, as_of=curr_month,
+                                  query_ctx=query_ctx)
             st.rerun()
 
+    pending = st.session_state.pop("_ask_pending", None)      # a clarification option was clicked
+    if pending:
+        _process_new_question(pending[0], df_curr, df_prev, memory, as_of=curr_month,
+                              query_ctx=query_ctx, direct=pending)
+
     prompt = st.chat_input(
-        "Ask anything about your portfolio, e.g. \"which branches are "
-        "underperforming\" or \"meanwhile, how are executive in my region performing\"",
+        "Ask anything, e.g. \"which branches are underperforming\" or \"loans above 2 EMI agreed since November 2025\"",
     )
     if prompt:
-        _process_new_question(prompt.strip(), df_curr, df_prev, memory, as_of=curr_month)
+        _process_new_question(prompt.strip(), df_curr, df_prev, memory, as_of=curr_month, query_ctx=query_ctx)

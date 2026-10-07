@@ -1,4 +1,11 @@
-﻿import os
+"""
+Answers from the AI Query engine (graph.run_query: planner -> compiler ->
+executor) for the Ask AI chat: run a question (cached per data, filters and
+options), draw a clarification card, draw an answer. The chat
+(ui/tabs/investigator.py) routes list / filter / custom-grouping questions
+here; drill-down questions go to the Investigator's own steps.
+"""
+import os
 
 import pandas as pd
 import streamlit as st
@@ -56,208 +63,80 @@ def _ai_cache_put(cache: dict, key: tuple, value: dict) -> None:
     cache[key] = value
 
 
-def render_ai_query_tab(
-    df_curr: pd.DataFrame,
-    snapshot_dates: dict | None = None,
-    df_prev: pd.DataFrame | None = None,
-    precomputed_views: dict | None = None,
-    alerts_curr: list | None = None,
-    alerts_prev: list | None = None,
-    rr_meta: dict | None = None,
-    data_version: int = 0,
-    filter_key: str = "",
-) -> None:
+def run_ai_query(question: str, df_curr: pd.DataFrame, ctx: dict, *, allow_clarification: bool = True,
+                 skip_insights: bool = True) -> dict:
+    """Run one question through the AI Query engine (graph.run_query), with
+    live status steps. An identical question on the same data and filters is
+    served from the session cache (no Gemini call). ctx: snapshot_dates,
+    df_prev, precomputed_views, alerts_curr, alerts_prev, rr_meta,
+    data_version, filter_key (what app.py hands the Ask AI tab)."""
     from graph import run_query
+    cache = st.session_state.setdefault("_ai_query_cache", {})
+    cache_key = (question, ctx.get("data_version", 0), ctx.get("filter_key", ""), skip_insights, allow_clarification)
+    cached = _ai_cache_get(cache, cache_key)
+    if cached is not None:
+        _log_ai_cache_hit(question, ctx.get("data_version", 0), ctx.get("filter_key", ""))
+        return cached
+    with st.status("Building the answer...", expanded=False) as status:
+        result = run_query(question, df_curr, on_step=status.write,
+                           snapshot_dates=ctx.get("snapshot_dates"), allow_clarification=allow_clarification,
+                           df_prev=ctx.get("df_prev"), precomputed_views=ctx.get("precomputed_views"),
+                           alerts_curr=ctx.get("alerts_curr"), alerts_prev=ctx.get("alerts_prev"),
+                           rr_meta=ctx.get("rr_meta"), skip_insights=skip_insights)
+        status.update(label="Done", state="complete")
+    if not result.get("error"):
+        _ai_cache_put(cache, cache_key, result)       # never cache a transient failure
+    return result
 
-    # Exact-repeat query cache: re-asking an identical question (same text,
-    # same underlying data + filter selection) skips both Gemini calls
-    # entirely instead of re-running the full pipeline from scratch. Keyed on
-    # (query, data_version, filter_key) -- data_version changes whenever the
-    # raw uploaded data changes, filter_key changes whenever the sidebar
-    # filter selection changes (the exact same signal app.py already uses to
-    # invalidate "ai_result" on a filter change) -- together they cover every
-    # way df_curr seen by run_query can change.
-    _ai_cache = st.session_state.setdefault("_ai_query_cache", {})
 
-    # ── Example chips (cross-frame JS fill) ──────────────────────────────────
-    st.components.v1.html("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
-<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #f2f2f2; font-family: 'Inter', sans-serif; padding: 2px 0 0 0; }
-.panel {
-    background: #0d1117;
-    border: 1px solid #21262d;
-    border-radius: 12px;
-    padding: 20px 24px;
-}
-.hdr { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.icon { font-size: 22px; line-height: 1; }
-.title { font-size: 20px; font-weight: 800; color: #FFC000; letter-spacing: -0.3px; }
-.sub { font-size: 13px; color: #6b7280; line-height: 1.7; margin-bottom: 14px; }
-.chip {
-    display: inline-block;
-    background: #161b22; color: #8b949e;
-    border: 1px solid #2d333b; border-radius: 6px;
-    padding: 5px 12px; font-size: 11px; font-style: italic;
-    cursor: pointer; margin: 0 6px 0 0;
-    font-family: 'Inter', sans-serif;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
-    line-height: 1.4; outline: none;
-}
-.chip:hover { background: #2a2a2a; color: #d0d0d0; border-color: #555; }
-</style>
-<div class="panel">
-  <div class="hdr">
-    <span class="icon">🤖</span>
-    <span class="title">AI Query Assistant</span>
-  </div>
-  <div class="sub">Ask any question about your loan portfolio in plain English. Click an example to try:</div>
-  <button class="chip" onclick="fill('Show customers who haven\\'t paid for last 3 months')">Show customers who haven't paid for last 3 months</button>
-  <button class="chip" onclick="fill('Give me all branches with previous NPA count and current NPA count, sorted descending with the biggest reduction on top')">Branches with the biggest NPA drop vs last month</button>
-  <button class="chip" onclick="fill('Show all accounts with arrears greater than 2 EMI from November 2025 onward advances')">Show all accounts &gt;2 bucket from Nov 2025 onward advances</button>
-  <button class="chip" onclick="fill('Show those accounts that need immediate action')">Show accounts that need immediate action</button>
-</div>
-<script>
-function fill(text) {
-    var doc = window.parent.document;
-    var ta  = doc.querySelector('[data-testid="stTextArea"] textarea');
-    if (!ta) return;
-    var set = Object.getOwnPropertyDescriptor(window.parent.HTMLTextAreaElement.prototype, 'value').set;
-    set.call(ta, text);
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-    ta.focus();
-}
-</script>
-""", height=200, scrolling=False)
+def render_clarification(result: dict, key: str, show_options: bool = True) -> str | None:
+    """The engine's "which did you mean?" card. Returns the question to ask
+    next when an option is clicked (the chat then asks it), else None.
+    show_options=False: an already-answered card, shown without its buttons."""
+    q_question = result.get("clarification_question") or "Your query could be read a few ways: which did you mean?"
+    q_options  = result.get("clarification_options") or []
+    orig_query = result.get("query") or ""
 
-    ai_query = st.text_area(
-        "Query", key="ai_query_input",
-        placeholder="Type your question here...",
-        height=90, label_visibility="collapsed",
-    )
+    st.markdown(f"""
+    <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
+                padding:16px 20px;margin:16px 0 10px 0;">
+      <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
+        🤔 NEED A QUICK CLARIFICATION
+      </div>
+      <div style="font-size:13px;color:#e6edf3;line-height:1.6;">{q_question}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col_run, col_opt, col_hint = st.columns([1, 1.6, 3])
-    with col_run:
-        run_btn = st.button("🔍  Run Query", type="primary", width='stretch')
-    with col_opt:
-        skip_insights = not st.checkbox(
-            "Generate AI summary", value=False, key="ai_gen_summary",
-            help="Off by default: skips the 2nd Gemini call that writes the bullet-point "
-                 "observations below the table. The table/KPIs/highlights are unaffected: "
-                 "check this only if you also want the written narrative, which can add "
-                 "several extra seconds (sometimes the slower of the two calls).",
-        )
-    with col_hint:
-        st.markdown(
-            "<div style='padding-top:10px;font-size:12px;color:#aaa;'>"
-            "Powered by Gemini 2.5 Flash · LangGraph multi-agent pipeline</div>",
-            unsafe_allow_html=True,
-        )
+    # Out-of-scope's own options are standalone EXAMPLE queries (a safety
+    # net offered when the input couldn't be understood at all), not
+    # clarifying details about the SAME original query -- unlike a genuine
+    # ambiguity's options (e.g. "Collection Efficiency" for "best
+    # branches"), appending one of these to the original nonsense text as
+    # "(interpretation: ...)" would hand the planner a confusing hybrid
+    # string instead of the clean example it's supposed to be. Run it as
+    # a fresh query instead, exactly as if the user had typed it in themselves.
+    is_out_of_scope = result.get("query_title") == "Out of Scope"
 
-    if run_btn:
-        if not ai_query.strip():
-            st.warning("Please enter a question.")
-        elif not os.environ.get("GOOGLE_API_KEY"):
-            st.error("GOOGLE_API_KEY not found in .env file.")
-        else:
-            _q = ai_query.strip()
-            # skip_insights is part of the cache key -- a query cached WITHOUT
-            # the AI summary (checkbox off) must not be silently reused once
-            # the user turns the checkbox on and re-asks the identical question.
-            _cache_key = (_q, data_version, filter_key, skip_insights)
-            _cached = _ai_cache_get(_ai_cache, _cache_key)
-            if _cached is not None:
-                _log_ai_cache_hit(_q, data_version, filter_key)
-                _ai_result = _cached
-            else:
-                with st.status("Running AI pipeline...", expanded=True) as _status:
-                    def _on_step(label: str) -> None:
-                        _status.write(label)
-                    _ai_result = run_query(_q, df_curr, on_step=_on_step,
-                                           snapshot_dates=snapshot_dates, df_prev=df_prev,
-                                           precomputed_views=precomputed_views,
-                                           alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                           rr_meta=rr_meta, skip_insights=skip_insights)
-                    _status.update(label="Query complete", state="complete", expanded=False)
-                if not _ai_result.get("error"):
-                    # Don't cache a transient failure (e.g. a network blip) --
-                    # re-asking the same question should get a fresh attempt,
-                    # not the same error replayed from cache forever.
-                    _ai_cache_put(_ai_cache, _cache_key, _ai_result)
-            st.session_state["ai_result"] = _ai_result
+    if not show_options:
+        st.caption("Options: " + ", ".join(q_options) + "." if q_options else "")
+        return None
+    for i, opt in enumerate(q_options):
+        if st.button(opt, key=f"{key}_clarify_{i}", width="stretch"):
+            # Out-of-scope options are standalone example questions; a real
+            # ambiguity's option is a reading of the SAME question.
+            return opt if is_out_of_scope else f"{orig_query} (interpretation: {opt})"
+    st.caption("None of these? Ask again with the exact detail you meant (name the metric, "
+               "branch, executive or region).")
+    return None
 
-    # ── Render result ─────────────────────────────────────────────────────────
-    result = st.session_state.get("ai_result")
-    if not result:
-        return
 
+def render_query_result(result: dict, df_curr: pd.DataFrame, key: str) -> None:
+    """One AI Query answer: the header card, KPI cards / highlights, the table
+    for its result type, the optional AI observations and feedback. key makes
+    every widget in it unique (many answers can sit in one chat)."""
     if result.get("error"):
         st.error(f"Query failed: {result['error']}")
         return
-
-    # ── Clarification: query was ambiguous  -  ask instead of guessing ───────────
-    if result.get("needs_clarification"):
-        q_question = result.get("clarification_question") or "Your query could be read a few ways: which did you mean?"
-        q_options  = result.get("clarification_options") or []
-        orig_query = result.get("query") or ""
-
-        st.markdown(f"""
-        <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
-                    padding:16px 20px;margin:16px 0 10px 0;">
-          <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
-            🤔 NEED A QUICK CLARIFICATION
-          </div>
-          <div style="font-size:13px;color:#e6edf3;line-height:1.6;">{q_question}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Out-of-scope's own options are standalone EXAMPLE queries (a safety
-        # net offered when the input couldn't be understood at all), not
-        # clarifying details about the SAME original query -- unlike a genuine
-        # ambiguity's options (e.g. "Collection Efficiency" for "best
-        # branches"), appending one of these to the original nonsense text as
-        # "(interpretation: ...)" would hand the planner a confusing hybrid
-        # string instead of the clean example it's supposed to be. Run it as
-        # a fresh query instead, exactly as if the user had typed it in themselves.
-        is_out_of_scope = result.get("query_title") == "Out of Scope"
-
-        for i, opt in enumerate(q_options):
-            if st.button(opt, key=f"clarify_opt_{i}", width='stretch'):
-                next_query = opt if is_out_of_scope else f"{orig_query} (interpretation: {opt})"
-                # A different query string, so this naturally gets its own
-                # cache key -- no collision with the original query's entry.
-                _cache_key = (next_query, data_version, filter_key, skip_insights)
-                _cached = _ai_cache_get(_ai_cache, _cache_key)
-                if _cached is not None:
-                    _log_ai_cache_hit(next_query, data_version, filter_key)
-                    _res = _cached
-                else:
-                    with st.status("Running AI pipeline...", expanded=True) as _status:
-                        def _on_step(label: str) -> None:
-                            _status.write(label)
-                        _res = run_query(next_query, df_curr, on_step=_on_step,
-                                         snapshot_dates=snapshot_dates, allow_clarification=not is_out_of_scope,
-                                         df_prev=df_prev, precomputed_views=precomputed_views,
-                                         alerts_curr=alerts_curr, alerts_prev=alerts_prev,
-                                         rr_meta=rr_meta, skip_insights=skip_insights)
-                        _status.update(label="Query complete", state="complete", expanded=False)
-                    if not _res.get("error"):
-                        _ai_cache_put(_ai_cache, _cache_key, _res)
-                st.session_state["ai_result"] = _res
-                st.rerun()
-
-        st.markdown(
-            '<div style="background:#161b22;border:1px dashed #3d444d;border-radius:10px;'
-            'padding:10px 16px;margin-top:8px;font-size:12px;color:#9ca3af;">'
-            '💬 <strong style="color:#c9d1d9;">None of these?</strong> Your question is still in the '
-            "box above: edit it with the exact detail you meant (e.g. name the metric or "
-            'branch/executive/region directly), then click <strong style="color:#c9d1d9;">Run Query</strong> again.'
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
     filtered_df = result["result_df"]
     kpis_q      = result["result_kpis"]
     rankings    = result["result_rankings"]
@@ -450,7 +329,7 @@ function fill(text) {
         with sel_col:
             n_accounts = st.selectbox(
                 "How many accounts to review?",
-                options=[20, 30, 40, 50], index=1, key="priority_n",
+                options=[20, 30, 40, 50], index=1, key=f"{key}_priority_n",
             )
 
         distributed = distribute_priority_accounts(filtered_df, n_accounts)
@@ -474,7 +353,7 @@ function fill(text) {
                          height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
             if len(disp) > 1000:
                 st.caption(f"Showing 1,000 of {len(disp):,} rows: download Excel for full list.")
-            _dl_btn(disp, f"priority_{p_num}.xlsx", f"dl_priority_{p_num}", full_source=df_curr)
+            _dl_btn(disp, f"priority_{p_num}.xlsx", f"{key}_dl_priority_{p_num}", full_source=df_curr)
 
     elif result.get("plan_mode"):
         # ── Multi-step plan result ────────────────────────────────────────────
@@ -526,7 +405,7 @@ function fill(text) {
                          height=min(420, 50 + min(len(display_plan), 1000) * 36), hide_index=True)
             if len(display_plan) > 1000:
                 st.caption(f"Showing 1,000 of {len(display_plan):,} rows: download Excel for full list.")
-            _dl_btn(display_plan, "plan_result.xlsx", "dl_plan")
+            _dl_btn(display_plan, "plan_result.xlsx", f"{key}_dl_plan")
         else:
             st.warning("The plan returned no rows.")
 
@@ -583,7 +462,7 @@ function fill(text) {
                          height=min(400, 50 + min(len(filtered_df), 1000) * 36), hide_index=True)
             if len(filtered_df) > 1000:
                 st.caption(f"Showing 1,000 of {len(filtered_df):,} rows: download Excel for full list.")
-            _dl_btn(filtered_df, "ranking_result.xlsx", "dl_ranking")
+            _dl_btn(filtered_df, "ranking_result.xlsx", f"{key}_dl_ranking")
 
     elif is_aggregation:
         # ── Ranked aggregation table ──────────────────────────────────────────
@@ -650,7 +529,7 @@ function fill(text) {
               </table>
             </div>
             """, unsafe_allow_html=True)
-            _dl_btn(filtered_df, "aggregation_result.xlsx", "dl_aggregation")
+            _dl_btn(filtered_df, "aggregation_result.xlsx", f"{key}_dl_aggregation")
         else:
             st.warning("No data returned for this aggregation.")
 
@@ -755,7 +634,7 @@ function fill(text) {
         st.dataframe(_safe_df(display_filtered.head(1000)), width='stretch', height=320, hide_index=True)
         if len(display_filtered) > 1000:
             st.caption(f"Showing 1,000 of {len(display_filtered):,} rows: download Excel for full list.")
-        _dl_btn(display_filtered, "filtered_accounts.xlsx", "dl_filter_table", full_source=df_curr)
+        _dl_btn(display_filtered, "filtered_accounts.xlsx", f"{key}_dl_filter_table", full_source=df_curr)
 
     # ── AI Observations ───────────────────────────────────────────────────────
     # Empty when "Generate AI summary" was left unchecked (skip_insights=True) --
@@ -783,11 +662,11 @@ function fill(text) {
                 unsafe_allow_html=True,
             )
         with _fb_cols[1]:
-            if st.button("👍", key="fb_up", help="Helpful result"):
+            if st.button("👍", key=f"{key}_fb_up", help="Helpful result"):
                 _send_feedback(_run_id, score=1.0)
                 st.session_state["_fb_sent"] = True
         with _fb_cols[2]:
-            if st.button("👎", key="fb_down", help="Result needs improvement"):
+            if st.button("👎", key=f"{key}_fb_down", help="Result needs improvement"):
                 _send_feedback(_run_id, score=0.0)
                 st.session_state["_fb_sent"] = True
         if st.session_state.pop("_fb_sent", False):

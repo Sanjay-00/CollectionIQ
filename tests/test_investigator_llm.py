@@ -517,3 +517,27 @@ class TestGeminiFailureHandling:
         df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
         assert list(llm.narrate_step_stream("entity_summary", df)) == ["Collection is"]
         assert fallback_calls == []
+
+
+class TestPortfolioQueryRoute:
+    """The Ask AI chat sends list / filter / custom-grouping questions to the
+    AI Query engine through one extra route, "portfolio_query"."""
+
+    def test_route_is_accepted_with_its_standalone_question(self):
+        import json
+        out = llm._normalize_turn_response(json.dumps({
+            "step_type": llm.PORTFOLIO_QUERY,
+            "params": {"question": "Count of NPA loans by segment and fuel type"},
+        }))
+        assert out["step_type"] == llm.PORTFOLIO_QUERY and not out["needs_clarification"]
+        assert out["params"]["question"] == "Count of NPA loans by segment and fuel type"
+
+    def test_unknown_step_is_still_rejected(self):
+        import json
+        out = llm._normalize_turn_response(json.dumps({"step_type": "made_up_step", "params": {}}))
+        assert out["step_type"] is None and out["needs_clarification"]
+
+    def test_prompt_describes_the_route(self):
+        from investigator.state import EntityMemory
+        prompt = llm.build_turn_prompt("list loans", EntityMemory())
+        assert "portfolio_query" in prompt and "params.question" in prompt

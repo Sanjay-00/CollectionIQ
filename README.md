@@ -76,7 +76,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 ![Migration](docs/screenshots/05-migration.png)
 &nbsp;
 
-**Portfolio Intelligence: one question at a time: Regions & Branches, Executives (Top 25% / Middle / Bottom 25% tiers by collection or strike rate), Segments, and Exposure (large customers over ₹2 Cr with their delinquent loans, largest delinquent loans, fleet operators, concentration map)**
+**Portfolio Intelligence: one question at a time: Regions & Branches, Executives (Top 25% / Middle / Bottom 25% tiers by collection or strike rate), Segments (segment, fuel type, payment mode, NACH, legal stage, secured / unsecured, each by branch or executive too), and Exposure (large customers over ₹2 Cr with their delinquent loans, largest delinquent loans, fleet operators, concentration map)**
 &nbsp;
 
 **Root Cause: why it's moving, in four views: the dominant driver per region, insurance vs installment arrears, paying vs not paying, and the recent-advances cohort (with today's due-date-missed list)**
@@ -111,7 +111,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 ![Disbursement Vintage](docs/screenshots/16-business-4.png)
 &nbsp;
 
-**AI Query Assistant: Plain English queries powered by Gemini 2.5 Flash-Lite + LangGraph**
+**Ask AI: one chat for "why did this move" drill-downs and for any list or count in plain English, powered by Gemini 2.5 Flash-Lite + LangGraph (screens below show the earlier query layout)**
 
 ![Ask a question in plain English](docs/screenshots/17-ai-query-1.png)
 &nbsp;
@@ -154,7 +154,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 
 **Plain English Query Engine** : Ask any question in NBFC language. Get back a filtered loan table, a ranked executive comparison, or a single stat answer. Multi-step questions (for example "customers per branch with more than 3 loans" or "fleet owners who have not paid this month") are answered by a composable step-plan engine that chains group-by, conditional counts, derive, sort and limit to any depth. When a question is genuinely ambiguous, the agent asks a short clarifying question with 3 to 5 options instead of guessing. Every result includes an Excel download and optional AI observations. Ask for "all columns" to see every raw column plus the computed ones; loan-level downloads always carry them, even when the screen shows a curated subset.
 
-**Investigator (Chat Drill-Down)** : A chat assistant for the "why" behind a number. Ask why collection % is down and drill one level at a time, Business Unit → Zone → Region → Branch → Executive → the actual loans, with customer names attached. It checks the mechanism behind a move (roll rate, vintage, overdue vs current demand), offers a 9-category priority menu, and drafts a branch email as a downloadable .eml that is never sent automatically. The AI only picks which tested calculation to run; nothing runs without a click, and multi-customer results reach Gemini only as counts and totals, never customer names.
+**Ask AI (one chat)** : A router reads each message and sends it down one of two paths. A **list, filter, count or custom grouping** ("loans above 2 EMI agreed since November 2025", "NPA count by segment and fuel type") goes to the AI Query pipeline below and comes back as a table with KPI cards. A **"why"** question goes to the Investigator drill-down: a chat assistant for the "why" behind a number. Ask why collection % is down and drill one level at a time, Business Unit → Zone → Region → Branch → Executive → the actual loans, with customer names attached. It checks the mechanism behind a move (roll rate, vintage, overdue vs current demand), offers a 9-category priority menu, and drafts a branch email as a downloadable .eml that is never sent automatically. The AI only picks which tested calculation to run; nothing runs without a click, and multi-customer results reach Gemini only as counts and totals, never customer names.
 
 **Multi-Region File Support** : Upload multiple regional LCC files at once for a unified view. Supports `.xlsx`, `.xls`, and `.xlsb` with automatic deduplication and datetime normalisation across files.
 
@@ -163,6 +163,8 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 **Automated Priority Action List** : Seven-tier business priority framework ranks accounts by impact. Non-starters, easy settlements, insurance arrears, co-lending risk, and NPA accounts each get their own actionable tier.
 
 **Executive Tiers** : In Portfolio Intelligence → Executives, every executive is placed in the top 25%, middle or bottom 25% of the executives listed, by collection % (or by strike rate when sorted by it, to see who's current on this month's instalment, not just who collected the most). The bottom quarter is marked red.
+
+**Sidebar Filters** : Zone, Region, Branch, Loan Status, loan date (on or after) and Segment apply to every tab and the report. Zone narrows the Region list and Region narrows Branch, so the choices always fit together.
 
 **Dashboard Summary** : The first tab reads like a monthly review: KPIs against last month, the regions and branches that moved most, early-warning slips with a next-month forecast, a league table for any metric (worst or best, with last month's rank), new business, alert counts, and a "what to do first" summary whose lists open in Action Lists. Every section links to its detail tab.
 
@@ -203,7 +205,7 @@ With CollectionIQ, the same question is answered in under 30 seconds by the lead
 
 ## Architecture
 
-CollectionIQ has one AI pipeline, orchestrated with LangGraph, for answering questions in real time. Everything else (dashboard, alerts, roll analysis, the monthly report) is deterministic pandas over one shared set of metric definitions, so a number is the same in every tab and every report.
+CollectionIQ answers questions in one chat (Ask AI), backed by the AI Query pipeline below (orchestrated with LangGraph) and the Investigator's drill-down steps. Everything else (dashboard, alerts, roll analysis, the monthly report) is deterministic pandas over one shared set of metric definitions, so a number is the same in every tab and every report.
 &nbsp;
 
 ### AI Query Pipeline
@@ -366,7 +368,8 @@ CollectionIQ/
 │   └── summary.py                  # Dashboard summary: moves, league tables, business, alerts
 │
 ├── ui/
-│   ├── tabs/                       # One module per dashboard tab, incl. ai_query.py, investigator.py
+│   ├── tabs/                       # One module per dashboard tab; investigator.py is the Ask AI chat
+│   ├── query_answer.py             # Runs and draws AI Query answers inside the Ask AI chat
 │   ├── action_overview.py          # The Dashboard summary sections
 │   ├── components.py               # Shared KPI cards, download buttons, shading, safe tables
 │   ├── glossary.py                 # Plain-language definitions behind every ⓘ

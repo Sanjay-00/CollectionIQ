@@ -232,6 +232,15 @@ class TestKpiCardHtmlArrowAndColor:
         assert "kpi-mom-up" in html2
 
 
+def _in_memory(path):
+    """An upload-like file object (bytes + .name) that needs no closing."""
+    import io
+    from pathlib import Path
+    buf = io.BytesIO(Path(path).read_bytes())
+    buf.name = str(path)
+    return buf
+
+
 class TestLoadAndConcatDuplicateLoanCount:
     """_load_and_concat aggregates load_and_validate's per-file
     dropped_duplicate_loans count (df.attrs), plus any additional cross-file
@@ -247,7 +256,7 @@ class TestLoadAndConcatDuplicateLoanCount:
         buf = _build_upload(overrides)
         path = tmp_path / name
         path.write_bytes(buf.getvalue())
-        return open(path, "rb")  # real path on disk -> .name is already usable
+        return _in_memory(path)  # real path on disk -> .name is already usable
 
     def test_single_file_no_duplicates(self, tmp_path):
         f = self._real_upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"]})
@@ -281,7 +290,7 @@ class TestLoadAndConcatMissingOptionalCols:
         buf = _build_upload(overrides)
         path = tmp_path / name
         path.write_bytes(buf.getvalue())
-        return open(path, "rb")
+        return _in_memory(path)
 
     def test_single_file_reports_its_own_missing_cols(self, tmp_path):
         f = self._real_upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"]})
@@ -308,7 +317,7 @@ class TestLoadAndConcatMissingOptionalCols:
         buf = pd.DataFrame(data)
         path2 = tmp_path / "b.xlsx"
         buf.to_excel(path2, index=False, engine="openpyxl")
-        f2 = open(path2, "rb")
+        f2 = _in_memory(path2)
 
         result_df, errs = _load_and_concat([f1, f2])
         assert errs == []
@@ -336,7 +345,7 @@ class TestLoadAndConcatMissingOptionalCols:
         path2 = tmp_path / "b.xlsx"
         _build_without_colending(["L3", "L4"]).to_excel(path2, index=False, engine="openpyxl")
 
-        result_df, errs = _load_and_concat([open(path1, "rb"), open(path2, "rb")])
+        result_df, errs = _load_and_concat([_in_memory(path1), _in_memory(path2)])
         assert errs == []
         assert "CoLending_Loans" not in result_df.columns
         assert "CoLending_Loans" in result_df.attrs["missing_optional_cols"]
@@ -438,3 +447,28 @@ class _Fake:
 
     def markdown(self, *a, **k):
         return None
+
+
+def test_dashboard_cards_move_percent_metrics_in_points():
+    # A % metric's card shows the change in points, like every other tab and
+    # the report (59.00% from 58.36% is "0.64 pts", not the relative "1.10%").
+    from ui.tabs.dashboard import _change
+    metrics = {"Delinquency %": (59.0, 1.1), "Count": (8000, 0.38)}
+    prev = {"Delinquency %": (58.36, None), "Count": (7970, None)}
+    assert _change("Delinquency %", metrics, prev) == (0.64, " pts")
+    assert _change("Delinquency %", metrics, None) == (None, " pts")       # no last month: "no prev data"
+    assert _change("Count", metrics, prev) == (0.38, "%")                   # counts keep the % change
+
+
+def test_segments_group_by_loan_attributes():
+    # Payment mode, NACH, legal stage and security type are Segments groupings;
+    # a blank legal stage is "Not in legal" and NACH Y/N read as words.
+    from ui.tabs.portfolio_intelligence import _cached_segments
+    df = pd.DataFrame({"Loan No": ["A", "B", "C"], "Unit": ["X"] * 3, "Arrears / EMI": [0.0, 4.0, 1.0],
+                       "curr_bucket": ["STD", "NPA", "1-30 DPD"], "SOH": [1.0, 2.0, 3.0],
+                       "LGL_DESCRIPTION": [None, "Sec 138 Notice", ""], "NACHStatus": ["Y", "N", "y"]})
+    legal = _cached_segments.__wrapped__(df, 0, "", "LGL_DESCRIPTION", "Together", "All")
+    assert set(legal["Name"]) == {"Not in legal", "Sec 138 Notice"}
+    assert int(legal.set_index("Name").loc["Not in legal", "Accounts"]) == 2
+    nach = _cached_segments.__wrapped__(df, 0, "", "NACHStatus", "Together", "All")
+    assert set(nach["Name"]) == {"Registered", "Not registered"}

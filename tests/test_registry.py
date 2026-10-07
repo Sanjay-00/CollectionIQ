@@ -261,3 +261,16 @@ def test_every_view_can_be_computed_on_demand():
         except Exception as e:      # noqa: BLE001 -- collect every failure
             failed[name] = repr(e)
     assert failed == {}
+
+
+def test_dimension_by_real_column_name_in_any_case():
+    # The planner sometimes writes a column name in its own case ("fuel_type"
+    # for FUEL_TYPE); that must group by the real column, not fail to compile.
+    import pandas as pd
+    from compiler.core import compile_logical
+    df = pd.DataFrame({"Loan No": ["L1", "L2"], "FUEL_TYPE": ["DIESEL", "CNG"], "SegmentName": ["A", "B"],
+                       "curr_bucket": ["NPA", "STD"], "Arrears / EMI": [4.0, 0.0]})
+    plan, errs = compile_logical({"intent": "aggregation", "dimensions": ["segment", "fuel_type"],
+                                  "measures": [{"name": "Count", "agg": "count"}]}, df)
+    assert errs == [], errs
+    assert any(s.get("op") == "group_aggregate" and s["group_by"] == ["SegmentName", "FUEL_TYPE"] for s in plan)

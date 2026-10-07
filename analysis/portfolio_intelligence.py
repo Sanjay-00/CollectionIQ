@@ -354,7 +354,11 @@ def compute_overdue_demand_scorecard(df_curr: pd.DataFrame) -> dict[str, pd.Data
         # Overall Collection % for every unit in one pass (shared definition).
         coll = unit_metrics(df_curr, [col], flags=flags).set_index(col)["Collection%"]
         rows = []
-        for key, grp in df_curr.groupby(col):
+        # Only the columns read below: grouping all ~100 columns per unit was the cost.
+        keep = [col, *[src for src, _ in extra_cols], "Loan No", "Overdue", "MonthDemandExclPC", "OverdueCollected",
+                "DemandCollected", "Month Collection (Excluding Reserve Collection)"]
+        narrow = df_curr[list(dict.fromkeys(k for k in keep if k in df_curr.columns))]
+        for key, grp in narrow.groupby(col):
             name = _exec_name(key) if col == _EXEC_KEY else key
             n = account_count(grp)
             if n < min_accounts:

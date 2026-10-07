@@ -45,6 +45,6 @@ def render_action_lists_tab(lists: list[dict], df_curr: pd.DataFrame) -> None:
     view = list_controls(f"al_{names.index(name)}", e["loans"], "Branch", "loans")
     soh = view["SOH"].sum() / 1e7 if "SOH" in view.columns else 0.0
     st.caption(f"These {len(view):,} loans: ₹{soh:,.2f} Cr SOH.")
-    st.dataframe(_safe_df(view), use_container_width=True, hide_index=True, height=min(38 + 35 * len(view), 520))
+    st.dataframe(_safe_df(view), width="stretch", hide_index=True, height=min(38 + 35 * len(view), 520))
     slug = "".join(ch if ch.isalnum() else "_" for ch in name.lower()).strip("_")
     _dl_btn(view.rename(columns=RAW_NAMES), f"{slug}.xlsx", f"dl_al_{slug}", full_source=df_curr)

@@ -94,6 +94,12 @@ def _cached_totals(_c, _p, data_version: int, filter_key: str, branch: str = "Al
 def _cached_segments(_c, data_version: int, filter_key: str, dim_col: str, breakdown: str, branch: str) -> pd.DataFrame:
     from utils import unit_metrics
     d = _c if branch == "All" else _c[_c["Unit"].astype(str) == branch]
+    if dim_col in _BLANK_AS:      # a blank legal stage means the loan isn't in legal, not "unknown"
+        d = d.assign(**{dim_col: d[dim_col].where(d[dim_col].astype(str).str.strip().ne("") & d[dim_col].notna(),
+                                                  _BLANK_AS[dim_col])})
+    if dim_col in _VALUE_LABELS:     # "Y"/"N" read as words
+        labels = _VALUE_LABELS[dim_col]
+        d = d.assign(**{dim_col: d[dim_col].map(lambda v: labels.get(str(v).strip().upper(), v))})
     by = {"Together": [dim_col], "By branch": [dim_col, "Unit"], "By executive": [dim_col, "MNT NAME", "Unit"]}[breakdown]
     by = [c for c in by if c in d.columns]
     m = unit_metrics(d, by, min_accounts=1 if breakdown == "Together" else 3)
@@ -304,19 +310,28 @@ def _view_executives(c, p, data_version, filter_key) -> None:
 
 # ── View 3: Segments ─────────────────────────────────────────────────────────
 
+# Loan attributes the Segments view can group by (label -> column), shown when
+# the file has the column with at least two values.
+_SEGMENT_DIMS = {"Fuel type": "FUEL_TYPE", "Payment mode": "Paymethod", "NACH registered": "NACHStatus",
+                 "Legal stage": "LGL_DESCRIPTION", "Secured / unsecured": "Security_Type"}
+_BLANK_AS = {"LGL_DESCRIPTION": "Not in legal"}
+_VALUE_LABELS = {"NACHStatus": {"Y": "Registered", "N": "Not registered"}}
+
+
 def _view_segments(c, data_version, filter_key) -> None:
     from utils import segment_column
     dims = {}
     seg = segment_column(c)
     if seg:
         dims["Segment"] = seg
-    if "FUEL_TYPE" in c.columns:
-        dims["Fuel type"] = "FUEL_TYPE"
+    for label, col in _SEGMENT_DIMS.items():
+        if col in c.columns and (col in _BLANK_AS or c[col].nunique(dropna=True) > 1):
+            dims[label] = col
     if not dims:
-        st.info("No segment or fuel type column in this file.")
+        st.info("No segment or loan-attribute column in this file.")
         return
-    a, b, d = st.columns([1, 1.6, 1.2])
-    dim = a.radio("By", list(dims), horizontal=True, key="pi_seg_dim")
+    a, b, d = st.columns([1.3, 1.6, 1.2])
+    dim = a.selectbox("By", list(dims), key="pi_seg_dim")
     breakdown = b.radio("Break down", ["Together", "By branch", "By executive"], horizontal=True, key="pi_seg_breakdown")
     branch = d.selectbox("Branch", ["All"] + sorted(c["Unit"].dropna().astype(str).unique()), key="pi_seg_branch")
     df = _cached_segments(c, data_version, filter_key, dims[dim], breakdown, branch)
@@ -381,7 +396,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
         takeaway(f"These {len(view):,} loans hold <b>₹{soh / 1e7:,.2f} Cr</b> SOH "
                   f"({soh / book * 100 if book else 0:.1f}% of the whole book); "
                   f"{int((view['Bucket'] == 'NPA').sum()):,} of them are already NPA.")
-        st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
+        st.dataframe(_safe_df(view), width="stretch", hide_index=True)
         _dl_btn(view.rename(columns={v: k for k, v in _RENAME.items() if v in view.columns and k in c.columns}),
                 "largest_delinquent_loans.xlsx", "dl_pi_top_loans", full_source=c)
     elif what == "Fleet operators":
@@ -393,7 +408,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
                   f"<b>₹{fl['total_soh_cr']:,.2f} Cr</b> SOH; {fl['npa_operators']:,} of them have at least one NPA loan.")
         df = fl["top_df"].rename(columns={"Unit": "Branch"})
         view = list_controls("pi_fleet", df, "Branch", "fleet operators")
-        st.dataframe(_safe_df(view), use_container_width=True, hide_index=True)
+        st.dataframe(_safe_df(view), width="stretch", hide_index=True)
         if fl.get("excluded_blank_mobile_loans"):
             st.caption(f"{fl['excluded_blank_mobile_loans']:,} loans with no mobile number can't be grouped by customer.")
         _dl_btn(view, "fleet_operators.xlsx", "dl_pi_fleet")
@@ -487,7 +502,7 @@ def _view_large_customers(c, data_version, filter_key) -> None:
                  .apply(lambda row: [red if row.get("Delinquent") == "Yes" else ""] * len(row), axis=1)
                  .format({**{k: "{:,.0f}" for k in money},
                           **({"Arrears / EMI": "{:.2f}"} if "Arrears / EMI" in view.columns else {})}, na_rep=""),
-                 use_container_width=True, hide_index=True, height=min(38 + 35 * len(view), 520))
+                 width="stretch", hide_index=True, height=min(38 + 35 * len(view), 520))
     st.caption(f"{len(view):,} loans. Delinquent loans (any EMI or charge overdue) are shaded red and come first "
                "for each customer.")
     _dl_btn(lv, "large_customer_loans.xlsx", "dl_pi_cust_loans")

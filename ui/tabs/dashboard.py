@@ -18,16 +18,25 @@ _KPI_RISK        = ["Count", "SOH", "Delinquency %", "SMA-2 %", "NPA %", "NPA % 
 _INVERSE_MOM     = {"NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Delinquency %"}
 
 
-def _kpi_row(keys: list, metrics: dict, count_deltas: dict | None = None) -> None:
+def _change(k: str, metrics: dict, prev_metrics: dict | None) -> tuple:
+    """(change, unit): a % metric moves in points ("▲ 0.64 pts", as on every
+    other tab and the report); an amount or count as a % change."""
+    if _KIND[k] == "pct":
+        before = (prev_metrics or {}).get(k)
+        return (None if before is None else round(metrics[k][0] - before[0], 2)), " pts"
+    return metrics[k][1], "%"
+
+
+def _kpi_row(keys: list, metrics: dict, count_deltas: dict | None = None, prev_metrics: dict | None = None) -> None:
     count_deltas = count_deltas or {}
-    html = "".join(
-        _kpi_card_html(
-            k, fmt_value(metrics[k][0], _KIND[k]), metrics[k][1],
-            inverse=k in _INVERSE_MOM, zero_delta_bad=True,
-            count_delta=count_deltas.get(k),
-        )
-        for k in keys if k in metrics and k in _KIND
-    )
+    cards = []
+    for k in keys:
+        if k not in metrics or k not in _KIND:
+            continue
+        change, unit = _change(k, metrics, prev_metrics)
+        cards.append(_kpi_card_html(k, fmt_value(metrics[k][0], _KIND[k]), change, unit=unit,
+                                    inverse=k in _INVERSE_MOM, zero_delta_bad=True, count_delta=count_deltas.get(k)))
+    html = "".join(cards)
     st.markdown(f'<div class="kpi-row">{html}</div>', unsafe_allow_html=True)
 
 
@@ -47,17 +56,16 @@ def render_dashboard_tab(
     sel_branch: str,
     sel_status: str,
     alerts: list,
+    prev_metrics: dict | None = None,
     data_version: int = 0,
-    segment: tuple = (),
-    date_from=None,
+    filter_key: str = "",
     alerts_prev: list | None = None,
 ) -> None:
     # ── Scoreboard: collections, then book and risk ──────────────────────────
     st.markdown('<div class="section-label">Collections</div>', unsafe_allow_html=True)
-    _kpi_row(_KPI_COLLECTIONS, metrics)
+    _kpi_row(_KPI_COLLECTIONS, metrics, prev_metrics=prev_metrics)
     st.markdown('<div class="section-label" style="margin-top:14px;">Book and Risk</div>', unsafe_allow_html=True)
-    _kpi_row(_KPI_RISK, metrics, count_deltas={"NPA %": _npa_count_delta(df_curr, df_prev)})
+    _kpi_row(_KPI_RISK, metrics, count_deltas={"NPA %": _npa_count_delta(df_curr, df_prev)}, prev_metrics=prev_metrics)
 
     # ── Summary of the whole portfolio, each section linking to its tab ──────
-    filter_key = f"{sel_region}|{sel_branch}|{sel_status}|{','.join(sorted(segment))}|{date_from}"
     render_summary(df_curr, df_prev, data_version, filter_key, curr_month, alerts, alerts_prev or [])
