@@ -590,12 +590,15 @@ def _fmt_cell(v, kind: str, row=None, count_key: str | None = None, amount_key: 
     return _esc(v)
 
 
-def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, max_height: int | None = None) -> str:
+def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, max_height: int | None = None,
+               highlight=None) -> str:
     """cols: {"key", "label"?, "fmt": text|int|pct|pct_count|pct_cr|cr|inr|num|pp|count_change,
     "count"?: count column for pct_count, "amount"?: ₹ Cr column for pct_cr, "heat"?: True (red shading by rank,
     lowest = palest), "good_if_up"?: True (a rise is good: green arrows),
     "help"?: hover text, "bold"?: True}. total: an optional final row (dict).
-    max_height: scroll inside the table with the header kept in view."""
+    max_height: scroll inside the table with the header kept in view.
+    highlight: optional row -> bool; True rows get a red edge and a pale red
+    tint (e.g. a customer with a loan behind on payment)."""
     heat = {c["key"]: heat_range(df[c["key"]].tolist()) for c in cols if c.get("heat") and c["key"] in df.columns}
     head = "".join(
         f'<th style="text-align:{"left" if c.get("fmt", "text") == "text" else "right"};">{_esc(c.get("label", c["key"]))}'
@@ -604,9 +607,12 @@ def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, ma
     frames = [(r, False) for _, r in df.iterrows()] + ([(pd.Series(total), True)] if total else [])
     for r, is_total in frames:
         tds = ""
-        for c in cols:
+        flagged = not is_total and highlight is not None and bool(highlight(r))
+        for i, c in enumerate(cols):
             kind, v = c.get("fmt", "text"), r.get(c["key"])
             style = f'text-align:{"left" if kind == "text" else "right"};'
+            if flagged:
+                style += "background:#fff1f2;" + ("box-shadow:inset 4px 0 0 #dc2626;" if i == 0 else "")
             if c.get("bold"):
                 style += "font-weight:700;"
             if not is_total and c["key"] in heat:

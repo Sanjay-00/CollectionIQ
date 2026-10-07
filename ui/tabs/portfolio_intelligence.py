@@ -14,6 +14,7 @@ from ui.components import (
 )
 from config import (
     FLEET_MIN_LOANS, REPOSSESSION_WINDOW_MONTHS, GOOD_CUSTOMER_MIN_TENURE_PCT, GOOD_CUSTOMER_MIN_LCC_PCT,
+    LARGE_CUSTOMER_MIN_SOH_CR,
 )
 
 VIEWS = ["Regions & Branches", "Executives", "Segments", "Exposure", "Action Lists"]
@@ -257,6 +258,12 @@ def _cached_delinquent(_c, data_version: int, filter_key: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
+def _cached_large_customers(_c, data_version: int, filter_key: str, min_cr: float) -> dict:
+    from analysis.customer_exposure import large_customers
+    return large_customers(_c, min_cr)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
 def _cached_fleet(_c, data_version: int, filter_key: str) -> dict:
     from analysis.portfolio_intelligence import compute_fleet_exposure
     return compute_fleet_exposure(_c, top_n=None)
@@ -484,9 +491,11 @@ _BUCKET_FILTERS = {"All delinquent": None, "SMA-1 and worse": ["SMA-1", "SMA-2",
 
 
 def _view_exposure(c, data_version, filter_key, fig_treemap) -> None:
-    what = st.radio("Show", ["Largest delinquent loans", "Fleet operators", "Concentration map"],
+    what = st.radio("Show", ["Large customers", "Largest delinquent loans", "Fleet operators", "Concentration map"],
                     horizontal=True, key="pi_exp_what")
-    if what == "Largest delinquent loans":
+    if what == "Large customers":
+        _view_large_customers(c, data_version, filter_key)
+    elif what == "Largest delinquent loans":
         df = _cached_delinquent(c, data_version, filter_key)
         if df.empty:
             st.info("No delinquent loans.")
@@ -520,6 +529,97 @@ def _view_exposure(c, data_version, filter_key, fig_treemap) -> None:
     else:
         _chart_card(fig_treemap)
         st.caption("Box size = SOH; colour = NPA % (pale = lower, dark red = higher). Click a region to see its branches.")
+
+
+_CUSTOMER_COLS = [
+    {"key": "Customer", "bold": True}, {"key": "Mobile"}, {"key": "Branches"},
+    {"key": "Exposure (Cr)", "label": "Exposure", "fmt": "cr",
+     "help": "The customer's total SOH across all their loans in the upload."},
+    {"key": "Loans", "fmt": "int", "help": "Loans in view (the download also has Loans in Book: all of them)."},
+    {"key": "Delinquent %", "label": "Delinquent loans", "fmt": "pct_count", "count": "Delinquent", "heat": True,
+     "help": "Loans with any EMI or charge overdue: % of the customer's loans (number of loans)."},
+    {"key": "Delinquent SOH %", "label": "Delinquent SOH", "fmt": "pct_cr", "amount": "Delinquent SOH (Cr)",
+     "heat": True, "help": "SOH of the delinquent loans as % of the customer's SOH (₹ Cr)."},
+    {"key": "NPA", "label": "NPA loans", "fmt": "int"},
+    {"key": "Worst Bucket"},
+    {"key": "Overdue (Closing Arrears)", "label": "Overdue", "fmt": "inr"},
+]
+_LOAN_MONEY = ("SOH", "POS", "Closing Arrears", "ARREARS AGAINST INST", "ARREARS AGAINST EXP", "Month Due-Inst",
+               "Month Collection (Excluding Reserve Collection)", "Last Receipt Amount", "Loan Amount")
+
+
+def _customer_total(cust: pd.DataFrame) -> dict:
+    loans, delq = int(cust["Loans"].sum()), int(cust["Delinquent"].sum())
+    soh, bad_soh = float(cust["SOH (Cr)"].sum()), float(cust["Delinquent SOH (Cr)"].sum())
+    return {"Customer": "Total", "Exposure (Cr)": round(float(cust["Exposure (Cr)"].sum()), 2), "Loans": loans,
+            "Delinquent": delq, "Delinquent %": round(delq / loans * 100, 2) if loans else 0.0,
+            "Delinquent SOH (Cr)": round(bad_soh, 2), "Delinquent SOH %": round(bad_soh / soh * 100, 2) if soh else 0.0,
+            "NPA": int(cust["NPA"].sum()), "Overdue (Closing Arrears)": float(cust["Overdue (Closing Arrears)"].sum())}
+
+
+def _view_large_customers(c, data_version, filter_key) -> None:
+    a, b, d = st.columns([1, 1.4, 1.6])
+    min_cr = a.number_input("Exposure at least (₹ Cr)", min_value=0.1, value=float(LARGE_CUSTOMER_MIN_SOH_CR),
+                            step=0.25, format="%.2f", key="pi_cust_min")
+    r = _cached_large_customers(c, data_version, filter_key, float(min_cr))
+    cust, loans = r["customers"], r["loans"]
+    if cust.empty:
+        st.info(f"No customer has ₹{min_cr:,.2f} Cr or more SOH. The largest customer exposure in this file is "
+                f"₹{r['largest_cr']:,.2f} Cr; lower the amount to see the biggest customers.")
+        return
+    branches = sorted({x.strip() for v in cust["Branches"] for x in str(v).split(",") if x.strip()})
+    branch = b.selectbox("Branch", ["All"] + branches, key="pi_cust_branch")
+    d.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
+    only = d.checkbox("Only customers with a delinquent loan", key="pi_cust_only")
+    if branch != "All":
+        cust = cust[cust["Branches"].astype(str).str.split(", ").apply(lambda xs: branch in xs)]
+    if only:
+        cust = cust[cust["Has Delinquent Loan"]]
+    if cust.empty:
+        st.info("No customer matches these choices.")
+        return
+
+    total = _customer_total(cust)
+    _takeaway(f"<b>{len(cust):,}</b> customers with ₹{min_cr:,.2f} Cr or more exposure hold "
+              f"<b>₹{total['Exposure (Cr)']:,.2f} Cr</b>. <b>{int(cust['Has Delinquent Loan'].sum()):,}</b> of them "
+              f"have a loan behind on payment, with <b>₹{total['Delinquent SOH (Cr)']:,.2f} Cr</b> SOH on those "
+              f"loans; they are marked in red.")
+    st.markdown(html_table(cust, _CUSTOMER_COLS, total=total, max_height=480 if len(cust) > 12 else None,
+                           highlight=lambda row: bool(row.get("Has Delinquent Loan"))), unsafe_allow_html=True)
+    st.caption("A customer is matched by mobile number, so two people sharing a number count as one. "
+               "Exposure counts all of the customer's loans in the upload, even outside the sidebar filter.")
+    keep = ["Customer", "Mobile", "Exposure (Cr)", "Loans in Book", "Loans", "Delinquent", "Delinquent %",
+            "Delinquent SOH (Cr)", "Delinquent SOH %", "NPA", "SOH (Cr)", "Overdue (Closing Arrears)",
+            "Worst Bucket", "Branches", "Regions", "Executives"]
+    _dl_btn(_with_total_row(cust[keep], total), "large_customers.xlsx", "dl_pi_cust")
+
+    # Loan level: every loan of the customers above, delinquent ones shaded.
+    st.markdown('<div class="section-label" style="margin-top:18px;">Loans of these customers</div>',
+                unsafe_allow_html=True)
+    labels = {f"{row['Customer']} ({row['Mobile']}), ₹{row['Exposure (Cr)']:,.2f} Cr": str(row["Mobile"]).strip()
+              for _, row in cust.iterrows()}
+    x, y = st.columns([2.4, 1.6])
+    pick = x.selectbox("Customer", ["All customers above", *labels], key="pi_cust_pick")
+    y.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
+    only_bad = y.checkbox("Only delinquent loans", key="pi_cust_only_loans")
+    mobs = set(labels.values()) if pick not in labels else {labels[pick]}
+    lv = loans[loans["Cust Mob No"].astype(str).str.strip().isin(mobs)]
+    if only_bad:
+        lv = lv[lv["Delinquent"] == "Yes"]
+    if lv.empty:
+        st.info("No loans to show for this choice.")
+        return
+    view = lv.rename(columns=_RENAME)
+    money = [k for k in _LOAN_MONEY if k in view.columns]
+    red = "background-color:#fff1f2;color:#7f1d1d"
+    st.dataframe(_safe_df(view).style
+                 .apply(lambda row: [red if row.get("Delinquent") == "Yes" else ""] * len(row), axis=1)
+                 .format({**{k: "{:,.0f}" for k in money},
+                          **({"Arrears / EMI": "{:.2f}"} if "Arrears / EMI" in view.columns else {})}, na_rep=""),
+                 use_container_width=True, hide_index=True, height=min(38 + 35 * len(view), 520))
+    st.caption(f"{len(view):,} loans. Delinquent loans (any EMI or charge overdue) are shaded red and come first "
+               "for each customer.")
+    _dl_btn(lv, "large_customer_loans.xlsx", "dl_pi_cust_loans")
 
 
 # ── View 5: Action lists ─────────────────────────────────────────────────────

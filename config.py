@@ -194,6 +194,10 @@ GOOD_CUSTOMER_MIN_LCC_PCT = 100
 # treated as a fleet operator rather than an individual borrower
 FLEET_MIN_LOANS = 3
 
+# Large customers: a customer (matched by mobile number) whose loans add up to
+# at least this much SOH, across the whole upload, in ₹ crore.
+LARGE_CUSTOMER_MIN_SOH_CR = 2.0
+
 # Region spellings that mean the same region, mapped to one name at load time
 # (every uploaded file and the due-date-missed list). Matching ignores case,
 # spaces and punctuation, so "C.S. Nagar" and "cs nagar" both match "CS NAGAR".

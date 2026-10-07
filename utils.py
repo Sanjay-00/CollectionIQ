@@ -400,6 +400,7 @@ def repair_upload(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 CUSTOMER_LOAN_COUNT = "Customer Loan Count"
+CUSTOMER_SOH = "Customer SOH"
 
 
 def add_customer_loan_count(df: pd.DataFrame) -> pd.DataFrame:
@@ -409,7 +410,8 @@ def add_customer_loan_count(df: pd.DataFrame) -> pd.DataFrame:
     about the current view -- filtering to one branch must not demote a
     customer whose other loans sit in another branch. Blank mobile numbers get
     no count (NA): unrelated customers without a mobile on file would otherwise
-    merge into one phantom fleet operator."""
+    merge into one phantom fleet operator. CUSTOMER_SOH is the same customer's
+    total SOH across the whole upload (the "exposure" of a large customer)."""
     if "Cust Mob No" not in df.columns or "Loan No" not in df.columns:
         return df
     attrs = dict(df.attrs)
@@ -417,6 +419,9 @@ def add_customer_loan_count(df: pd.DataFrame) -> pd.DataFrame:
     has_mobile = (mob != "") & (mob.str.lower() != "nan") & df["Cust Mob No"].notna()
     counts = df[has_mobile].groupby(mob[has_mobile])["Loan No"].nunique()
     df = df.assign(**{CUSTOMER_LOAN_COUNT: mob.map(counts).where(has_mobile).astype("Int64")})
+    if "SOH" in df.columns:
+        soh = to_num(df, "SOH", fill=0).groupby(mob).sum()
+        df[CUSTOMER_SOH] = mob.map(soh).where(has_mobile)
     df.attrs = attrs
     return df
 
