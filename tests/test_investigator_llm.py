@@ -520,7 +520,7 @@ class TestGeminiFailureHandling:
 
 
 class TestPortfolioQueryRoute:
-    """The Ask AI chat sends list / filter / custom-grouping questions to the
+    """The Investigator routes list / filter / custom-grouping questions to the
     AI Query engine through one extra route, "portfolio_query"."""
 
     def test_route_is_accepted_with_its_standalone_question(self):

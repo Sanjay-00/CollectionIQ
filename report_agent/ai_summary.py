@@ -34,7 +34,13 @@ def _numbers(text: str) -> set[str]:
 
 
 def facts_from(model: dict) -> str:
-    """The summary sentences the AI may rewrite (the first bullets block)."""
+    """The summary sentences the AI may rewrite: the "At a glance" story (or,
+    in a report without one, the first bullets block)."""
+    for b in model["blocks"]:
+        if b["type"] == "glance":
+            lines = [b["verdict"]["text"], *b["good"], *b["bad"],
+                     *(f"Focus: {f['title']}: {f['detail']}" for f in b["focus"])]
+            return "\n".join(f"- {x}" for x in lines)
     for b in model["blocks"]:
         if b["type"] == "bullets":
             return "\n".join(f"- {it['text']}" + (f": {it['detail']}" if it.get("detail") else "") for it in b["items"])

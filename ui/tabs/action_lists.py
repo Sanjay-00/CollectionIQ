@@ -23,7 +23,7 @@ def render_action_lists_tab(lists: list[dict], df_curr: pd.DataFrame) -> None:
              "(a loan can be on more than one).")
 
     overview = pd.DataFrame([{"Group": e["group"], "List": e["name"], "Loans": e["count"], "SOH (Cr)": e["soh_cr"],
-                              "Change": None if e["prev"] is None else e["count"] - e["prev"],
+                              "Change": e.get("change"),
                               "What to do": e["action"],
                               # more good customers is good news: green arrow when the list grows
                               "_good_if_up": e["name"] == "Good customers"} for e in lists])
@@ -32,8 +32,9 @@ def render_action_lists_tab(lists: list[dict], df_curr: pd.DataFrame) -> None:
         {"key": "Group", "bold": True}, {"key": "List"}, {"key": "Loans", "fmt": "int"},
         {"key": "SOH (Cr)", "label": "SOH", "fmt": "cr"},
         {"key": "Change", "label": "vs last month", "fmt": "count_change", "good_if_up": lambda r: bool(r.get("_good_if_up", False)),
-         "help": "Change in the number of loans since last month's file, same rule. Blank when last "
-                 "month can't be counted the same way (lists that need the bucket from two months ago)."},
+         "help": "Change in loans since last month's file, same rule both months. SMA-2, SMA-1 and 1-30 DPD "
+                 "compare the whole bucket (the lists leave out this month's new defaulters). New defaulters and "
+                 "the slips stay blank: last month's would need the month before last."},
         {"key": "What to do"},
     ]), unsafe_allow_html=True)
 
@@ -45,7 +46,7 @@ def render_action_lists_tab(lists: list[dict], df_curr: pd.DataFrame) -> None:
                         format_func=lambda n: next(f"{e['group']}: {_label(e)}" for e in lists if e["name"] == n))
     e = next(x for x in lists if x["name"] == name)
     st.caption(f"{e['action']} Largest SOH first.")
-    view = list_controls(f"al_{names.index(name)}", e["loans"], "Branch", "loans")
+    view = list_controls(f"al_{names.index(name)}", e["loans"], "Branch", "loans", source=df_curr)
     soh = view["SOH"].sum() / 1e7 if "SOH" in view.columns else 0.0
     st.caption(f"These {len(view):,} loans: ₹{soh:,.2f} Cr SOH.")
     st.dataframe(_safe_df(view), width="stretch", hide_index=True, height=min(38 + 35 * len(view), 520))

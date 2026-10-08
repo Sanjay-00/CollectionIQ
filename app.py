@@ -30,6 +30,7 @@ from ui.tabs.migration import render_migration_tab
 from ui.tabs.portfolio_intelligence import render_portfolio_intelligence_tab
 from ui.tabs.root_cause import render_root_cause_tab
 from ui.tabs.business import render_business_tab
+from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.investigator import render_investigator_tab
 from ui.tabs.report import render_report_tab
 
@@ -117,7 +118,7 @@ if generate and curr_file:
     # defaulting to "All". Popping the widget keys here forces every filter
     # back to "All" on every fresh upload, not just when the old value
     # happens to be absent from the new file.
-    for _k in ["df_curr_raw", "df_prev_raw", "rpt2", "rpt2_packs", "_last_filter_key",
+    for _k in ["df_curr_raw", "df_prev_raw", "rpt2", "ai_result", "_last_filter_key",
                "_sample_loaded", "_sel_branch", "_prev_region", "_prev_zone", "sel_zone_key", "sel_region_key", "sel_status_key",
                "sel_date_from_key"]:
         st.session_state.pop(_k, None)
@@ -347,7 +348,7 @@ df_curr, df_prev = _cached_filter(df_curr_raw, df_prev_raw, data_version, sel_re
 
 # Clear AI/report results when filters change
 if st.session_state.get("_last_filter_key") != _filter_key:
-    for _k in ("rpt2", "rpt2_packs", "investigator_threads", "investigator_active_thread"):
+    for _k in ("rpt2", "ai_result", "investigator_threads", "investigator_active_thread"):
         st.session_state.pop(_k, None)
     st.session_state["_last_filter_key"] = _filter_key
 
@@ -445,23 +446,24 @@ try:
             data_version=data_version, filter_key=_filter_key,
         )
 
-    elif active == "🤖 Ask AI":
-        # One chat: drill-down questions run the Investigator's steps, list /
-        # count questions the AI Query engine (ui/query_answer.py).
+    elif active == "🤖 AI Query":
+        # Lists, counts and custom groupings (graph.run_query), steps shown live.
         _snapshot_dates = {"curr": curr_month_input.strftime("%Y-%m-%d")}
         if prev_month and len(df_prev_raw) > 0:
             _snapshot_dates["prev"] = prev_month_input.strftime("%Y-%m-%d")
         rr_matrix, rr_meta = _roll_rate()
-        render_investigator_tab(
-            df_curr, df_prev, data_version=data_version, filter_key=_filter_key,
-            alerts_curr=_alerts(), curr_month=curr_month,
-            query_ctx={
-                "snapshot_dates": _snapshot_dates, "alerts_prev": _alerts_prev(), "rr_meta": rr_meta,
-                # Views not listed here are computed on demand by the engine's view
-                # layer (registry/views.py) with the same function, so numbers match.
-                "precomputed_views": {"scorecard_df": _scorecard(), "rr_matrix": (rr_matrix, rr_meta)},
-            },
-        )
+        render_ai_query_tab(df_curr, {
+            "snapshot_dates": _snapshot_dates, "df_prev": df_prev, "alerts_curr": _alerts(),
+            "alerts_prev": _alerts_prev(), "rr_meta": rr_meta, "data_version": data_version, "filter_key": _filter_key,
+            # Views not listed here are computed on demand by the engine's view
+            # layer (registry/views.py) with the same function, so numbers match.
+            "precomputed_views": {"scorecard_df": _scorecard(), "rr_matrix": (rr_matrix, rr_meta)},
+        })
+
+    elif active == "🕵️ Investigator":
+        # Why a number moved, one bounded step at a time; lists go to AI Query.
+        render_investigator_tab(df_curr, df_prev, data_version=data_version, filter_key=_filter_key,
+                                alerts_curr=_alerts(), curr_month=curr_month)
 
     elif active == "📋 Report":
         render_report_tab(df_curr, df_prev, curr_month, prev_month, sel_region, sel_branch, sel_status, sel_zone)

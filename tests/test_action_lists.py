@@ -47,3 +47,23 @@ def test_distinct_loans_counts_a_loan_once():
 
 def test_download_names_map_back_to_the_upload():
     assert RAW_NAMES["Region"] == "RegionName" and RAW_NAMES["Branch"] == "Unit" and RAW_NAMES["Executive"] == "MNT NAME"
+
+
+def test_change_vs_last_month_uses_the_same_rule_both_months():
+    # A bucket list (new defaulters left out) can't be rebuilt for last month
+    # without the month before last, so it compares the whole bucket instead;
+    # new defaulters and the slips stay blank rather than mix two rules.
+    c = _book()
+    p = _prev(c).drop(columns=["prev_bucket"], errors="ignore")    # two files uploaded: no month before last
+    lists = {e["name"]: e for e in build_lists(c, "2026-08", run_all_alerts(c, as_of="2026-08"),
+                                               run_all_alerts(p, as_of="2026-07"), df_prev=p, prev_as_of="2026-07")}
+    bucket = lambda df, b: df.loc[df["curr_bucket"] == b, "Loan No"].nunique()   # noqa: E731
+    for name, b in (("SMA-2: last chance before NPA", "SMA-2"), ("SMA-1: stop the slide", "SMA-1"),
+                    ("1-30 DPD: bring them current", "1-30 DPD")):
+        if name in lists:
+            assert lists[name]["change"] == bucket(c, b) - bucket(p, b) and lists[name]["change_basis"] == "bucket"
+    if "New defaulters" in lists:
+        assert lists["New defaulters"]["change"] is None
+    for e in lists.values():
+        if e["change_basis"] == "list":
+            assert e["change"] == e["count"] - e["prev"]

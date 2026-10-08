@@ -1,9 +1,8 @@
 """
 Answers from the AI Query engine (graph.run_query: planner -> compiler ->
-executor) for the Ask AI chat: run a question (cached per data, filters and
-options), draw a clarification card, draw an answer. The chat
-(ui/tabs/investigator.py) routes list / filter / custom-grouping questions
-here; drill-down questions go to the Investigator's own steps.
+executor) for the AI Query tab (ui/tabs/ai_query.py): run a question with its
+steps shown live (cached per data, filters and options), draw a
+clarification card, draw an answer and how it was built.
 """
 import os
 
@@ -65,28 +64,74 @@ def _ai_cache_put(cache: dict, key: tuple, value: dict) -> None:
 
 def run_ai_query(question: str, df_curr: pd.DataFrame, ctx: dict, *, allow_clarification: bool = True,
                  skip_insights: bool = True) -> dict:
-    """Run one question through the AI Query engine (graph.run_query), with
-    live status steps. An identical question on the same data and filters is
-    served from the session cache (no Gemini call). ctx: snapshot_dates,
-    df_prev, precomputed_views, alerts_curr, alerts_prev, rr_meta,
-    data_version, filter_key (what app.py hands the Ask AI tab)."""
+    """Run one question through the AI Query engine (graph.run_query), showing
+    each pipeline step live as it happens. The steps are also kept on the
+    result ("steps"), so render_steps can show them after the page redraws.
+    An identical question on the same data and filters is served from the
+    session cache (no Gemini call; "from_cache" marks it). ctx:
+    snapshot_dates, df_prev, precomputed_views, alerts_curr, alerts_prev,
+    rr_meta, data_version, filter_key (what app.py hands the AI Query tab)."""
     from graph import run_query
     cache = st.session_state.setdefault("_ai_query_cache", {})
     cache_key = (question, ctx.get("data_version", 0), ctx.get("filter_key", ""), skip_insights, allow_clarification)
     cached = _ai_cache_get(cache, cache_key)
     if cached is not None:
         _log_ai_cache_hit(question, ctx.get("data_version", 0), ctx.get("filter_key", ""))
-        return cached
-    with st.status("Building the answer...", expanded=False) as status:
-        result = run_query(question, df_curr, on_step=status.write,
+        return {**cached, "from_cache": True}
+    steps: list[str] = []
+    live = st.empty()           # the live step box, cleared once done: the strip above the answer replaces it
+    with live.container(), st.status("Running AI pipeline...", expanded=True) as status:
+        def on_step(label: str) -> None:
+            steps.append(label)
+            status.write(label)
+        result = run_query(question, df_curr, on_step=on_step,
                            snapshot_dates=ctx.get("snapshot_dates"), allow_clarification=allow_clarification,
                            df_prev=ctx.get("df_prev"), precomputed_views=ctx.get("precomputed_views"),
                            alerts_curr=ctx.get("alerts_curr"), alerts_prev=ctx.get("alerts_prev"),
                            rr_meta=ctx.get("rr_meta"), skip_insights=skip_insights)
-        status.update(label="Done", state="complete")
+    live.empty()
+    result = {**result, "steps": steps}
     if not result.get("error"):
         _ai_cache_put(cache, cache_key, result)       # never cache a transient failure
     return result
+
+
+def steps_strip(steps: list[str], failed: bool = False, note: str = "", full: bool = False) -> None:
+    """The steps behind an answer as one line of ticked chips joined by
+    arrows; the last gets a cross when it failed. A step is "text" or
+    "text|hover detail". Without `full`, a chip shows only the step's name
+    (the text before ":"), with the whole text on hover. note: a small grey
+    tag at the end."""
+    if not steps:
+        return
+    chips = []
+    for i, s in enumerate(steps):
+        text, _, detail = s.partition("|")
+        head = text.split(":", 1)[0].strip()
+        name = text if full or ":" not in text or len(head) > 28 else head
+        bad = failed and i == len(steps) - 1
+        chips.append(f'<span class="pipe-chip{" bad" if bad else ""}" title="{_esc(detail or text)}">{_esc(name)}'
+                     f'<b>{"&#10007;" if bad else "&#10003;"}</b></span>')
+    tag = f'<span class="pipe-note">{_esc(note)}</span>' if note else ""
+    st.markdown(
+        '<style>.pipe { display:flex; flex-wrap:wrap; align-items:center; gap:6px; background:#0d1117;'
+        ' border:1px solid #21262d; border-radius:10px; padding:7px 12px; margin:6px 0 10px 0; }'
+        '.pipe-label { color:#FFC000; font-size:10.5px; font-weight:800; letter-spacing:1px; margin-right:4px; }'
+        '.pipe-chip { background:#161b22; color:#c9d1d9; border:1px solid #2d333b; border-radius:6px;'
+        ' padding:3px 9px; font-size:12px; white-space:nowrap; }'
+        '.pipe-chip b { color:#3fb950; margin-left:5px; } .pipe-chip.bad b { color:#f85149; }'
+        '.pipe-arrow { color:#484f58; font-size:12px; }'
+        '.pipe-note { margin-left:auto; color:#8b949e; font-size:11.5px; font-style:italic; }</style>'
+        f'<div class="pipe"><span class="pipe-label">STEPS</span>'
+        + '<span class="pipe-arrow">&#8594;</span>'.join(chips) + f"{tag}</div>",
+        unsafe_allow_html=True)
+
+
+def render_steps(result: dict, key: str = "") -> None:
+    """The AI Query pipeline's steps for this answer, as one strip (kept
+    after the page redraws), tagged when it came from this session's memory."""
+    steps_strip(result.get("steps") or [], failed=bool(result.get("error")),
+                note="answered from memory, no AI call" if result.get("from_cache") else "")
 
 
 def render_clarification(result: dict, key: str, show_options: bool = True) -> str | None:

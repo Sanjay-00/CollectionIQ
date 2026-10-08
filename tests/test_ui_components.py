@@ -425,8 +425,8 @@ def test_percent_by_soh_and_its_crore_share_one_cell():
 def test_top_x_in_each_branch(monkeypatch):
     import ui.components as comp
     df = pd.DataFrame({"Branch": ["A"] * 5 + ["B"] * 5, "SOH": list(range(10, 0, -1))})
-    picks = {"pi_t_n": 2, "pi_t_b": "All"}
-    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * 3)
+    picks = {"pi_t_n": 2, "pi_t_b": "All", "pi_t_each": "Branch"}
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
     monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
     out = comp.list_controls("pi_t", df, "Branch")
     assert out.groupby("Branch").size().to_dict() == {"A": 2, "B": 2}      # top 2 from EACH branch
@@ -436,11 +436,23 @@ def test_top_x_in_each_branch(monkeypatch):
 def test_region_filter_narrows_the_list(monkeypatch):
     import ui.components as comp
     df = pd.DataFrame({"Region": ["N", "N", "S", "S"], "Branch": ["A", "B", "C", "D"], "SOH": [4, 3, 2, 1]})
-    picks = {"pi_r_n": "All", "pi_r_r": "S", "pi_r_b": "All"}
+    picks = {"pi_r_n": "All", "pi_r_r": "S", "pi_r_b": "All", "pi_r_each": "Whole list"}
     monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
     monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
     out = comp.list_controls("pi_r", df, "Branch")
     assert set(out["Region"]) == {"S"} and len(out) == 2
+
+
+def test_top_x_in_each_zone_with_zone_looked_up_from_the_source(monkeypatch):
+    import ui.components as comp
+    loans = pd.DataFrame({"Loan No": list("ABCDEF"), "Region": ["R1", "R1", "R2", "R2", "R3", "R3"],
+                          "Branch": list("PQRSTU"), "SOH": [6, 5, 4, 3, 2, 1]})
+    source = pd.DataFrame({"Loan No": list("ABCDEF"), "Zone": ["N", "N", "N", "N", "S", "S"]})
+    picks = {"pi_z_n": 1, "pi_z_each": "Zone"}
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
+    monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
+    out = comp.list_controls("pi_z", loans, "Branch", source=source)
+    assert list(out["Zone"]) == ["N", "S"] and list(out["Loan No"]) == ["A", "E"]     # the top 1 of each zone
 
 
 class _Fake:
@@ -477,8 +489,27 @@ def test_segments_group_by_loan_attributes():
     df = pd.DataFrame({"Loan No": ["A", "B", "C"], "Unit": ["X"] * 3, "Arrears / EMI": [0.0, 4.0, 1.0],
                        "curr_bucket": ["STD", "NPA", "1-30 DPD"], "SOH": [1.0, 2.0, 3.0],
                        "LGL_DESCRIPTION": [None, "Sec 138 Notice", ""], "NACHStatus": ["Y", "N", "y"]})
-    legal = _cached_segments.__wrapped__(df, 0, "", "LGL_DESCRIPTION", "Together", "All")
+    legal = _cached_segments.__wrapped__(df, 0, "", "LGL_DESCRIPTION", "Together", ())
     assert set(legal["Name"]) == {"Not in legal", "Sec 138 Notice"}
     assert int(legal.set_index("Name").loc["Not in legal", "Accounts"]) == 2
-    nach = _cached_segments.__wrapped__(df, 0, "", "NACHStatus", "Together", "All")
+    nach = _cached_segments.__wrapped__(df, 0, "", "NACHStatus", "Together", ())
     assert set(nach["Name"]) == {"Registered", "Not registered"}
+
+
+def test_segments_break_down_by_zone_and_filter_by_place():
+    from ui.tabs.portfolio_intelligence import _cached_segments
+    df = pd.DataFrame({"Loan No": list("ABCDEF"), "Zone": ["N", "N", "N", "S", "S", "S"],
+                       "RegionName": ["R1", "R1", "R1", "R2", "R2", "R2"], "Unit": ["X", "X", "X", "Y", "Y", "Y"],
+                       "Arrears / EMI": [0.0, 4.0, 1.0, 0.0, 0.0, 4.0], "SOH": [1.0] * 6,
+                       "curr_bucket": ["STD", "NPA", "1-30 DPD", "STD", "STD", "NPA"], "FUEL_TYPE": ["D"] * 6})
+    by_zone = _cached_segments.__wrapped__(df, 0, "", "FUEL_TYPE", "By zone", ())
+    assert set(by_zone["Zone"]) == {"N", "S"} and by_zone["Accounts"].sum() == 6
+    south = _cached_segments.__wrapped__(df, 0, "", "FUEL_TYPE", "By region", (("Zone", "S"),))
+    assert list(south["Region"]) == ["R2"] and int(south["Accounts"].iloc[0]) == 3
+
+
+def test_apply_place_matches_last_month_loosely():
+    from ui.components import apply_place
+    df = pd.DataFrame({"Zone": ["N", "S"], "RegionName": ["Pune ", "NASHIK"], "Unit": ["A", "B"]})
+    assert len(apply_place(df, {"Region": "PUNE"})) == 0                    # exact by default
+    assert list(apply_place(df, {"Region": "PUNE"}, loose=True)["Unit"]) == ["A"]   # case and spaces ignored

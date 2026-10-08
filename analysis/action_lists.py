@@ -46,7 +46,20 @@ def _entry(group: str, name: str, action: str, loans: pd.DataFrame, soh: pd.Seri
     count = int(loans["Loan No"].nunique()) if "Loan No" in loans.columns else len(loans)
     soh_cr = round(float(loans["SOH"].sum()) / 1e7, 2) if "SOH" in loans.columns else 0.0
     return {"group": group, "name": name, "action": action, "loans": loans,
-            "count": count, "soh_cr": soh_cr, "prev": prev}
+            "count": count, "soh_cr": soh_cr, "prev": prev,
+            "change": None if prev is None else count - prev, "change_basis": None if prev is None else "list"}
+
+
+# The bucket behind each bucket call list. Those lists leave out this month's
+# new defaulters, and last month's list can't be rebuilt without the month
+# before last; so without it, their change compares the WHOLE bucket in both
+# months (same rule both sides) -- "is SMA-2 growing?".
+_BUCKET_OF = {"SMA-2: last chance before NPA": "SMA-2", "SMA-1: stop the slide": "SMA-1",
+              "1-30 DPD: bring them current": "1-30 DPD"}
+
+
+def _bucket_count(df: pd.DataFrame, bucket: str) -> int:
+    return int(df.loc[df["curr_bucket"] == bucket, "Loan No"].nunique())
 
 
 def _loan_count(loans: pd.DataFrame) -> int:
@@ -109,6 +122,13 @@ def build_lists(df_curr: pd.DataFrame, as_of, alerts: list, alerts_prev: list | 
                       "Most of the tenure done and everything paid: offer a top-up or a new loan "
                       "(lowest SOH first: the easiest to refinance).",
                       compute_good_customers(df_curr), soh, prev.get("Good customers"), smallest_first=True))
+    if df_prev is not None and len(df_prev) and {"curr_bucket", "Loan No"} <= set(df_prev.columns) \
+            and "curr_bucket" in df_curr.columns:
+        for e in out:
+            bucket = _BUCKET_OF.get(e["name"])
+            if bucket and e["change"] is None:
+                e["change"] = _bucket_count(df_curr, bucket) - _bucket_count(df_prev, bucket)
+                e["change_basis"] = "bucket"
     return [e for e in out if e["count"]]
 
 

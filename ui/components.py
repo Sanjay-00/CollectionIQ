@@ -254,37 +254,89 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
 TOP_CHOICES = [10, 20, 50, 100, "All"]
 
 
+WHOLE_LIST = "Whole list"
+
+
 def list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows",
-                  region_col: str = "Region") -> pd.DataFrame:
-    """Top X, region and branch filters and "top X in each branch", for any
-    list already sorted with the most important rows first. The region filter
-    shows only when the list has a region column, and narrows the branches."""
-    has_region = region_col in df.columns
-    if has_region:
-        c1, c_r, c2, c3 = st.columns([1, 1.2, 1.2, 1.4])
-    else:
-        c1, c2, c3 = st.columns([1, 1.4, 1.6])
-    n = c1.selectbox("Show top", TOP_CHOICES, index=0, key=f"{key}_n")
+                  region_col: str = "Region", source: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Top X with Zone, Region and Branch filters (each narrowing the next)
+    and "Top X in each" zone / region / branch, for any list already sorted
+    with the most important rows first. A level shows only when the list has
+    its column with 2+ values. source: the loans the list came from; when the
+    list has Loan No but no Zone, each loan's zone is looked up from it."""
+    if "Zone" not in df.columns and source is not None and "Loan No" in df.columns \
+            and {"Loan No", "Zone"} <= set(source.columns):
+        zone_of = source.drop_duplicates("Loan No").set_index("Loan No")["Zone"]
+        df = df.assign(Zone=df["Loan No"].map(zone_of))
+    levels = [(label, col) for label, col in (("Zone", "Zone"), ("Region", region_col), ("Branch", branch_col))
+              if col in df.columns and df[col].nunique(dropna=True) > 1]
+    boxes = st.columns([1] + [1.1] * len(levels) + [1.3])
+    n = boxes[0].selectbox("Show top", TOP_CHOICES, index=0, key=f"{key}_n")
     scope = df
-    if has_region:
-        r = c_r.selectbox("Region", ["All"] + sorted(df[region_col].dropna().astype(str).unique()), key=f"{key}_r")
-        if r != "All":
-            scope = df[df[region_col].astype(str) == r]
-    branches = ["All"] + (sorted(scope[branch_col].dropna().astype(str).unique()) if branch_col in df.columns else [])
-    if st.session_state.get(f"{key}_b") not in branches:      # the branch isn't in the region just picked
-        st.session_state[f"{key}_b"] = "All"
-    b = c2.selectbox("Branch", branches, key=f"{key}_b")
-    c3.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
-    each = c3.checkbox(f"Top {n} in each branch" if n != "All" else "Group by branch", key=f"{key}_each",
-                       disabled=b != "All" or branch_col not in df.columns)
-    d = scope if b == "All" else scope[scope[branch_col].astype(str) == b]
-    if each and b == "All" and branch_col in d.columns:
-        d = d.groupby(branch_col, sort=True, group_keys=False).head(n if n != "All" else len(d))
-        d = d.sort_values(branch_col, kind="stable")
+    for (label, col), box in zip(levels, boxes[1:]):
+        options = ["All"] + sorted(scope[col].dropna().astype(str).unique())
+        wkey = f"{key}_{label[0].lower()}"            # _z, _r, _b
+        if st.session_state.get(wkey) not in options:  # e.g. a branch outside the region just picked
+            st.session_state[wkey] = "All"
+        pick = box.selectbox(label, options, key=wkey)
+        if pick != "All":
+            scope = scope[scope[col].astype(str) == pick]
+    # "Top X in each": only the levels still with 2+ values after the filters.
+    group_by = {label: col for label, col in levels if scope[col].nunique(dropna=True) > 1}
+    each_options = [WHOLE_LIST, *group_by]
+    if st.session_state.get(f"{key}_each") not in each_options:
+        st.session_state[f"{key}_each"] = WHOLE_LIST
+    each = boxes[-1].selectbox(f"Top {n} in each" if n != "All" else "Group by", each_options, key=f"{key}_each")
+    d = scope
+    if each != WHOLE_LIST:
+        col = group_by[each]
+        d = d.groupby(col, sort=True, group_keys=False).head(n if n != "All" else len(d))
+        d = d.sort_values(col, kind="stable")
     elif n != "All":
         d = d.head(n)
-    st.caption(f"Showing {len(d):,} of {len(df):,} {noun}.")
+    st.caption(f"Showing {len(d):,} of {len(df):,} {noun}"
+               + (f": the top {n} in each {each.lower()}." if each != WHOLE_LIST and n != "All" else "."))
     return d
+
+
+# The place hierarchy every screen filters and breaks down by: (label, column).
+PLACE_LEVELS = (("Zone", "Zone"), ("Region", "RegionName"), ("Branch", "Unit"))
+
+
+def place_filters(df: pd.DataFrame, key: str, container=None) -> tuple[pd.DataFrame, dict]:
+    """Zone, Region and Branch dropdowns over loan rows, each narrowing the
+    next (a level shows only when its column has 2+ values in view). A pick
+    that no longer fits (a branch outside the region just picked) goes back to
+    All. Returns (the loans in the chosen place, {label: pick} for each level
+    not on All)."""
+    levels = [(label, col) for label, col in PLACE_LEVELS if col in df.columns and df[col].nunique(dropna=True) > 1]
+    if not levels:
+        return df, {}
+    boxes = (container or st).columns(len(levels))
+    scope, picks = df, {}
+    for (label, col), box in zip(levels, boxes):
+        options = ["All"] + sorted(scope[col].dropna().astype(str).unique())
+        wkey = f"{key}_{label.lower()}"
+        if st.session_state.get(wkey) not in options:
+            st.session_state[wkey] = "All"
+        pick = box.selectbox(label, options, key=wkey)
+        if pick != "All":
+            scope, picks[label] = scope[scope[col].astype(str) == pick], pick
+    return scope, picks
+
+
+def apply_place(df: pd.DataFrame, picks: dict, loose: bool = False) -> pd.DataFrame:
+    """Rows in the place `picks` names ({label: value}, as place_filters
+    returns). loose: match ignoring case and spaces (last month's file, whose
+    names may be typed differently)."""
+    from utils import _unit_key
+    cols = dict(PLACE_LEVELS)
+    for label, value in picks.items():
+        col = cols[label]
+        if col not in df.columns:
+            continue
+        df = df[df[col].map(_unit_key) == _unit_key(value)] if loose else df[df[col].astype(str) == str(value)]
+    return df
 
 
 def takeaway(text: str) -> None:
@@ -441,7 +493,7 @@ def _is_blank(v) -> bool:
 # The app's tabs, in order (app.py's tab bar). Shared so a "See details"
 # button can switch to a tab by its exact label.
 TAB_LABELS = ["🗂️ Dashboard", "🎯 Action Lists", "📈 Migration", "📊 Portfolio Intelligence",
-              "🔎 Root Cause", "💼 Business", "🤖 Ask AI", "📋 Report"]
+              "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
 TAB_KEY = "_active_section"
 
 
@@ -473,7 +525,7 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame
     Streamlit reruns the ENTIRE script (all 7 tabs, not just the active one --
     tabs are only CSS-hidden when inactive, their code still executes) on
     every single interaction anywhere in the app, e.g. clicking "Run Query" in
-    the Ask AI tab. Without caching, that meant every one of this app's ~20
+    the AI Query tab. Without caching, that meant every one of this app's ~20
     _dl_btn call sites re-ran an uncached openpyxl df.to_excel() -- cell-by-cell,
     not vectorized -- on every rerun, regardless of whether the underlying
     table had changed.

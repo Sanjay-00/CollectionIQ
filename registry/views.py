@@ -11,7 +11,7 @@ path to a correct answer for that class of question.
 
 Only views whose analysis/ function returns a DataFrame, a (DataFrame, dict) tuple,
 or a flat dict are included -- anything returning a Plotly Figure/HTML string is
-out of scope (the Ask AI chat's answer renderer, ui/query_answer.py, expects tabular/KPI data).
+out of scope (the AI Query tab's answer renderer, ui/query_answer.py, expects tabular/KPI data).
 
 Schema per entry:
     label        human-readable name, for the prompt catalog

@@ -10,7 +10,8 @@ import pandas as pd
 import streamlit as st
 
 from ui.components import (
-    _dl_btn, _safe_df, _chart_card, _esc, html_table, section_label, takeaway, list_controls,
+    _dl_btn, _safe_df, _chart_card, _esc, apply_place, html_table, place_filters, section_label, takeaway,
+    list_controls,
 )
 from config import FLEET_MIN_LOANS, LARGE_CUSTOMER_MIN_SOH_CR
 
@@ -80,31 +81,39 @@ def _cached_units(_c, _p, data_version: int, filter_key: str, grain: str) -> pd.
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
-def _cached_totals(_c, _p, data_version: int, filter_key: str, branch: str = "All") -> dict:
-    """The Total row: the whole view (or one branch) as one unit -- sum over
-    sum, never an average of rows -- with its own change against last month."""
+def _cached_totals(_c, _p, data_version: int, filter_key: str, place: tuple = ()) -> dict:
+    """The Total row: the whole view (or the zone / region / branch picked,
+    place = ((label, value), ...)) as one unit -- sum over sum, never an
+    average of rows -- with its own change against last month."""
     from analysis.summary import portfolio_total
-    from utils import _unit_key
-    if branch != "All":
-        _c = _c[_c["Unit"].astype(str) == branch]
-        _p = _p[_p["Unit"].map(_unit_key) == _unit_key(branch)] if len(_p) and "Unit" in _p.columns else _p
-    return portfolio_total(_c, _p)
+    picks = dict(place)
+    return portfolio_total(apply_place(_c, picks), apply_place(_p, picks, loose=True) if len(_p) else _p)
+
+
+def _total_label(picks: dict) -> str:
+    return "Total" if not picks else f"Total ({', '.join(picks.values())})"
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _cached_segments(_c, data_version: int, filter_key: str, dim_col: str, breakdown: str, branch: str) -> pd.DataFrame:
+def _cached_segments(_c, data_version: int, filter_key: str, dim_col: str, breakdown: str,
+                     place: tuple = ()) -> pd.DataFrame:
     from utils import unit_metrics
-    d = _c if branch == "All" else _c[_c["Unit"].astype(str) == branch]
+    d = apply_place(_c, dict(place))
     if dim_col in _BLANK_AS:      # a blank legal stage means the loan isn't in legal, not "unknown"
         d = d.assign(**{dim_col: d[dim_col].where(d[dim_col].astype(str).str.strip().ne("") & d[dim_col].notna(),
                                                   _BLANK_AS[dim_col])})
     if dim_col in _VALUE_LABELS:     # "Y"/"N" read as words
         labels = _VALUE_LABELS[dim_col]
         d = d.assign(**{dim_col: d[dim_col].map(lambda v: labels.get(str(v).strip().upper(), v))})
-    by = {"Together": [dim_col], "By branch": [dim_col, "Unit"], "By executive": [dim_col, "MNT NAME", "Unit"]}[breakdown]
-    by = [c for c in by if c in d.columns]
+    by = [c for c in [dim_col, *_BREAKDOWNS[breakdown]] if c in d.columns]
     m = unit_metrics(d, by, min_accounts=1 if breakdown == "Together" else 3)
-    return m.rename(columns={"Unit": "Branch", "MNT NAME": "Executive", dim_col: "Name"}) if not m.empty else m
+    return m.rename(columns={"RegionName": "Region", "Unit": "Branch", "MNT NAME": "Executive", dim_col: "Name"}) \
+        if not m.empty else m
+
+
+# Segments "Break down" choices -> the extra columns to group by (zone > region > branch > executive).
+_BREAKDOWNS = {"Together": [], "By zone": ["Zone"], "By region": ["RegionName"], "By branch": ["Unit"],
+               "By executive": ["MNT NAME", "Unit"]}
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -279,12 +288,13 @@ def _view_executives(c, p, data_version, filter_key) -> None:
     if df.empty:
         st.info("No executive column (MNT NAME) in this file.")
         return
-    a, b = st.columns([1, 2])
-    branch = a.selectbox("Branch", ["All"] + sorted(df["Branch"].astype(str).unique()), key="pi_exec_branch")
+    a, b = st.columns([3, 1.4])
+    scope, picks = place_filters(c, "pi_exec", a)
     sorts = {**_SORTS, **_EXEC_SORTS}
     sort = b.selectbox("Sort by", [k for k in sorts if sorts[k][0] in df.columns], key="pi_exec_sort")
-    if branch != "All":
-        df = df[df["Branch"].astype(str) == branch]
+    if picks and {"Region", "Branch"} <= set(df.columns) and {"RegionName", "Unit"} <= set(scope.columns):
+        keep = set(zip(scope["RegionName"].astype(str), scope["Unit"].astype(str)))
+        df = df[[(r, b_) in keep for r, b_ in zip(df["Region"].astype(str), df["Branch"].astype(str))]]
     col, asc = sorts[sort]
     df = df.sort_values(col, ascending=asc, na_position="last", kind="stable").reset_index(drop=True)
     # Tier: quarter of the executives listed, by strike rate when sorted by it, else by collection.
@@ -300,8 +310,8 @@ def _view_executives(c, p, data_version, filter_key) -> None:
     if "Rescued" in df.columns:
         cols.append({"key": "Rescued", "label": "Rescued", "fmt": "int",
                      "help": "Loans moved from SMA-1/SMA-2/NPA to a better bucket since last month."})
-    t = _cached_totals(c, p, data_version, filter_key, branch)       # every loan in view, not just listed rows
-    total = _total_row("Executive", t, "Total" if branch == "All" else f"Total ({branch})")
+    t = _cached_totals(c, p, data_version, filter_key, tuple(picks.items()))   # every loan in view, not just listed rows
+    total = _total_row("Executive", t, _total_label(picks))
     if total and "Rescued" in df.columns:
         total["Rescued"] = t.get("Rescued")
     st.markdown(html_table(df, [x for x in cols if x["key"] in df.columns], total=total,
@@ -333,26 +343,31 @@ def _view_segments(c, data_version, filter_key) -> None:
     if not dims:
         st.info("No segment or loan-attribute column in this file.")
         return
-    a, b, d = st.columns([1.3, 1.6, 1.2])
+    a, b = st.columns([1.2, 2.8])
     dim = a.selectbox("By", list(dims), key="pi_seg_dim")
-    breakdown = b.radio("Break down", ["Together", "By branch", "By executive"], horizontal=True, key="pi_seg_breakdown")
-    branch = d.selectbox("Branch", ["All"] + sorted(c["Unit"].dropna().astype(str).unique()), key="pi_seg_branch")
-    df = _cached_segments(c, data_version, filter_key, dims[dim], breakdown, branch)
+    options = [k for k, cols in _BREAKDOWNS.items() if all(x in c.columns for x in cols)
+               and not (cols and c[cols[0]].nunique(dropna=True) < 2)]
+    if st.session_state.get("pi_seg_breakdown") not in options:      # e.g. "By zone" with one zone in view
+        st.session_state["pi_seg_breakdown"] = "Together"
+    breakdown = b.radio("Break down", options, horizontal=True, key="pi_seg_breakdown")
+    f, s = st.columns([3, 1.2])
+    _, picks = place_filters(c, "pi_seg", f)
+    sorts = {"NPA % (worst first)": ("NPA%", False), "Delinquency % (worst first)": ("Delinquency%", False),
+             "Accounts (largest first)": ("Accounts", False), "SOH (largest first)": ("SOH (Cr)", False)}
+    sort = s.selectbox("Sort by", list(sorts), key="pi_seg_sort")
+    df = _cached_segments(c, data_version, filter_key, dims[dim], breakdown, tuple(picks.items()))
     if df.empty:
         st.info("No loans for this selection.")
         return
-    sorts = {"NPA % (worst first)": ("NPA%", False), "Delinquency % (worst first)": ("Delinquency%", False),
-             "Accounts (largest first)": ("Accounts", False), "SOH (largest first)": ("SOH (Cr)", False)}
-    sort = st.selectbox("Sort by", list(sorts), key="pi_seg_sort")
     col, asc = sorts[sort]
     df = df.sort_values(col, ascending=asc, kind="stable").reset_index(drop=True)
     top = df.iloc[0]
-    where = "".join(f" in {_esc(top[k])}" for k in ("Branch",) if k in df.columns) + \
+    where = "".join(f" in {_esc(top[k])}" for k in ("Zone", "Region", "Branch") if k in df.columns) + \
         (f" ({_esc(top['Executive'])})" if "Executive" in df.columns else "")
     takeaway(f"<b>{_esc(top['Name'])}</b>{where} is first on this list: NPA {top['NPA%']:.1f}% "
               f"({int(top['NPA']):,} of {int(top['Accounts']):,} loans), delinquency {top['Delinquency%']:.1f}%.")
     cols = [{"key": "Name", "label": dim, "bold": True},
-            *([{"key": "Branch"}] if "Branch" in df.columns else []),
+            *[{"key": k} for k in ("Zone", "Region", "Branch") if k in df.columns],
             *([{"key": "Executive"}] if "Executive" in df.columns else []),
             {"key": "Accounts", "fmt": "int"},
             {"key": "Delinquency%", "label": "Delinquent", "fmt": "pct_count", "count": "Delinquent", "heat": True},
@@ -361,13 +376,13 @@ def _view_segments(c, data_version, filter_key) -> None:
             {"key": "NPA% (SOH)", "label": "NPA by SOH", "fmt": "pct_cr", "amount": "NPA SOH (Cr)", "heat": True},
             {"key": "Collection%", "label": "Collection", "fmt": "pct"},
             {"key": "SOH (Cr)", "label": "SOH", "fmt": "cr"}]
-    t = _cached_totals(c, pd.DataFrame(), data_version, filter_key, branch)
-    total = {"Name": "Total" if branch == "All" else f"Total ({branch})", **{k: t.get(k) for k in (
+    t = _cached_totals(c, pd.DataFrame(), data_version, filter_key, tuple(picks.items()))
+    total = {"Name": _total_label(picks), **{k: t.get(k) for k in (
         "Accounts", "Delinquency%", "Delinquent", "SMA-2%", "SMA-2", "NPA%", "NPA", "NPA% (SOH)", "NPA SOH (Cr)", "Collection%", "SOH (Cr)")}} if t else None
     st.markdown(html_table(df, cols, total=total, max_height=560 if len(df) > 15 else None), unsafe_allow_html=True)
     if breakdown != "Together":
         st.caption("Groups with fewer than 3 loans are left out.")
-    keep = [k for k in ("Name", "Branch", "Executive", "Accounts", "Delinquent", "Delinquency%", "SMA-2", "SMA-2%",
+    keep = [k for k in ("Name", "Zone", "Region", "Branch", "Executive", "Accounts", "Delinquent", "Delinquency%", "SMA-2", "SMA-2%",
                         "NPA", "NPA%", "NPA% (SOH)", "NPA SOH (Cr)", "Collection%", "SOH (Cr)") if k in df.columns]
     _dl_btn(_with_total_row(df[keep], total).rename(columns={"Name": dim}),
             f"{dim.lower().replace(' ', '_')}_table.xlsx", "dl_pi_segments")
@@ -393,7 +408,7 @@ def _view_exposure(c, data_version, filter_key) -> None:
         if _BUCKET_FILTERS[flt]:
             df = df[df["curr_bucket"].isin(_BUCKET_FILTERS[flt])]
         df = df.rename(columns=_RENAME)
-        view = list_controls("pi_top_loans", df, "Branch", "delinquent loans")
+        view = list_controls("pi_top_loans", df, "Branch", "delinquent loans", source=c)
         book = float(pd.to_numeric(c.get("SOH"), errors="coerce").sum()) if "SOH" in c.columns else 0.0
         soh = float(view["SOH"].sum())
         takeaway(f"These {len(view):,} loans hold <b>₹{soh / 1e7:,.2f} Cr</b> SOH "
