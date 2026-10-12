@@ -780,7 +780,10 @@ def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segme
     if segment:
         _seg_col = next((c for c in ["SegmentName", "Segment"] if c in df.columns), None)
         if _seg_col:
-            df = df[df[_seg_col].isin(segment)]
+            # By key, not spelling: last month's file may spell the same
+            # segment "CATEGORY 1" where this month's says "Category 1".
+            keys = {name_key(s) for s in segment}
+            df = df[df[_seg_col].map(name_key).isin(keys)]
     if date_from and "Ag_Date" in df.columns:
         ag_date = pd.to_datetime(df["Ag_Date"], errors="coerce")
         df = df[ag_date >= pd.Timestamp(date_from)]
@@ -850,20 +853,42 @@ def expand_to_all_columns(curated: pd.DataFrame, source_df: pd.DataFrame) -> pd.
     return full
 
 
+_NAME_NOISE = re.compile(r"[\s\-_.]+")
+
+
+def name_key(v) -> str:
+    """Match key for a typed category name: case, spaces, hyphens, underscores
+    and dots ignored ("Category 1", "category1 ", "CATEGORY  1", "Category-1"
+    are one key)."""
+    return _NAME_NOISE.sub("", str(v)).casefold()
+
+
 def normalize_truncated_names(series: pd.Series, prefix_chars: int = SEGMENT_NAME_PREFIX_MATCH_CHARS) -> pd.Series:
-    """Merge values that are truncated-at-different-lengths variants of the
-    same real name (e.g. "Passenger Commerc" / "Passenger Commerci" /
-    "Passenger Commercial") under whichever variant is longest -- see
-    config.py::SEGMENT_NAME_PREFIX_MATCH_CHARS for the full rationale and the
-    real-data evidence behind the 15-character default. Leaves NaN untouched."""
-    mask = series.notna()
+    """One spelling per real category name. Values that differ only in case,
+    spacing or punctuation (name_key) are one category, and truncated-at-
+    different-lengths variants of the same name (e.g. "Passenger Commerc" /
+    "Passenger Commerci" / "Passenger Commercial") merge under the longest --
+    see config.py::SEGMENT_NAME_PREFIX_MATCH_CHARS for the rationale behind
+    the 15-character default (compared on the key, so spacing doesn't count).
+    Each category is shown in its most common spelling in the file (spaces
+    tidied). Leaves NaN and blanks untouched."""
+    values = series.astype("string").str.strip().str.replace(r"\s+", " ", regex=True)
+    mask = values.notna() & (values != "")
     if not mask.any():
         return series
-    values = series[mask].astype(str).str.strip()
-    prefix = values.str[:prefix_chars]
-    canonical = values.groupby(prefix).transform(lambda s: max(s, key=len))
+    values = values[mask].astype(str)
+    key = values.map(name_key)
+    # The most common spelling of each key; on a tie, "Category 1" over
+    # "CATEGORY 1" over "category 1", then the first one in the file.
+    def best(s: pd.Series) -> str:
+        counts = s.value_counts(sort=False)
+        casing = lambda v: 2 if v.islower() else 1 if v.isupper() else 0      # noqa: E731
+        first = {v: i for i, v in reversed(list(enumerate(s)))}
+        return min(counts.index, key=lambda v: (-counts[v], casing(v), first[v]))
+    spelling = values.groupby(key, sort=False).agg(best)
+    full_key = key.groupby(key.str[:prefix_chars], sort=False).transform(lambda s: max(s, key=len))
     result = series.copy()
-    result[mask] = canonical
+    result[mask] = full_key.map(spelling)
     return result
 
 
@@ -914,6 +939,12 @@ def insurance_only_mask(df: pd.DataFrame) -> pd.Series:
     return ((to_num(df, "ARREARS AGAINST INST", fill=0) <= 0)
             & (to_num(df, "ARREARS AGAINST EXP", fill=0) > INSURANCE_EXP_ARREARS_MIN)
             & (to_num(df, "Arrears / EMI") > 0))
+
+
+def non_starter_mask(df: pd.DataFrame) -> pd.Series:
+    """Never paid the first EMI: flagged Non Starter (Y / Yes) and still behind
+    (Arrears/EMI above 0). The focus list and the report count the same loans."""
+    return is_yes(df, "Non Starter") & (to_num(df, "Arrears / EMI") > 0)
 
 
 def loan_flags(df: pd.DataFrame) -> pd.DataFrame:

@@ -859,6 +859,31 @@ class TestNormalizeTruncatedNames:
         result = normalize_truncated_names(s)
         assert result.isna().all()
 
+    def test_case_and_spacing_variants_are_one_segment(self):
+        s = pd.Series(["Category 1", "Category 1 ", " category 1", "CATEGORY  1", "Category1", "Category-1",
+                       "Category 1"])
+        result = normalize_truncated_names(s)
+        assert set(result) == {"Category 1"}                  # the most common spelling, spaces tidied
+
+    def test_spacing_variants_do_not_merge_different_numbers(self):
+        s = pd.Series(["Category 1", "category 2", "Category 2", "CATEGORY 12"])
+        assert normalize_truncated_names(s).tolist() == ["Category 1", "Category 2", "Category 2", "CATEGORY 12"]
+
+    def test_truncation_merges_across_case(self):
+        s = pd.Series(["PASSENGER COMMERC", "Passenger Commercial", "Passenger Commercial"])
+        assert set(normalize_truncated_names(s)) == {"Passenger Commercial"}
+
+    def test_blank_left_untouched(self):
+        s = pd.Series(["Bus", "", "  ", "bus"])
+        assert normalize_truncated_names(s).tolist() == ["Bus", "", "  ", "Bus"]
+
+    def test_segment_filter_matches_last_months_other_spelling(self):
+        # The sidebar picks names from this month's file; last month's file
+        # may spell the same segment differently and must still match.
+        prev = pd.DataFrame({"SegmentName": ["CATEGORY  1", "Category 2"], "Loan No": ["A", "B"]})
+        out = apply_filters(prev, "All", "All", "All", ["Category 1"], None)
+        assert out["Loan No"].tolist() == ["A"]
+
     def test_custom_prefix_length(self):
         s = pd.Series(["ABCDEFGHIJ-1", "ABCDEFGHIJ-2"])
         result = normalize_truncated_names(s, prefix_chars=10)

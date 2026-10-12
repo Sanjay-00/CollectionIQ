@@ -16,7 +16,7 @@ from config import (
     ACTION_COLLECTION_GAP_PP, ACTION_HEADLINES_MAX, ACTION_HOTSPOT_MULTIPLE, ACTION_MIN_ACCOUNTS,
     ACTION_MIN_ROLLED, ACTION_RANGE_Z, ACTION_RISING_PP, ACTION_TOP_N, INSURANCE_EXP_ARREARS_MIN,
 )
-from utils import BUCKET_SCORE, insurance_only_mask, is_yes, loan_flags, to_num, unit_metrics
+from utils import BUCKET_SCORE, insurance_only_mask, loan_flags, non_starter_mask, to_num, unit_metrics
 
 _GRAIN_COLS = {"region": ["RegionName"], "branch": ["Unit"], "executive": ["MNT NAME", "Unit"]}
 _WORSE_THAN = {b: [c for c in rf.VALID_BUCKETS if BUCKET_SCORE[c] > BUCKET_SCORE[b]] for b in rf.VALID_BUCKETS}
@@ -195,7 +195,6 @@ def _focus_groups(df: pd.DataFrame) -> list[tuple[str, str, pd.Series]]:
     """(name, what to do, mask) in priority order: cheapest and most urgent first."""
     bucket = df["curr_bucket"] if "curr_bucket" in df.columns else pd.Series("", index=df.index)
     prev = df["prev_bucket"] if "prev_bucket" in df.columns else pd.Series(None, index=df.index)
-    behind = to_num(df, "Arrears / EMI") > 0
     new_def = (prev == "STD") & bucket.isin(_WORSE_THAN["STD"])
     return [
         ("Quick wins: insurance charge only", "Settle the charge by cash or WCL adjustment.", insurance_only_mask(df)),
@@ -204,7 +203,7 @@ def _focus_groups(df: pd.DataFrame) -> list[tuple[str, str, pd.Series]]:
         ("SMA-1: stop the slide", "Get at least one EMI to keep them out of SMA-2.", (bucket == "SMA-1") & ~new_def),
         ("1-30 DPD: bring them current", "Reminder call, collect the overdue EMI.", (bucket == "1-30 DPD") & ~new_def),
         ("Non-starters", "Never paid the first EMI: check the customer and the disbursement.",
-         is_yes(df, "Non Starter") & behind),
+         non_starter_mask(df)),
     ]
 
 
