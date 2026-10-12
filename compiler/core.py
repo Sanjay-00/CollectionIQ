@@ -818,7 +818,7 @@ def _build_entity_semi_join(entity_filters: list, errs: list) -> list:
 
 
 def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, columns=None) -> list:
-    """Derive an intermediate→filter→terminal plan from the grain lattice. The LLM
+    """Derive an entity-filter→intermediate→terminal plan from the grain lattice. The LLM
     supplied only entity names + declarative predicates + measure names; ALL of the
     structure below (keys, pass order, rollup decomposition) is derived here."""
     if not group_by:
@@ -850,14 +850,22 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
                     f"'{pcol}' should be counted globally per entity or within each group"
                 )
 
-    # Intermediate aggregations: predicate aggregates + measure rollup partials.
-    inter_aggs: list = []
+    # Entity predicates are evaluated over each entity's WHOLE set of rows (a
+    # semi-join ahead of the passes), never inside one output group. Within a
+    # group, "customers with an NPA loan, by bucket" would test the predicate
+    # per (bucket, customer) and drop a qualifying customer's STD loans, since
+    # the STD group alone never holds an NPA loan. Same rule as fleet_operator's
+    # whole-upload CUSTOMER_LOAN_COUNT: a fact about the entity, not the slice.
+    pred_aggs: list = []
     pred_filters: list = []
     for i, ef in enumerate(resolved):
         for j, pred in enumerate(ef.get("having") or []):
             a, cond = _build_having_pred(pred, f"__ef{i}_{j}", errs)
-            inter_aggs.append(a)
+            pred_aggs.append(a)
             pred_filters.append(cond)
+
+    # Intermediate aggregations: measure rollup partials.
+    inter_aggs: list = []
 
     term_aggs: list = []
     term_post: list = []
@@ -921,9 +929,14 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
         inter_aggs.append({"alias": "Cust Name__p", "func": "first", "column": "Cust Name"})
         term_aggs.append({"alias": "Cust Name", "func": "first", "column": "Cust Name__p"})
 
+    if not inter_aggs:
+        # group_aggregate needs one aggregation; the terminal pass only reads the keys.
+        inter_aggs.append({"alias": "__rows", "func": "count"})
+
     steps: list = [
+        {"op": "entity_semi_join", "key_cols": ekey,
+         "aggregations": pred_aggs, "having_conditions": pred_filters},
         {"op": "group_aggregate", "group_by": inter_keys, "aggregations": inter_aggs},
-        {"op": "filter", "conditions": pred_filters},
         {"op": "group_aggregate", "group_by": group_by, "aggregations": term_aggs},
     ]
     for d in term_post:

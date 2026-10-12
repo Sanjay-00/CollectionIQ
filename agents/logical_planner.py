@@ -302,6 +302,24 @@ ENTITY FILTERS (for nested "per-group with per-entity threshold"):
     filters: [{{"column":"RegionName","op":"==","value":"PUNE"}}]
     entity_filters: [{{"concept":"fleet_operator"}}]
     order_by: [{{"by":"SOH","dir":"desc"}}]
+  ROW FILTER vs CUSTOMER CONDITION: a top-level "filters" entry DROPS LOANS, so only the
+  matching loans come back. When the user wants ALL loans of customers who HAVE some loan
+  condition ("fleet owners in NPA, give all their loans", "every account of fleet owners
+  who are delinquent"), that condition describes the CUSTOMER: put it in entity_filters as a
+  count, and leave it OUT of "filters":
+    intent: "loan_table", filters: []
+    entity_filters: [{{"concept":"fleet_operator"}},
+                     {{"entity":"customer","having":[{{"agg":"count","concept":"npa","op":">=","value":1}}]}}]
+  (use "delinquent" instead of "npa" for "in delinquency"/"overdue"/"in arrears"). Use the
+  top-level filter only when the user wants just the matching loans ("NPA loans of fleet
+  owners", "fleet owners' NPA accounts").
+  HOW MANY of those customers' loans sit in NPA / each bucket: intent "aggregation", the SAME
+  entity_filters as above, and no top-level filter for the condition:
+    per owner:  dimensions: ["customer"]
+                measures: [{{"agg":"count","alias":"total_loans"}},
+                           {{"agg":"count","alias":"npa_loans","where":[{{"concept":"npa"}}]}}]
+                (one count per bucket asked for, e.g. "where":[{{"column":"curr_bucket","op":"==","value":"SMA-2"}}])
+    per bucket: dimensions: ["curr_bucket"], measures: [{{"agg":"count","alias":"loans"}}]
 
 OUTPUT: return a JSON object with EXACTLY these keys:
 {{

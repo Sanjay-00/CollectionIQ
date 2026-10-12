@@ -167,8 +167,7 @@ class TestQuery6_DimensionMatchesEntityKey:
             "measures": [],
         }, _df().columns)
         assert errs == []
-        inter = plan[0]
-        assert inter["op"] == "group_aggregate"
+        inter = next(s for s in plan if s["op"] == "group_aggregate")
         assert inter["group_by"] == ["Cust Mob No"]
 
     def test_cust_name_attached_for_display(self):
@@ -416,3 +415,89 @@ class TestQuery10_LoanCountViaNuniqueLoanNo:
         term_aggs = plan[2]["aggregations"]
         funcs = {a["alias"]: a["func"] for a in term_aggs}
         assert funcs["loan_count"] == "sum"   # rewritten to a decomposable count, not nunique
+
+
+# "Has an NPA loan" as a CUSTOMER condition (entity_filters), not a row filter.
+_HAS_NPA = {"entity": "customer", "having": [{"agg": "count", "concept": "npa", "op": ">=", "value": 1}]}
+
+
+def _df_with_clean_fleet():
+    """_df() plus cust 555: a fleet owner (3 loans, branch C / R2) with NO NPA loan."""
+    df = _df().drop(columns=["Customer Loan Count"], errors="ignore")
+    extra = df[df["Cust Mob No"] == 444].head(3).copy()
+    extra["Loan No"] = [20, 21, 22]
+    extra["Cust Mob No"] = 555
+    extra["Cust Name"] = "Esha"
+    extra["curr_bucket"] = "STD"
+    return add_customer_loan_count(pd.concat([df, extra], ignore_index=True))
+
+
+def _run_clean_fleet(ir):
+    df = _df_with_clean_fleet()
+    plan, errs = compile_logical(ir, df.columns)
+    assert errs == [], errs
+    out, err = execute_plan(df, plan)
+    assert err == ""
+    return out
+
+
+class TestQuery11_AllLoansOfFleetOwnersInNpa:
+    """"Give me all fleet owners who are in NPA, give all loans of them": NPA
+    picks the CUSTOMERS, then every loan of theirs comes back, not just the NPA
+    ones (a top-level filter would drop the rest -- see TestQuery8)."""
+
+    def test_returns_every_loan_of_fleet_owners_with_an_npa_loan(self):
+        out = _run_clean_fleet({
+            "intent": "loan_table",
+            "entity_filters": [{"concept": "fleet_operator"}, _HAS_NPA],
+            "show_all_columns": True,
+        })
+        # 111/333/444 are fleet owners with an NPA loan; 555 is fleet but clean;
+        # 222 has no NPA and is not fleet.
+        assert set(out["Cust Mob No"]) == {111, 333, 444}
+        assert len(out) == 4 + 3 + 4                       # NPA and non-NPA loans alike
+        assert set(out["curr_bucket"]) == {"NPA", "STD"}
+
+    def test_counts_total_and_npa_loans_per_fleet_owner(self):
+        out = _run_clean_fleet({
+            "intent": "aggregation",
+            "dimensions": ["customer"],
+            "entity_filters": [{"concept": "fleet_operator"}, _HAS_NPA],
+            "measures": [
+                {"agg": "count", "alias": "total_loans"},
+                {"agg": "count", "alias": "npa_loans", "where": [{"concept": "npa"}]},
+            ],
+        })
+        got = {r["Cust Mob No"]: (r["total_loans"], r["npa_loans"]) for _, r in out.iterrows()}
+        assert got == {111: (4, 2), 333: (3, 3), 444: (4, 1)}
+
+    def test_counts_their_loans_per_bucket(self):
+        # Regression: the customer condition used to be tested inside each
+        # bucket group, so a qualifying owner's STD loans silently vanished
+        # (the STD group alone never holds an NPA loan).
+        out = _run_clean_fleet({
+            "intent": "aggregation",
+            "dimensions": ["curr_bucket"],
+            "entity_filters": [{"concept": "fleet_operator"}, _HAS_NPA],
+            "measures": [{"agg": "count", "alias": "loans"}],
+        })
+        got = dict(zip(out["curr_bucket"], out["loans"]))
+        assert got == {"NPA": 2 + 3 + 1, "STD": 2 + 0 + 3}   # 555's STD loans excluded
+
+    def test_customer_condition_spans_branches(self):
+        # A customer qualifies on ALL their loans, wherever they sit: 111 with
+        # one NPA loan moved to branch B still counts as an NPA customer in A.
+        df = _df_with_clean_fleet()
+        df.loc[df["Loan No"] == 1, "Unit"] = "B"
+        df.loc[df["Loan No"] == 2, "curr_bucket"] = "STD"   # 111's only NPA loan is now in B
+        plan, errs = compile_logical({
+            "intent": "aggregation",
+            "dimensions": ["branch"],
+            "entity_filters": [_HAS_NPA],
+            "measures": [{"agg": "count", "distinct": "Cust Mob No", "alias": "npa_customers"}],
+        }, df.columns)
+        assert errs == [], errs
+        out, err = execute_plan(df, plan)
+        assert err == ""
+        got = dict(zip(out["Unit"], out["npa_customers"]))
+        assert got["A"] == 1                                 # 111, via its branch-B NPA loan
