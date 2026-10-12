@@ -27,7 +27,7 @@ def test_every_level_opens_with_the_same_story(data):
     c, p = data
     heads = {lv: _headings(build_report(c, p, "2026-08", "2026-07", lv)) for lv in ("Leadership", "Zone", "Regional", "Branch")}
     assert all(h[0] == "At a Glance" for h in heads.values())
-    assert "Branches Ranked" in heads["Regional"] and "Branches Ranked" not in heads["Leadership"]   # depth by level
+    assert "Branch Scorecard" in heads["Regional"] and "Branch Scorecard" not in heads["Leadership"]   # depth by level
     assert "Who to Call First" in heads["Branch"]
     assert heads["Regional"][-1] == heads["Branch"][-1] == "How to Read This"
 
@@ -61,34 +61,79 @@ def test_html_pdf_excel_all_carry_the_same_report(data):
     assert pdf[:4] == b"%PDF" and len(pdf) > 5_000
     wb = load_workbook(BytesIO(render.to_excel(m)))
     assert wb.sheetnames[0] == "Summary"
-    assert {"Branches Ranked", "Roll steps", "Where to focus", "Definitions"} <= set(wb.sheetnames)
+    assert {"Branch Scorecard", "Bucket movement", "Roll steps by branch", "Where to focus",
+            "Definitions"} <= set(wb.sheetnames)
     assert any(name.startswith("Call 1") for name in wb.sheetnames)  # call lists with proof columns
 
 
-def test_long_rankings_show_worst_and_best_on_one_scale_and_all_in_the_annex(monkeypatch, data):
+def _table(model, title):
+    return next(b for b in model["blocks"] if b["type"] == "table" and b["title"] == title)
+
+
+def test_scorecard_has_the_portfolio_intelligence_columns_and_a_true_total(data):
+    from analysis.summary import portfolio_total
+    c, p = data
+    sc = _table(build_report(c, p, "2026-08", "2026-07", "Regional"), "Branch Scorecard")
+    labels = [col.get("label", col["key"]) for col in sc["columns"]]
+    assert labels[:5] == ["Branch", "Region", "Loans", "Delinquent", "vs last month"]   # two regions: Region shown
+    assert "Rolled forward" in labels
+    assert list(sc["df"]["Delinquency%"]) == sorted(sc["df"]["Delinquency%"], reverse=True)   # worst first
+    assert sc["total"]["Branch"] == "Total"
+    assert sc["total"]["Delinquency%"] == portfolio_total(c, p)["Delinquency%"]   # every loan, not a row average
+
+
+def test_long_scorecards_show_worst_and_best_and_all_in_the_annex(monkeypatch, data):
     import report_agent.story as story
-    monkeypatch.setattr(story, "BARS_ALL_UP_TO", 1)
-    monkeypatch.setattr(story, "BARS_EACH_SIDE", 1)
+    monkeypatch.setattr(story, "ALL_ROWS_UP_TO", 1)
+    monkeypatch.setattr(story, "ROWS_EACH_SIDE", 1)
     c, p = data
     m = build_report(c, p, "2026-08", "2026-07", "Regional")
-    worst = next(b for b in m["blocks"] if b["type"] == "bars" and b["title"] == "Needing the most help")
-    best = next(b for b in m["blocks"] if b["type"] == "bars" and b["title"] == "Doing best")
-    assert len(worst["rows"]) == len(best["rows"]) == 1 and len(worst["full"]) == 2
-    assert worst["max"] == best["max"]                               # one scale: the bars compare
-    assert "The 1 worst and 1 best of 2" in next(b["note"] for b in m["blocks"]
-                                                 if b["type"] == "heading" and b["text"] == "Branches Ranked")
+    worst, best = _table(m, "Needing the most help"), _table(m, "Doing best")
+    assert len(worst["df"]) == len(best["df"]) == 1 and len(worst["full"]) == 2
+    assert best["sheet"] is False and best["total"]                  # one annex sheet; the Total closes the pair
 
 
-def test_status_is_against_the_reports_own_average(data):
-    from report_agent.story import ACT_NOW_GAP_PTS, _status
-    assert _status(60.0, 59.0) == "amber" and _status(59.0, 59.0) == "green"
-    assert _status(59.0 + ACT_NOW_GAP_PTS, 59.0) == "red" and _status(None, 59.0) is None
+def test_worst_quarter_of_executives_is_tinted(data):
+    from report_agent.story import _scorecard
+    t = pd.DataFrame({"Executive": list("ABCDEFGH"), "Accounts": [40] * 8,
+                      "Delinquency%": [10, 80, 30, 70, 20, 60, 50, 40]})
+    blocks = _scorecard("Executive Scorecard", t, "Executive", [], None, sheet="Executives", flag_worst=True)
+    tb = blocks[1]
+    assert render._flagged(tb) == [True, True] + [False] * 6         # 8 executives: the worst 2
+    assert list(tb["df"]["Executive"][:2]) == ["B", "D"]
+    assert render.FLAG_BG in render.to_html({"title": "t", "subtitle": "", "scope": "", "accounts": 8, "month": "m",
+                                             "data_notes": [], "blocks": blocks})
+
+
+def test_bucket_movement_rows_add_to_100_and_only_worse_cells_are_red(data):
     c, p = data
-    m = build_report(c, p, "2026-08", "2026-07", "Regional")
-    rows = next(b for b in m["blocks"] if b["type"] == "bars" and b["title"] == "Branches Ranked")["rows"]
-    assert all(r["status"] in ("red", "amber", "green") for r in rows)
-    html = render.to_html(m)
-    assert any(word in html for word in ("Act now", "Watch", "On track"))
+    mv = _table(build_report(c, p, "2026-08", "2026-07", "Regional"), "Bucket movement")
+    buckets = [col["count"] for col in mv["columns"] if col.get("heat_key")]
+    for _, row in mv["df"].iterrows():
+        assert abs(sum(row[f"{b} %"] for b in buckets) - 100) < 0.01
+        assert abs(row["Fwd %"] + row["Stay %"] + row["Back %"] - 100) < 0.01
+        assert pd.isna(row[f"{row['Last month']} worse"])            # staying put is never shaded
+        assert row["Last month"] != "STD" or pd.isna(row["STD worse"])
+    assert mv["total"]["Loans"] == int(mv["df"]["Loans"].sum())
+
+
+def test_definitions_explain_only_what_the_report_shows(data):
+    c, p = data
+    m = build_report(c, p, "2026-08", "2026-07", "Branch")
+    terms = list(_table(m, "Definitions")["df"]["Term"])
+    shown = {col.get("label", col["key"]) for b in m["blocks"] if b["type"] == "table" for col in b["columns"]}
+    shown |= {b["title"] for b in m["blocks"] if b["type"] == "table"}
+    shown |= {r for b in m["blocks"] if b["type"] == "table" and "Metric" in b["df"].columns for r in b["df"]["Metric"]}
+    assert terms and all(t in shown for t in terms)
+    assert "Concern Score" not in terms and "Forecast" not in terms
+
+
+def test_annex_never_shows_engine_column_names(data):
+    c, p = data
+    wb = load_workbook(BytesIO(render.to_excel(build_report(c, p, "2026-08", "2026-07", "Regional"))))
+    heads = {cell.value for ws in wb.worksheets if not ws.title.startswith("Call") for cell in ws[1]}
+    assert not heads & {"base", "n", "pct", "soh_pct", "_roll_valid", "MNT NAME", "Unit", "RegionName"}
+    assert "Delinquent %" in heads and "Delinquent (loans)" in heads
 
 
 def test_each_level_makes_one_file_per_unit(data):
@@ -181,3 +226,119 @@ def test_only_the_picked_units_get_a_file(data):
     assert [n for n, _ in one["files"]] == ["branch_MALEGAON_2026-08.html"]
     none = build_files(c, p, "2026-08", "2026-07", "Branch", fmt="HTML", only=[])
     assert none["files"] == []                       # nothing picked: no files, never the whole book
+
+
+def _mom(model):
+    return _table(model, "This month vs last month")
+
+
+def test_every_level_compares_with_last_month(data):
+    c, p = data
+    for lv in ("Leadership", "Zone", "Regional", "Branch"):
+        assert "This Month vs Last Month" in _headings(build_report(c, p, "2026-08", "2026-07", lv))
+
+
+def test_month_vs_month_rows_and_colours(data):
+    from analysis.summary import portfolio_total
+    c, p = data
+    df = _mom(build_report(c, p, "2026-08", "2026-07", "Regional"))["df"].set_index("Metric")
+    for group in ("PORTFOLIO", "ASSET QUALITY", "COLLECTIONS"):
+        assert df.loc[group, "_group"]
+    now, before = portfolio_total(c, None), portfolio_total(p, None)
+    npa = df.loc["NPA"]
+    assert npa["This month"].startswith(f"{now['NPA%']:.1f}%") and npa["Last month"].startswith(f"{before['NPA%']:.1f}%")
+    d = round(now["NPA%"] - before["NPA%"], 2)
+    assert npa["_worse"] is (None if d == 0 else d > 0)              # NPA up is worse
+    coll = df.loc["Collection %"]
+    d = round(now["Collection%"] - before["Collection%"], 2)
+    assert coll["_worse"] is (None if d == 0 else d < 0)             # collection up is better
+    assert df.loc["SOH", "_worse"] is None                           # size is neither good nor bad
+
+
+def test_matured_accounts_are_counted_and_newly_matured_found(data):
+    from report_agent.story import _matured, _newly_matured
+    c, p = data
+    c = c.copy(); p = p.copy()
+    c["Loan Status"], p["Loan Status"] = "RUN", "RUN"
+    c.loc[c.index[:3], "Loan Status"] = "MAT "                       # stray space still counts
+    p.loc[p["Loan No"].isin(c["Loan No"][:1]), "Loan Status"] = "MAT"
+    assert _matured(c)["n"] == 3
+    assert _newly_matured(c, p) == 2                                  # one was already MAT last month
+    df = _mom(build_report(c, p, "2026-08", "2026-07", "Regional"))["df"].set_index("Metric")
+    assert df.loc["Matured accounts (MAT)", "This month"] == "3"
+
+
+def test_without_last_month_only_this_month_is_shown(data):
+    c, p = data
+    m = build_report(c, p.iloc[0:0], "2026-08", None, "Regional")
+    df = _mom(m)["df"]
+    rows = df[~df["_group"]]
+    assert (rows["Last month"].isin(["-", ""])).all() and (rows["Change"].isin(["-", ""])).all()
+    assert "isn't loaded" in next(b["note"] for b in m["blocks"] if b["type"] == "heading"
+                                  and b["text"] == "This Month vs Last Month")
+    assert not any(b["type"] == "table" and b["title"].startswith("Change by") for b in m["blocks"])
+
+
+def test_change_by_unit_puts_the_biggest_rise_first_with_a_true_total(data):
+    from analysis.summary import portfolio_total
+    c, p = data
+    t = _table(build_report(c, p, "2026-08", "2026-07", "Regional"), "Change by branch")
+    rises = list(t["df"]["Δ Delinquency%"].dropna())
+    assert rises == sorted(rises, reverse=True)
+    now, before = portfolio_total(c, p), portfolio_total(p, None)
+    assert t["total"]["Delinquent"] == f"{before['Delinquency%']:.1f}% → {now['Delinquency%']:.1f}%"
+    assert next(col for col in t["columns"] if col["key"] == "Δ Collection%")["good_if_up"] is True
+
+
+def test_change_by_unit_annex_keeps_every_metric_as_numbers(data):
+    c, p = data
+    wb = load_workbook(BytesIO(render.to_excel(build_report(c, p, "2026-08", "2026-07", "Regional"))))
+    heads = [cell.value for cell in wb["Change by branch"][1]]
+    for name in ("Delinquent", "SMA-2", "NPA", "Collection"):
+        assert {f"{name} last month %", f"{name} this month %", f"{name} change (pts)"} <= set(heads)
+    assert wb["Change by branch"].cell(row=wb["Change by branch"].max_row, column=1).value == "Total"
+
+
+def test_month_table_has_demand_collection_non_starters_and_insurance_only(data):
+    from utils import compute_overdue_demand_pct, non_starter_mask
+    c, p = data
+    df = _mom(build_report(c, p, "2026-08", "2026-07", "Regional"))["df"].set_index("Metric")
+    assert df.loc["Month demand collection %", "This month"] == f"{compute_overdue_demand_pct(c)['demand_pct']:.1f}%"
+    assert df.loc["Non-starters", "This month"].endswith(f"({int(non_starter_mask(c).sum())})")
+    assert "Insurance charge only" in df.index
+
+
+def _with_new_book(c):
+    c = c.copy()
+    c["Ag_Date"] = pd.Timestamp("2024-01-15")
+    c.loc[c.index[:6], "Ag_Date"] = pd.Timestamp("2025-12-10")       # new book: Dec 2025 and Mar 2026
+    c.loc[c.index[6:10], "Ag_Date"] = pd.Timestamp("2026-03-05")
+    c["Loan Amount"] = 500000
+    return c
+
+
+def test_new_book_follows_loans_since_the_configured_month(data):
+    from report_agent.story import new_book_since
+    c, p = data
+    c = _with_new_book(c)
+    m = build_report(c, p, "2026-08", "2026-07", "Regional")
+    assert f"New Book (disbursed since {new_book_since():%b %Y})" in _headings(m)
+    by_month = _table(m, "By disbursal month")
+    assert list(by_month["df"]["Disbursed"]) == ["2025-12", "2026-03"]                 # oldest first
+    assert by_month["total"]["Accounts"] == 10 and round(by_month["total"]["Funded (Cr)"], 2) == 0.5
+
+
+def test_new_book_shows_dash_not_zero_when_nothing_is_due_yet(data):
+    from report_agent.story import _book_table
+    c, _ = data
+    nb = _with_new_book(c).head(10).assign(_month="2026-08")
+    nb["Net Collection Demand Inst+Exp+BC"] = 0
+    df, total = _book_table(nb, "_month", "Disbursed", sort="Disbursed")
+    assert pd.isna(df.loc[0, "Collection%"]) and total["Collection%"] is None
+
+
+def test_no_new_book_says_so(data):
+    c, p = data
+    c = c.assign(Ag_Date=pd.Timestamp("2020-01-01"))
+    m = build_report(c, p, "2026-08", "2026-07", "Regional")
+    assert any(b["type"] == "callout" and "No loan in this report was disbursed since" in b["text"] for b in m["blocks"])

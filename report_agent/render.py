@@ -20,60 +20,71 @@ _TONE = {"bad": "#dc2626", "good": "#16a34a", "info": "#d97706", "plain": "#9ca3
 # Verdict banner: (edge, background) by tone.
 _VERDICT = {"bad": ("#dc2626", "#fef2f2"), "good": ("#16a34a", "#f0fdf4"), "mixed": ("#d97706", "#fffbeb"),
             "info": ("#6b7280", "#f3f4f6")}
-# Bars and status chips: bar colour, chip background, chip text.
-_STATUS = {"red": ("#ef4444", "#fee2e2", "#b91c1c"), "amber": ("#f59e0b", "#fef3c7", "#92400e"),
-           "green": ("#22c55e", "#dcfce7", "#166534")}
-_STATUS_TEXT = {"red": "Act now", "amber": "Watch", "green": "On track"}
-_BAR_DEFAULT = "#9ca3af"
-
-
-def _bar_color(row: dict) -> str:
-    key = row.get("status") or row.get("color")
-    return _STATUS[key][0] if key in _STATUS else _BAR_DEFAULT
-
-
-def _bar_width(row: dict, top: float) -> int:
-    v = row.get("value")
-    return 0 if v is None or pd.isna(v) or top <= 0 else max(1, min(100, round(float(v) / top * 100)))
-
-
-def _change_color(row: dict) -> str:
-    return "#dc2626" if row.get("worse") else ("#16a34a" if row.get("worse") is False else MUTED)
+FLAG_BG, FLAG_EDGE = "#fff1f2", "#dc2626"          # a flagged row (e.g. the worst quarter of executives)
 
 
 # ── Cell formatting: ui.components.format_value, shared with the on-screen tables ──
 
 def cell_text(row, col: dict) -> str:
-    """The text of one cell; a % column with a "count" reads "11.9% (37)" and
-    one with an "amount" (₹ Cr) reads "34.6% (₹121.40 Cr)"."""
+    """The text of one cell; a % column with a "count" reads "11.9% (37)",
+    with a "count" and a "base" "11.9% (37 of 310)" ("-" when the base is 0),
+    and one with an "amount" (₹ Cr) reads "34.6% (₹121.40 Cr)"."""
     v = row.get(col["key"])
+    base = row.get(col["base"]) if col.get("base") else None
+    if col.get("base") and not _blank(base) and int(base) == 0:
+        return "-"
     text = fmt(v, col["fmt"])
     count = row.get(col["count"]) if col.get("count") else None
     if col.get("count") and not _blank(v) and not _blank(count):
-        text += f" ({int(count):,})"
+        text += f" ({int(count):,}" + (f" of {int(base):,})" if not _blank(base) else ")")
     amount = row.get(col["amount"]) if col.get("amount") else None
     if col.get("amount") and not _blank(v) and not _blank(amount):
         text += f" (₹{float(amount):,.2f} Cr)"
     return text
 
 
+def _align(c: dict) -> str:
+    return c.get("align") or ("left" if c["fmt"] == "text" else "right")
+
+
+def _grouped(block: dict) -> list[bool]:
+    """Rows that are a group label (e.g. "ASSET QUALITY"), drawn as a band across the table."""
+    g = block.get("group_key")
+    if not g or g not in block["df"].columns:
+        return [False] * len(block["df"])
+    return [bool(v) for v in block["df"][g].fillna(False)]
+
+
+def _flagged(block: dict) -> list[bool]:
+    f = block.get("flag")
+    if not f or f not in block["df"].columns:
+        return [False] * len(block["df"])
+    return [bool(v) for v in block["df"][f].fillna(False)]
+
+
 def _cell_colors(block: dict) -> list[list[tuple[str | None, str | None]]]:
     """(background, text colour) for each body cell: red shading by rank on
-    heat columns, red/green on change columns (a rise is worse unless the
+    heat columns (by "heat_key" when given, e.g. only the cells where a loan
+    got worse), red/green on change columns (a rise is worse unless the
     column says good_if_up)."""
     df, cols = block["df"], block["columns"]
-    ranges = {c["key"]: heat_range(df[c["key"]].tolist()) for c in cols if c.get("heat")}
+    hk = {c["key"]: c.get("heat_key", c["key"]) for c in cols if c.get("heat")}
+    ranges = {k: heat_range(df[h].tolist()) for k, h in hk.items() if h in df.columns}
     out = []
     for _, row in df.iterrows():
         cells = []
         for c in cols:
             v, bg, fg = row.get(c["key"]), None, None
-            if c.get("heat") and not _blank(v):
-                bg = heat_bg(v, ranges[c["key"]])
+            shade = row.get(hk[c["key"]]) if c["key"] in ranges else None
+            if not _blank(shade):
+                bg = heat_bg(shade, ranges[c["key"]])
                 fg = "#7f1d1d" if bg else None
             if c["fmt"] in ("pp", "count_change") and not _blank(v) and float(v) != 0:
                 worse = (float(v) > 0) != bool(c.get("good_if_up"))
                 fg = "#dc2626" if worse else "#16a34a"
+            tone = row.get(c["tone_key"]) if c.get("tone_key") else None
+            if not _blank(tone):                             # a precomputed better / worse
+                fg = "#dc2626" if tone else "#16a34a"
             cells.append((bg, fg))
         out.append(cells)
     return out
@@ -114,16 +125,25 @@ def _html_block(b: dict) -> str:
         return f'{title}<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>{cells}</tr></table>'
     if t == "table":
         df, cols = b["df"], b["columns"]
-        colors = _cell_colors(b)
+        colors, flags, groups = _cell_colors(b), _flagged(b), _grouped(b)
         head = "".join(f'<th style="background:#111;color:{YELLOW};padding:6px 8px;font-size:11px;'
-                       f'text-align:{"left" if c["fmt"] == "text" else "right"};">{_e(c.get("label", c["key"]))}</th>'
+                       f'text-align:{_align(c)};">{_e(c.get("label", c["key"]))}</th>'
                        for c in cols)
         body = ""
         for i, (_, row) in enumerate(df.iterrows()):
+            if groups[i]:                    # a group label: one band across the table
+                body += (f'<tr><td colspan="{len(cols)}" style="padding:6px 8px;font-size:11px;font-weight:800;'
+                         f'letter-spacing:0.6px;color:{INK};background:#f3f4f6;border-top:1px solid #e5e7eb;">'
+                         f'{_e(row.get(cols[0]["key"]))}</td></tr>')
+                continue
             tds = ""
-            for c, (bg, fg) in zip(cols, colors[i]):
+            for j, (c, (bg, fg)) in enumerate(zip(cols, colors[i])):
+                bg = bg or (FLAG_BG if flags[i] else None)
                 style = (f'padding:5px 8px;font-size:12px;border-bottom:1px solid #eee;'
-                         f'text-align:{"left" if c["fmt"] == "text" else "right"};'
+                         f'{"white-space:nowrap;" if c["fmt"] != "text" else ""}'
+                         f'text-align:{_align(c)};'
+                         f'{"font-weight:700;" if c.get("bold") else ""}'
+                         f'{"border-left:4px solid " + FLAG_EDGE + ";" if flags[i] and j == 0 else ""}'
                          f'{"background:" + bg + ";" if bg else ""}{"color:" + fg + ";font-weight:600;" if fg else ""}')
                 tds += f'<td style="{style}">{_e(cell_text(row, c))}</td>'
             body += f'<tr style="background:{"#fff" if i % 2 == 0 else "#fafafa"};">{tds}</tr>'
@@ -131,7 +151,7 @@ def _html_block(b: dict) -> str:
             row = pd.Series(b["total"])
             tds = "".join(
                 f'<td style="padding:5px 8px;font-size:12px;font-weight:800;border-top:2px solid {YELLOW};'
-                f'background:#fffbea;text-align:{"left" if c["fmt"] == "text" else "right"};">{_e(cell_text(row, c))}</td>'
+                f'background:#fffbea;text-align:{_align(c)};">{_e(cell_text(row, c))}</td>'
                 for c in cols)
             body += f"<tr>{tds}</tr>"
         note = f'<div style="font-size:11px;color:{MUTED};margin-top:4px;">{_e(b["note"])}</div>' if b["note"] else ""
@@ -141,10 +161,6 @@ def _html_block(b: dict) -> str:
                 f'style="border-collapse:collapse;border:1px solid #e5e7eb;"><tr>{head}</tr>{body}</table>{note}')
     if t == "glance":
         return _html_glance(b)
-    if t == "bars":
-        return _html_bars(b)
-    if t == "actions":
-        return _html_actions(b)
     if t == "callout":
         edge, bg = _VERDICT.get(b["tone"], _VERDICT["info"])
         return (f'<div style="border-left:4px solid {edge};background:{bg};padding:8px 12px;margin:8px 0;'
@@ -177,77 +193,13 @@ def _html_glance(b: dict) -> str:
             f'<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{cols}</tr></table>')
 
 
-def _chip(status: str | None) -> str:
-    if status not in _STATUS:
-        return ""
-    _, bg, fg = _STATUS[status]
-    return (f'<span style="background:{bg};color:{fg};padding:2px 8px;border-radius:10px;font-size:11px;'
-            f'font-weight:700;white-space:nowrap;">{_STATUS_TEXT[status]}</span>')
-
-
-def _html_bars(b: dict) -> str:
-    rows = b["rows"]
-    has_change = any(r.get("change") for r in rows)
-    has_status = any(r.get("status") for r in rows)
-    th = lambda text, align="right": (f'<th style="font-size:10.5px;color:{MUTED};font-weight:700;text-align:{align};'
-                                      f'padding:4px 8px;border-bottom:2px solid {YELLOW};white-space:nowrap;">{_e(text)}</th>')
-    head = th("", "left") + th("", "left") + th(b.get("value_head") or "")
-    head += th("vs last month") if has_change else ""
-    head += "".join(th(h) for h in b.get("extra_heads", []))
-    head += th("Status", "center") if has_status else ""
-    body = ""
-    for r in rows:
-        w = _bar_width(r, b["max"])
-        bar = (f'<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
-               + (f'<td width="{w}%" style="background:{_bar_color(r)};height:14px;font-size:1px;">&nbsp;</td>' if w else "")
-               + (f'<td style="background:#f3f4f6;height:14px;font-size:1px;">&nbsp;</td>' if w < 100 else "")
-               + '</tr></table>')
-        sub = f'<div style="font-size:10.5px;color:{MUTED};">{_e(r["sub"])}</div>' if r.get("sub") else ""
-        cells = (f'<td style="padding:6px 8px;border-bottom:1px solid #f1f1f1;width:24%;"><div style="font-size:12.5px;'
-                 f'font-weight:700;color:{INK};">{_e(r["label"])}</div>{sub}</td>'
-                 f'<td style="padding:6px 8px;border-bottom:1px solid #f1f1f1;width:34%;">{bar}</td>'
-                 f'<td style="padding:6px 8px;border-bottom:1px solid #f1f1f1;text-align:right;font-size:13px;'
-                 f'font-weight:800;color:{INK};white-space:nowrap;">{_e(r.get("text", ""))}</td>')
-        if has_change:
-            cells += (f'<td style="padding:6px 8px;border-bottom:1px solid #f1f1f1;text-align:right;font-size:12px;'
-                      f'font-weight:700;color:{_change_color(r)};white-space:nowrap;">{_e(r.get("change") or "-")}</td>')
-        cells += "".join(f'<td style="padding:6px 8px;border-bottom:1px solid #f1f1f1;text-align:right;font-size:12px;'
-                         f'color:{MUTED};white-space:nowrap;">{_e(x)}</td>' for x in r.get("extra", []))
-        if has_status:
-            cells += (f'<td style="padding:6px 8px;border-bottom:1px solid #f1f1f1;text-align:center;">'
-                      f'{_chip(r.get("status"))}</td>')
-        body += f"<tr>{cells}</tr>"
-    title = (f'<div style="font-size:12.5px;font-weight:700;color:{INK};margin:12px 0 4px 0;">{_e(b["title"])}</div>'
-             if b["title"] and not b.get("hide_title") else "")
-    note = f'<div style="font-size:11px;color:{MUTED};margin-top:4px;">{_e(b["note"])}</div>' if b.get("note") else ""
-    return (f'{title}<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
-            f'<tr>{head}</tr>{body}</table>{note}')
-
-
-def _html_actions(b: dict) -> str:
-    rows = ""
-    for it in b["items"]:
-        risk = (f'<div style="font-size:11px;color:#b91c1c;font-weight:700;">About {it["risk"]:,} likely to slip '
-                f'if left</div>' if it.get("risk") else "")
-        rows += (f'<tr><td valign="top" style="padding:8px 10px 8px 0;width:34px;"><div style="background:{YELLOW};'
-                 f'color:#000;font-weight:900;font-size:14px;width:28px;height:28px;line-height:28px;text-align:center;'
-                 f'border-radius:14px;">{it["rank"]}</div></td>'
-                 f'<td valign="top" style="padding:8px 8px;border-bottom:1px solid #f1f1f1;">'
-                 f'<div style="font-size:13px;font-weight:800;color:{INK};">{_e(it["title"])}</div>'
-                 f'<div style="font-size:12px;color:{MUTED};margin-top:2px;">{_e(it["action"])}</div></td>'
-                 f'<td valign="top" style="padding:8px 8px;border-bottom:1px solid #f1f1f1;text-align:right;'
-                 f'white-space:nowrap;"><div style="font-size:15px;font-weight:800;color:{INK};">{it["loans"]:,} loans</div>'
-                 f'<div style="font-size:11.5px;color:{MUTED};">&#8377;{it["soh_cr"]:,.2f} Cr</div>{risk}</td></tr>')
-    return f'<table width="100%" cellpadding="0" cellspacing="0" border="0">{rows}</table>'
-
-
 def _mark_duplicate_titles(blocks: list[dict]) -> list[dict]:
     """Hide a table's title when the heading right above says the same."""
     out, last = [], ""
     for b in blocks:
         if b["type"] == "heading":
             last = b["text"]
-        elif b["type"] in ("table", "bars") and b["title"] == last:
+        elif b["type"] == "table" and b["title"].lower() == last.lower():
             b = {**b, "hide_title": True}
         out.append(b)
     return out
@@ -324,7 +276,7 @@ def to_pdf(model: dict) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table
+    from reportlab.platypus import CondPageBreak, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table
 
     reg, bold, uni = _pdf_font()
     T = lambda s: _pdf_text(s, uni)
@@ -378,8 +330,9 @@ def to_pdf(model: dict) -> bytes:
             return ([Paragraph(f'<font color="{color}"><b>{title}</b></font>', st["kl"])]
                     + [Paragraph(item, st["bd"]) for item in items])
         focus = [f"<b>{i}. {T(f['title'])}</b><br/>{T(f['detail'])}" for i, f in enumerate(b["focus"], start=1)]
-        cols = Table([[column("WHAT WENT WELL", "#16a34a", [f"&#10003; {T(x)}" for x in b["good"]]),
-                       column("WHAT WENT WRONG", "#dc2626", [f"&#10007; {T(x)}" for x in b["bad"]]),
+        # A bullet, not ✓ / ✗: Segoe UI and DejaVu draw those as empty boxes.
+        cols = Table([[column("WHAT WENT WELL", "#16a34a", [f'<font color="#16a34a">•</font> {T(x)}' for x in b["good"]]),
+                       column("WHAT WENT WRONG", "#dc2626", [f'<font color="#dc2626">•</font> {T(x)}' for x in b["bad"]]),
                        column("WHERE TO FOCUS", "#b45309", focus or ["Nothing urgent."])]],
                      colWidths=[page_w / 3] * 3, style=[
                          ("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#e5e7eb")),
@@ -388,67 +341,6 @@ def to_pdf(model: dict) -> bytes:
                          ("LINEABOVE", (1, 0), (1, 0), 3, colors.HexColor("#dc2626")),
                          ("LINEABOVE", (2, 0), (2, 0), 3, colors.HexColor("#b45309"))])
         return [verdict, Spacer(1, 6), kpi_table(b["tiles"]), Spacer(1, 6), cols, Spacer(1, 6)]
-
-    def bar_drawing(row: dict, top: float, width: float):
-        from reportlab.graphics.shapes import Drawing, Rect
-        d = Drawing(width, 10)
-        d.add(Rect(0, 1, width, 8, fillColor=colors.HexColor("#f3f4f6"), strokeColor=None))
-        w = _bar_width(row, top) / 100 * width
-        if w:
-            d.add(Rect(0, 1, w, 8, fillColor=colors.HexColor(_bar_color(row)), strokeColor=None))
-        return d
-
-    def pdf_bars(b: dict) -> list:
-        rows = b["rows"]
-        has_change = any(r.get("change") for r in rows)
-        has_status = any(r.get("status") for r in rows)
-        extras = b.get("extra_heads", [])
-        bar_w = page_w * 0.32
-        heads = ["", "", b.get("value_head") or ""] + (["vs last month"] if has_change else []) + list(extras) \
-            + (["Status"] if has_status else [])
-        data = [[Paragraph(T(h), st["kl"]) for h in heads]]
-        style = [("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LINEBELOW", (0, 0), (-1, 0), 1.2, colors.HexColor(YELLOW)),
-                 ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#eeeeee")), ("ALIGN", (2, 0), (-1, -1), "RIGHT")]
-        for i, r in enumerate(rows, start=1):
-            label = f"<b>{T(r['label'])}</b>" + (f'<br/><font size="7" color="{MUTED}">{T(r["sub"])}</font>' if r.get("sub") else "")
-            cells = [Paragraph(label, st["cell"]), bar_drawing(r, b["max"], bar_w),
-                     Paragraph(f"<b>{T(r.get('text', ''))}</b>", st["cell"])]
-            if has_change:
-                cells.append(Paragraph(f'<font color="{_change_color(r)}"><b>{T(r.get("change") or "-")}</b></font>', st["cell"]))
-            cells += [Paragraph(f'<font color="{MUTED}">{T(x)}</font>', st["cell"]) for x in r.get("extra", [])]
-            if has_status:
-                status = r.get("status")
-                if status in _STATUS:
-                    _, bg, fg = _STATUS[status]
-                    cells.append(Paragraph(f'<font color="{fg}"><b>{_STATUS_TEXT[status]}</b></font>', st["cell"]))
-                    style.append(("BACKGROUND", (len(cells) - 1, i), (len(cells) - 1, i), colors.HexColor(bg)))
-                else:
-                    cells.append("")
-            data.append(cells)
-        n_small = len(heads) - 2
-        rest = (page_w - bar_w - page_w * 0.22) / max(n_small, 1)
-        widths = [page_w * 0.22, bar_w] + [rest] * n_small
-        parts = []
-        if b["title"] and not b.get("hide_title") and b["title"] != last_heading:
-            parts.append(Paragraph(T(b["title"]), st["b"]))
-        parts.append(Table(data, colWidths=widths, repeatRows=1, style=style))
-        if b.get("note"):
-            parts.append(Paragraph(T(b["note"]), st["note"]))
-        return ([KeepTogether(parts)] if len(rows) <= 16 else parts) + [Spacer(1, 6)]   # a long one may split
-
-    def pdf_actions(b: dict) -> list:
-        data = []
-        for it in b["items"]:
-            risk = (f'<br/><font size="7.5" color="#b91c1c"><b>About {it["risk"]:,} likely to slip if left</b></font>'
-                    if it.get("risk") else "")
-            soh = T(f"₹{it['soh_cr']:,.2f} Cr")
-            data.append([Paragraph(f'<b>{it["rank"]}</b>', ParagraphStyle("r", parent=st["kv"], alignment=1)),
-                         Paragraph(f"<b>{T(it['title'])}</b><br/><font color=\"{MUTED}\">{T(it['action'])}</font>", st["b"]),
-                         Paragraph(f"<b>{it['loans']:,} loans</b><br/>{soh}{risk}",
-                                   ParagraphStyle("a", parent=st["b"], alignment=2))])
-        style = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LINEBELOW", (0, 0), (-1, -1), 0.3, colors.HexColor("#eeeeee"))]
-        style += [("BACKGROUND", (0, i), (0, i), colors.HexColor(YELLOW)) for i in range(len(data))]
-        return [Table(data, colWidths=[page_w * 0.05, page_w * 0.70, page_w * 0.25], style=style), Spacer(1, 6)]
 
     pending: list = []          # a heading waiting to be kept with the block after it
     last_heading = ""
@@ -479,10 +371,6 @@ def to_pdf(model: dict) -> bytes:
             story += [kpi_table(b["items"]), Spacer(1, 4)]
         elif b["type"] == "glance":
             story += pdf_glance(b)
-        elif b["type"] == "bars":
-            story += pdf_bars(b)
-        elif b["type"] == "actions":
-            story += pdf_actions(b)
         elif b["type"] == "callout":
             edge, bg = _VERDICT.get(b["tone"], _VERDICT["info"])
             story += [Table([[Paragraph(f"<b>{T(b['text'])}</b>", st["b"])]], colWidths=[page_w], style=[
@@ -490,37 +378,65 @@ def to_pdf(model: dict) -> bytes:
                 ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(edge))]), Spacer(1, 4)]
         elif b["type"] == "table":
             df, cols = b["df"], b["columns"]
-            colors_ = _cell_colors(b)
-            data = [[Paragraph(T(c.get("label", c["key"])), st["head"]) for c in cols]]
-            for i, (_, row) in enumerate(df.iterrows()):
-                data.append([Paragraph(T(cell_text(row, c)), st["cell"]) for c in cols])
-            weights = [max(len(str(c.get("label", c["key"]))), *(len(cell_text(r, c)) for _, r in df.head(50).iterrows()), 4)
-                       if c["key"] in df.columns else 6 for c in cols]
-            weights = [min(max(w, 9), 60) for w in weights]
+            colors_, flags = _cell_colors(b), _flagged(b)
+            right = ParagraphStyle("cr", parent=st["cell"], alignment=2)
+            head_r = ParagraphStyle("hr", parent=st["head"], alignment=2)
+
+            def para(text: str, c: dict, bold: bool = False, color: str | None = None):
+                text = T(text)
+                text = f"<b>{text}</b>" if bold or c.get("bold") else text
+                text = f'<font color="{color}">{text}</font>' if color else text
+                return Paragraph(text, st["cell"] if _align(c) == "left" else right)
+
+            data = [[Paragraph(T(c.get("label", c["key"])), st["head"] if _align(c) == "left" else head_r)
+                     for c in cols]]
+            for (_, row), row_colors in zip(df.iterrows(), colors_):
+                data.append([para(cell_text(row, c), c, bold=bool(fg), color=fg)
+                             for c, (_, fg) in zip(cols, row_colors)])
+            # Width by the longest cell, but never narrower than the longest
+            # header word or cell word, so nothing breaks mid-word ("Loa / ns").
+            def weight(c) -> float:
+                texts = [cell_text(r, c) for _, r in df.head(50).iterrows()]
+                if b.get("total"):
+                    texts.append(cell_text(pd.Series(b["total"]), c))
+                words = str(c.get("label", c["key"])).split() + [w for t in texts for w in t.split()]
+                return max(max(len(w) for w in words) * 1.15, *(len(t) for t in texts), 4) + 2   # + cell padding
+            weights = [min(weight(c), 60) for c in cols]
             widths = [page_w * w / sum(weights) for w in weights]
             style = [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111111")),
                      ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e5e7eb")),
                      ("VALIGN", (0, 0), (-1, -1), "TOP"),
                      ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")])]
-            for r, row_colors in enumerate(colors_, start=1):
-                for ci, (bg, fg) in enumerate(row_colors):
+            for r, grouped in enumerate(_grouped(b), start=1):
+                if grouped:                  # a group label: one band across the table
+                    data[r] = [Paragraph(f"<b>{T(df.iloc[r - 1][cols[0]['key']])}</b>", st["cell"])] + [""] * (len(cols) - 1)
+                    style += [("SPAN", (0, r), (-1, r)), ("BACKGROUND", (0, r), (-1, r), colors.HexColor("#f3f4f6"))]
+            for r, (row_colors, flagged) in enumerate(zip(colors_, flags), start=1):
+                if flagged:
+                    style += [("BACKGROUND", (0, r), (-1, r), colors.HexColor(FLAG_BG)),
+                              ("LINEBEFORE", (0, r), (0, r), 3, colors.HexColor(FLAG_EDGE))]
+                for ci, (bg, _) in enumerate(row_colors):
                     if bg:
                         style.append(("BACKGROUND", (ci, r), (ci, r), colors.HexColor(bg)))
-                    if fg:
-                        data[r][ci] = Paragraph(f'<font color="{fg}"><b>{T(cell_text(df.iloc[r - 1], cols[ci]))}</b></font>', st["cell"])
             if b.get("total"):
                 trow = pd.Series(b["total"])
-                data.append([Paragraph(f"<b>{T(cell_text(trow, c))}</b>", st["cell"]) for c in cols])
+                data.append([para(cell_text(trow, c), c, bold=True) for c in cols])
                 style += [("LINEABOVE", (0, len(data) - 1), (-1, len(data) - 1), 1.5, colors.HexColor(YELLOW)),
                           ("BACKGROUND", (0, len(data) - 1), (-1, len(data) - 1), colors.HexColor("#fffbea"))]
             tbl = Table(data, colWidths=widths, repeatRows=1, style=style)
-            show_title = b["title"] and b["title"] != last_heading
+            show_title = b["title"] and b["title"].lower() != last_heading.lower()
             parts = [Paragraph(T(b["title"]), st["b"]), tbl] if show_title else [tbl]
             if b["note"]:
                 parts.append(Paragraph(T(b["note"]), st["note"]))
             # One keep-together per heading+table (never nested); a short
-            # table on its own is kept whole, a long one may split.
-            if pending or len(df) > 20:
+            # table on its own is kept whole, a long one may split. A long
+            # table under a heading isn't glued to it whole (a page-tall table
+            # would leave the page before it blank): the heading starts a new
+            # page only when its first rows wouldn't fit under it.
+            if pending and len(df) > 15:
+                story += [CondPageBreak(55 * mm), *pending, *parts]
+                pending = []
+            elif pending or len(df) > 20:
                 story.extend(parts)
             else:
                 story.append(KeepTogether(parts))
@@ -553,6 +469,32 @@ def to_pdf(model: dict) -> bytes:
 _BAD_SHEET = re.compile(r"[\[\]:*?/\\]")
 
 
+def annex_frame(df: pd.DataFrame, cols: list[dict]) -> pd.DataFrame:
+    """A table as the reader saw it, with numbers left as numbers: the same
+    columns and headers as the report, a % column split into "<label> %" and
+    its "(loans)" / "(of loans)" / "(₹ Cr)" columns. Never the engine's own
+    column names (base, n, _roll_valid, MNT NAME...)."""
+    out = {}
+    for c in cols:
+        key, label = c["key"], c.get("label", c["key"])
+        if key not in df.columns:
+            continue
+        if c["fmt"] == "pct":
+            out[label if label.endswith("%") else f"{label} %"] = df[key].round(2)
+            for part, suffix in (("count", "(loans)"), ("base", "(of loans)"), ("amount", "(₹ Cr)")):
+                if c.get(part) in df.columns:
+                    out[f"{label} {suffix}"] = df[c[part]]
+        elif c["fmt"] == "pp":
+            out[f"{label} (pts)"] = pd.to_numeric(df[key], errors="coerce").round(2)
+        elif c["fmt"] == "rs_cr":
+            out[f"{label} (₹ Cr)"] = (pd.to_numeric(df[key], errors="coerce") / 1e7).round(2)
+        elif c["fmt"] == "cr":
+            out[f"{label} (₹ Cr)"] = pd.to_numeric(df[key], errors="coerce").round(2)
+        else:
+            out[label] = df[key]
+    return pd.DataFrame(out)
+
+
 def to_excel(model: dict) -> bytes:
     """Summary sheet, then every table in full (not just the rows shown in the
     report), then every call list with its proof columns."""
@@ -570,25 +512,20 @@ def to_excel(model: dict) -> bytes:
                         for it in b["tiles"]]
         elif b["type"] == "callout":
             summary.append({"Section": "Note", "Item": b["text"], "Detail": ""})
-        elif b["type"] == "bars":
-            if b.get("full") is not None:
-                sheets.append((b["sheet"], b["full"]))
-        elif b["type"] == "actions":
-            sheets.append(("Where to focus", pd.DataFrame([
-                {"#": it["rank"], "Group": it["title"], "Loans": it["loans"], "SOH (Cr)": round(it["soh_cr"], 2),
-                 "Likely to slip if left": it.get("risk"), "What to do": it["action"]} for it in b["items"]])))
         elif b["type"] == "bullets":
             summary += [{"Section": "Summary", "Item": it["text"], "Detail": it.get("detail", "")} for it in b["items"]]
         elif b["type"] == "kpis":
             summary += [{"Section": b["title"] or "KPIs", "Item": it["label"],
                          "Detail": f'{it["value"]}' + (f' ({it["change"]} vs last month)' if it.get("change") else "")}
                         for it in b["items"]]
-        elif b["type"] == "table":
+        elif b["type"] == "table" and b["sheet"] is not False and b.get("annex") is not None:
+            sheets.append((b["sheet"], b["annex"]))
+        elif b["type"] == "table" and b["sheet"] is not False:
             full = b["full"]
             if b.get("total"):
                 full = pd.concat([full, pd.DataFrame([b["total"]])[[c for c in full.columns if c in b["total"]]]],
                                  ignore_index=True)
-            sheets.append((b["sheet"], full))
+            sheets.append((b["sheet"], annex_frame(full, b["columns"])))
     sheets.insert(0, ("Summary", pd.DataFrame(summary)))
     for name, df in model.get("annex", []):
         sheets.append((name, df))

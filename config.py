@@ -270,3 +270,7 @@ ACTION_RANGE_Z = 1.96             # forecast range: about 95% of months land ins
 
 # Dashboard summary: how many units each short list / league table shows.
 DASHBOARD_TOP_N = 5
+
+# The report's "New Book" section follows every loan disbursed (Ag_Date) on or
+# after this date, month by month (user, 2026-10-12: "November onward advances").
+NEW_BOOK_FROM = "2025-11-01"
