@@ -124,6 +124,8 @@ def test_definitions_explain_only_what_the_report_shows(data):
     shown = {col.get("label", col["key"]) for b in m["blocks"] if b["type"] == "table" for col in b["columns"]}
     shown |= {b["title"] for b in m["blocks"] if b["type"] == "table"}
     shown |= {r for b in m["blocks"] if b["type"] == "table" and "Metric" in b["df"].columns for r in b["df"]["Metric"]}
+    from report_agent.story import PTS_TERM
+    shown.add(PTS_TERM)                          # shown inside the change cells ("▲ 0.56 pts"), not as a label
     assert terms and all(t in shown for t in terms)
     assert "Concern Score" not in terms and "Forecast" not in terms
 
@@ -342,3 +344,58 @@ def test_no_new_book_says_so(data):
     c = c.assign(Ag_Date=pd.Timestamp("2020-01-01"))
     m = build_report(c, p, "2026-08", "2026-07", "Regional")
     assert any(b["type"] == "callout" and "No loan in this report was disbursed since" in b["text"] for b in m["blocks"])
+
+
+def test_report_build_without_overview_keeps_what_the_report_reads(data):
+    from analysis import action_center
+    c, p = data
+    full, slim = action_center.build(c, p), action_center.build(c, p, with_overview=False)
+    for key in ("headlines", "outlook", "focus", "roll_summary", "has_prev"):
+        assert slim[key] == full[key], key
+    assert [t["name"] for t in slim["calls"]] == [t["name"] for t in full["calls"]]
+    assert slim["pulse"] == [] and slim["attention"] == {}
+
+
+def test_executive_scorecard_shows_demand_and_collected_behind_collection(data):
+    c, p = data
+    sc = _table(build_report(c, p, "2026-08", "2026-07", "Regional"), "Executive Scorecard")
+    labels = [col.get("label", col["key"]) for col in sc["columns"]]
+    assert labels.index("Demand") + 1 == labels.index("Collected") == labels.index("Collection") - 1
+    for _, r in sc["df"].iterrows():                 # the % is exactly Collected of Demand
+        if r["Demand"]:
+            assert abs(r["Collected"] / r["Demand"] * 100 - r["Collection%"]) < 0.01
+    assert sc["total"]["Demand"] > 0 and "Demand" in sc["total"]
+    cell = render.cell_text(sc["df"].iloc[0], next(col for col in sc["columns"] if col["key"] == "Demand"))
+    assert cell.startswith("₹") and cell.endswith(" L")
+    assert "Demand" not in [col.get("label") for col in _table(build_report(c, p, "2026-08", "2026-07", "Regional"),
+                                                               "Branch Scorecard")["columns"]]
+
+
+def test_was_silent_group_gets_a_plain_label_and_definition(data):
+    from analysis.root_cause import WAS_SILENT
+    from config import NOT_PAYING_3M_FLAG_COL
+    from report_agent.story import SILENT_LABEL
+    c, p = data
+    c = c.copy()
+    c[NOT_PAYING_3M_FLAG_COL] = "N"
+    behind = c.index[pd.to_numeric(c["Arrears / EMI"], errors="coerce").between(0.01, 5.9)][:2]
+    c.loc[behind, NOT_PAYING_3M_FLAG_COL] = "Y"                     # went silent, now under 6 EMIs
+    m = build_report(c, p, "2026-08", "2026-07", "Regional")
+    labels = [col.get("label") for col in _table(m, "Why loans are behind")["columns"]]
+    assert SILENT_LABEL in labels and WAS_SILENT not in labels
+    assert SILENT_LABEL in list(_table(m, "Definitions")["df"]["Term"])
+
+
+def test_definitions_end_with_what_pts_means(data):
+    from report_agent.story import PTS_TERM
+    c, p = data
+    terms = list(_table(build_report(c, p, "2026-08", "2026-07", "Regional"), "Definitions")["df"]["Term"])
+    assert terms[-1] == PTS_TERM
+
+
+def test_no_pts_definition_without_last_month(data):
+    from report_agent.story import PTS_TERM
+    c, p = data
+    m = build_report(c, p.iloc[0:0], "2026-08", None, "Regional",
+                     sections=["glance", "month_vs_month", "why", "definitions"])
+    assert PTS_TERM not in list(_table(m, "Definitions")["df"]["Term"])
