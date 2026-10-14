@@ -923,3 +923,52 @@ class TestZoneFilter:
         assert apply_filters(df, "All", "All", "All", zone="Z1")["RegionName"].tolist() == ["R1"]
         assert apply_filters(df, "All", "All", "All", zone="3")["RegionName"].tolist() == ["R3"]   # numeric zones
         assert apply_filters(df, "R2", "All", "All", zone="Z1").empty               # region outside the zone
+
+
+class TestFrameCache:
+    """utils.frame_cache: a @per_frame function runs once per frame inside the
+    block (a report asks for the same totals many times), never outside it."""
+
+    def _counted(self):
+        from utils import per_frame
+        calls = []
+
+        @per_frame
+        def total(df, col):
+            calls.append(col)
+            return {"sum": float(df[col].sum())}
+        return total, calls
+
+    def test_outside_the_block_nothing_is_cached(self):
+        total, calls = self._counted()
+        df = pd.DataFrame({"a": [1, 2]})
+        total(df, "a"); total(df, "a")
+        assert len(calls) == 2
+
+    def test_inside_the_block_each_frame_and_argument_runs_once(self):
+        from utils import frame_cache
+        total, calls = self._counted()
+        df, other = pd.DataFrame({"a": [1, 2], "b": [5, 5]}), pd.DataFrame({"a": [9]})
+        with frame_cache():
+            assert total(df, "a") == {"sum": 3.0} and total(df, "a") == {"sum": 3.0}
+            total(df, "b"); total(other, "a")
+        assert calls == ["a", "b", "a"]
+        total(df, "a")                                # the block is over: computed again
+        assert len(calls) == 4
+
+    def test_callers_get_copies_they_may_change(self):
+        from utils import frame_cache
+        total, _ = self._counted()
+        df = pd.DataFrame({"a": [1, 2]})
+        with frame_cache():
+            first = total(df, "a")
+            first["sum"] = -1                         # a caller changing its result...
+            assert total(df, "a") == {"sum": 3.0}     # ...doesn't change the cached one
+
+    def test_unit_metrics_is_the_same_with_and_without_the_cache(self):
+        from utils import frame_cache, unit_metrics
+        df = pd.DataFrame({"RegionName": ["A", "A", "B"], "Arrears / EMI": [0, 2, 4], "SOH": [1e5, 2e5, 3e5]})
+        plain = unit_metrics(df, ["RegionName"])
+        with frame_cache():
+            pd.testing.assert_frame_equal(unit_metrics(df, ["RegionName"]), plain)
+            pd.testing.assert_frame_equal(unit_metrics(df, ["RegionName"]), plain)

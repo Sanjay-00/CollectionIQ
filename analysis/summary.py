@@ -8,7 +8,7 @@ import pandas as pd
 
 from analysis import roll_flow as rf
 from config import ACTION_MIN_ACCOUNTS, DASHBOARD_TOP_N
-from utils import _unit_key, unit_metrics
+from utils import _unit_key, per_frame, unit_metrics
 
 _GRAIN = {  # grain: (group columns, display name column); hierarchy Zone > Region > Branch > Executive
     "Zone": (["Zone"], "Zone"),
@@ -133,6 +133,7 @@ def biggest_moves(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str, n: i
             "better": sorted([r for r in rows if r["change"] < 0], key=lambda r: r["change"])[:n]}
 
 
+@per_frame
 def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.DataFrame:
     """Every headline metric for each region / branch / executive, with the
     COUNT behind each % (so a screen can show "11.9% (37)"), last month's
@@ -161,7 +162,7 @@ def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.D
     for col in ("SMA-2", "SMA-2%", "NPA", "NPA%", "NPA% (SOH)", "NPA SOH (Cr)"):
         out[col] = now[col].values
     out["Δ NPA%"] = [None if b is None else round(v - b["NPA%"], 2) for v, b in zip(now["NPA%"], p)]
-    for col in ("Hard Bucket", "Hard Bucket%", "Collection%", "Strike%", "SOH (Cr)"):
+    for col in ("Hard Bucket", "Hard Bucket%", "Demand", "Collected", "Collection%", "Strike%", "SOH (Cr)"):
         out[col] = now[col].values
     if "Roll Fwd%" in now.columns:
         out["Roll Fwd%"] = now["Roll Fwd%"].values
@@ -170,6 +171,7 @@ def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.D
     return out.reset_index(drop=True)
 
 
+@per_frame
 def portfolio_total(df_curr: pd.DataFrame, df_prev: pd.DataFrame | None) -> dict:
     """Every loan in view as one unit (sum over sum, never an average of rows):
     all of unit_metrics' columns, plus last month's delinquency and the change
@@ -186,6 +188,7 @@ def portfolio_total(df_curr: pd.DataFrame, df_prev: pd.DataFrame | None) -> dict
     return t
 
 
+@per_frame
 def business_snapshot(df_curr: pd.DataFrame, as_of) -> dict:
     """This month's new loans vs last month, with the top segments and branches."""
     from analysis.new_business import compute_new_advances, compute_new_advances_by_dimension

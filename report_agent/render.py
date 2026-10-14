@@ -43,6 +43,12 @@ def cell_text(row, col: dict) -> str:
     return text
 
 
+def _cell_texts(block: dict) -> list[list[str]]:
+    """Every body cell's text, row by row (rows as plain dicts: iterrows is slow)."""
+    cols = block["columns"]
+    return [[cell_text(row, c) for c in cols] for row in block["df"].to_dict("records")]
+
+
 def _align(c: dict) -> str:
     return c.get("align") or ("left" if c["fmt"] == "text" else "right")
 
@@ -71,7 +77,7 @@ def _cell_colors(block: dict) -> list[list[tuple[str | None, str | None]]]:
     hk = {c["key"]: c.get("heat_key", c["key"]) for c in cols if c.get("heat")}
     ranges = {k: heat_range(df[h].tolist()) for k, h in hk.items() if h in df.columns}
     out = []
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         cells = []
         for c in cols:
             v, bg, fg = row.get(c["key"]), None, None
@@ -130,6 +136,7 @@ def _html_block(b: dict) -> str:
                        f'text-align:{_align(c)};">{_e(c.get("label", c["key"]))}</th>'
                        for c in cols)
         body = ""
+        texts = _cell_texts(b)
         for i, (_, row) in enumerate(df.iterrows()):
             if groups[i]:                    # a group label: one band across the table
                 body += (f'<tr><td colspan="{len(cols)}" style="padding:6px 8px;font-size:11px;font-weight:800;'
@@ -145,7 +152,7 @@ def _html_block(b: dict) -> str:
                          f'{"font-weight:700;" if c.get("bold") else ""}'
                          f'{"border-left:4px solid " + FLAG_EDGE + ";" if flags[i] and j == 0 else ""}'
                          f'{"background:" + bg + ";" if bg else ""}{"color:" + fg + ";font-weight:600;" if fg else ""}')
-                tds += f'<td style="{style}">{_e(cell_text(row, c))}</td>'
+                tds += f'<td style="{style}">{_e(texts[i][j])}</td>'
             body += f'<tr style="background:{"#fff" if i % 2 == 0 else "#fafafa"};">{tds}</tr>'
         if b.get("total"):
             row = pd.Series(b["total"])
@@ -262,6 +269,35 @@ def _pdf_font() -> tuple[str, str, bool]:
                 pass
     _FONT = ("Helvetica", "Helvetica-Bold", False)
     return _FONT
+
+
+def _min_width(i: int, c: dict, sample: list[list[str]], bold_font: str) -> float:
+    """Points a column needs so its longest single word (header or cell) never
+    breaks mid-word: "BHUSAWAL", not "BHUSAW / AL". Measured in the bold font
+    at 8 pt (the widest a cell is drawn), plus the cell's padding."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    words = str(c.get("label", c["key"])).split() + [w for r in sample for w in r[i].split()]
+    return max((stringWidth(w, bold_font, 8) for w in words), default=0) + 14
+
+
+def _fit_widths(weights: list[float], minimum: list[float], total: float) -> list[float]:
+    """Share `total` by weight, but give every column at least its minimum,
+    taking the difference from the columns that have room to spare."""
+    widths = [total * w / sum(weights) for w in weights]
+    for _ in range(len(widths)):
+        short = [i for i, w in enumerate(widths) if w < minimum[i] - 0.01]
+        if not short:
+            break
+        need = sum(minimum[i] - widths[i] for i in short)
+        for i in short:
+            widths[i] = minimum[i]
+        room = {i: widths[i] - minimum[i] for i in range(len(widths)) if i not in short and widths[i] > minimum[i]}
+        spare = sum(room.values())
+        if spare <= 0:
+            break
+        for i, r in room.items():
+            widths[i] -= need * r / spare
+    return widths
 
 
 def _pdf_text(s: str, unicode_ok: bool) -> str:
@@ -390,19 +426,20 @@ def to_pdf(model: dict) -> bytes:
 
             data = [[Paragraph(T(c.get("label", c["key"])), st["head"] if _align(c) == "left" else head_r)
                      for c in cols]]
-            for (_, row), row_colors in zip(df.iterrows(), colors_):
-                data.append([para(cell_text(row, c), c, bold=bool(fg), color=fg)
-                             for c, (_, fg) in zip(cols, row_colors)])
+            texts = _cell_texts(b)                  # each cell formatted once
+            for row_texts, row_colors in zip(texts, colors_):
+                data.append([para(t, c, bold=bool(fg), color=fg)
+                             for t, c, (_, fg) in zip(row_texts, cols, row_colors)])
             # Width by the longest cell, but never narrower than the longest
             # header word or cell word, so nothing breaks mid-word ("Loa / ns").
-            def weight(c) -> float:
-                texts = [cell_text(r, c) for _, r in df.head(50).iterrows()]
-                if b.get("total"):
-                    texts.append(cell_text(pd.Series(b["total"]), c))
-                words = str(c.get("label", c["key"])).split() + [w for t in texts for w in t.split()]
-                return max(max(len(w) for w in words) * 1.15, *(len(t) for t in texts), 4) + 2   # + cell padding
-            weights = [min(weight(c), 60) for c in cols]
-            widths = [page_w * w / sum(weights) for w in weights]
+            sample = texts[:50] + ([[cell_text(b["total"], c) for c in cols]] if b.get("total") else [])
+
+            def weight(i: int, c: dict) -> float:
+                col = [r[i] for r in sample]
+                words = str(c.get("label", c["key"])).split() + [w for t in col for w in t.split()]
+                return max(max(len(w) for w in words) * 1.15, *(len(t) for t in col), 4) + 2   # + cell padding
+            weights = [min(weight(i, c), 60) for i, c in enumerate(cols)]
+            widths = _fit_widths(weights, [_min_width(i, c, sample, bold) for i, c in enumerate(cols)], page_w)
             style = [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111111")),
                      ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e5e7eb")),
                      ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -488,6 +525,8 @@ def annex_frame(df: pd.DataFrame, cols: list[dict]) -> pd.DataFrame:
             out[f"{label} (pts)"] = pd.to_numeric(df[key], errors="coerce").round(2)
         elif c["fmt"] == "rs_cr":
             out[f"{label} (₹ Cr)"] = (pd.to_numeric(df[key], errors="coerce") / 1e7).round(2)
+        elif c["fmt"] == "rs_l":
+            out[f"{label} (₹ L)"] = (pd.to_numeric(df[key], errors="coerce") / 1e5).round(2)
         elif c["fmt"] == "cr":
             out[f"{label} (₹ Cr)"] = pd.to_numeric(df[key], errors="coerce").round(2)
         else:

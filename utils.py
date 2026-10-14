@@ -1,4 +1,8 @@
+import contextlib
+import contextvars
+import copy
 import datetime
+import functools
 import re
 import warnings
 import pandas as pd
@@ -947,6 +951,53 @@ def non_starter_mask(df: pd.DataFrame) -> pd.Series:
     return is_yes(df, "Non Starter") & (to_num(df, "Arrears / EMI") > 0)
 
 
+# ── A cache for one piece of work (e.g. building one report) ─────────────────
+# A report asks for the same numbers of the same frame many times (the month
+# table, the scorecard and the Total row all total the same loans). Inside
+# `with frame_cache():` a @per_frame function runs once per (frame, arguments)
+# and later calls get a copy of that result. Outside the block nothing is
+# cached, so the app's tabs behave exactly as before. A frame is known by its
+# identity, size and columns; the cache holds a reference to it so the identity
+# can't be reused, and everything is dropped when the block ends. Frames must
+# not be changed in place inside the block (the report never does).
+
+_FRAME_CACHE: contextvars.ContextVar = contextvars.ContextVar("frame_cache", default=None)
+
+
+@contextlib.contextmanager
+def frame_cache():
+    token = _FRAME_CACHE.set({})
+    try:
+        yield
+    finally:
+        _FRAME_CACHE.reset(token)
+
+
+def _cache_key(v):
+    if isinstance(v, pd.DataFrame):
+        return ("df", id(v), len(v), tuple(v.columns))
+    if isinstance(v, (list, tuple)):
+        return tuple(_cache_key(x) for x in v)
+    if isinstance(v, pd.Timestamp) or v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    return ("obj", id(v))
+
+
+def per_frame(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        cache = _FRAME_CACHE.get()
+        if cache is None:
+            return fn(*args, **kwargs)
+        key = (fn.__qualname__, _cache_key(args), tuple(sorted((k, _cache_key(v)) for k, v in kwargs.items())))
+        if key not in cache:
+            cache[key] = (args, kwargs, fn(*args, **kwargs))      # args kept alive: ids can't be reused
+        result = cache[key][2]
+        return result.copy() if isinstance(result, (pd.DataFrame, pd.Series)) else copy.deepcopy(result)
+    return wrapper
+
+
+@per_frame
 def loan_flags(df: pd.DataFrame) -> pd.DataFrame:
     """One row per loan, one column per condition/amount (index-aligned)."""
     ae = to_num(df, "Arrears / EMI")
@@ -992,6 +1043,7 @@ def _pct_col(num: pd.Series, den: pd.Series, decimals: int = 2) -> pd.Series:
     return _round_each(num / den.where(den != 0) * 100, decimals).fillna(0.0)
 
 
+@per_frame
 def unit_metrics(df: pd.DataFrame, by: list[str], min_accounts: int = 0,
                  flags: pd.DataFrame | None = None) -> pd.DataFrame:
     """Every standard metric per unit, from ONE groupby over loan_flags.

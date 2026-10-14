@@ -16,7 +16,7 @@ region / branch / executive (the book a manager owns today).
 import pandas as pd
 
 from config import MIN_ACCOUNTS_DIMENSION_BREAKDOWN, MIN_ACCOUNTS_EXECUTIVE, ROLL_STEPS
-from utils import BUCKET_SCORE, PREV_CARRYOVER_COLS, _pct_col, to_num
+from utils import BUCKET_SCORE, PREV_CARRYOVER_COLS, _pct_col, per_frame, to_num
 
 VALID_BUCKETS = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]
 _PREV_SOH = PREV_CARRYOVER_COLS["SOH"]          # "prev_SOH"
@@ -27,6 +27,7 @@ def has_roll_data(df: pd.DataFrame) -> bool:
     return "prev_bucket" in df.columns and "curr_bucket" in df.columns
 
 
+@per_frame
 def _matched(df: pd.DataFrame) -> pd.DataFrame:
     """Loans with a real bucket in both months, with last month's SOH and the
     direction of travel. Last month's SOH falls back to this month's when the

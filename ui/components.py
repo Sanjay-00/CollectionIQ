@@ -666,7 +666,7 @@ def is_blank(v) -> bool:
     return v is None or (not isinstance(v, str) and pd.isna(v))
 
 
-_NUMBER_KINDS = ("int", "pct", "num", "cr", "inr", "rs_cr", "pp", "count_change", "pct_change")
+_NUMBER_KINDS = ("int", "pct", "num", "cr", "inr", "rs_cr", "rs_l", "pp", "count_change", "pct_change")
 _CHANGE_KINDS = ("pp", "count_change", "pct_change")     # coloured: red when worse, green when better
 
 
@@ -689,6 +689,8 @@ def format_value(v, kind: str) -> str:
         return f"₹{round(float(v)):,}"
     if kind == "rs_cr":
         return f"₹{float(v) / 1e7:,.2f} Cr"
+    if kind == "rs_l":                       # rupees shown in lakh: a unit's demand / collection
+        return f"₹{float(v) / 1e5:,.2f} L"
     if kind == "pp":
         v = float(v)
         return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):.2f} pts"

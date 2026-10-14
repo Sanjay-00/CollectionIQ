@@ -331,9 +331,10 @@ def _unit_name(key, cols) -> str:
     return f"{key[0]} ({key[1]})" if len(cols) > 1 else str(key)
 
 
-def _context(df: pd.DataFrame, df_prev: pd.DataFrame | None = None) -> dict:
+def _context(df: pd.DataFrame, df_prev: pd.DataFrame | None = None,
+             grains: tuple = ("branch", "executive")) -> dict:
     """What every section shares, computed once: the per-loan flags (both
-    months) and the roll inputs."""
+    months) and the roll inputs (roll steps by each of `grains`)."""
     has_roll = rf.has_roll_data(df)
     moved = rf._matched(df)
     has_prev = df_prev is not None and len(df_prev) > 0
@@ -344,21 +345,25 @@ def _context(df: pd.DataFrame, df_prev: pd.DataFrame | None = None) -> dict:
         "summary": rf.roll_steps_summary(df, moved),
         "rates": transition_rates(df, moved),
         "roll_by": {g: (rf.roll_steps_by(df, g, moved) if has_roll else pd.DataFrame())
-                    for g in ("branch", "executive")},
+                    for g in grains},
     }
 
 
-def build(df_curr: pd.DataFrame, df_prev: pd.DataFrame, with_calls: bool = True) -> dict:
+def build(df_curr: pd.DataFrame, df_prev: pd.DataFrame, with_calls: bool = True,
+          with_overview: bool = True) -> dict:
     """Everything the action overview shows, in one call. with_calls=False
     skips the call lists (the Dashboard links to Action Lists instead; the
-    report's annex still uses them)."""
-    ctx = _context(df_curr, df_prev)
+    report's annex still uses them). with_overview=False skips the pulse and
+    the branch / executive attention lists (the report shows neither), and
+    with them the executive roll steps, the costliest part."""
+    ctx = _context(df_curr, df_prev, grains=("branch", "executive") if with_overview else ("branch",))
     return {
-        "pulse": pulse(df_curr, df_prev, ctx),
+        "pulse": pulse(df_curr, df_prev, ctx) if with_overview else [],
         "headlines": headlines(df_curr, df_prev, ctx),
         "outlook": next_month_outlook(df_curr, ctx["rates"]),
         "focus": focus_first(df_curr, ctx["rates"]),
-        "attention": {g: attention(df_curr, df_prev, g, ctx) for g in ("branch", "executive")},
+        "attention": ({g: attention(df_curr, df_prev, g, ctx) for g in ("branch", "executive")}
+                      if with_overview else {}),
         "calls": call_lists(df_curr) if with_calls else [],
         "roll_summary": ctx["summary"],
         "has_prev": rf.has_roll_data(df_curr) and df_prev is not None and len(df_prev) > 0,

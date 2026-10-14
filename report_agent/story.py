@@ -27,6 +27,13 @@ ALL_ROWS_UP_TO = 25            # a scorecard this long shows every row; longer: 
 ROWS_EACH_SIDE = 10
 
 
+# The level just below each report's own: (its name, its roll_flow grain, its
+# column in the file). Whose moves the verdict names, and what "Change by",
+# roll steps, "Why loans are behind" and the new book break down by.
+_CHILD = {"Leadership": ("Region", "region", "RegionName"), "Zone": ("Region", "region", "RegionName"),
+          "Regional": ("Branch", "branch", "Unit"), "Branch": ("Executive", "executive", "MNT NAME")}
+
+
 # ── Block helpers ────────────────────────────────────────────────────────────
 
 def heading(text: str, note: str = "") -> dict:
@@ -106,9 +113,11 @@ def _varies(df: pd.DataFrame, col: str) -> bool:
     return col in df.columns and df[col].nunique(dropna=True) > 1
 
 
-def _scorecard_columns(name: str, extra: list[str] = ()) -> list[dict]:
-    """The Portfolio Intelligence column set (ui/tabs/portfolio_intelligence.unit_columns)."""
-    return [
+def _scorecard_columns(name: str, extra: list[str] = (), amounts: bool = False) -> list[dict]:
+    """The Portfolio Intelligence column set (ui/tabs/portfolio_intelligence.unit_columns).
+    amounts: the month's demand and collected (₹ lakh) just before Collection, so
+    the % reads as "this much collected of this much due"."""
+    cols = [
         {"key": name, "fmt": "text", "bold": True},
         *[{"key": e, "fmt": "text"} for e in extra],
         {"key": "Accounts", "label": "Loans", "fmt": "int"},
@@ -122,6 +131,11 @@ def _scorecard_columns(name: str, extra: list[str] = ()) -> list[dict]:
         {"key": "Strike%", "label": "Strike", "fmt": "pct"},
         {"key": "Roll Fwd%", "label": "Rolled forward", "fmt": "pct", "count": "Slipped", "heat": True},
     ]
+    if amounts:
+        at = next(i for i, c in enumerate(cols) if c["key"] == "Collection%")
+        cols[at:at] = [{"key": "Demand", "label": "Demand", "fmt": "rs_l"},
+                       {"key": "Collected", "label": "Collected", "fmt": "rs_l"}]
+    return cols
 
 
 def _total_row(c, p, name: str, extra=()) -> dict | None:
@@ -131,17 +145,22 @@ def _total_row(c, p, name: str, extra=()) -> dict | None:
     return {**t, name: "Total", **{e: "" for e in extra}} if t else None
 
 
+def _without_branch(names: pd.Series) -> pd.Series:
+    """"SNEHA JOSHI (BHUSAWAL)" -> "SNEHA JOSHI", for a table that shows the branch in its own column."""
+    return names.astype(str).str.replace(r"\s*\([^()]*\)$", "", regex=True)
+
+
 _SCORE_NOTE = ("Worst delinquency first. Each % shows its loans in brackets (NPA by SOH: its ₹ Cr). "
                "Darker red: worse than the others in this table. Total: every loan in this report.")
 
 
 def _scorecard(title: str, t: pd.DataFrame, name: str, extra: list[str], total: dict | None,
-               sheet: str, note: str = _SCORE_NOTE, flag_worst: bool = False) -> list[dict]:
+               sheet: str, note: str = _SCORE_NOTE, flag_worst: bool = False, amounts: bool = False) -> list[dict]:
     """One scorecard table, worst delinquency first; when longer than
     ALL_ROWS_UP_TO, the worst and the best ROWS_EACH_SIDE (every row is still
     in the Excel annex). flag_worst tints the worst quarter red."""
     t = t.sort_values("Delinquency%", ascending=False, kind="stable").reset_index(drop=True)
-    cols = [c for c in _scorecard_columns(name, extra) if c["key"] in t.columns]
+    cols = [c for c in _scorecard_columns(name, extra, amounts) if c["key"] in t.columns]
     if len(t) <= ALL_ROWS_UP_TO:
         flag = None
         if flag_worst and len(t) >= 4:
@@ -174,10 +193,12 @@ def _executives_scorecard(c, p) -> list[dict]:
         return []
     extra = [x for x in ("Branch", "Region") if _varies(t, x)]
     if "Branch" in extra:                  # "SNEHA JOSHI (BHUSAWAL)": the branch has its own column
-        t = t.assign(Executive=t["Executive"].astype(str).str.replace(r"\s*\([^()]*\)$", "", regex=True))
+        t = t.assign(Executive=_without_branch(t["Executive"]))
     return _scorecard("Executive Scorecard", t, "Executive", extra, _total_row(c, p, "Executive", extra),
-                      sheet="Executives", flag_worst=True,
-                      note=_SCORE_NOTE + " Executives with too few loans to judge fairly are left out.")
+                      sheet="Executives", flag_worst=True, amounts=True,
+                      note=_SCORE_NOTE + " Demand and Collected are this month's, in ₹ lakh; Collection is "
+                                         "Collected as % of Demand. Executives with too few loans to judge "
+                                         "fairly are left out.")
 
 
 def _glance(c, p, metrics: dict, prev_values: dict | None, ac: dict, child: str | None) -> list[dict]:
@@ -254,13 +275,17 @@ def _glance(c, p, metrics: dict, prev_values: dict | None, ac: dict, child: str 
 MATURED_STATUS = "MAT"      # Loan Status of a matured loan: tenure over, money still owed
 
 
+def _is_matured(df: pd.DataFrame) -> pd.Series:
+    return df["Loan Status"].astype(str).str.strip().str.upper() == MATURED_STATUS
+
+
 def _matured(df: pd.DataFrame) -> dict:
     """Matured accounts (Loan Status MAT): count and SOH (₹ Cr). Past its tenure,
     all that's owed is overdue, so their SOH is also their arrears."""
     from utils import to_num
     if df is None or not len(df) or "Loan Status" not in df.columns:
         return {}
-    m = df[df["Loan Status"].astype(str).str.strip().str.upper() == MATURED_STATUS]
+    m = df[_is_matured(df)]
     return {"n": len(m), "soh_cr": to_num(m, "SOH", fill=0).sum() / 1e7}
 
 
@@ -269,9 +294,8 @@ def _newly_matured(c: pd.DataFrame, p: pd.DataFrame) -> int | None:
     need = {"Loan Status", "Loan No"}
     if p is None or not len(p) or not need <= set(c.columns) or not need <= set(p.columns):
         return None
-    is_mat = lambda d: d["Loan Status"].astype(str).str.strip().str.upper() == MATURED_STATUS   # noqa: E731
-    was = set(p.loc[is_mat(p), "Loan No"].astype(str))
-    return int((~c.loc[is_mat(c), "Loan No"].astype(str).isin(was)).sum())
+    was = set(p.loc[_is_matured(p), "Loan No"].astype(str))
+    return int((~c.loc[_is_matured(c), "Loan No"].astype(str).isin(was)).sum())
 
 
 def _blank_num(v) -> bool:
@@ -423,7 +447,7 @@ def _unit_changes(c, p, child_level: str) -> list[dict]:
         t[name] = [arrow(a, z) for a, z in zip(t[f"Prev {cur}"], t[cur])]
     t = t.sort_values("Δ Delinquency%", ascending=False, na_position="last", kind="stable").reset_index(drop=True)
     if grain == "Executive" and _varies(t, "Branch"):
-        t = t.assign(Executive=t["Executive"].astype(str).str.replace(r"\s*\([^()]*\)$", "", regex=True))
+        t = t.assign(Executive=_without_branch(t["Executive"]))
     extra = [x for x in ("Branch",) if grain == "Executive" and _varies(t, x)]
     ra = {"fmt": "text", "align": "right"}
     cols = [{"key": grain, "fmt": "text", "bold": True}, *[{"key": e, "fmt": "text"} for e in extra],
@@ -540,7 +564,7 @@ def _new_book(c: pd.DataFrame, curr_month: str, preset: str) -> list[dict]:
     blocks.append(table("By disbursal month", df, _book_columns("Disbursed", df), total=total,
                         note="Read down the Delinquent and NPA columns: newer months going bad faster than "
                              "older ones point to a sourcing or underwriting problem.", sheet="New book by month"))
-    col, label = _WHY_GROUP[preset]
+    label, _, col = _CHILD[preset]
     if col in nb.columns and nb[col].nunique() > 1:
         df, total = _book_table(nb, col, label, sort="Delinquency%")
         blocks.append(table(f"By {label.lower()}", df, _book_columns(label, df), total=total,
@@ -556,6 +580,8 @@ def _new_book(c: pd.DataFrame, curr_month: str, preset: str) -> list[dict]:
         bad = bad.assign(**{"Disbursed on": pd.to_datetime(bad["Ag_Date"], errors="coerce").dt.strftime("%d %b %Y"),
                             "Non-starter": ns[bad.index].map({True: "Yes", False: ""}),
                             "SOH": to_num(bad, "SOH", fill=0)}).sort_values("SOH", ascending=False)
+        # Not _RENAME: these are whole-file rows, and the file has both Segment and
+        # SegmentName, so renaming SegmentName -> Segment would make two "Segment" columns.
         bad = bad.rename(columns={"Cust Name": "Customer", "Unit": "Branch", "MNT NAME": "Executive",
                                   "curr_bucket": "Bucket", "RegionName": "Region"})
         keep = [k for k in ("Loan No", "Customer", "Region", "Branch", "Executive", "Disbursed on", "Bucket",
@@ -575,7 +601,6 @@ def _new_book(c: pd.DataFrame, curr_month: str, preset: str) -> list[dict]:
 
 _STEP_LABEL = {"STD → Behind": "New defaulters (STD → behind)", "1-30 → SMA-1+": "1-30 → SMA-1 or worse",
                "SMA-1 → SMA-2+": "SMA-1 → SMA-2 or worse", "SMA-2 → NPA": "SMA-2 → NPA", "Back to STD": "Back to STD"}
-_GRAIN_NAME = {"zone": "Zone", "region": "Region", "branch": "Branch", "executive": "Executive"}
 
 
 def _bucket_matrix(c) -> tuple[pd.DataFrame, list[dict], dict] | None:
@@ -620,7 +645,7 @@ def _bucket_matrix(c) -> tuple[pd.DataFrame, list[dict], dict] | None:
     return df, cols, total
 
 
-def _roll_forward(c, ac: dict, child: str | None) -> list[dict]:
+def _roll_forward(c, ac: dict, child: str | None, name: str = "") -> list[dict]:
     """The bucket matrix with rolled forward / stayed / back, the outlook if
     this month's rates repeat, and the roll steps by the next level down."""
     from analysis import roll_flow as rf
@@ -642,7 +667,6 @@ def _roll_forward(c, ac: dict, child: str | None) -> list[dict]:
                               f"(₹{nd['soh'] / 1e7:,.2f} Cr).", "bad"))
     by = rf.roll_steps_by(c, child) if child else pd.DataFrame()
     if len(by) > 1:
-        name = _GRAIN_NAME[child]
         extra = [x for x in ("Branch", "Region") if x != name and _varies(by, x)]
         steps = rf.step_labels()
         cols = [{"key": name, "fmt": "text", "bold": True}, *[{"key": e, "fmt": "text"} for e in extra],
@@ -662,15 +686,15 @@ def _roll_forward(c, ac: dict, child: str | None) -> list[dict]:
 _WHY_LABEL = {"Insurance-Only": "Insurance charge only", "Installment-Only": "EMI only", "Both": "EMI and insurance",
               "Other": "Other charges", "Hard + Not Paying": "6+ EMIs, not paying",
               "Hard + Still Paying": "6+ EMIs, still paying", "Early Delinquency": "Under 6 EMIs"}
-_WHY_GROUP = {"Leadership": ("RegionName", "Region"), "Zone": ("RegionName", "Region"),
-              "Regional": ("Unit", "Branch"), "Branch": ("MNT NAME", "Executive")}
+SILENT_LABEL = "Was not paying, now under 6 EMIs"   # root_cause.WAS_SILENT (its name carries the threshold)
 
 
 def _why(c, preset: str) -> list[dict]:
     """One table by the next level down: what's unpaid (insurance vs EMI) and
     how far behind (6+ EMIs paying or not), each as a share of its delinquent loans."""
-    from analysis.root_cause import ARREARS_GROUPS, compute_chronic_shock_split, compute_insurance_split
-    col, name = _WHY_GROUP[preset]
+    from analysis.root_cause import ARREARS_GROUPS, WAS_SILENT, compute_chronic_shock_split, compute_insurance_split
+    labels = {**_WHY_LABEL, WAS_SILENT: SILENT_LABEL}
+    name, _, col = _CHILD[preset]
     if col not in c.columns:
         return []
     ins, chronic = compute_insurance_split(c, col), compute_chronic_shock_split(c, col)
@@ -690,7 +714,7 @@ def _why(c, preset: str) -> list[dict]:
         total[f"{g} %"] = total[g] / total["Delinquent Accounts"] * 100 if total["Delinquent Accounts"] else None
     cols = [{"key": name, "fmt": "text", "bold": True},
             {"key": "Delinquent Accounts", "label": "Delinquent loans", "fmt": "int"},
-            *[{"key": f"{g} %", "label": _WHY_LABEL.get(g, g), "fmt": "pct", "count": g, "heat": True}
+            *[{"key": f"{g} %", "label": labels.get(g, g), "fmt": "pct", "count": g, "heat": True}
               for g in groups]]
     return [heading("Why Loans Are Behind", "Each % is a share of the delinquent loans (loans in brackets). The "
                                             "first columns say what is unpaid; the last ones how far behind and "
@@ -756,6 +780,8 @@ _MEANING = {
     "NPA": "Loans 3 or more EMIs overdue, as % of the unit's loans.",
     "NPA by SOH": "NPA measured by money: SOH of NPA loans as % of the unit's SOH (₹ Cr in brackets).",
     "Hard bucket": "Loans 6 or more EMIs overdue right now.",
+    "Demand": "This month's collection demand: instalment, expense and bounce charges due.",
+    "Collected": "Collected this month, excluding reserve collection.",
     "Collection": "Collected this month (excluding reserve collection) as % of the month's demand "
                   "(instalment, expense and bounce charges).",
     "Strike": "Share of loans the file marks Strike = Y: a collection made this month.",
@@ -773,6 +799,8 @@ _MEANING = {
     "Other charges": "A small insurance charge (₹3,000 or less) or only bounce or penal charges.",
     "6+ EMIs, not paying": "6 or more EMIs overdue and nothing paid in 3 months: legal or repossession candidates.",
     "6+ EMIs, still paying": "6 or more EMIs overdue, but paying something: worth a restructuring talk.",
+    SILENT_LABEL: "Went 3+ months without paying and crossed 6 EMIs overdue at some point, but has paid part since "
+                  "and is now under 6 EMIs. Call before they go quiet again.",
     "Under 6 EMIs": "Behind, but under 6 EMIs overdue. Normal field follow-up.",
     "Loans in book": "Every loan in this report's files: running, matured (MAT) and S&S.",
     "POS": "Principal outstanding: the loan amount still to be repaid, excluding interest and charges.",
@@ -791,14 +819,34 @@ _MEANING = {
 }
 
 
+PTS_TERM = "pts (percentage points)"
+PTS_MEANING = ("The plain difference between two percentages. NPA 37.2% last month and 37.8% now is "
+               "▲ 0.6 pts (37.8 minus 37.2), not ▲ 1.5% (that would be the growth of NPA itself). "
+               "Every % in this report changes in pts; amounts and counts (SOH, loans, demand) change in %.")
+
+
+def _shows_points(blocks: list[dict]) -> bool:
+    """Does any block show a change in points ("▲ 0.56 pts")?"""
+    for b in blocks:
+        if b["type"] == "glance" and any("pts" in (t.get("change") or "") for t in b["tiles"]):
+            return True
+        if b["type"] == "table" and (any(c["fmt"] == "pp" for c in b["columns"])
+                                     or ("Change" in b["df"].columns
+                                         and b["df"]["Change"].astype(str).str.contains("pts").any())):
+            return True
+    return False
+
+
 def _definitions(blocks: list[dict]) -> list[dict]:
     shown = {b["title"] for b in blocks if b["type"] == "table"} | {
         c.get("label", c["key"]) for b in blocks if b["type"] == "table" for c in b["columns"]}
     shown |= {m for b in blocks if b["type"] == "table" and "Metric" in b["df"].columns for m in b["df"]["Metric"]}
     terms = [t for t in _MEANING if t in shown]
+    if _shows_points(blocks):                     # last: how every change in the report is written
+        terms.append(PTS_TERM)
     if not terms:
         return []
-    rows = pd.DataFrame([{"Term": t, "Meaning": _MEANING[t]} for t in terms])
+    rows = pd.DataFrame([{"Term": t, "Meaning": _MEANING.get(t, PTS_MEANING)} for t in terms])
     return [heading("How to Read This"), table("Definitions", rows, [{"key": "Term", "fmt": "text", "bold": True},
                                                                    {"key": "Meaning", "fmt": "text"}],
                                               sheet="Definitions")]
@@ -1023,12 +1071,6 @@ PRESET_SECTIONS = {
     "Regional": ["glance", "month_vs_month", "branches", "executives", "slipping", "why", "new_business", "new_book", "focus", "definitions"],
     "Branch": ["glance", "month_vs_month", "executives", "slipping", "new_book", "focus", "call_lists", "definitions"],
 }
-# The level just below each report's own: whose moves the verdict names, and
-# whose new defaulters "Where loans are slipping" breaks down.
-_CHILD = {"Leadership": ("Region", "region"), "Zone": ("Region", "region"),
-          "Regional": ("Branch", "branch"), "Branch": ("Executive", "executive")}
-
-
 def build_report(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, prev_month: str | None,
                  preset: str = DEFAULT_PRESET, filters: dict | None = None,
                  alerts: list | None = None, alerts_prev: list | None = None,
@@ -1041,15 +1083,21 @@ def build_report(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, 
     unit: the zone / region / branch this file is about (packs.py splits by it).
     alerts / alerts_prev are accepted for callers that pass them; the focus
     list already covers the alert groups."""
+    from utils import frame_cache
+    with frame_cache():                  # each number of each frame worked out once per report
+        return _build_report(df_curr, df_prev, curr_month, prev_month, preset, filters, extras, sections, unit)
+
+
+def _build_report(df_curr, df_prev, curr_month, prev_month, preset, filters, extras, sections, unit) -> dict:
     from analysis import action_center
     from utils import compute_metrics
     filters = filters or {}
     preset = preset if preset in PRESET_SECTIONS else DEFAULT_PRESET
-    ac = action_center.build(df_curr, df_prev)
+    ac = action_center.build(df_curr, df_prev, with_overview=False)    # the report shows no pulse / attention
     metrics = compute_metrics(df_curr, df_prev)
     prev_values = ({k: v[0] for k, v in compute_metrics(df_prev, df_prev.iloc[0:0]).items()}
                    if df_prev is not None and len(df_prev) else None)
-    child_level, child_grain = _CHILD[preset]
+    child_level, child_grain, _ = _CHILD[preset]
 
     chosen = set(PRESET_SECTIONS[preset] + list(extras) if sections is None else sections)
     build = {
@@ -1060,7 +1108,7 @@ def build_report(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, 
         "regions": lambda: _units_scorecard(df_curr, df_prev, "Region", "Region Scorecard"),
         "branches": lambda: _units_scorecard(df_curr, df_prev, "Branch", "Branch Scorecard"),
         "executives": lambda: _executives_scorecard(df_curr, df_prev),
-        "slipping": lambda: _roll_forward(df_curr, ac, child_grain),
+        "slipping": lambda: _roll_forward(df_curr, ac, child_grain, child_level),
         "why": lambda: _why(df_curr, preset),
         "new_business": lambda: _business(df_curr, curr_month),
         "new_book": lambda: _new_book(df_curr, curr_month, preset),

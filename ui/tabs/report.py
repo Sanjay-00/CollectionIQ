@@ -20,7 +20,7 @@ _PRESET_HELP = {
               "and who to call.",
 }
 _UNIT_WORD = {"Zone": "zone", "Regional": "region", "Branch": "branch"}
-_SECONDS_PER_FILE = {"PDF": 1.8, "HTML": 1.3, "Excel": 2.3}    # measured on the demo book, for the "about N seconds" note
+_SECONDS_PER_FILE = {"PDF": 0.9, "HTML": 0.6, "Excel": 1.0}    # measured on the demo book, for the "about N seconds" note
 
 
 def render_report_tab(
