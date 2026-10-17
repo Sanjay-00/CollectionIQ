@@ -114,7 +114,6 @@ def test_unit_tables_read_accounts_delinquent_pct_prev_then_buckets():
     from analysis.executive_scorecard import compute_executive_scorecard
     from analysis.portfolio_intelligence import compute_branch_quadrant, compute_region_scorecard
     curr, prev = _month([0, 0, 1, 1] * 5), _month([0, 0, 0, 1] * 5)
-    lead = lambda cols, first: [c for c in cols if c in first]
     reg = list(compute_region_scorecard(curr, prev).columns)
     assert reg[:9] == ["Region", "Accounts", "Delinquent", "Delinquency%", "Prev Delinquency%",
                        "Δ Delinquency%", "SMA-2", "SMA-2%", "Δ SMA-2%"]

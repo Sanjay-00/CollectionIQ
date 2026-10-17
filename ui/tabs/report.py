@@ -218,7 +218,8 @@ def _generate(df_curr, df_prev, curr_month, prev_month, preset, filters, section
     else:
         name, data, mime = f"{preset.lower()}_reports_{curr_month}.zip", zip_files(files), MIME["zip"]
     st.session_state["rpt2"] = {"name": name, "data": data, "mime": mime, "n": len(files), "preset": preset,
-                                "fmt": fmt, "month": curr_month, "preview": out["preview"], "notes": out["notes"]}
+                                "fmt": fmt, "month": curr_month, "preview": out["preview"], "notes": out["notes"],
+                                "title": (out.get("titles") or [f"{preset} Report"])[0]}
 
 
 def _show_result() -> None:
@@ -241,7 +242,8 @@ def _show_result() -> None:
                 if not to.strip():
                     st.warning("Enter an email address.")
                 else:
-                    ok, err = _send_report_email(out["data"].decode("utf-8"), to.strip(), out["month"])
+                    ok, err = _send_report_email(out["data"].decode("utf-8"), to.strip(), out["month"],
+                                                 title=out.get("title", "Portfolio Report"), file_name=out["name"])
                     (st.success(f"Sent to {to}") if ok else st.error(f"Failed: {err}"))
         else:
             st.caption("Email sending is off: add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to turn it on.")

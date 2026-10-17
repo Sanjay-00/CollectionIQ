@@ -1068,7 +1068,7 @@ class TestComputeRiskIndicators:
 
     def test_count_signal_improving_when_count_drops(self):
         curr = make_df([{"Non Starter": "N"} for _ in range(10)])
-        prev = make_df([{"Non Starter": "Y"} for _ in range(3)] + [{"Non Starter": "N"} for _ in range(7)])
+        prev = make_df([{"Non Starter": "Y", "Arrears / EMI": 1.0} for _ in range(3)] + [{"Non Starter": "N"} for _ in range(7)])
         out = compute_risk_indicators(curr, prev, None)
         ns_signal = next(i for i in out if i["Signal"] == "Non-Starters")
         assert ns_signal["_direction"] == "Improving"
@@ -1335,7 +1335,6 @@ class TestComputeGoodCustomers:
         assert out["SOH"].tolist() == [50_000, 200_000]
 
     def test_missing_tenure_columns_returns_empty(self):
-        curr = make_df([{"LCC%": 100.0}]).drop(columns=["Loan No"], errors="ignore")
         out = compute_good_customers(make_df([{"LCC%": 100.0}]))
         assert out.empty
 

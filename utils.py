@@ -330,6 +330,10 @@ PREV_CARRYOVER_COLS = {
     # previous-period version under time.compare.
     "Month Collection (Excluding Reserve Collection)": "prev_Month_Collection",
     "Net Collection Demand Inst+Exp+BC":               "prev_Net_Collection_Demand",
+    # Cumulative collection and dues, for LCC% (lcc_pct) vs last month.
+    "Cum Coll (Inst+Exp)":  "prev_Cum_Coll",
+    "Cum Due-Inst":         "prev_Cum_Due_Inst",
+    "Cum Due-Exp":          "prev_Cum_Due_Exp",
     # Not numeric (Y/N flag), but carried forward the same way -- needed for the
     # strike_pct count_ratio metric's previous-period version (registry/ontology.py).
     "Strike":               "prev_Strike",
@@ -468,15 +472,12 @@ def assign_buckets(df: pd.DataFrame) -> pd.DataFrame:
     # for this metric, same Inst+Exp+BC scope elsewhere would use, minus BC's
     # own carve-out reasoning not applying here (BC is a real due amount; PC is
     # a penalty, not principal/EMI demand).
-    _overdue = pd.to_numeric(df.get("Arrear Opening"), errors="coerce").fillna(0).clip(lower=0) \
-        if "Arrear Opening" in df.columns else pd.Series(0.0, index=df.index)
-    _demand = (
-        pd.to_numeric(df.get("Month Due-Inst"), errors="coerce").fillna(0)
-        + pd.to_numeric(df.get("Month Due-Exp"), errors="coerce").fillna(0)
-        + pd.to_numeric(df.get("MONTH DUE (BC)"), errors="coerce").fillna(0)
-    ) if "Month Due-Inst" in df.columns else pd.Series(0.0, index=df.index)
-    _paid = pd.to_numeric(df.get("Month Collection (Excluding Reserve Collection)"), errors="coerce").fillna(0) \
-        if "Month Collection (Excluding Reserve Collection)" in df.columns else pd.Series(0.0, index=df.index)
+    # to_num: a missing optional column (e.g. MONTH DUE (BC)) counts as 0. A
+    # bare df.get() returned None for it and crashed the whole upload.
+    _overdue = to_num(df, "Arrear Opening", fill=0).clip(lower=0)
+    _demand = (to_num(df, "Month Due-Inst", fill=0) + to_num(df, "Month Due-Exp", fill=0)
+               + to_num(df, "MONTH DUE (BC)", fill=0))
+    _paid = to_num(df, "Month Collection (Excluding Reserve Collection)", fill=0)
 
     df["Overdue"] = _overdue
     df["MonthDemandExclPC"] = _demand
@@ -692,8 +693,10 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
     df, date_parse_warnings = parse_date_columns(df)
     df.attrs["date_parse_warnings"] = date_parse_warnings
 
-    # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number
-    df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
+    # Due Dt is a numeric EMI due day (5, 10, 15, 20)  -  keep as number.
+    # Optional (not in CRITICAL_COLS): a file without it must still load.
+    if "Due Dt" in df.columns:
+        df["Due Dt"] = pd.to_numeric(df["Due Dt"], errors="coerce")
 
     # Additive cash flows - zero is the correct default when missing
     for col in ["Month Receipt Amount", "Month Collection (Excluding Reserve Collection)", "NET COLLECTION", "Cum Coll (Inst+Exp)", "Total Cum Collection"]:
@@ -792,6 +795,24 @@ def apply_filters(df: pd.DataFrame, region: str, branch: str, status: str, segme
         ag_date = pd.to_datetime(df["Ag_Date"], errors="coerce")
         df = df[ag_date >= pd.Timestamp(date_from)]
     return df
+
+
+def dates_only(df: pd.DataFrame) -> pd.DataFrame:
+    """A copy with every datetime column as plain dates. LCC dates (Ag_Date,
+    Last Receipt Date...) carry no time of day, but a datetime column shows
+    "2022-11-01 00:00:00" on screen and in an exported .xlsx."""
+    df = df.copy()
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.date
+    return df
+
+
+def as_list(x) -> list:
+    """None -> [], a list / tuple -> a list, anything else -> [it]."""
+    if x is None:
+        return []
+    return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
 def _safe_pct(num, den):

@@ -29,6 +29,8 @@ Measure definition (`mdef`) fields a handler may read:
 """
 from dataclasses import dataclass, field
 
+from utils import as_list
+
 
 @dataclass
 class Lowered:
@@ -72,10 +74,6 @@ def measure_rollup(kind: str):
     return deco
 
 
-def _as_cols(x) -> list:
-    if x is None:
-        return []
-    return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
 # ── Built-in measure kinds ────────────────────────────────────────────────────
@@ -142,7 +140,7 @@ def _ratio(mdef: dict, ctx: dict) -> Lowered:
     inside an eval expression  -  so spaced/parenthesised column names are safe.
     Only the generated snake-safe aliases are used in derive expressions."""
     alias = mdef["alias"]
-    num, den = _as_cols(mdef.get("numerator")), _as_cols(mdef.get("denominator"))
+    num, den = as_list(mdef.get("numerator")), as_list(mdef.get("denominator"))
     if not num or not den:
         return Lowered(errors=[f"measure '{alias}': ratio needs 'numerator' and 'denominator'"])
 
@@ -272,7 +270,7 @@ def _r_ratio(mdef: dict, ctx: dict) -> RollupLowered:
     # intermediate grain, re-sum at the terminal grain, divide once. (Averaging a
     # per-entity ratio would be wrong.)
     alias = mdef["alias"]
-    num, den = _as_cols(mdef.get("numerator")), _as_cols(mdef.get("denominator"))
+    num, den = as_list(mdef.get("numerator")), as_list(mdef.get("denominator"))
     if not num or not den:
         return RollupLowered(errors=[f"measure '{alias}': ratio needs 'numerator' and 'denominator'"])
     inter, n_aliases, d_aliases = [], [], []

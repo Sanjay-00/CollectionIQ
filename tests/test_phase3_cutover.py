@@ -9,7 +9,6 @@ Validates that:
 5. Empty plan results are now returned as empty DataFrames (not errors)
 """
 import pandas as pd
-import pytest
 
 from agents.plan_executor import execute_plan, validate_plan
 from compiler.core import compile_logical

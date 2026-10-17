@@ -12,7 +12,11 @@ from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from utils import load_and_validate, expand_to_all_columns, add_customer_loan_count, REQUIRED_COLS, CRITICAL_COLS
+from utils import (
+    load_and_validate, expand_to_all_columns, add_customer_loan_count, normalize_truncated_names,
+    REQUIRED_COLS, CRITICAL_COLS,
+)
+from utils import dates_only as _dateonly      # noqa: F401  (its old name here, for existing callers)
 
 
 def _esc(val):
@@ -227,20 +231,6 @@ def _bump_data_version(fingerprint: str | None = None) -> None:
         st.session_state["_data_version"] = fingerprint
     else:
         st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
-
-
-def _dateonly(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop the always-00:00:00 time component from datetime64 columns.
-
-    LCC date columns (Ag_Date, Last Receipt Date, etc.) carry no real time-of-day
-    signal -- they're loan-level dates, not timestamps -- but pandas' datetime64
-    dtype always renders the full "2022-11-01 00:00:00" in both st.dataframe and
-    an exported .xlsx cell. .dt.date yields plain python date objects, which
-    display and export as a bare date with no formatting/dtype trickery needed."""
-    df = df.copy()
-    for col in df.select_dtypes(include="datetime64[ns]").columns:
-        df[col] = df[col].dt.date
-    return df
 
 
 def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -819,15 +809,12 @@ def _send_feedback(run_id: str, score: float) -> None:
         pass
 
 
-def _send_report_email(html_report: str, email_to: str, curr_month: str) -> tuple[bool, str]:
-    """Send the HTML report via SMTP. Returns (success, error_msg).
-
-    Thin wrapper around report_agent's send_report_email - the same function
-    the auto-send-on-generate LangGraph node uses, so this tab's standalone
-    "resend" button can't silently drift out of sync with it.
-    """
+def _send_report_email(html_report: str, email_to: str, curr_month: str,
+                       title: str = "Portfolio Report", file_name: str | None = None) -> tuple[bool, str]:
+    """Send the HTML report via SMTP. Returns (success, error_msg). Thin
+    wrapper around report_agent's send_report_email."""
     from report_agent.nodes.email_dispatcher import send_report_email
-    return send_report_email(html_report, email_to, curr_month)
+    return send_report_email(html_report, email_to, curr_month, title=title, file_name=file_name)
 
 
 def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
@@ -840,6 +827,7 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     dfs, errors = [], []
     dropped_dupes = 0  # per-file dupes (from load_and_validate) + any cross-file dupes below
     data_fixes: list[str] = []
+    date_warnings: list[str] = []
     for f in files:
         df, errs = load_and_validate(f)
         if errs:
@@ -848,6 +836,7 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
             dropped_dupes += df.attrs.get("dropped_duplicate_loans", 0)
             prefix = f"{getattr(f, 'name', 'file')}: " if len(files) > 1 else ""
             data_fixes += [prefix + n for n in df.attrs.get("data_fixes", [])]
+            date_warnings += [prefix + w for w in df.attrs.get("date_parse_warnings", [])]
             dfs.append(df)
 
     if not dfs:
@@ -870,6 +859,11 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
         before = len(combined)
         combined = combined.drop_duplicates(subset=["Loan No"], keep="first")
         dropped_dupes += before - len(combined)
+    # Each file merged its own truncated segment spellings; two regional files
+    # can cut the same name at different lengths, so merge once more across all.
+    for col in ("SegmentName", "Segment"):
+        if col in combined.columns:
+            combined[col] = normalize_truncated_names(combined[col])
     # Recount across ALL files: a customer's loans can sit in different
     # regional files, and each file only counted its own.
     combined = add_customer_loan_count(combined)
@@ -884,4 +878,5 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
         c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in combined.columns
     ]
     combined.attrs["data_fixes"] = data_fixes
+    combined.attrs["date_parse_warnings"] = date_warnings
     return combined, errors

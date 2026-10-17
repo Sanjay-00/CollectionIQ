@@ -126,3 +126,90 @@ class TestLccPctConsistency:
         df["Cum Coll (Inst+Exp)"] = [200.0, 200.0, 200.0, 200.0]  # > cum due -- both paths must cap at 100
         dashboard_lcc = compute_metrics(df, df.iloc[0:0])["LCC%"][0]
         assert dashboard_lcc == self._via_compiler_lcc(df) == 100.0
+
+
+class TestFlagConceptsMatchDashboard:
+    """The AI Query / Investigator concepts (registry/ontology.py) and the
+    dashboard's own masks must pick the SAME loans. They once disagreed: on
+    the demo file Alerts showed 33 non-starters and AI Query 9, and the
+    co-lending / not-paying-3M concepts matched "Y" but not "Yes"."""
+
+    def _flags(self):
+        from helpers import make_df
+        return make_df([
+            {"Non Starter": "Y",   "Arrears / EMI": 1.0, "VehEMI Accrued": 1},
+            {"Non Starter": "Yes", "Arrears / EMI": 2.0, "VehEMI Accrued": 3},
+            {"Non Starter": "Y",   "Arrears / EMI": 0.0, "VehEMI Accrued": 2},   # cleared: not one
+            {"Non Starter": "N",   "Arrears / EMI": 4.0, "VehEMI Accrued": 1},
+            {"CoLending_Loans": "Yes", "Arrears / EMI": 1.0},
+            {"CoLending_Loans": "Y",   "Arrears / EMI": 0.5},
+            {"CoLending_Loans": "Y",   "Arrears / EMI": 0.0},
+        ]).assign(**{"No Coll 3 Months and >6 EMI": ["Yes", "Y", "N", "NO", "N", "N", "N"]})
+
+    def _concept(self, df, name):
+        from investigator.steps import concept_filter
+        return len(concept_filter(df, name))
+
+    def test_non_starter(self):
+        from smart_alerts import alert_non_starters
+        from utils import non_starter_mask
+        df = self._flags()
+        assert self._concept(df, "non_starter") == int(non_starter_mask(df).sum()) \
+            == alert_non_starters(df)["count"] == 2
+
+    def test_colending_at_risk_accepts_yes(self):
+        from smart_alerts import alert_colending_at_risk
+        df = self._flags()
+        assert self._concept(df, "colending_at_risk") == alert_colending_at_risk(df)["count"] == 2
+
+    def test_no_collection_3m_accepts_yes(self):
+        from utils import loan_flags
+        df = self._flags()
+        assert self._concept(df, "no_collection_3m") == int(loan_flags(df)["not_paying_3m"].sum()) == 2
+
+    def test_priority_tier_uses_the_same_non_starter_rule(self):
+        from registry.ontology import CONCEPTS, PRIORITY_RULES
+        tier = next(r for r in PRIORITY_RULES if r["label"] == "Non Starters")
+        assert tier["conditions"] == CONCEPTS["non_starter"]["conditions"]
+
+    def test_demo_file_counts_agree_across_tabs(self):
+        from pathlib import Path
+        from smart_alerts import alert_non_starters
+        from utils import load_and_validate, non_starter_mask
+        path = Path(__file__).resolve().parent.parent / "sample_data" / "Current_Month_Demo.xlsx"
+        with open(path, "rb") as f:
+            df, errs = load_and_validate.__wrapped__(f)
+        assert errs == []
+        n = int(non_starter_mask(df).sum())
+        assert n > 0
+        assert self._concept(df, "non_starter") == alert_non_starters(df)["count"] == n
+
+
+class TestCollectionPctsConsistency:
+    """Collection %, Overdue Collection % and Month Demand Collection %: the AI
+    Query metrics must equal the Dashboard's own figures (utils.unit_metrics
+    and utils.compute_overdue_demand_pct)."""
+
+    def _df(self):
+        from helpers import make_df
+        from utils import assign_buckets
+        return assign_buckets(make_df([
+            {"Arrear Opening": 5_000.0, "Month Collection (Excluding Reserve Collection)": 12_000.0,
+             "Net Collection Demand Inst+Exp+BC": 10_000.0},
+            {"Arrear Opening": 0.0, "Month Collection (Excluding Reserve Collection)": 3_000.0,
+             "Net Collection Demand Inst+Exp+BC": 10_000.0},
+            {"Arrear Opening": 20_000.0, "Month Collection (Excluding Reserve Collection)": 0.0,
+             "Net Collection Demand Inst+Exp+BC": 8_000.0},
+        ]))
+
+    def test_collection_pct(self):
+        from utils import portfolio_metrics
+        df = self._df()
+        assert _via_compiler("collection_pct", df) == float(portfolio_metrics(df)["Collection%"])
+
+    def test_overdue_and_month_demand_collection_pct(self):
+        from utils import compute_overdue_demand_pct
+        df = self._df()
+        shared = compute_overdue_demand_pct(df)
+        assert _via_compiler("overdue_collection_pct", df) == shared["overdue_pct"]
+        assert _via_compiler("month_demand_collection_pct", df) == shared["demand_pct"]

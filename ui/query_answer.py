@@ -122,7 +122,7 @@ def steps_strip(steps: list[str], failed: bool = False, note: str = "", full: bo
         '.pipe-chip b { color:#3fb950; margin-left:5px; } .pipe-chip.bad b { color:#f85149; }'
         '.pipe-arrow { color:#484f58; font-size:12px; }'
         '.pipe-note { margin-left:auto; color:#8b949e; font-size:11.5px; font-style:italic; }</style>'
-        f'<div class="pipe"><span class="pipe-label">STEPS</span>'
+        '<div class="pipe"><span class="pipe-label">STEPS</span>'
         + '<span class="pipe-arrow">&#8594;</span>'.join(chips) + f"{tag}</div>",
         unsafe_allow_html=True)
 

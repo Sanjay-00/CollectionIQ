@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from helpers import make_df
 from investigator.steps import (
@@ -225,19 +226,21 @@ class TestRollRateByDimension:
     loop calling compute_roll_rate_matrix once per branch) is new."""
 
     def _two_branch_df(self):
-        prev = make_df([
-            {"Loan No": "L1", "Unit": "MAHAD", "curr_bucket": "STD"},
-            {"Loan No": "L2", "Unit": "MAHAD", "curr_bucket": "STD"},
-            {"Loan No": "L3", "Unit": "PUNE", "curr_bucket": "STD"},
-            {"Loan No": "L4", "Unit": "PUNE", "curr_bucket": "STD"},
-        ])
-        curr = make_df([
-            {"Loan No": "L1", "Unit": "MAHAD", "curr_bucket": "NPA"},
-            {"Loan No": "L2", "Unit": "MAHAD", "curr_bucket": "NPA"},
-            {"Loan No": "L3", "Unit": "PUNE", "curr_bucket": "NPA"},
-            {"Loan No": "L4", "Unit": "PUNE", "curr_bucket": "STD"},
-        ])
+        # MAHAD: 4 STD loans, all NPA now (100%). PUNE: 4 STD loans, 2 NPA now
+        # (50%). Each branch is above the roll tables' minimum size.
+        moves = [("MAHAD", "NPA")] * 4 + [("PUNE", "NPA"), ("PUNE", "STD")] * 2
+        prev = make_df([{"Loan No": f"L{i}", "Unit": u, "curr_bucket": "STD"} for i, (u, _) in enumerate(moves)])
+        curr = make_df([{"Loan No": f"L{i}", "Unit": u, "curr_bucket": b} for i, (u, b) in enumerate(moves)])
         return curr, prev
+
+    def test_branch_below_the_minimum_size_is_left_out(self):
+        # 1 of 2 loans slipping is 50%: too few loans to rank (same floor as
+        # the Dashboard's roll tables).
+        prev = make_df([{"Loan No": "S1", "Unit": "TINY", "curr_bucket": "STD"},
+                        {"Loan No": "S2", "Unit": "TINY", "curr_bucket": "STD"}])
+        curr = make_df([{"Loan No": "S1", "Unit": "TINY", "curr_bucket": "NPA"},
+                        {"Loan No": "S2", "Unit": "TINY", "curr_bucket": "STD"}])
+        assert roll_rate_by_dimension(curr, prev, "branch").empty
 
     def test_one_row_per_branch_with_roll_forward_rate(self):
         curr, prev = self._two_branch_df()
@@ -256,14 +259,11 @@ class TestRollRateByDimension:
         # Same collision class investigator/guardrails.py's ambiguous-name
         # check exists to prevent -- two different people sharing a first
         # name in different branches must never be merged into one row.
-        prev = make_df([
-            {"Loan No": "L1", "Unit": "PUNE", "MNT NAME": "RAHUL SHARMA", "curr_bucket": "STD"},
-            {"Loan No": "L2", "Unit": "NAGPUR", "MNT NAME": "RAHUL VERMA", "curr_bucket": "STD"},
-        ])
-        curr = make_df([
-            {"Loan No": "L1", "Unit": "PUNE", "MNT NAME": "RAHUL SHARMA", "curr_bucket": "NPA"},
-            {"Loan No": "L2", "Unit": "NAGPUR", "MNT NAME": "RAHUL VERMA", "curr_bucket": "STD"},
-        ])
+        people = [("PUNE", "RAHUL SHARMA", "NPA"), ("NAGPUR", "RAHUL VERMA", "STD")] * 5   # 5 loans each
+        prev = make_df([{"Loan No": f"L{i}", "Unit": u, "MNT NAME": n, "curr_bucket": "STD"}
+                        for i, (u, n, _) in enumerate(people)])
+        curr = make_df([{"Loan No": f"L{i}", "Unit": u, "MNT NAME": n, "curr_bucket": b}
+                        for i, (u, n, b) in enumerate(people)])
         result = roll_rate_by_dimension(curr, prev, "executive")
         assert len(result) == 2
         assert set(zip(result["MNT NAME"], result["Unit"])) == {
@@ -784,10 +784,15 @@ class TestEntitySummaryBranch:
         # Raw pp difference (0 - 100 = -100), never a relative "% of %" figure.
         assert npa_row["Delta"] == -100.0
 
-    def test_unknown_branch_returns_all_none_current(self):
+    def test_unknown_branch_says_so_instead_of_a_table_of_blanks(self):
         df_curr = make_df(_branch_df("MAHAD", "WEST", n=3))
-        result = entity_summary("branch", "NO_SUCH_BRANCH", df_curr)
-        assert result["Current"].isnull().all()
+        with pytest.raises(ValueError, match="no branch named 'MAHAAD'.*Did you mean MAHAD"):
+            entity_summary("branch", "MAHAAD", df_curr)
+
+    def test_small_branch_still_gets_its_numbers(self):
+        # Under the ranking tables' size floor (3), but its own summary is real.
+        result = entity_summary("branch", "MAHAD", make_df(_branch_df("MAHAD", "WEST", n=2)))
+        assert result["Current"].notnull().all()
 
 
 class TestEntitySummaryExecutive:
@@ -953,9 +958,9 @@ class TestEntitySummaryRegionZoneBU:
         coll_row = result[result["Metric"] == "Collection%"].iloc[0]
         assert coll_row["Current"] is not None
 
-    def test_unknown_region_returns_all_none_not_a_crash(self):
-        result = entity_summary("region", "NO_SUCH_REGION", self._hierarchy_df())
-        assert result["Current"].isnull().all()
+    def test_unknown_region_says_so_not_a_crash(self):
+        with pytest.raises(ValueError, match="no region named 'NO_SUCH_REGION'"):
+            entity_summary("region", "NO_SUCH_REGION", self._hierarchy_df())
 
 
 class TestUnderperformerQuartile:
@@ -1222,14 +1227,19 @@ class TestIntersectEntities:
 
 
 class TestNonPayingCustomers:
-    def test_filters_to_hard_bucket_customers_of_the_given_executives(self):
+    def test_uses_the_dashboards_not_paying_3m_rule(self):
+        # Business decision (2026-10-16): the Dashboard's "Not Paying 3M+"
+        # flag, not Arrears/EMI >= 6. DEEP ARREARS is 7 EMIs behind but still
+        # paying, so not on the list; "Yes" spellings count.
         rows = [
             {"MNT NAME": "RAJ", "Unit": "MAHAD", "Cust Name": "PAYING CUST",
-             "Cust Mob No": "1111111111", "Arrears / EMI": 0.0},
+             "Cust Mob No": "1111111111", "Arrears / EMI": 0.0, "No Coll 3 Months and >6 EMI": "N"},
             {"MNT NAME": "RAJ", "Unit": "MAHAD", "Cust Name": "DEFAULTER",
-             "Cust Mob No": "2222222222", "Arrears / EMI": 7.0},
+             "Cust Mob No": "2222222222", "Arrears / EMI": 7.0, "No Coll 3 Months and >6 EMI": "Yes"},
+            {"MNT NAME": "RAJ", "Unit": "MAHAD", "Cust Name": "DEEP ARREARS",
+             "Cust Mob No": "4444444444", "Arrears / EMI": 7.0, "No Coll 3 Months and >6 EMI": "N"},
             {"MNT NAME": "OTHER", "Unit": "MAHAD", "Cust Name": "NOT IN SCOPE",
-             "Cust Mob No": "3333333333", "Arrears / EMI": 8.0},
+             "Cust Mob No": "3333333333", "Arrears / EMI": 8.0, "No Coll 3 Months and >6 EMI": "Y"},
         ]
         entities = make_df([{"MNT NAME": "RAJ", "Unit": "MAHAD"}])
         result = non_paying_customers(make_df(rows), entities)
@@ -1237,9 +1247,15 @@ class TestNonPayingCustomers:
         assert "Last Receipt Amount" in result.columns or "Ag_Date" in result.columns
 
     def test_empty_entities_returns_empty(self):
-        rows = [{"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 7.0}]
+        rows = [{"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 7.0, "No Coll 3 Months and >6 EMI": "Y"}]
         result = non_paying_customers(make_df(rows), pd.DataFrame())
         assert result.empty
+
+    def test_file_without_the_flag_column_is_refused(self):
+        rows = [{"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 7.0}]
+        entities = make_df([{"MNT NAME": "RAJ", "Unit": "MAHAD"}])
+        with pytest.raises(ValueError, match="No Coll 3 Months"):
+            non_paying_customers(make_df(rows), entities)
 
     def test_all_columns_returns_every_source_column_not_the_curated_subset(self):
         # The exact gap a live user hit: "can you give me all columns for
@@ -1249,7 +1265,7 @@ class TestNonPayingCustomers:
         # to act on it.
         rows = [{
             "MNT NAME": "RAJ", "Unit": "MAHAD", "Cust Mob No": "2222222222",
-            "Arrears / EMI": 7.0, "SegmentName": "TWO WHEELER", "FUEL_TYPE": "PETROL",
+            "Arrears / EMI": 7.0, "SegmentName": "TWO WHEELER", "FUEL_TYPE": "PETROL", "No Coll 3 Months and >6 EMI": "Y",
         }]
         entities = make_df([{"MNT NAME": "RAJ", "Unit": "MAHAD"}])
         curated = non_paying_customers(make_df(rows), entities)
@@ -1285,13 +1301,15 @@ class TestCustomerLoanBook:
 
 class TestCustomerLoanSummary:
     def test_summarizes_delinquency_and_exposure(self):
+        # Delinquent = behind on any amount (Arrears/EMI > 0), 1-30 DPD included.
         rows = [
-            {"Cust Mob No": "9999999999", "curr_bucket": "NPA", "SOH": 50_000.0},
-            {"Cust Mob No": "9999999999", "curr_bucket": "STD", "SOH": 30_000.0},
+            {"Cust Mob No": "9999999999", "curr_bucket": "NPA", "Arrears / EMI": 4.0, "SOH": 30_000.0},
+            {"Cust Mob No": "9999999999", "curr_bucket": "1-30 DPD", "Arrears / EMI": 0.5, "SOH": 20_000.0},
+            {"Cust Mob No": "9999999999", "curr_bucket": "STD", "Arrears / EMI": 0.0, "SOH": 30_000.0},
         ]
         summary = customer_loan_summary(make_df(rows), "9999999999")
-        assert summary["loan_count"] == 2
-        assert summary["delinquent_count"] == 1
+        assert summary["loan_count"] == 3
+        assert summary["delinquent_count"] == 2
         assert summary["total_soh"] == 80_000.0
 
     def test_no_loans_returns_zeroed_summary(self):
@@ -1311,9 +1329,9 @@ class TestConceptFilter:
 
     def _df(self):
         rows = [
-            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 1, "Loan No": "L1"},
-            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "N", "VehEMI Accrued": 1, "Loan No": "L2"},
-            {"RegionName": "EAST", "Unit": "NAGPUR", "Non Starter": "Y", "VehEMI Accrued": 1, "Loan No": "L3"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "Loan No": "L1"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "N", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "Loan No": "L2"},
+            {"RegionName": "EAST", "Unit": "NAGPUR", "Non Starter": "Y", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "Loan No": "L3"},
         ]
         return make_df(rows)
 
@@ -1332,23 +1350,23 @@ class TestConceptFilter:
         # exactly this: "are there any non starters" -> "No rows matched,"
         # indistinguishable from a genuinely clean file.
         rows = [
-            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Yes", "VehEMI Accrued": 1, "Loan No": "L1"},
-            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "No", "VehEMI Accrued": 1, "Loan No": "L2"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Yes", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "Loan No": "L1"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "No", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "Loan No": "L2"},
         ]
         result = concept_filter(make_df(rows), "non_starter")
         assert set(result["Loan No"]) == {"L1"}
 
-    def test_vehicle_emi_accrued_must_be_exactly_one(self):
-        # A customer flagged Non Starter but already 2+ EMIs into the loan
-        # is a different (and arguably mis-flagged/stale) case, not a
-        # genuine "never paid the 1st EMI" -- narrow to the loan's very
-        # first EMI cycle specifically.
+    def test_any_emi_cycle_counts_but_only_while_still_behind(self):
+        # Business rule (2026-10-16): a customer on EMI 2 or 3 who never paid
+        # is still a non-starter; one who has since cleared the arrears is
+        # not. Same loans as utils.non_starter_mask (the dashboard's count).
         rows = [
-            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 1, "Loan No": "L1"},
-            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 2, "Loan No": "L2"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "Loan No": "L1"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 2, "Arrears / EMI": 1.0, "Loan No": "L2"},
+            {"RegionName": "WEST", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 3, "Arrears / EMI": 0.0, "Loan No": "L3"},
         ]
         result = concept_filter(make_df(rows), "non_starter")
-        assert set(result["Loan No"]) == {"L1"}
+        assert set(result["Loan No"]) == {"L1", "L2"}
 
     def test_scoped_to_one_region(self):
         result = concept_filter(self._df(), "non_starter", scope_col="region", scope_value="WEST")
@@ -1383,16 +1401,16 @@ class TestConceptFilter:
 class TestConceptSummary:
     def test_summarizes_count_and_exposure_not_raw_rows(self):
         rows = [
-            {"Non Starter": "Y", "VehEMI Accrued": 1, "SOH": 50_000.0, "Loan No": "L1"},
-            {"Non Starter": "N", "VehEMI Accrued": 1, "SOH": 30_000.0, "Loan No": "L2"},
-            {"Non Starter": "Y", "VehEMI Accrued": 1, "SOH": 20_000.0, "Loan No": "L3"},
+            {"Non Starter": "Y", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "SOH": 50_000.0, "Loan No": "L1"},
+            {"Non Starter": "N", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "SOH": 30_000.0, "Loan No": "L2"},
+            {"Non Starter": "Y", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "SOH": 20_000.0, "Loan No": "L3"},
         ]
         summary = concept_summary(make_df(rows), "non_starter")
         assert summary["count"] == 2
         assert summary["total_soh"] == 70_000.0
 
     def test_no_matches_returns_zeroed_summary(self):
-        rows = [{"Non Starter": "N", "VehEMI Accrued": 1, "SOH": 10.0}]
+        rows = [{"Non Starter": "N", "VehEMI Accrued": 1, "Arrears / EMI": 1.0, "SOH": 10.0}]
         summary = concept_summary(make_df(rows), "non_starter")
         assert summary == {"count": 0, "total_soh": 0.0}
 
@@ -1594,7 +1612,7 @@ class TestPriorityMenu:
     def _df(self):
         rows = [
             {"Loan No": "L1", "Unit": "MAHAD", "Non Starter": "Y", "VehEMI Accrued": 1,
-             "curr_bucket": "STD", "Closing Arrears": 0.0, "Arrears / EMI": 0.0},
+             "curr_bucket": "STD", "Closing Arrears": 0.0, "Arrears / EMI": 0.5},
             {"Loan No": "L2", "Unit": "MAHAD", "Non Starter": "N", "VehEMI Accrued": 1,
              "curr_bucket": "NPA", "Closing Arrears": 90_000.0, "Arrears / EMI": 8.0},
             {"Loan No": "L3", "Unit": "MAHAD", "Non Starter": "N", "VehEMI Accrued": 1,
@@ -1804,3 +1822,56 @@ class TestPriorityByExecutive:
 
     def test_empty_priority_df_returns_empty(self):
         assert priority_by_executive(make_df([{"Loan No": "L1"}]), make_df([])).empty
+
+
+class TestScopeNeverSilentlyWidens:
+    """A scope the file can't honour used to be skipped: "branches in NORTH
+    ZONE" on a file without a Zone column returned every branch in the book,
+    and the priority menu counted the whole book's NPAs as that zone's."""
+
+    def _df(self):
+        return make_df(_branch_df("MAHAD", "WEST", n=3) + _branch_df("PUNE", "EAST", n=3))
+
+    def test_missing_scope_column_refuses(self):
+        with pytest.raises(ValueError, match="no zone column"):
+            dimension_breakdown(self._df(), "branch", scope_col="zone", scope_value="NORTH ZONE")
+        with pytest.raises(ValueError, match="no zone column"):
+            priority_menu(self._df(), scope_col="zone", scope_value="NORTH ZONE")
+
+    def test_misspelt_scope_value_suggests_the_real_one(self):
+        with pytest.raises(ValueError, match="Did you mean WEST"):
+            dimension_breakdown(self._df(), "branch", scope_col="region", scope_value="WESST")
+
+    def test_scope_still_narrows(self):
+        result = dimension_breakdown(self._df(), "branch", scope_col="region", scope_value=" west ")
+        assert result["Unit"].tolist() == ["MAHAD"]
+
+    def test_last_month_without_the_column_is_only_the_comparison(self):
+        # Last month's file lacking Zone must not stop this month's answer.
+        df = self._df().assign(Zone="NORTH")
+        result = dimension_breakdown(df, "branch", df_prev=self._df(), scope_col="zone", scope_value="NORTH")
+        assert len(result) == 2
+
+
+class TestFleetOwnersBehindOnPayment:
+    def test_largest_pos_first(self):
+        # 3 loans of one fleet owner, all behind: the biggest principal leads,
+        # even when another loan has the bigger SOH.
+        rows = [{"Cust Mob No": "9999999999", "Loan No": f"F{i}", "Unit": "MAHAD", "Arrears / EMI": 1.0,
+                 "POS": pos, "SOH": soh} for i, (pos, soh) in enumerate([(50_000.0, 900_000.0),
+                                                                          (700_000.0, 710_000.0),
+                                                                          (300_000.0, 320_000.0)])]
+        assert list(fleet_defaulters(make_df(rows))["Loan No"]) == ["F1", "F2", "F0"]
+
+    def test_menu_label(self):
+        from investigator.steps import PRIORITY_MENU_CATEGORIES
+        labels = [c["label"] for c in PRIORITY_MENU_CATEGORIES]
+        assert "Fleet Owners Behind on Payment" in labels and "Fleet Owners with High POS" not in labels
+
+
+class TestRollSummaryScopeNeedsLastMonthsColumn:
+    def test_refuses_instead_of_counting_the_whole_book_as_exits(self):
+        curr = make_df([{"Loan No": f"L{i}", "Zone": "NORTH", "curr_bucket": "STD"} for i in range(3)])
+        prev = make_df([{"Loan No": f"L{i}", "curr_bucket": "STD"} for i in range(9)])    # no Zone column
+        with pytest.raises(ValueError, match="last month's file has no zone column"):
+            roll_rate_summary(curr, prev, scope_col="zone", scope_value="NORTH")

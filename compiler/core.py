@@ -22,10 +22,10 @@ import re
 
 
 from registry.ontology import CONCEPTS, METRICS, ENTITY_CONCEPTS
-from registry.semantic_model import ENTITIES, DIMENSIONS, entity_key, resolve_dimension, is_coarser
-from agents.plan_executor import validate_plan
+from registry.semantic_model import ENTITIES, DIMENSIONS, LABEL_COLUMNS, entity_key, resolve_dimension, is_coarser
+from agents.plan_executor import _COLUMN_VALUE_OPS, validate_plan
 from compiler.measures import MEASURE_HANDLERS, MEASURE_ROLLUPS
-from utils import PREV_CARRYOVER_COLS, resolve_dynamic_values
+from utils import as_list, BUCKET_SCORE, PREV_CARRYOVER_COLS, resolve_dynamic_values
 
 # Key columns of loan-level "dimension" entities (branch/region/executive). A
 # per-entity predicate that aggregates over one of these  -  when it is not the output
@@ -254,8 +254,8 @@ def _resolve_prev_metric(name: str) -> dict | None:
         return None
     kind = base.get("kind")
     if kind == "ratio":
-        num = [PREV_CARRYOVER_COLS.get(c) for c in _as_cols(base.get("numerator"))]
-        den = [PREV_CARRYOVER_COLS.get(c) for c in _as_cols(base.get("denominator"))]
+        num = [PREV_CARRYOVER_COLS.get(c) for c in as_list(base.get("numerator"))]
+        den = [PREV_CARRYOVER_COLS.get(c) for c in as_list(base.get("denominator"))]
         if not all(num) or not all(den):
             return None  # no prev mapping for one of the columns -- can't build it
         mdef = dict(base)
@@ -279,6 +279,16 @@ def _resolve_prev_metric(name: str) -> dict | None:
         mdef["denominator_where"] = prev_den_where
         return mdef
     return None  # count / count_distinct / semi_additive: no direct prev column to map
+
+
+# Per-loan rates and ratios: a total of these across loans means nothing. Any
+# "%" column, plus these. Named, not guessed from a "/" ("Uncleared
+# Cheque/Amount Not remitted by RE" is a rupee amount and adds up fine).
+_RATE_COLUMNS = {"Arrears / EMI"}
+
+
+def _is_rate_column(col: str) -> bool:
+    return "%" in col or col in _RATE_COLUMNS
 
 
 def _resolve_metric_as_column(name: str, columns) -> str | None:
@@ -325,6 +335,12 @@ def _measure_def(m: dict, errs: list, columns=None):
             # Last resort: the "metric" name is actually just a raw column, guessed
             # case-insensitively (e.g. "soh" -> "SOH"). Treat as a sum measure.
             real_col = _resolve_metric_as_column(m["metric"], columns)
+            if real_col is not None and not m.get("agg") and _is_rate_column(real_col):
+                # A per-loan rate ("LCC%", "Arrears / EMI"): totalling it across
+                # loans means nothing, so don't default to a sum.
+                errs.append(f"metric '{m['metric']}' is the per-loan rate column '{real_col}', which can't be "
+                            "added up: use a catalog metric (e.g. lcc_pct) or say mean/max")
+                return None
             if real_col is not None:
                 return {
                     "alias": m.get("alias") or m["metric"],
@@ -416,28 +432,95 @@ def grain_issues(measure_grains: list[str], dimensions: list[str]) -> list[str]:
     return issues
 
 
-def _as_cols(x) -> list:
-    if x is None:
-        return []
-    return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
 def _map_where_to_prev(conditions: list) -> list | None:
     """Map each condition's column through PREV_CARRYOVER_COLS, for building the
     previous-period version of a count_ratio where-clause (e.g. "Arrears / EMI"
-    -> "prev_Arrears_EMI"). Returns None if ANY condition's column has no prev
-    mapping -- the whole comparison then can't be built for the prior period,
-    matching "ratio"'s existing all-or-nothing per-column rule. An empty
-    conditions list ("count all rows") maps to itself unchanged -- always supported."""
-    if not conditions:
-        return []
+    -> "prev_Arrears_EMI"); a label column (LABEL_COLUMNS) stays as it is.
+    Returns None if ANY other condition's column has no prev mapping -- the
+    whole comparison then can't be built for the prior period, matching
+    "ratio"'s existing all-or-nothing per-column rule. "Count all rows" (no
+    conditions) becomes "every loan on the book last month"."""
     mapped = []
     for cond in conditions:
-        prev_col = PREV_CARRYOVER_COLS.get(cond.get("column"))
-        if not prev_col:
+        col = cond.get("column")
+        if cond.get("op") in _COLUMN_VALUE_OPS:
+            # Both sides are columns. A same-month comparison maps both to last
+            # month; one that already reads last month ("worse than last
+            # month") would need the month before, so it can't be built.
+            ref = cond.get("value")
+            if col in _BASE_TO_PREV and ref in _BASE_TO_PREV:
+                mapped.append({**cond, "column": _BASE_TO_PREV[col], "value": _BASE_TO_PREV[ref]})
+            else:
+                return None
+        elif col in _BASE_TO_PREV:
+            mapped.append({**cond, "column": _BASE_TO_PREV[col]})
+        elif col in LABEL_COLUMNS:
+            mapped.append(dict(cond))          # a label means the same last month
+        else:
             return None
-        mapped.append({**cond, "column": prev_col})
+    # Every condition left on labels only would also count this month's new
+    # loans, so last month means: the loan was on the book last month.
+    if not any(c["column"] in _PREV_TO_BASE for c in mapped):
+        mapped.append(dict(_WAS_ON_BOOK_LAST_MONTH))
     return mapped
+
+
+# This month's column -> the same value last month, as carried onto each loan.
+# The bucket rides along as prev_bucket (app.py), outside PREV_CARRYOVER_COLS.
+_BASE_TO_PREV = {**PREV_CARRYOVER_COLS, "curr_bucket": "prev_bucket"}
+_PREV_TO_BASE = {prev: base for base, prev in _BASE_TO_PREV.items()}
+_VALID_BUCKETS = list(BUCKET_SCORE)            # the five real buckets ("NA" is not one)
+# "This loan was on the book last month": it has a real bucket from last month's file.
+_WAS_ON_BOOK_LAST_MONTH = {"column": "prev_bucket", "op": "in", "value": _VALID_BUCKETS}
+
+
+def _condition_columns(cond: dict) -> set:
+    cols = {cond.get("column")}
+    if cond.get("op") in _COLUMN_VALUE_OPS:
+        cols.add(cond.get("value"))
+    return cols
+
+
+def _agg_columns(agg: dict) -> set:
+    cols = {agg["column"]} if agg.get("column") else set()
+    for cond in agg.get("where") or []:
+        cols |= _condition_columns(cond)
+    return cols
+
+
+def _agg_on_prev_file(agg: dict) -> dict | None:
+    """The same aggregation run on LAST MONTH'S FILE (prev_* columns back to
+    their own names), or None when it isn't a last-month figure: it reads no
+    prev_* column, or also reads this month's state (e.g. "worse than last
+    month" needs both months on the same loan)."""
+    cols = _agg_columns(agg)
+    if not cols & _PREV_TO_BASE.keys() or not cols <= (_PREV_TO_BASE.keys() | LABEL_COLUMNS):
+        return None
+    out = dict(agg)
+    if out.get("column"):
+        out["column"] = _PREV_TO_BASE.get(out["column"], out["column"])
+    if out.get("where"):
+        out["where"] = [{**c, "column": _PREV_TO_BASE.get(c["column"], c["column"]),
+                         **({"value": _PREV_TO_BASE.get(c["value"], c["value"])}
+                            if c.get("op") in _COLUMN_VALUE_OPS else {})} for c in out["where"]]
+    return out
+
+
+def _prev_file_pass(conditions: list, pre_derives: list, aggs: list) -> dict | None:
+    """Last month's figures from last month's whole file (business rule,
+    2026-10-16): "NPA last month" must match the Dashboard and the report,
+    including loans that have since closed or left the book -- values carried
+    onto this month's loans can't see those. Only when every filter is on a
+    label column (it means the same thing last month); a filter on this
+    month's state ("loans NPA now") keeps the same-loans figures."""
+    if pre_derives or any(not _condition_columns(c) <= LABEL_COLUMNS for c in conditions):
+        return None
+    prev_aggs = [p for p in (_agg_on_prev_file(a) for a in aggs) if p is not None]
+    if not prev_aggs:
+        return None
+    return {"conditions": [dict(c) for c in conditions], "aggregations": prev_aggs}
 
 
 def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, columns=None) -> tuple[list, list]:
@@ -453,8 +536,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
     - extra_derives : derive steps added AFTER the group_aggregate
                       (change = curr_alias - prev_alias, for type:"change")
 
-    Measures whose source column has no prev_* mapping are silently skipped
-    (not a fatal error  -  the result just won't have a prev column for that measure).
+    A measure with no last-month version is an error (it used to be skipped
+    silently, so "X vs last month" came back with no last-month column).
     Only type:"snapshot" and type:"change" with from:"prev", to:"curr" are supported;
     other period references return a loud error.
     """
@@ -476,6 +559,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
 
     for m in ir_measures:
         mdef = _measure_def(m, local_errs, columns)
+        # (Every unsupported measure below adds to errs: a fatal error, so the
+        # repair loop or the user sees it.)
         if mdef is None:
             continue
         alias = mdef["alias"]
@@ -485,17 +570,24 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
         if kind in ("additive", "semi_additive"):
             col = mdef.get("column")
             prev_col = PREV_CARRYOVER_COLS.get(col) if col else None
-            if not prev_col:
-                continue  # no prev mapping for this column  -  skip gracefully
             func = (mdef.get("agg") or "sum").lower()
-            extra_aggs.append({"alias": prev_alias, "func": func, "column": prev_col})
+            if prev_col:
+                extra_aggs.append({"alias": prev_alias, "func": func, "column": prev_col})
+            elif col in LABEL_COLUMNS:
+                # A fixed loan attribute (e.g. Loan Amount): last month's total
+                # is the same column over the loans on the book last month.
+                extra_aggs.append({"alias": prev_alias, "func": func, "column": col,
+                                   "where": [dict(_WAS_ON_BOOK_LAST_MONTH)]})
+            else:
+                errs.append(f"can't compare '{alias}' with last month: '{col}' has no last-month value")
+                continue
             if typ == "change":
                 extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
 
         elif kind == "ratio":
             # Carry prev num/den sums through the same group_aggregate, then divide.
-            num_cols = _as_cols(mdef.get("numerator"))
-            den_cols = _as_cols(mdef.get("denominator"))
+            num_cols = as_list(mdef.get("numerator"))
+            den_cols = as_list(mdef.get("denominator"))
             prev_n, prev_d = [], []
             supported = True
             for i, c in enumerate(num_cols):
@@ -525,6 +617,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
                 extra_derives.append(derive)
                 if typ == "change":
                     extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+            else:
+                errs.append(f"can't compare '{alias}' with last month: its columns have no last-month value")
 
         elif kind == "count_ratio":
             # Same principle as "ratio": carry prev num/den counts through the
@@ -550,10 +644,37 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
                 extra_derives.append(derive)
                 if typ == "change":
                     extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+            else:
+                errs.append(_no_prev_msg(alias, (mdef.get("numerator_where") or []) + (mdef.get("denominator_where") or [])))
 
-        # count / count_distinct: no natural prev version; skip silently
+        elif kind == "count":
+            # Loans matching the same conditions last month; "count all" means
+            # every loan that was on the book last month.
+            prev_where = _map_where_to_prev(mdef.get("where") or [])
+            if prev_where is None:
+                errs.append(_no_prev_msg(alias, mdef.get("where") or []))
+                continue
+            extra_aggs.append({"alias": prev_alias, "func": "count", "where": prev_where})
+            if typ == "change":
+                extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+
+        elif kind == "count_distinct":
+            col = mdef.get("distinct") or mdef.get("column")
+            if col not in LABEL_COLUMNS:
+                errs.append(f"can't compare '{alias}' with last month: '{col}' has no last-month value")
+                continue
+            extra_aggs.append({"alias": prev_alias, "func": "nunique", "column": col,
+                               "where": [dict(_WAS_ON_BOOK_LAST_MONTH)]})
+            if typ == "change":
+                extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
 
     return extra_aggs, extra_derives
+
+
+def _no_prev_msg(alias: str, conditions: list) -> str:
+    cols = sorted({c.get("column") for c in conditions if c.get("column") not in _BASE_TO_PREV})
+    return (f"can't compare '{alias}' with last month: no last-month value for "
+            f"{', '.join(map(str, cols)) or 'its columns'}")
 
 
 def _is_misplaced_entity_concept(concept) -> bool:
@@ -672,7 +793,13 @@ def compile_logical(ir: dict, columns, as_of=None) -> tuple[list, list]:
             aggs = [{"alias": "count", "func": "count"}]
         if _wants_cust_name(group_by, {a.get("alias") for a in aggs}, columns):
             aggs.append({"alias": "Cust Name", "func": "first", "column": "Cust Name"})
-        plan.append({"op": "group_aggregate", "group_by": group_by, "aggregations": aggs})
+        step = {"op": "group_aggregate", "group_by": group_by, "aggregations": aggs}
+        prev_file = _prev_file_pass(conditions, pre_derives, aggs)
+        if prev_file:
+            # The executor runs these on last month's file when it has one
+            # (agents/plan_executor.py); without it, the carried values stand.
+            step["prev_file"] = prev_file
+        plan.append(step)
         for d in post_derives:
             plan.append({"op": "derive", **d})
         for d in ir.get("metrics") or []:

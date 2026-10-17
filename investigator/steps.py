@@ -15,12 +15,13 @@ Every step is dispatched through STEP_REGISTRY at the bottom of this file.
 """
 from __future__ import annotations
 
+import difflib
+
 import pandas as pd
 
-from agents.data_executor import _COL_COMPARE_OPS, _build_mask
+from agents.data_executor import BUCKET_COMPARE_OPS, _COL_COMPARE_OPS, _build_mask
 from analysis.executive_scorecard import compute_executive_scorecard, rank_by_metric
 from analysis.portfolio_intelligence import (
-    _branch_aggregates,
     compute_overdue_demand_scorecard,
     compute_product_analysis,
 )
@@ -38,10 +39,40 @@ from analysis.new_business import (
 )
 from analysis.roll_rate import VALID_BUCKETS, compute_roll_rate_matrix
 from compiler.core import _expand_filters
-from config import HARD_BUCKET_ARREARS_EMI_MIN
+from config import (
+    MIN_ACCOUNTS_DIMENSION_BREAKDOWN, MIN_ACCOUNTS_EXECUTIVE, NOT_PAYING_3M_FLAG_COL,
+)
 from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
-from utils import BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, resolve_dynamic_values, to_num, unit_metrics
+from utils import (
+    BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, loan_flags, resolve_dynamic_values, to_num,
+    unit_metrics,
+)
+
+def _scope(df: pd.DataFrame | None, scope_col, scope_value, required: bool = True) -> pd.DataFrame | None:
+    """`df` narrowed to one branch/region/zone/BU (scope_col is a dimension
+    alias), matched ignoring case and surrounding spaces. Unscoped when no
+    scope is given. Refuses (ValueError, shown to the user) when the file has
+    no such column or nothing matches: silently skipping the scope used to
+    answer "branches in NORTH ZONE" with every branch in the book.
+    required=False (last month's file, for a comparison) leaves df as it is
+    when it lacks the column, and is empty when the entity is new."""
+    if not (scope_col and scope_value) or df is None or df.empty:
+        return df
+    col = resolve_dimension(scope_col)[0]
+    if col not in df.columns:
+        if not required:
+            return df
+        raise ValueError(f"this file has no {scope_col} column ({col}), so I can't narrow to '{scope_value}'")
+    labels = df[col].astype(str).str.strip().str.upper()
+    target = str(scope_value).strip().upper()
+    out = df[labels == target]
+    if out.empty and required:
+        close = difflib.get_close_matches(target, sorted(labels.unique()), n=3, cutoff=0.6)
+        hint = f" Did you mean {', '.join(close)}?" if close else ""
+        raise ValueError(f"there's no {scope_col} named '{scope_value}' in this data.{hint}")
+    return out
+
 
 # ── Metric direction metadata ────────────────────────────────────────────────
 # Single source of truth for "is a higher value of this metric good," shared
@@ -78,7 +109,7 @@ _CUSTOMER_DISPLAY_COLS = [
 # Ops (agents/data_executor.py::_apply_condition) whose "value" is ITSELF a
 # column name to compare against, not a literal -- a missing-column check
 # must also validate these, not just each condition's own "column".
-_CROSS_COLUMN_OPS = set(_COL_COMPARE_OPS) | {"bucket_worse_than", "bucket_better_than"}
+_CROSS_COLUMN_OPS = set(_COL_COMPARE_OPS) | set(BUCKET_COMPARE_OPS)
 
 
 def _missing_condition_columns(df: pd.DataFrame, conditions: list[dict]) -> list[str]:
@@ -165,12 +196,11 @@ def dimension_breakdown(
     if df_curr is None or df_curr.empty or col not in df_curr.columns:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        scope_resolved = resolve_dimension(scope_col)[0]
-        if scope_resolved in df_curr.columns:
-            df_curr = df_curr[df_curr[scope_resolved].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
-            if df_prev is not None and not df_prev.empty and scope_resolved in df_prev.columns:
-                df_prev = df_prev[df_prev[scope_resolved].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df_curr = _scope(df_curr, scope_col, scope_value)
+    # Last month left whole when it lacks the scope column: it's joined per
+    # unit at `dimension` below, and a branch's last-month figures are the
+    # same whichever zone filter was applied.
+    df_prev = _scope(df_prev, scope_col, scope_value, required=False)
     if df_curr.empty:
         return pd.DataFrame()
 
@@ -241,12 +271,12 @@ def roll_rate_summary(
     if df_curr is None or df_curr.empty or df_prev is None or df_prev.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df_curr.columns:
-            df_curr = df_curr[df_curr[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
-        if col in df_prev.columns:
-            df_prev = df_prev[df_prev[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df_curr = _scope(df_curr, scope_col, scope_value)
+    if scope_col and scope_value and resolve_dimension(scope_col)[0] not in df_prev.columns:
+        # An unscoped last month would count every other unit's loans as "Exits".
+        raise ValueError(f"last month's file has no {scope_col} column, so I can't compare "
+                         f"'{scope_value}' with last month")
+    df_prev = _scope(df_prev, scope_col, scope_value, required=False)
 
     if df_curr.empty or df_prev.empty:
         return pd.DataFrame()
@@ -340,6 +370,10 @@ def roll_rate_by_dimension(
     ).round(2).fillna(0.0)
 
     grouped = grouped.drop(columns=["_forward_n", "_backward_n", "_pre_npa_n", "_formed_npa_n"])
+    # The same size floor as the Dashboard's roll tables (analysis/roll_flow.py):
+    # 1 of 2 loans slipping is 50%, and would top a "worst roll forward" list.
+    min_n = MIN_ACCOUNTS_EXECUTIVE if dimension == "executive" else MIN_ACCOUNTS_DIMENSION_BREAKDOWN
+    grouped = grouped[grouped["Matched Accounts"] >= min_n]
     return grouped.sort_values("Roll Forward Rate %", ascending=False).reset_index(drop=True)
 
 
@@ -389,10 +423,7 @@ def vintage_summary(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -436,10 +467,7 @@ def demand_summary(
     if df is None or df.empty or dimension not in _DEMAND_DIMENSIONS:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -488,10 +516,7 @@ def new_advances_summary(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -535,10 +560,7 @@ def new_advances_by_dimension(
     if df is None or df.empty or dimension not in _NEW_ADVANCES_DIMENSIONS:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -587,10 +609,7 @@ def product_analysis(
     if df is None or df.empty or axis not in _PRODUCT_AXES:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -638,10 +657,7 @@ def top_accounts(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -682,10 +698,7 @@ def new_advances_trend(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -724,10 +737,7 @@ def fleet_exposure(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -764,10 +774,7 @@ def repossession_list(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -802,10 +809,7 @@ def good_customers(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -854,6 +858,14 @@ def entity_summary(
     else:
         raise ValueError(f"Unknown entity_type '{entity_type}'")
 
+    if curr_row is None and df_curr is not None and not df_curr.empty:
+        # Not in this month's data: say so (with close spellings) instead of
+        # a table of blanks that reads like an answer.
+        if entity_type == "executive":
+            raise ValueError(f"there's no executive matching '{name}' in this data.")
+        _scope(df_curr, entity_type, entity_value)     # raises with "Did you mean ...?"
+        raise ValueError(f"there's no {entity_type} named '{entity_value}' in this data.")
+
     rows = []
     for metric in metrics:
         curr_val = curr_row.get(metric) if curr_row else None
@@ -882,10 +894,11 @@ def _branch_row(df: pd.DataFrame | None, branch) -> dict | None:
     sub = df[df["Unit"].astype(str).str.strip().str.upper() == str(branch).strip().upper()]
     if sub.empty:
         return None
-    agg = _branch_aggregates(sub)
-    if agg.empty:
-        return None
-    return agg.iloc[0].to_dict()
+    # unit_metrics, no size cut: _branch_aggregates drops branches under
+    # MIN_ACCOUNTS_DIMENSION_BREAKDOWN (right for a ranking), which turned a
+    # small branch's own summary into a table of blanks.
+    agg = unit_metrics(sub, ["Unit"])
+    return None if agg.empty else agg.iloc[0].to_dict()
 
 
 def _generic_dimension_row(df: pd.DataFrame | None, entity_type: str, value) -> dict | None:
@@ -1026,10 +1039,7 @@ def underperformer_quartile(
     """
     hib = _higher_is_better(metric, higher_is_better)
     sub = df
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            sub = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    sub = _scope(df, scope_col, scope_value)
     scorecard = compute_executive_scorecard(sub)
     if scorecard.empty or metric not in scorecard.columns:
         return pd.DataFrame()
@@ -1109,10 +1119,7 @@ def executive_roster(
     if df is None or df.empty:
         return pd.DataFrame()
     sub = df
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            sub = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    sub = _scope(df, scope_col, scope_value)
     roster = compute_executive_scorecard(sub)
     if n and metric and not roster.empty and metric in roster.columns:
         hib = _higher_is_better(metric, higher_is_better)
@@ -1161,10 +1168,13 @@ def non_paying_customers(
     all_columns: bool = False,
 ) -> pd.DataFrame:
     """Customers of the given executives (entities: a table with MNT NAME/Unit
-    columns, e.g. intersect_entities' output) who are NOT currently paying --
-    Arrears / EMI at or above HARD_BUCKET_ARREARS_EMI_MIN, the same threshold
-    utils.py::compute_hard_bucket_pct already uses as the single source of
-    truth for "in hard bucket" (never a locally reimplemented cutoff).
+    columns, e.g. intersect_entities' output) who are NOT paying: the
+    Dashboard's own "Not Paying 3M+" rule (config.NOT_PAYING_3M_FLAG_COL, no
+    collection for 3 months with more than 6 EMIs overdue, read through
+    utils.loan_flags), so "not paying" means one thing in every tab
+    (business decision, 2026-10-16; it used to be Arrears/EMI >= 6 here).
+    Worst arrears first. A file without that flag column is refused, not
+    answered as "nobody is not paying".
     Returns the curated audit columns an RBH usually needs (Ag_Date, POS,
     Closing Arrears, LCC%, Arrears / EMI, Last Receipt Date/Amount) unless
     all_columns=True, which returns every source column instead -- a real
@@ -1183,11 +1193,13 @@ def non_paying_customers(
     if scoped.empty:
         return pd.DataFrame()
 
-    not_paying = to_num(scoped, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
-    scoped = scoped[not_paying]
+    if NOT_PAYING_3M_FLAG_COL not in scoped.columns:
+        raise ValueError(f"this file has no '{NOT_PAYING_3M_FLAG_COL}' column, so I can't tell who isn't paying")
+    scoped = scoped[loan_flags(scoped)["not_paying_3m"]]
+    scoped = scoped.assign(_ae=to_num(scoped, "Arrears / EMI")).sort_values("_ae", ascending=False).drop(columns="_ae")
     if all_columns:
         return scoped.reset_index(drop=True)
-    cols = [c for c in _CUSTOMER_DISPLAY_COLS if c in scoped.columns]
+    cols = [c for c in [*_CUSTOMER_DISPLAY_COLS, NOT_PAYING_3M_FLAG_COL] if c in scoped.columns]
     return scoped[cols].reset_index(drop=True)
 
 
@@ -1218,10 +1230,9 @@ def customer_loan_summary(df: pd.DataFrame, cust_mob_no: str) -> dict:
     book = customer_loan_book(df, cust_mob_no)
     if book.empty:
         return {"loan_count": 0, "delinquent_count": 0, "total_soh": 0.0}
-    delinquent = (
-        book["curr_bucket"].isin(["SMA-1", "SMA-2", "NPA"])
-        if "curr_bucket" in book.columns else pd.Series(False, index=book.index)
-    )
+    # Behind on any amount (Arrears/EMI > 0), the app's one definition of
+    # delinquent (utils.loan_flags); SMA-1 or worse left out 1-30 DPD loans.
+    delinquent = to_num(book, "Arrears / EMI") > 0
     return {
         "loan_count":       int(len(book)),
         "delinquent_count": int(delinquent.sum()),
@@ -1251,10 +1262,7 @@ def concept_filter(
     """
     if df is None or df.empty:
         return pd.DataFrame()
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -1396,6 +1404,8 @@ def worst_loans_by_metric(
 
     if scope_col and scope_value is not None:
         cols = [c for c in resolve_dimension(scope_col) if c in df.columns]
+        if not cols:
+            raise ValueError(f"this file has no {scope_col} column, so I can't narrow to '{scope_value}'")
         if cols:
             if len(cols) > 1 and isinstance(scope_value, (list, tuple)) and len(scope_value) == len(cols):
                 mask = pd.Series(True, index=df.index)
@@ -1476,10 +1486,7 @@ def high_arrears_at_risk(
     """
     if df is None or df.empty:
         return pd.DataFrame()
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
     result = alert_high_arrears_ratio(df)
@@ -1506,19 +1513,16 @@ def fleet_defaulters(
     mobile numbers never counted (they would otherwise merge unrelated
     customers into one fictitious mega "fleet operator").
 
-    Sorted worst-first by SOH -- the exposure that makes a defaulting fleet
-    operator a priority in the first place, same framing
-    compute_fleet_exposure's own top_df already uses.
+    Largest POS first (SOH breaks a tie): the principal still at stake is
+    what makes a defaulting fleet owner a priority (business decision,
+    2026-10-16; the priority menu calls this "Fleet Owners Behind on Payment").
     """
     if df is None or df.empty or "Cust Mob No" not in df.columns or "Loan No" not in df.columns:
         return pd.DataFrame()
     # Fleet status BEFORE scoping: scoping to one branch must not demote a
     # customer whose other loans sit in another branch.
     df = df[fleet_loan_mask(df)]
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     fleet_df = df
     if fleet_df.empty:
         return pd.DataFrame()
@@ -1528,8 +1532,9 @@ def fleet_defaulters(
     if result.empty:
         return pd.DataFrame()
 
-    soh = to_num(result, "SOH") if "SOH" in result.columns else pd.Series(0.0, index=result.index)
-    return result.assign(_soh=soh).sort_values("_soh", ascending=False).drop(columns=["_soh"]).reset_index(drop=True)
+    return (result.assign(_pos=to_num(result, "POS", fill=0), _soh=to_num(result, "SOH", fill=0))
+            .sort_values(["_pos", "_soh"], ascending=False, kind="stable")
+            .drop(columns=["_pos", "_soh"]).reset_index(drop=True))
 
 
 # ── top_closing_arrears ───────────────────────────────────────────────────────
@@ -1556,10 +1561,7 @@ def top_closing_arrears(
     also imposing a display cap)."""
     if df is None or df.empty or "Closing Arrears" not in df.columns:
         return pd.DataFrame()
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -1587,7 +1589,7 @@ PRIORITY_MENU_CATEGORIES: list[dict] = [
     {"label": "Non Starter",                    "kind": "concept", "concept": "non_starter",                  "default_n": 10},
     {"label": "NPA Accounts",                   "kind": "concept", "concept": "npa",                          "default_n": 10},
     {"label": "High Closing Arrears",           "kind": "top_closing_arrears",                                 "default_n": 20},
-    {"label": "Fleet Owners with High POS",     "kind": "fleet_defaulters",                                    "default_n": 10},
+    {"label": "Fleet Owners Behind on Payment", "kind": "fleet_defaulters",                                    "default_n": 10},
     {"label": "Co-lending at Risk",             "kind": "concept", "concept": "colending_at_risk",             "default_n": 10},
     {"label": "Insurance-Only Delinquency",     "kind": "concept", "concept": "insurance_driven_delinquency",  "default_n": 10},
     {"label": "Easy to Nil",                    "kind": "concept", "concept": "easy_settlement",               "default_n": 10},
@@ -1645,10 +1647,7 @@ def priority_menu(
     branch with only 3 matching loans shows 3, not a misleading 20."""
     if df is None or df.empty:
         return pd.DataFrame()
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
 
@@ -1697,10 +1696,7 @@ def priority_accounts(
 
     if df is None or df.empty:
         return pd.DataFrame()
-    if scope_col and scope_value:
-        col = resolve_dimension(scope_col)[0]
-        if col in df.columns:
-            df = df[df[col].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+    df = _scope(df, scope_col, scope_value)
     if df.empty:
         return pd.DataFrame()
     result, _message = execute_priority_mode(df, as_of=as_of)

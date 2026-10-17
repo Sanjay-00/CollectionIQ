@@ -901,7 +901,11 @@ def _render_analyse_further(
             "Analyse further: find non-paying customers behind these executives",
             key=f"drill_{dl_key}",
         ):
-            drill_df = STEP_REGISTRY["non_paying_customers"](df_curr, result_df)
+            try:
+                drill_df = STEP_REGISTRY["non_paying_customers"](df_curr, result_df)
+            except ValueError as e:      # e.g. the file has no "Not Paying 3M+" flag column
+                st.warning(f"I couldn't run that: {e}")
+                return
             new_type, new_value = "non_paying_customers", f"{record.entity_type}:{record.entity_value}"
             source_entities = [{"entity_type": record.entity_type, "entity_value": record.entity_value}]
             memory.touch(
@@ -912,7 +916,7 @@ def _render_analyse_further(
             st.rerun()
 
         # Companion to the button above, not a replacement -- "find
-        # non-paying customers" is a generic hard-bucket threshold across
+        # non-paying customers" is the generic "Not Paying 3M+" rule across
         # the WHOLE list; this is specifically "which loans are driving the
         # metric THIS list was ranked by" (record.metric_focus), scoped
         # the SAME way the list itself was (record.params' own

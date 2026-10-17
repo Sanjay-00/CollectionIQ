@@ -494,7 +494,7 @@ Params:
 fleet_defaulters: use this for "which fleet owners are defaulting,"
 "fleet operators with overdue EMIs," "customers with multiple loans who are
 delinquent," or similar: fleet operators (customers holding several
-loans) who are CURRENTLY behind on payment, loan-level, sorted by exposure.
+loans) who are CURRENTLY behind on payment, loan-level, largest POS first.
 Distinct from a plain concept_filter("delinquent") (that has no fleet-size
 filter) and from a plain fleet lookup (that has no delinquency filter) --
 this is specifically the INTERSECTION. Optionally scope_col/scope_value
@@ -512,8 +512,8 @@ FURTHER than "which executive/branch," down to "which actual loans/
 customers." metric MUST be one of "NPA %", "Hard Bucket %", "Collection %",
 "Strike Rate %" (also accepts the no-space spelling): this maps that
 metric to its matching registered concept and returns sorted-worst-first,
-customer-named rows, distinct from non_paying_customers (a fixed generic
-"not paying" threshold, not tied to any specific metric) and from
+customer-named rows, distinct from non_paying_customers (the Dashboard's
+"Not Paying 3M+" rule, not tied to any specific metric) and from
 concept_filter (which needs the concept named directly, not derived from a
 metric). scope_col/scope_value narrow to ONE executive (["name","branch"]
 pair, both required together to avoid matching the wrong person sharing a
@@ -893,7 +893,23 @@ def _build_preview(step_type: str, result_df) -> str:
     people they didn't name."""
     if _has_customer_pii(step_type, result_df):
         return _aggregate_preview(result_df)
-    return result_df.head(20).to_csv(index=False)
+    n = len(result_df)
+    shown = f"(all {n} rows)" if n <= _PREVIEW_ROWS else f"(the first {_PREVIEW_ROWS} of {n} rows, in the table's order)"
+    # Rounded to 2 decimals, as the model should quote them (and as _checked
+    # compares them): an unrounded 87.23456 would get a correct "87.23%" dropped.
+    return shown + "\n" + result_df.head(_PREVIEW_ROWS).round(2).to_csv(index=False)
+
+
+_PREVIEW_ROWS = 20
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _checked(text: str, preview: str) -> str:
+    """Only the sentences whose every number is in the preview the model saw
+    (agents/insight_generator.check_numbers, sentence by sentence)."""
+    from agents.insight_generator import check_numbers
+    sentences = [x for x in _SENTENCE_END.split(text.strip()) if x]
+    return " ".join(check_numbers("\n".join(sentences), preview).splitlines())
 
 
 def narrate_step(step_type: str, result_df) -> str:
@@ -913,7 +929,7 @@ def narrate_step(step_type: str, result_df) -> str:
         {"temperature": PLANNER_TEMPERATURE},
     )
     _add_token_usage(response)
-    return (response.text or "").strip()
+    return _checked(response.text or "", preview)
 
 
 def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
@@ -930,21 +946,26 @@ def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
     preview = _build_preview(step_type, result_df)
     client = make_client(api_key)
     yielded = False
+    chunks: list[str] = []
     try:
         stream = client.models.generate_content_stream(
             model=GEMINI_MODEL,
             contents=build_narration_prompt(step_type, preview),
             config={"temperature": PLANNER_TEMPERATURE},
         )
+        # Collected, then checked, then shown once: a streamed sentence with
+        # a number that isn't in the table couldn't be taken back afterwards.
         for chunk in stream:
             if chunk.text:
-                yielded = True
-                yield chunk.text
+                chunks.append(chunk.text)
+        if chunks:
+            yielded = True
+            yield _checked("".join(chunks), preview)
     except Exception as e:
-        # Streaming has no retry of its own. If nothing reached the user yet,
-        # fall back to narrate_step (which retries transient errors); if a
-        # partial narrative already rendered, keep it rather than repeating.
-        # Either way the table still renders -- narration is optional.
+        # Streaming has no retry of its own, and nothing has been shown yet
+        # (the text is checked before it is shown), so retry in full with
+        # narrate_step; the checked partial text is the last resort. Either
+        # way the table still renders -- narration is optional.
         logger.warning("Investigator narration stream failed: %s", e)
         if yielded:
             return
@@ -952,6 +973,6 @@ def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
             text = narrate_step(step_type, result_df)
         except Exception as e2:
             logger.warning("Investigator narration fallback failed: %s", e2)
-            return
+            text = _checked("".join(chunks), preview) if chunks else ""
         if text:
             yield text

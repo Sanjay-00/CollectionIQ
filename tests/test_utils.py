@@ -972,3 +972,27 @@ class TestFrameCache:
         with frame_cache():
             pd.testing.assert_frame_equal(unit_metrics(df, ["RegionName"]), plain)
             pd.testing.assert_frame_equal(unit_metrics(df, ["RegionName"]), plain)
+
+
+class TestOptionalColumnsMayBeMissing:
+    """A column outside CRITICAL_COLS is optional: a file without it must
+    load (it once crashed the whole upload with KeyError: 'Due Dt')."""
+
+    def test_file_without_due_dt_loads(self):
+        df = pd.read_excel(_build_upload({}), engine="openpyxl").drop(columns=["Due Dt"])
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        buf.name = "no_due_dt.xlsx"
+        out, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert len(out) == 3
+        assert "Due Dt" in out.attrs["missing_optional_cols"]
+
+
+class TestAssignBucketsWithoutOptionalDemandColumns:
+    def test_missing_bc_demand_counts_as_zero(self):
+        # MONTH DUE (BC) is optional; its absence used to crash assign_buckets.
+        df = assign_buckets(make_df([{"Arrear Opening": 1_000.0, "Month Due-Inst": 9_500.0, "Month Due-Exp": 500.0}]))
+        assert df["MonthDemandExclPC"].tolist() == [10_000.0]
+        assert df["Overdue"].tolist() == [1_000.0]

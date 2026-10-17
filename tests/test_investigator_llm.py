@@ -4,7 +4,6 @@ response-parsing are tested directly; parse_turn/narrate_step's own Gemini
 call is tested by monkeypatching investigator.llm._call_gemini_with_retry,
 the same way tests/test_skip_insights.py monkeypatches graph.generate_insights."""
 import pandas as pd
-import pytest
 
 import investigator.llm as llm
 from investigator.state import EntityMemory
@@ -438,7 +437,9 @@ class TestNarrateStepStream:
         assert chunks == []
         assert calls == []
 
-    def test_yields_each_chunk_from_the_stream(self, monkeypatch):
+    def test_yields_the_whole_checked_narration_once(self, monkeypatch):
+        # Collected, checked, then shown once: a streamed sentence quoting a
+        # number not in the table couldn't be taken back after showing.
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
         seen = {}
 
@@ -459,8 +460,8 @@ class TestNarrateStepStream:
         df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
         chunks = list(llm.narrate_step_stream("entity_summary", df))
 
-        # The None-text chunk is skipped, not yielded as the string "None".
-        assert chunks == ["Collection", "% is down"]
+        # The None-text chunk is skipped, not joined in as the string "None".
+        assert chunks == ["Collection% is down"]
         assert "Collection%" in seen["contents"]
         assert "Collection%" in seen["contents"]
 
@@ -494,7 +495,9 @@ class TestGeminiFailureHandling:
         df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
         assert list(llm.narrate_step_stream("entity_summary", df)) == ["Fallback narrative."]
 
-    def test_stream_failure_after_partial_text_keeps_partial_without_repeating(self, monkeypatch):
+    def test_stream_failure_mid_way_retries_in_full(self, monkeypatch):
+        # Nothing was shown yet (text is checked before showing), so a full
+        # narrate_step retry replaces the partial text.
         monkeypatch.setenv("GOOGLE_API_KEY", "fake")
 
         class _Chunk:
@@ -515,8 +518,8 @@ class TestGeminiFailureHandling:
         monkeypatch.setattr(llm, "make_client", lambda api_key: _Client())
         monkeypatch.setattr(llm, "narrate_step", lambda *a: fallback_calls.append(1) or "x")
         df = pd.DataFrame({"Metric": ["Collection%"], "Current": [80.0]})
-        assert list(llm.narrate_step_stream("entity_summary", df)) == ["Collection is"]
-        assert fallback_calls == []
+        assert list(llm.narrate_step_stream("entity_summary", df)) == ["x"]
+        assert fallback_calls == [1]
 
 
 class TestPortfolioQueryRoute:

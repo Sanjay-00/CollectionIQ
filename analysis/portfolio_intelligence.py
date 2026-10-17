@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from utils import (
     _EXEC_KEY, _exec_name, _with_exec_key, _safe_pct, BUCKET_ORDER, BUCKET_COLORS, to_num, account_count,
     is_yes, compute_overdue_demand_pct, attach_prev_delinquency, _unit_key, order_unit_columns, unit_metrics,
-    first_value, as_of_or_today, segment_column, match_prev, loan_flags, portfolio_metrics,
+    first_value, as_of_or_today, segment_column, match_prev, loan_flags, portfolio_metrics, non_starter_mask,
 )
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN, MIN_ACCOUNTS_EXECUTIVE, MIN_ACCOUNTS_PRODUCT_SEGMENT,
@@ -22,6 +22,8 @@ from config import (
 )
 
 VALID_BUCKETS = [b for b in BUCKET_ORDER if b != "NA"]
+# "NOV'25" for a 2025-11-01 start: the card label follows config.
+_COHORT_LABEL = f"{pd.Timestamp(RECENT_ADVANCES_COHORT_START):%b'%y}".upper()
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -137,6 +139,13 @@ def compute_bucket_waterfall(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> go
     return fig
 
 
+# The optional columns behind each pulse card that isn't from CRITICAL_COLS alone.
+_PULSE_NEEDS = {
+    "insurance_debit_count": ("ARREARS AGAINST INST", "ARREARS AGAINST EXP"),
+    "overdue_coll_pct": ("Arrear Opening",),
+}
+
+
 def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dict]:
     """Top-line KPIs for Portfolio Pulse section. Includes SMA-2 alongside NPA."""
     def _calc(df):
@@ -181,6 +190,9 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
             "demand_coll_pct": overdue_demand["demand_pct"],
             "insurance_debit_count": insurance_debit_count,
             "nov25_delinquency_count": nov25_delinquency_count,
+            # Metrics this file can't work out (an optional column is missing):
+            # their 0 is "unknown", so no change is shown against them.
+            "_unavailable": {k for k, cols in _PULSE_NEEDS.items() if not set(cols) <= set(df.columns)},
         }
 
     c = _calc(df_curr)
@@ -200,11 +212,12 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         # metric that had actually worsened, red for one that had actually
         # improved) -- confirmed against real data: NPA Accounts +431 (got
         # worse) rendered as "▼ green" (implying an improvement).
-        cv = c.get(key, 0)
-        pv = p.get(key, 0)
-        if not p or pv == 0:
+        # Last month at 0 is still a real comparison (0 -> 5 insurance cases is
+        # +5); a missing previous month, or a metric either file can't work
+        # out, has no change to show.
+        if not p or key in p["_unavailable"] or key in c.get("_unavailable", ()):
             return None
-        return round(cv - pv, 2)
+        return round(c.get(key, 0) - p.get(key, 0), 2)
 
     # curr_raw/prev_raw: the literal unrounded numeric values behind "value"
     # and the raw "delta" -- exposed additively so a true comparison table
@@ -253,7 +266,7 @@ def compute_pulse_kpis(df_curr: pd.DataFrame, df_prev: pd.DataFrame) -> list[dic
         _card("Overdue Collection %", "overdue_coll_pct", f"{c.get('overdue_coll_pct',0):.2f}%", "%", False),
         _card("Month Demand Collection %", "demand_coll_pct", f"{c.get('demand_coll_pct',0):.2f}%", "%", False),
         _card("Insurance Debit Cases", "insurance_debit_count", f"{c.get('insurance_debit_count',0):,}", "", True),
-        _card("NOV'25 Onward Delinquency", "nov25_delinquency_count", f"{c.get('nov25_delinquency_count',0):,}", "", True),
+        _card(f"{_COHORT_LABEL} Onward Delinquency", "nov25_delinquency_count", f"{c.get('nov25_delinquency_count',0):,}", "", True),
     ]
 
 
@@ -951,8 +964,8 @@ def compute_risk_indicators(
              f"No payment in 3 months AND more than {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue", is_count=True)
 
     if "Non Starter" in df_curr.columns:
-        c = int(is_yes(df_curr, "Non Starter").sum())
-        p = int(is_yes(df_prev, "Non Starter").sum()) if has_prev and "Non Starter" in df_prev.columns else 0
+        c = int(non_starter_mask(df_curr).sum())
+        p = int(non_starter_mask(df_prev).sum()) if has_prev and "Non Starter" in df_prev.columns else 0
         _add("Non-Starters", c, p, "", "down", "Never paid first EMI: highest NPA risk", is_count=True)
 
     if "CoLending_Loans" in df_curr.columns and "Arrears / EMI" in df_curr.columns:

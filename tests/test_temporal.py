@@ -19,7 +19,6 @@ import pytest
 import pandas as pd
 
 from registry.semantic_model import TIME_MODEL
-from utils import PREV_CARRYOVER_COLS
 from compiler.core import compile_logical, _resolve_time_compare
 from agents.logical_planner import _normalize_ir1
 from agents.plan_executor import execute_plan
@@ -94,16 +93,27 @@ class TestResolveTimeCompare:
         assert errs, "Should emit an error for unsupported period refs"
         assert any("from:'prev'" in e for e in errs)
 
-    def test_column_without_prev_mapping_skipped(self):
-        # "Loan Amount" is not in PREV_CARRYOVER_COLS → no prev agg, no error.
+    def test_label_column_compares_over_last_months_book(self):
+        # "Loan Amount" is a fixed loan attribute: last month's total is the
+        # same column over the loans that were on the book last month.
         ir_measures = [{"column": "Loan Amount", "agg": "sum", "alias": "loan_amt"}]
         errs: list = []
-        extra_aggs, extra_derives = _resolve_time_compare(
+        extra_aggs, _ = _resolve_time_compare(
             {"compare": {"type": "snapshot", "from": "prev", "to": "curr"}},
             ir_measures, errs,
         )
-        assert extra_aggs == []
-        assert errs == []   # not a fatal error  -  just no prev data for that column
+        assert errs == []
+        assert extra_aggs == [{"alias": "prev_loan_amt", "func": "sum", "column": "Loan Amount",
+                               "where": [{"column": "prev_bucket", "op": "in",
+                                          "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]}]}]
+
+    def test_column_with_no_last_month_value_is_an_error_not_skipped(self):
+        # Used to be skipped silently: "X vs last month" came back with no
+        # last-month column and nothing said why.
+        errs: list = []
+        _resolve_time_compare({"compare": {"type": "snapshot", "from": "prev", "to": "curr"}},
+                              [{"column": "Month Receipt Amount", "agg": "sum", "alias": "rcpt"}], errs)
+        assert errs and "last month" in errs[0]
 
     def test_multiple_measures_only_mapped_columns_get_prev(self):
         ir_measures = [
@@ -115,8 +125,7 @@ class TestResolveTimeCompare:
             ir_measures, [],
         )
         aliases = {a["alias"] for a in extra_aggs}
-        assert "prev_soh" in aliases
-        assert "prev_lamt" not in aliases  # skipped gracefully
+        assert {"prev_soh", "prev_lamt"} <= aliases
 
 
 # ── compile_logical integration ───────────────────────────────────────────────
@@ -228,11 +237,12 @@ class TestTemporalRoundtrip:
         aliases = {a["alias"] for a in ga["aggregations"]}
         assert {"soh", "prev_soh", "pos", "prev_pos"}.issubset(aliases)
 
-    def test_lcc_pct_ratio_without_prev_mapping_skipped_gracefully(self):
-        """lcc_pct's numerator/denominator aren't in PREV_CARRYOVER_COLS  -  no prev ratio,
-        no error. The current-period lcc_pct is still computed correctly."""
+    def test_lcc_pct_compares_with_last_month(self):
+        """lcc_pct's cumulative columns are carried over (PREV_CARRYOVER_COLS),
+        so LCC% vs last month works, with the current lcc_pct unchanged."""
         df = pd.DataFrame([
-            {"Unit": "A", "Cum Coll (Inst+Exp)": 90.0, "Cum Due-Inst": 50.0, "Cum Due-Exp": 50.0},
+            {"Unit": "A", "Cum Coll (Inst+Exp)": 90.0, "Cum Due-Inst": 50.0, "Cum Due-Exp": 50.0,
+             "prev_Cum_Coll": 80.0, "prev_Cum_Due_Inst": 50.0, "prev_Cum_Due_Exp": 50.0},
         ])
         ir = {
             "dimensions": ["branch"],
@@ -242,8 +252,8 @@ class TestTemporalRoundtrip:
         plan, errs = compile_logical(ir, df.columns)
         assert errs == [], errs   # no fatal error
         derives = [s for s in plan if s["op"] == "derive"]
-        assert any(d.get("column") == "lcc" for d in derives)   # current lcc present
-        assert not any("prev_lcc" in str(d) for d in derives)    # prev skipped gracefully
+        assert any(d.get("column") == "lcc" for d in derives)        # current lcc present
+        assert any(d.get("column") == "prev_lcc" for d in derives)   # and last month's
 
 
 # ── _normalize_ir1 ─────────────────────────────────────────────────────────────

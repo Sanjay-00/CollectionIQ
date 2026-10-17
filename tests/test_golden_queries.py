@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from compiler.core import compile_logical
-from agents.plan_executor import execute_plan, validate_plan
+from agents.plan_executor import execute_plan
 
 
 def _loan_df():
@@ -62,7 +62,6 @@ class TestHavingKeyFallback:
         cols = list(_loan_df().columns)
         plan, errs = compile_logical(ir1, cols)
         assert errs == []
-        filter_steps = [s for s in plan if s["op"] == "filter" and s is not plan[0]]
         assert any(
             c["column"] == "npa" and c["op"] == ">=" and c["value"] == 1
             for s in plan if s["op"] == "filter"
@@ -195,13 +194,13 @@ class TestStandalonePrevMetric:
         assert "prev_coll" in result.columns and "coll_change" in result.columns
 
     def test_prev_metric_without_carryover_mapping_is_unresolved(self):
-        # lcc_pct's numerator/denominator columns (Cum Coll/Cum Due-*) have no
-        # PREV_CARRYOVER_COLS mapping -- must fail loudly (unknown metric),
+        # overdue_collection_pct's columns (OverdueCollected/Overdue, worked
+        # out at load) have no PREV_CARRYOVER_COLS mapping -- must fail loudly (unknown metric),
         # never silently return a wrong "0" for a metric it can't actually build.
         ir1 = {
             "intent": "aggregation", "view": None, "filters": [],
             "dimensions": ["branch"],
-            "measures": [{"metric": "prev_lcc_pct", "alias": "x"}],
+            "measures": [{"metric": "prev_overdue_collection_pct", "alias": "x"}],
             "metrics": [], "having": [], "order_by": [], "limit": None,
             "display_columns": [], "time": None,
         }
@@ -882,12 +881,14 @@ class TestColumnVsColumnComparison:
         })
         assert set(result["Loan No"]) == {"L1", "L3", "L4"}
 
-    def test_col_compare_missing_ref_column_is_graceful_noop(self):
+    def test_col_compare_missing_ref_column_raises(self):
+        # An unfiltered table would read as "every loan matched": refuse instead.
+        import pytest
         from agents.data_executor import _apply_condition
-        result = _apply_condition(_loan_df(), {
-            "column": "Month Receipt Amount", "op": "col_lte", "value": "Nonexistent Col",
-        })
-        assert len(result) == len(_loan_df())  # unchanged, not an empty/crashed result
+        with pytest.raises(ValueError, match="Nonexistent Col"):
+            _apply_condition(_loan_df(), {
+                "column": "Month Receipt Amount", "op": "col_lte", "value": "Nonexistent Col",
+            })
 
     def test_no_collection_concept(self):
         ir1 = {

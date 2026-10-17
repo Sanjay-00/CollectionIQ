@@ -1,7 +1,6 @@
 """Action overview (analysis/action_center.py): what changed, what to fix
 first, where, and who to call."""
 import pandas as pd
-import pytest
 
 import analysis.action_center as ac
 import config

@@ -14,7 +14,7 @@ from agents.data_executor import (
     compute_result_kpis,
     execute_priority_mode,
 )
-from agents.plan_executor import execute_plan
+from agents.plan_executor import _check_condition_columns, execute_plan
 from agents.logical_planner import plan_logical
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
@@ -76,6 +76,10 @@ _STEP_LABELS: dict[str, str] = {
 }
 
 _MAX_REPAIRS = 1
+
+# Rows of a result table the Insight Generator sees (it is told how many of
+# the total these are, and its numbers are checked against them).
+_INSIGHT_ROWS = 15
 
 
 def _trace_metadata(fields: dict) -> None:
@@ -475,7 +479,18 @@ def _build_highlights(spec: dict, result_df: pd.DataFrame, requests: list) -> li
     return highlights
 
 
-def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame) -> list:
+# A rate card is the whole portfolio's own rate (all loans, summed then
+# divided once, utils.unit_metrics), never an average of each unit's rate: an
+# average lets a small region with a high NPA% pull the card off.
+_PORTFOLIO_RATE = {
+    "NPA%": "NPA%", "NPA %": "NPA%", "SMA-2%": "SMA-2%", "SMA-2 %": "SMA-2%",
+    "Hard Bucket%": "Hard Bucket%", "Collection%": "Collection%", "Collection %": "Collection%",
+    "Strike%": "Strike%", "Strike Rate %": "Strike%", "Roll Fwd%": "Roll Fwd%", "Roll Fwd %": "Roll Fwd%",
+    "Roll Bwd%": "Roll Bwd%", "Roll Bwd %": "Roll Bwd%",
+}
+
+
+def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame, source_df: pd.DataFrame | None = None) -> list:
     """Unconditional portfolio-wide rollup for every view that declares
     "metrics" -- e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
     table. Unlike highlight_metrics/sort_by, this needs no LLM judgment call
@@ -486,12 +501,21 @@ def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame) -> list:
     if not metrics or result_df is None or result_df.empty:
         return []
 
+    portfolio = None
+    if source_df is not None and len(source_df) and any(c in _PORTFOLIO_RATE for c in metrics):
+        from utils import portfolio_metrics
+        portfolio = portfolio_metrics(source_df)
+
     kpis = []
     for col in metrics:
         if col not in result_df.columns or col not in _METRIC_AGG:
             continue
         series = result_df[col].dropna()
         if series.empty:
+            continue
+        rate = _PORTFOLIO_RATE.get(col)
+        if portfolio is not None and rate in portfolio.index and pd.notna(portfolio[rate]):
+            kpis.append({"label": f"Portfolio {col}", "value": _format_metric_value(col, float(portfolio[rate]))})
             continue
         agg = _METRIC_AGG[col]
         value = series.mean() if agg == "mean" else series.sum()
@@ -577,6 +601,7 @@ def view_node(state: QueryState) -> QueryState:
     rr_meta = state.get("rr_meta")
 
     cache_hit = False
+    source_df = df_curr          # the loans the view was computed from
     try:
         if not filters and not non_default_params:
             # Reuse the literal cached object -- zero recomputation, guarantees
@@ -597,15 +622,23 @@ def view_node(state: QueryState) -> QueryState:
                 conditions = resolve_dynamic_values(_expand_filters(filters, errs), _report_month(state))
                 if errs:
                     return _fallthrough("filter_expansion_error")
+                # The view path never goes through validate_plan, so check the
+                # columns here: a filter that can't apply must not serve the
+                # whole-portfolio view under a filtered title.
+                if _missing_filter_columns(conditions, df_curr.columns):
+                    return _fallthrough("filter_column_missing")
                 input_df = df_curr[_build_mask(df_curr, conditions)]
+                source_df = input_df
                 # Apply the SAME conditions to df_prev too -- a view that consumes
                 # both (e.g. region_scorecard) must compare like-for-like (e.g.
                 # "Pune this month" against "Pune last month", never "Pune this
-                # month" against "the whole portfolio last month"). Conditions on
-                # columns df_prev doesn't have (e.g. curr_bucket, which only
-                # exists post-merge on df_curr) are gracefully skipped by
-                # _apply_condition, not an error.
+                # month" against "the whole portfolio last month"). If last
+                # month's file lacks a filter column, the comparison can't be
+                # like-for-like, so fall through instead of comparing against
+                # an unfiltered last month.
                 if input_df_prev is not None and len(input_df_prev):
+                    if _missing_filter_columns(conditions, input_df_prev.columns):
+                        return _fallthrough("filter_column_missing_in_prev")
                     input_df_prev = input_df_prev[_build_mask(input_df_prev, conditions)]
 
             raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
@@ -645,7 +678,7 @@ def view_node(state: QueryState) -> QueryState:
     result_highlights = _build_highlights(
         spec, result_df, view_spec.get("highlight_metrics") or []
     )
-    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
+    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df, source_df)
 
     result_df = _apply_limit(result_df, ir1.get("limit"), spec)
 
@@ -689,7 +722,7 @@ def view_node(state: QueryState) -> QueryState:
         # Insight Generator only needs the analytical columns to describe the
         # pattern, so strip identity columns before this ever reaches a Gemini
         # prompt. See _PII_COLS_IN_AGG_ROWS's docstring above for the full story.
-        result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(5).to_dict(orient="records"))
+        result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(_INSIGHT_ROWS).to_dict(orient="records"))
 
     _trace_metadata({
         "view_name": name,
@@ -721,6 +754,12 @@ def view_node(state: QueryState) -> QueryState:
         "result_portfolio_kpis": result_portfolio_kpis,
         "error":             "",
     }
+
+
+def _missing_filter_columns(conditions: list, columns) -> list[str]:
+    """Problems with the columns a view filter needs (empty = all present)."""
+    cols = set(map(str, columns))
+    return [e for c in conditions for e in _check_condition_columns(c, cols, "view filter")]
 
 
 def _call_view_fn(name: str, spec: dict, df_curr, df_prev, call_params: dict, rr_meta=None):
@@ -821,7 +860,7 @@ def execute_node(state: QueryState) -> QueryState:
         if intent == "priority_action":
             display_df, err = execute_priority_mode(df, as_of=_report_month(state))
         else:
-            display_df, err = execute_plan(df, state.get("plan") or [])
+            display_df, err = execute_plan(df, state.get("plan") or [], df_prev=_fetch_large(state, "df_prev"))
 
         if err:
             return {**state, "result_df": pd.DataFrame(), "error": err}
@@ -877,7 +916,7 @@ def execute_node(state: QueryState) -> QueryState:
             # customer-level -- but "customer" dimension results ARE customer-
             # identifying (the merged "Cust Name (Cust Mob No)" column above), so
             # this strip is load-bearing here, not just defensive consistency.
-            kpis     = {"Count": len(display_df), "_agg_rows": _strip_pii_from_agg_rows(display_df.head(5).to_dict(orient="records"))}
+            kpis     = {"Count": len(display_df), "_agg_rows": _strip_pii_from_agg_rows(display_df.head(_INSIGHT_ROWS).to_dict(orient="records"))}
             rankings = {}
         else:
             # Apply default curated columns when the planner didn't specify any.

@@ -50,7 +50,7 @@ def build_files(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, p
                 level: str, filters: dict | None = None, sections: list[str] | None = None,
                 fmt: str = "PDF", use_ai: bool = False, progress=None, only: list[str] | None = None) -> dict:
     """{"files": [(file name, bytes)], "preview": HTML of the first file,
-    "notes": [AI messages]}. progress(done, total, unit) after each file.
+    "notes": [AI messages], "titles": [each file's report title]}. progress(done, total, unit) after each file.
     only: make files just for these units (None: every unit in view)."""
     from report_agent.story import build_report
     ext = FORMATS[fmt]
@@ -59,7 +59,7 @@ def build_files(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, p
     if only is not None and units:
         units = [u for u in units if u in set(only)]
         if not units:                              # none picked: no files (never the whole book by mistake)
-            return {"files": [], "preview": "", "notes": []}
+            return {"files": [], "preview": "", "notes": [], "titles": []}
     if units:
         col, label = LEVEL_SPLIT[level]
         curr_key = df_curr[col].map(_unit_key)
@@ -70,7 +70,7 @@ def build_files(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, p
     else:
         jobs = [(None, df_curr, df_prev, filters)]
 
-    out = {"files": [], "preview": "", "notes": []}
+    out = {"files": [], "preview": "", "notes": [], "titles": []}
     for i, (unit, c, p, f) in enumerate(jobs, start=1):
         model = build_report(c, p, curr_month, prev_month, level, f, sections=sections, unit=unit)
         if use_ai:
@@ -82,7 +82,14 @@ def build_files(df_curr: pd.DataFrame, df_prev: pd.DataFrame, curr_month: str, p
             from report_agent import render
             out["preview"] = render.to_html(model)
         name = f"{level.lower()}_{_safe_name(unit)}_{curr_month}" if unit else f"{level.lower()}_report_{curr_month}"
+        # Two units can share a safe name ("A/B" and "A B" -> "A_B"); in a ZIP
+        # the second would overwrite the first.
+        taken, k = {f for f, _ in out["files"]}, 2
+        stem = name
+        while f"{name}.{ext}" in taken:
+            name, k = f"{stem}_{k}", k + 1
         out["files"].append((f"{name}.{ext}", _render(model, ext)))
+        out["titles"].append(model["title"])
         if progress:
             progress(i, len(jobs), unit or level)
     return out

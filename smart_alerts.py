@@ -10,15 +10,11 @@ from config import (
     INSURANCE_EXP_ARREARS_MIN,
     RECENT_ADVANCES_MONTHS,
 )
-from utils import to_num, account_count, is_yes, recent_advances_cutoff, insurance_only_mask
+from utils import (
+    to_num, account_count, dates_only, is_yes, recent_advances_cutoff, insurance_only_mask, non_starter_mask,
+)
 
 
-def _fmt_dates(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].dt.date
-    return df
 
 # Fixed columns shown in every alert drilldown table. One shared list across
 # all 6 alerts (not per-alert) -- deliberately includes each alert's own
@@ -55,8 +51,9 @@ def _to_num(df: pd.DataFrame, col: str) -> pd.Series:
 
 
 def alert_non_starters(df: pd.DataFrame) -> dict:
-    """Customers who have never paid even their 1st EMI."""
-    mask = is_yes(df, "Non Starter")
+    """Customers who have never paid even their 1st EMI and are still behind
+    (utils.non_starter_mask, the same loans as the "Non-starters" call list)."""
+    mask = non_starter_mask(df)
     subset = df[mask]
     return {
         "title": "Non Starters",
@@ -65,8 +62,8 @@ def alert_non_starters(df: pd.DataFrame) -> dict:
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
-        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
-        "df_full": _fmt_dates(subset),
+        "df": dates_only(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": dates_only(subset),
         "icon": "🚨",
         "action": "Immediate field visit required. Check if disbursement reached customer.",
     }
@@ -83,8 +80,8 @@ def alert_insurance_delinquency(df: pd.DataFrame) -> dict:
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
-        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
-        "df_full": _fmt_dates(subset),
+        "df": dates_only(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": dates_only(subset),
         "icon": "⚠️",
         "action": "Settle insurance by cash or convert to child loan (EMI). Do not mark as willful default.",
     }
@@ -102,8 +99,8 @@ def alert_easy_settlements(df: pd.DataFrame) -> dict:
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
-        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
-        "df_full": _fmt_dates(subset),
+        "df": dates_only(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": dates_only(subset),
         "icon": "💡",
         "action": "One call / one visit can clear these. Assign to executives for same-day closure.",
     }
@@ -141,8 +138,8 @@ def alert_recent_advances_at_risk(df: pd.DataFrame, months: int = RECENT_ADVANCE
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
-        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
-        "df_full": _fmt_dates(subset),
+        "df": dates_only(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": dates_only(subset),
         "icon": "📉",
         "action": "Review sourcing quality. Engage field executive and check NACH status immediately.",
     }
@@ -160,8 +157,8 @@ def alert_colending_at_risk(df: pd.DataFrame) -> dict:
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
-        "df": _fmt_dates(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
-        "df_full": _fmt_dates(subset),
+        "df": dates_only(subset[_safe_cols(df, ALERT_DISPLAY_COLS)]),
+        "df_full": dates_only(subset),
         "icon": "🏦",
         "action": "Escalate immediately to Regional Manager. Partner bank SLA may be breached.",
     }
@@ -196,11 +193,11 @@ def alert_high_arrears_ratio(df: pd.DataFrame) -> dict:
         "count": account_count(subset),
         "pos": _to_num(subset, "SOH").sum(),
         "closing_arrears": _to_num(subset, "Closing Arrears").sum(),
-        "df": _fmt_dates(subset[[c for c in display_cols if c in subset.columns]]),
+        "df": dates_only(subset[[c for c in display_cols if c in subset.columns]]),
         # subset already carries the computed "Arrears Ratio %" column (added
         # above) -- included here deliberately, since it's the exact figure
         # that made each row qualify, not just a raw Excel column.
-        "df_full": _fmt_dates(subset),
+        "df_full": dates_only(subset),
         "icon": "🔥",
         "action": "Prioritise >100% cases for legal/recovery, these may be unrecoverable without immediate escalation.",
     }

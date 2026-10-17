@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from config import HARD_BUCKET_ARREARS_EMI_MIN as _HARD, INSURANCE_EXP_ARREARS_MIN as _INS
+
 PRESETS = ["Leadership", "Zone", "Regional", "Branch"]
 DEFAULT_PRESET = "Regional"
 ALL_ROWS_UP_TO = 25            # a scorecard this long shows every row; longer: the worst and the best few
@@ -380,7 +382,7 @@ def _month_vs_month(c, p, curr_month: str, prev_month: str | None, ac: dict) -> 
             t["SMA-1%"] = pct(t.get("SMA-1", 0), t["Accounts"])
     for label, key, count in (("Delinquent", "Delinquency%", "Delinquent"), ("SMA-1", "SMA-1%", "SMA-1"),
                               ("SMA-2", "SMA-2%", "SMA-2"), ("NPA", "NPA%", "NPA"),
-                              ("Hard bucket (6+ EMIs)", "Hard Bucket%", "Hard Bucket"),
+                              (f"Hard bucket ({_HARD}+ EMIs)", "Hard Bucket%", "Hard Bucket"),
                               ("Not paying 3M+", "Not Paying 3M+%", "Not Paying 3M+")):
         if key in now:
             rows.append(_mom_row("Asset quality", label, b(key), now[key], "pct", True, b(count), now.get(count)))
@@ -415,8 +417,9 @@ def _month_vs_month(c, p, curr_month: str, prev_month: str | None, ac: dict) -> 
              "fmt": "text", "align": "right"},
             {"key": "This month", "label": f"This month ({curr_month})", "fmt": "text", "align": "right"},
             {"key": "Change", "fmt": "text", "align": "right", "tone_key": "_worse"}]
-    note = ("Same loans in view both months. % metrics change in points, amounts and counts in %. "
-            "Red: worse than last month; green: better.")
+    note = ("Same filters both months: last month is last month's whole file, so it includes loans that have "
+            "since closed, and this month includes new loans. % metrics change in points, amounts and counts "
+            "in %. Red: worse than last month; green: better.")
     if not has_prev:
         note = "Last month's file isn't loaded, so only this month is shown. " + note
     blk = table("This month vs last month", df, cols, sheet="Month vs month")
@@ -684,14 +687,14 @@ def _roll_forward(c, ac: dict, child: str | None, name: str = "") -> list[dict]:
 
 
 _WHY_LABEL = {"Insurance-Only": "Insurance charge only", "Installment-Only": "EMI only", "Both": "EMI and insurance",
-              "Other": "Other charges", "Hard + Not Paying": "6+ EMIs, not paying",
-              "Hard + Still Paying": "6+ EMIs, still paying", "Early Delinquency": "Under 6 EMIs"}
-SILENT_LABEL = "Was not paying, now under 6 EMIs"   # root_cause.WAS_SILENT (its name carries the threshold)
+              "Other": "Other charges", "Hard + Not Paying": f"{_HARD}+ EMIs, not paying",
+              "Hard + Still Paying": f"{_HARD}+ EMIs, still paying", "Early Delinquency": f"Under {_HARD} EMIs"}
+SILENT_LABEL = f"Was not paying, now under {_HARD} EMIs"   # root_cause.WAS_SILENT (its name carries the threshold)
 
 
 def _why(c, preset: str) -> list[dict]:
     """One table by the next level down: what's unpaid (insurance vs EMI) and
-    how far behind (6+ EMIs paying or not), each as a share of its delinquent loans."""
+    how far behind (hard bucket, paying or not), each as a share of its delinquent loans."""
     from analysis.root_cause import ARREARS_GROUPS, WAS_SILENT, compute_chronic_shock_split, compute_insurance_split
     labels = {**_WHY_LABEL, WAS_SILENT: SILENT_LABEL}
     name, _, col = _CHILD[preset]
@@ -772,19 +775,22 @@ def _call_lists(ac: dict) -> list[dict]:
 
 
 # "How to read this" explains a term only when a table in the report shows it
-# (as a column header or a table title), in this order.
+# (as a column header or a table title), in this order. Thresholds come from
+# config.py, so a changed rule can't leave its definition saying the old one.
+
 _MEANING = {
     "Delinquent": "Loans with any EMI or charge overdue, as % of the unit's loans (loans in brackets).",
     "vs last month": "Change in delinquency since last month, in percentage points. Red: got worse.",
     "SMA-2": "Loans in the SMA-2 bucket, one step from NPA.",
     "NPA": "Loans 3 or more EMIs overdue, as % of the unit's loans.",
     "NPA by SOH": "NPA measured by money: SOH of NPA loans as % of the unit's SOH (₹ Cr in brackets).",
-    "Hard bucket": "Loans 6 or more EMIs overdue right now.",
+    "Hard bucket": f"Loans {_HARD} or more EMIs overdue right now.",
     "Demand": "This month's collection demand: instalment, expense and bounce charges due.",
     "Collected": "Collected this month, excluding reserve collection.",
     "Collection": "Collected this month (excluding reserve collection) as % of the month's demand "
                   "(instalment, expense and bounce charges).",
-    "Strike": "Share of loans the file marks Strike = Y: a collection made this month.",
+    "Strike": "Share of loans current on their instalment this month (the file's Strike flag: this month's "
+              "instalment collected, or no instalment arrears), of the loans the file gives a Strike value.",
     "Rolled forward": "Loans in a worse bucket than last month, as % of loans in both months' files.",
     "Bucket movement": "Rows: each loan's bucket last month. Columns: its bucket now. Each row adds to 100%.",
     "New defaulters (STD → behind)": "Paid up (STD) last month, behind now. The cheapest to bring back.",
@@ -792,16 +798,16 @@ _MEANING = {
     "SMA-1 → SMA-2 or worse": "Were SMA-1 last month, now SMA-2 or worse: one step from NPA.",
     "SMA-2 → NPA": "Were SMA-2 last month, NPA now: this month's new NPAs.",
     "Back to STD": "Were behind last month, fully paid up (STD) now: recovered loans.",
-    "Insurance charge only": "EMI paid; only the insurance or expense charge (over ₹3,000) is unpaid. "
+    "Insurance charge only": f"EMI paid; only the insurance or expense charge (over ₹{_INS:,}) is unpaid. "
                              "A cash or WCL adjustment fixes it.",
     "EMI only": "EMI unpaid, no insurance or expense charge unpaid.",
     "EMI and insurance": "Both the EMI and the insurance or expense charge are unpaid.",
-    "Other charges": "A small insurance charge (₹3,000 or less) or only bounce or penal charges.",
-    "6+ EMIs, not paying": "6 or more EMIs overdue and nothing paid in 3 months: legal or repossession candidates.",
-    "6+ EMIs, still paying": "6 or more EMIs overdue, but paying something: worth a restructuring talk.",
+    "Other charges": f"A small insurance charge (₹{_INS:,} or less) or only bounce or penal charges.",
+    f"{_HARD}+ EMIs, not paying": f"{_HARD} or more EMIs overdue and nothing paid in 3 months: legal or repossession candidates.",
+    f"{_HARD}+ EMIs, still paying": f"{_HARD} or more EMIs overdue, but paying something: worth a restructuring talk.",
     SILENT_LABEL: "Went 3+ months without paying and crossed 6 EMIs overdue at some point, but has paid part since "
-                  "and is now under 6 EMIs. Call before they go quiet again.",
-    "Under 6 EMIs": "Behind, but under 6 EMIs overdue. Normal field follow-up.",
+                  f"and is now under {_HARD} EMIs. Call before they go quiet again.",
+    f"Under {_HARD} EMIs": f"Behind, but under {_HARD} EMIs overdue. Normal field follow-up.",
     "Loans in book": "Every loan in this report's files: running, matured (MAT) and S&S.",
     "POS": "Principal outstanding: the loan amount still to be repaid, excluding interest and charges.",
     "Matured accounts (MAT)": "Loans whose tenure is over (Loan Status MAT) but money is still owed.",

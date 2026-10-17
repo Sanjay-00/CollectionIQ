@@ -1,4 +1,6 @@
 import os
+import re
+
 from langsmith import traceable
 from config import GEMINI_MODEL
 from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry, make_client
@@ -10,7 +12,45 @@ Each bullet must start with "• ".
 Be specific: use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
 Use a single hyphen (-) when a dash is needed. Never use a double hyphen, an em dash, or an en dash.
+Quote every number exactly as it appears in the data. Do not convert units, round, add up or compute new numbers.
+Only describe the rows you are shown.
 """
+
+_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Counting words ("3 of the 5 branches", "top 10") are fine without a source.
+_SMALL_INT_MAX = 10
+
+
+def _values(text: str) -> set[float]:
+    return {float(n.replace(",", "")) for n in _NUM.findall(text)}
+
+
+def _unverified(line: str, allowed: set[float]) -> list[float]:
+    return [v for v in _values(line)
+            if v not in allowed and not (v.is_integer() and v <= _SMALL_INT_MAX)]
+
+
+def check_numbers(answer: str, facts: str) -> str:
+    """Keep only the bullets whose every number is in `facts` (compared by
+    value: "12.5" matches "12.50"), the same guard as the report's AI summary
+    (report_agent/ai_summary.py). Says how many were removed."""
+    allowed = _values(facts)
+    kept, removed = [], 0
+    for line in (ln for ln in answer.splitlines() if ln.strip()):
+        if _unverified(line, allowed):
+            removed += 1
+        else:
+            kept.append(line)
+    if removed and not kept:
+        return "• AI observations removed: they used numbers that are not in the result."
+    if removed:
+        kept.append(f"• {removed} observation(s) removed: they used numbers that are not in the result.")
+    return "\n".join(kept)
+
+
+def _cell(v):
+    """A table value as the model should quote it: floats to 2 decimals."""
+    return round(v, 2) if isinstance(v, float) else v
 
 
 def _fmt_money(val: float) -> str:
@@ -38,15 +78,18 @@ def generate_insights(
     if agg_rows:
         # Aggregation result  -  build context from the grouped table rows
         rows_text = "\n".join(
-            "  " + ", ".join(f"{k}: {v}" for k, v in row.items() if k != "Rank")
+            "  " + ", ".join(f"{k}: {_cell(v)}" for k, v in row.items() if k != "Rank")
             for row in agg_rows
         )
+        total = kpis.get("Count", len(agg_rows))
+        shown = (f"all {total} rows" if len(agg_rows) >= total
+                 else f"the first {len(agg_rows)} of {total} rows, in the table's order")
         context = f"""
 User query: "{query}"
 Interpreted as: {plain_english}
 Focus area: {insight_focus if insight_focus else "General portfolio risk analysis"}
 
-AGGREGATION RESULT ({kpis.get('Count', 0)} groups):
+RESULT TABLE ({shown}):
 {rows_text}
 """
     else:
@@ -88,4 +131,4 @@ BUCKET DISTRIBUTION (% of matched accounts):
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)
-    return response.text.strip()
+    return check_numbers(response.text.strip(), context)

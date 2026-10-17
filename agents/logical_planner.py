@@ -386,6 +386,9 @@ REGISTERED PERCENTAGE METRICS: Strike %, Hard Bucket % and Delinquency % are cat
     {{"metric": "delinquency_pct", "alias": "curr_delinquency_pct"}}
   These also support the bare "prev_" prefix and time.compare, exactly like
   collection_pct (e.g. "prev_strike_pct", or just add a time.compare block).
+  The amount metrics do too: "prev_exposure" (last month's SOH) and "prev_pos".
+  Last-month figures count last month's whole book, including loans that have
+  since closed, so they match the Dashboard.
   Delinquency % (Arrears/EMI > 0) is the BROADEST risk reading: includes 1-30 DPD
   through NPA. Do not confuse with npa_pct (curr_bucket == NPA only) or
   hard_bucket_pct (>= HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue) -- three different,
@@ -396,7 +399,7 @@ COUNT-BASED PERCENTAGES (any other "% of accounts matching X" that is NOT a
   registered catalog METRIC): build from two "count" measures + a METRICS derive.
   Example: "% of accounts that are Non Starters, by branch":
     measures: [
-      {{"agg":"count","alias":"ns_count","where":[{{"column":"Non Starter","op":"in","value":["Y","YES"]}}]}},
+      {{"agg":"count","alias":"ns_count","where":[{{"column":"Non Starter","op":"in","value":["Y","YES"]}},{{"column":"Arrears / EMI","op":">","value":0}}]}},
       {{"agg":"count","alias":"total_count"}}
     ]
     metrics: [{{"alias":"non_starter_pct","expr":"ns_count / total_count * 100"}}]

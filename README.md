@@ -136,7 +136,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 </table>
 &nbsp;
 
-**Monthly Report: Regional / Leadership / Branch versions as HTML, PDF and an Excel annex**
+**Monthly Report: Leadership / Zone / Regional / Branch versions as HTML, PDF and an Excel annex**
 
 ![Report](docs/screenshots/20-report.png)
 &nbsp;
@@ -183,7 +183,7 @@ To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_
 
 **SOH as the True Exposure Metric** : Uses Sum of Hire (POS + Closing Arrears) instead of POS alone. For MAT and S&S accounts where POS = 0, SOH correctly reflects what is actually owed.
 
-**Monthly Report** : Built for the people it goes to: **Regional** (default, for regional managers), **Leadership** (2 to 3 pages) and **Branch** (one branch's executives and call lists). It opens with plain-sentence findings worked out from the data by fixed rules, then the scoreboard, early warning and forecast, league tables, needs attention, why it's happening, alerts and priorities. Every section is a checkbox: picking Regional, Leadership or Branch ticks that report's sections, and any of them can be unticked or ticked; nine optional detail sections (repossession, fleet, good customers, segments, overdue vs demand and more) can be added, with Select all / Clear all. One report model is rendered as **email-safe HTML, PDF and an Excel annex** (every table in full plus every call list), so the three never disagree. **Branch packs** zip one PDF and annex per branch for a regional manager to send on. An optional AI paragraph (off by default) only rewrites the findings; any number it writes that isn't in the data gets it dropped.
+**Monthly Report** : Built for the people it goes to: **Leadership** (everything in view), **Zone** (one file per zone), **Regional** (default, one file per region) and **Branch** (one file per branch); several files come as one ZIP. Each opens with **At a glance** (a verdict, KPI tiles, what went well, what went wrong, where to focus), then **This month vs last month** (portfolio, matured accounts, asset quality, collections and movement, with a change-by-branch table), **scorecards** with the same columns and Total row as Portfolio Intelligence (executives also show demand and collected), **roll forward** (the bucket matrix and roll steps by unit), **why loans are behind**, **new business**, the **new book** (loans disbursed since November 2025: by month, unit and segment, and the ones already going bad), **where to focus**, call lists and a **How to read this** that explains only the terms the report shows. Every section is a checkbox, and nine optional detail sections (repossession, fleet, good customers, segments, overdue vs demand and more) can be added. One report model is rendered as **email-safe HTML, PDF and an Excel annex** (every table in full with plain headers, plus every call list), so the three never disagree. An optional AI paragraph (off by default) only rewrites the findings; any number it writes that isn't in the data gets it dropped.
 &nbsp;
 
 
@@ -270,12 +270,12 @@ Triggered on demand; no AI is needed. The report is first built as a **model** (
 ```mermaid
 flowchart TD
     Trigger(["🖱 Generate report
-Regional · Leadership · Branch"]) --> ST
+Leadership · Zone · Regional · Branch"]) --> ST
     ST["🟢 Story
 report_agent/story.py
 
-Findings by fixed rules · Scoreboard · Early warning + forecast
-League tables · Needs attention · Why · Alerts · Priorities
+At a glance · This month vs last month · Scorecards
+Roll forward · Why · New business · New book · Focus
 + optional detail sections"]
     ST --> AI["🟠 AI wording (optional, off by default)
 Rewrites the findings; dropped if any
@@ -288,8 +288,8 @@ report_agent/render.py"]
     R --> X["⬇ Excel annex
 all tables in full + call lists"]
     H --> EM["📧 SMTP, if configured"]
-    ST --> PK["⬇ Branch packs (ZIP)
-one PDF + annex per branch"]
+    ST --> PK["⬇ One file per zone / region / branch
+several come as one ZIP"]
 
     classDef llm fill:#FDEBD3,stroke:#C1611D,color:#7A3D0F,stroke-width:1.4px;
     classDef det fill:#DCEFE9,stroke:#2F6F5E,color:#1C4238,stroke-width:1.4px;
@@ -376,9 +376,9 @@ CollectionIQ/
 │   └── landing.py                  # Upload page and sample-data loader
 │
 ├── report_agent/
-│   ├── story.py                    # The report model: presets and optional sections
+│   ├── story.py                    # The report model: levels, sections and optional detail sections
 │   ├── render.py                   # Model -> HTML, PDF (reportlab) and Excel annex
-│   ├── packs.py                    # Branch packs: one report per branch, zipped
+│   ├── packs.py                    # One report file per zone / region / branch, zipped
 │   ├── ai_summary.py               # Optional AI wording with a numbers check
 │   └── nodes/
 │       └── email_dispatcher.py     # SMTP delivery

@@ -65,6 +65,18 @@ from config import (
 )
 from utils import CUSTOMER_LOAN_COUNT
 
+# A Y/N flag is true for "Y" or "YES" (some extracts spell it out), the same
+# rule as utils.is_yes on the dashboard. Never "==" "Y": a file that writes
+# "Yes" would then match nothing here while the dashboard shows a count.
+_YES = ["Y", "YES"]
+
+# Never paid the first EMI and still behind: the same loans as
+# utils.non_starter_mask (Alerts, Action Lists, the report).
+_NON_STARTER = [
+    {"column": "Non Starter", "op": "in", "value": _YES},
+    {"column": "Arrears / EMI", "op": ">", "value": 0},
+]
+
 # ── Business Priority Framework (migrated verbatim  -  single source of truth) ───
 # Used by the system prompt's generated priority section AND by the data executor
 # when priority_mode is active.
@@ -73,27 +85,9 @@ PRIORITY_RULES = [
         "rank": 1,
         "label": "Non Starters",
         "why": "Never paid even 1st EMI: highest credit risk, possible fraud or disbursement issue",
-        # "in" [Y, YES], not "==" Y -- some monthly LCC extracts spell this
-        # flag out as "Yes" instead of abbreviating it (utils.is_yes's own
-        # docstring documents this exact variance). A real bug: this was
-        # still "==" Y here (and in the non_starter CONCEPT below) even
-        # though strike_pct's own METRIC definition further down this file
-        # was already fixed for the identical Y/Yes variance on the Strike
-        # column -- silently returning zero rows for "are there any non
-        # starters" on any file using the spelled-out form, a false
-        # negative indistinguishable from "genuinely none," on a file where
-        # the aggregate KPI card (smart_alerts.py, which DOES use is_yes)
-        # would have shown a nonzero count.
-        #
-        # VehEMI Accrued == 1 -- narrows to the loan's very FIRST EMI cycle
-        # specifically. A "Non Starter"-flagged loan that's already 2+ EMIs
-        # in is a different, arguably stale/mis-flagged case, not a genuine
-        # "never paid the 1st EMI" -- this keeps the tier meaning exactly
-        # what its own "why" text above says.
-        "conditions": [
-            {"column": "Non Starter", "op": "in", "value": ["Y", "YES"]},
-            {"column": "VehEMI Accrued", "op": "==", "value": 1},
-        ],
+        # Any EMI cycle, not only the first: a customer on EMI 3 who has
+        # never paid is still a non-starter (business decision, 2026-10-16).
+        "conditions": [dict(c) for c in _NON_STARTER],
     },
     {
         "rank": 2,
@@ -128,7 +122,7 @@ PRIORITY_RULES = [
         "label": "Co-lending at Risk",
         "why": "Partner bank co-lending loans with any delinquency: SLA breach risk",
         "conditions": [
-            {"column": "CoLending_Loans", "op": "==", "value": "Y"},
+            {"column": "CoLending_Loans", "op": "in", "value": _YES},
             {"column": "Arrears / EMI",   "op": ">",  "value": 0},
         ],
     },
@@ -136,7 +130,7 @@ PRIORITY_RULES = [
         "rank": 6,
         "label": "No Collection 3 Months",
         "why": "No payment for 3+ months AND >6 EMI arrears: pre-NPA deterioration signal",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
+        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "in", "value": _YES}],
     },
     {
         "rank": 7,
@@ -156,17 +150,10 @@ CONCEPTS: dict[str, dict] = {
     },
     "non_starter": {
         "label": "Non Starter",
-        "description": "Customer has not paid even the 1st EMI: highest credit risk.",
-        # See PRIORITY_RULES's identical "Non Starters" tier above for why
-        # both conditions are what they are (Y/Yes spelling variance;
-        # VehEMI Accrued == 1 narrows to the loan's first EMI cycle). Kept
-        # identical to that tier's own conditions on purpose --
-        # tests/test_registry.py::TestZeroBehaviorChange asserts they never
-        # drift apart.
-        "conditions": [
-            {"column": "Non Starter", "op": "in", "value": ["Y", "YES"]},
-            {"column": "VehEMI Accrued", "op": "==", "value": 1},
-        ],
+        "description": "Customer has never paid even the 1st EMI and is still behind: highest credit risk.",
+        # The same list as the "Non Starters" priority tier above and
+        # utils.non_starter_mask (tests/test_metric_consistency.py checks).
+        "conditions": [dict(c) for c in _NON_STARTER],
     },
     "npa": {
         "label": "NPA",
@@ -185,7 +172,7 @@ CONCEPTS: dict[str, dict] = {
         "label": "Co-lending at Risk",
         "description": "Partner-bank co-lending loan with any delinquency: SLA breach risk.",
         "conditions": [
-            {"column": "CoLending_Loans", "op": "==", "value": "Y"},
+            {"column": "CoLending_Loans", "op": "in", "value": _YES},
             {"column": "Arrears / EMI", "op": ">", "value": 0},
         ],
     },
@@ -209,7 +196,7 @@ CONCEPTS: dict[str, dict] = {
     "no_collection_3m": {
         "label": "No Collection 3 Months",
         "description": "No payment for 3+ months AND arrears exceed 6 EMIs: pre-NPA signal.",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
+        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "in", "value": _YES}],
     },
     "hard_bucket": {
         "label": "Hard Bucket",

@@ -9,7 +9,6 @@ These lock in two things:
    both exist during the transition.
 """
 import importlib
-import re
 
 from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS, CUSTOMER_LOAN_COUNT
 from registry import (

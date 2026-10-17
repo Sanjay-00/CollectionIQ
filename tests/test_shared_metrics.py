@@ -1,7 +1,6 @@
 """One definition per metric (utils.loan_flags / unit_metrics), so every
 table agrees, and every threshold comes from config.py."""
 import pandas as pd
-import pytest
 
 import config
 from helpers import make_df

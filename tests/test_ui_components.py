@@ -513,3 +513,27 @@ def test_apply_place_matches_last_month_loosely():
     df = pd.DataFrame({"Zone": ["N", "S"], "RegionName": ["Pune ", "NASHIK"], "Unit": ["A", "B"]})
     assert len(apply_place(df, {"Region": "PUNE"})) == 0                    # exact by default
     assert list(apply_place(df, {"Region": "PUNE"}, loose=True)["Unit"]) == ["A"]   # case and spaces ignored
+
+
+class TestLoadAndConcatAcrossFiles:
+    def _upload(self, tmp_path, name, overrides):
+        path = tmp_path / name
+        path.write_bytes(_build_upload(overrides).getvalue())
+        return _in_memory(path)
+
+    def test_date_warnings_survive_a_multi_file_upload(self, tmp_path):
+        # _build_upload fills date columns with "x", so each file warns.
+        f1 = self._upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"]})
+        f2 = self._upload(tmp_path, "b.xlsx", {"Loan No": ["L4", "L5", "L6"]})
+        combined, errs = _load_and_concat([f1, f2])
+        warnings_ = combined.attrs["date_parse_warnings"]
+        assert errs == []
+        assert any("a.xlsx: " in w for w in warnings_)
+        assert any("b.xlsx: " in w for w in warnings_)
+
+    def test_segment_truncated_differently_in_two_files_is_one_segment(self, tmp_path):
+        f1 = self._upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"], "SegmentName": ["Passenger Commerc"] * 3})
+        f2 = self._upload(tmp_path, "b.xlsx", {"Loan No": ["L4", "L5", "L6"], "SegmentName": ["Passenger Commercial"] * 3})
+        combined, errs = _load_and_concat([f1, f2])
+        assert errs == []
+        assert combined["SegmentName"].unique().tolist() == ["Passenger Commercial"]

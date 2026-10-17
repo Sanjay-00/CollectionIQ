@@ -69,7 +69,7 @@ class TestAiQueryCacheKeyIncludesSkipInsights:
             _ai_cache_put(cache, (f"q{i}", 1, "region=ALL", False), {"n": i})
         assert len(cache) == _AI_CACHE_MAX_ENTRIES
 
-        first_key = (f"q0", 1, "region=ALL", False)
+        first_key = ("q0", 1, "region=ALL", False)
         _ai_cache_put(cache, ("q_new", 1, "region=ALL", False), {"n": "new"})
 
         assert len(cache) == _AI_CACHE_MAX_ENTRIES
