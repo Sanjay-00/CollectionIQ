@@ -1,4 +1,4 @@
-﻿"""Compiler core  -  logical IR (IR-1) -> physical step-plan (IR-2).
+"""Compiler core  -  logical IR (IR-1) -> physical step-plan (IR-2).
 
 IR-1 (what the LLM emits; flat and declarative):
     {
@@ -19,17 +19,13 @@ plan, and validates it with the existing validate_plan. Unknown concept/metric -
 a loud error (routes to repair/clarification), never a silent wrong plan.
 """
 import re
-from datetime import date
 
-import pandas as pd
-from dateutil.relativedelta import relativedelta
 
 from registry.ontology import CONCEPTS, METRICS, ENTITY_CONCEPTS
-from registry.semantic_model import ENTITIES, DIMENSIONS, entity_key, resolve_dimension, is_coarser
-from agents.plan_executor import validate_plan
+from registry.semantic_model import ENTITIES, DIMENSIONS, LABEL_COLUMNS, entity_key, resolve_dimension, is_coarser
+from agents.plan_executor import _COLUMN_VALUE_OPS, validate_plan
 from compiler.measures import MEASURE_HANDLERS, MEASURE_ROLLUPS
-from utils import PREV_CARRYOVER_COLS
-from config import RECENT_ADVANCES_MONTHS
+from utils import as_list, BUCKET_SCORE, PREV_CARRYOVER_COLS, resolve_dynamic_values
 
 # Key columns of loan-level "dimension" entities (branch/region/executive). A
 # per-entity predicate that aggregates over one of these  -  when it is not the output
@@ -46,22 +42,14 @@ def _snake(name: str) -> str:
     return s or "value"
 
 
-def _resolve_cutoff(value):
-    """Resolve the dynamic __CUTOFF_1Y__ placeholder to a concrete timestamp.
-    Mirrors agents.data_executor.execute_priority_mode so concept definitions that
-    use the placeholder (recent_advance_high_bucket) behave identically. Despite
-    the "1Y" name the window is config.RECENT_ADVANCES_MONTHS (the same constant
-    smart_alerts.py uses for the identical "recent advances" concept), not a
-    hardcoded 12  -  changing that one setting now changes this everywhere."""
-    if value == "__CUTOFF_1Y__":
-        return pd.Timestamp(date.today() - relativedelta(months=RECENT_ADVANCES_MONTHS))
-    return value
-
-
 def _expand_filters(filters: list, errs: list) -> list:
     """Expand each filter item into concrete {column, op, value} conditions.
     Concept refs expand to their FULL condition list (the anti-dropped-condition
-    guarantee). Raw conditions pass through. ANDed together downstream."""
+    guarantee). Raw conditions pass through. ANDed together downstream.
+
+    Leaves utils.CUTOFF_PLACEHOLDER unresolved: compile_logical resolves the
+    whole plan once against the reporting month, and any other caller must
+    wrap the result in utils.resolve_dynamic_values(..., as_of)."""
     conditions: list = []
     for item in filters or []:
         if not isinstance(item, dict):
@@ -73,10 +61,9 @@ def _expand_filters(filters: list, errs: list) -> list:
             if concept is None:
                 errs.append(f"unknown concept '{name}'")
                 continue
-            for cond in concept["conditions"]:
-                conditions.append({**cond, "value": _resolve_cutoff(cond["value"])})
+            conditions.extend(dict(cond) for cond in concept["conditions"])
         elif "column" in item and "op" in item:
-            conditions.append({**item, "value": _resolve_cutoff(item.get("value"))})
+            conditions.append(dict(item))
         else:
             errs.append(f"uninterpretable filter (need 'concept' or 'column'+'op'): {item!r}")
     return conditions
@@ -177,11 +164,7 @@ def _resolve_count_metric(name: str) -> dict | None:
     # 4. {concept}_count → expand from registry
     concept = CONCEPTS.get(prefix)
     if concept:
-        where = [
-            {**cond, "value": _resolve_cutoff(cond["value"])}
-            for cond in concept["conditions"]
-        ]
-        return {"agg": "count", "kind": "count", "where": where}
+        return {"agg": "count", "kind": "count", "where": [dict(c) for c in concept["conditions"]]}
 
     # 5. {bucket}_count → count where curr_bucket == value
     bucket_val = _BUCKET_ALIASES.get(prefix)
@@ -198,6 +181,23 @@ def _resolve_count_metric(name: str) -> dict | None:
     return None
 
 
+def _wants_cust_name(group_by: list, existing_aliases: set, columns) -> bool:
+    """True when a customer-grain result (grouped by the bare mobile number)
+    should get a human-readable 'Cust Name' column attached automatically.
+    Without this, every AI Query result grouped by "customer" shows the raw
+    mobile number and nothing else -- unlike the "executive"/"branch"/"region"
+    dimensions, whose key column IS already the display label. Cust Name isn't
+    strictly 1:1 with Cust Mob No (see analysis/portfolio_intelligence.py's
+    compute_fleet_exposure docstring), so this is a representative "first row"
+    value, the same convention that function already uses for region/branch."""
+    return (
+        "Cust Mob No" in group_by
+        and "Cust Name" in (columns if columns is not None else [])
+        and "Cust Name" not in group_by
+        and "Cust Name" not in existing_aliases
+    )
+
+
 def _default_measure_alias(m: dict) -> str:
     if m.get("concept"):
         return m["concept"]
@@ -206,6 +206,15 @@ def _default_measure_alias(m: dict) -> str:
     if m.get("column"):
         return _snake(m["column"])
     return "count"
+
+
+def _is_count_distinct_shape(m: dict) -> bool:
+    """True when a raw IR measure's shape is a count_distinct, whether or not
+    its own "agg" field says so (the Planner emits both {"agg":"nunique",...}
+    and {"agg":"count","distinct":...} for the same intent). Single source of
+    truth for this trigger, shared by _infer_kind (below) and _build_nested's
+    "Loan No is the atomic key" rewrite, so the two can never drift apart."""
+    return "distinct" in m or (m.get("agg") or "").lower() == "nunique"
 
 
 def _infer_kind(d: dict):
@@ -219,7 +228,7 @@ def _infer_kind(d: dict):
         return "ratio"
     if "numerator_where" in d or "denominator_where" in d:
         return "count_ratio"
-    if "distinct" in d or (d.get("agg") or "").lower() == "nunique":
+    if _is_count_distinct_shape(d):
         return "count_distinct"
     if (d.get("agg") or "").lower() == "count" or "concept" in d or "where" in d:
         return "count"
@@ -245,8 +254,8 @@ def _resolve_prev_metric(name: str) -> dict | None:
         return None
     kind = base.get("kind")
     if kind == "ratio":
-        num = [PREV_CARRYOVER_COLS.get(c) for c in _as_cols(base.get("numerator"))]
-        den = [PREV_CARRYOVER_COLS.get(c) for c in _as_cols(base.get("denominator"))]
+        num = [PREV_CARRYOVER_COLS.get(c) for c in as_list(base.get("numerator"))]
+        den = [PREV_CARRYOVER_COLS.get(c) for c in as_list(base.get("denominator"))]
         if not all(num) or not all(den):
             return None  # no prev mapping for one of the columns -- can't build it
         mdef = dict(base)
@@ -270,6 +279,16 @@ def _resolve_prev_metric(name: str) -> dict | None:
         mdef["denominator_where"] = prev_den_where
         return mdef
     return None  # count / count_distinct / semi_additive: no direct prev column to map
+
+
+# Per-loan rates and ratios: a total of these across loans means nothing. Any
+# "%" column, plus these. Named, not guessed from a "/" ("Uncleared
+# Cheque/Amount Not remitted by RE" is a rupee amount and adds up fine).
+_RATE_COLUMNS = {"Arrears / EMI"}
+
+
+def _is_rate_column(col: str) -> bool:
+    return "%" in col or col in _RATE_COLUMNS
 
 
 def _resolve_metric_as_column(name: str, columns) -> str | None:
@@ -316,6 +335,12 @@ def _measure_def(m: dict, errs: list, columns=None):
             # Last resort: the "metric" name is actually just a raw column, guessed
             # case-insensitively (e.g. "soh" -> "SOH"). Treat as a sum measure.
             real_col = _resolve_metric_as_column(m["metric"], columns)
+            if real_col is not None and not m.get("agg") and _is_rate_column(real_col):
+                # A per-loan rate ("LCC%", "Arrears / EMI"): totalling it across
+                # loans means nothing, so don't default to a sum.
+                errs.append(f"metric '{m['metric']}' is the per-loan rate column '{real_col}', which can't be "
+                            "added up: use a catalog metric (e.g. lcc_pct) or say mean/max")
+                return None
             if real_col is not None:
                 return {
                     "alias": m.get("alias") or m["metric"],
@@ -407,28 +432,95 @@ def grain_issues(measure_grains: list[str], dimensions: list[str]) -> list[str]:
     return issues
 
 
-def _as_cols(x) -> list:
-    if x is None:
-        return []
-    return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
 def _map_where_to_prev(conditions: list) -> list | None:
     """Map each condition's column through PREV_CARRYOVER_COLS, for building the
     previous-period version of a count_ratio where-clause (e.g. "Arrears / EMI"
-    -> "prev_Arrears_EMI"). Returns None if ANY condition's column has no prev
-    mapping -- the whole comparison then can't be built for the prior period,
-    matching "ratio"'s existing all-or-nothing per-column rule. An empty
-    conditions list ("count all rows") maps to itself unchanged -- always supported."""
-    if not conditions:
-        return []
+    -> "prev_Arrears_EMI"); a label column (LABEL_COLUMNS) stays as it is.
+    Returns None if ANY other condition's column has no prev mapping -- the
+    whole comparison then can't be built for the prior period, matching
+    "ratio"'s existing all-or-nothing per-column rule. "Count all rows" (no
+    conditions) becomes "every loan on the book last month"."""
     mapped = []
     for cond in conditions:
-        prev_col = PREV_CARRYOVER_COLS.get(cond.get("column"))
-        if not prev_col:
+        col = cond.get("column")
+        if cond.get("op") in _COLUMN_VALUE_OPS:
+            # Both sides are columns. A same-month comparison maps both to last
+            # month; one that already reads last month ("worse than last
+            # month") would need the month before, so it can't be built.
+            ref = cond.get("value")
+            if col in _BASE_TO_PREV and ref in _BASE_TO_PREV:
+                mapped.append({**cond, "column": _BASE_TO_PREV[col], "value": _BASE_TO_PREV[ref]})
+            else:
+                return None
+        elif col in _BASE_TO_PREV:
+            mapped.append({**cond, "column": _BASE_TO_PREV[col]})
+        elif col in LABEL_COLUMNS:
+            mapped.append(dict(cond))          # a label means the same last month
+        else:
             return None
-        mapped.append({**cond, "column": prev_col})
+    # Every condition left on labels only would also count this month's new
+    # loans, so last month means: the loan was on the book last month.
+    if not any(c["column"] in _PREV_TO_BASE for c in mapped):
+        mapped.append(dict(_WAS_ON_BOOK_LAST_MONTH))
     return mapped
+
+
+# This month's column -> the same value last month, as carried onto each loan.
+# The bucket rides along as prev_bucket (app.py), outside PREV_CARRYOVER_COLS.
+_BASE_TO_PREV = {**PREV_CARRYOVER_COLS, "curr_bucket": "prev_bucket"}
+_PREV_TO_BASE = {prev: base for base, prev in _BASE_TO_PREV.items()}
+_VALID_BUCKETS = list(BUCKET_SCORE)            # the five real buckets ("NA" is not one)
+# "This loan was on the book last month": it has a real bucket from last month's file.
+_WAS_ON_BOOK_LAST_MONTH = {"column": "prev_bucket", "op": "in", "value": _VALID_BUCKETS}
+
+
+def _condition_columns(cond: dict) -> set:
+    cols = {cond.get("column")}
+    if cond.get("op") in _COLUMN_VALUE_OPS:
+        cols.add(cond.get("value"))
+    return cols
+
+
+def _agg_columns(agg: dict) -> set:
+    cols = {agg["column"]} if agg.get("column") else set()
+    for cond in agg.get("where") or []:
+        cols |= _condition_columns(cond)
+    return cols
+
+
+def _agg_on_prev_file(agg: dict) -> dict | None:
+    """The same aggregation run on LAST MONTH'S FILE (prev_* columns back to
+    their own names), or None when it isn't a last-month figure: it reads no
+    prev_* column, or also reads this month's state (e.g. "worse than last
+    month" needs both months on the same loan)."""
+    cols = _agg_columns(agg)
+    if not cols & _PREV_TO_BASE.keys() or not cols <= (_PREV_TO_BASE.keys() | LABEL_COLUMNS):
+        return None
+    out = dict(agg)
+    if out.get("column"):
+        out["column"] = _PREV_TO_BASE.get(out["column"], out["column"])
+    if out.get("where"):
+        out["where"] = [{**c, "column": _PREV_TO_BASE.get(c["column"], c["column"]),
+                         **({"value": _PREV_TO_BASE.get(c["value"], c["value"])}
+                            if c.get("op") in _COLUMN_VALUE_OPS else {})} for c in out["where"]]
+    return out
+
+
+def _prev_file_pass(conditions: list, pre_derives: list, aggs: list) -> dict | None:
+    """Last month's figures from last month's whole file (business rule,
+    2026-10-16): "NPA last month" must match the Dashboard and the report,
+    including loans that have since closed or left the book -- values carried
+    onto this month's loans can't see those. Only when every filter is on a
+    label column (it means the same thing last month); a filter on this
+    month's state ("loans NPA now") keeps the same-loans figures."""
+    if pre_derives or any(not _condition_columns(c) <= LABEL_COLUMNS for c in conditions):
+        return None
+    prev_aggs = [p for p in (_agg_on_prev_file(a) for a in aggs) if p is not None]
+    if not prev_aggs:
+        return None
+    return {"conditions": [dict(c) for c in conditions], "aggregations": prev_aggs}
 
 
 def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, columns=None) -> tuple[list, list]:
@@ -444,8 +536,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
     - extra_derives : derive steps added AFTER the group_aggregate
                       (change = curr_alias - prev_alias, for type:"change")
 
-    Measures whose source column has no prev_* mapping are silently skipped
-    (not a fatal error  -  the result just won't have a prev column for that measure).
+    A measure with no last-month version is an error (it used to be skipped
+    silently, so "X vs last month" came back with no last-month column).
     Only type:"snapshot" and type:"change" with from:"prev", to:"curr" are supported;
     other period references return a loud error.
     """
@@ -467,6 +559,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
 
     for m in ir_measures:
         mdef = _measure_def(m, local_errs, columns)
+        # (Every unsupported measure below adds to errs: a fatal error, so the
+        # repair loop or the user sees it.)
         if mdef is None:
             continue
         alias = mdef["alias"]
@@ -476,17 +570,24 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
         if kind in ("additive", "semi_additive"):
             col = mdef.get("column")
             prev_col = PREV_CARRYOVER_COLS.get(col) if col else None
-            if not prev_col:
-                continue  # no prev mapping for this column  -  skip gracefully
             func = (mdef.get("agg") or "sum").lower()
-            extra_aggs.append({"alias": prev_alias, "func": func, "column": prev_col})
+            if prev_col:
+                extra_aggs.append({"alias": prev_alias, "func": func, "column": prev_col})
+            elif col in LABEL_COLUMNS:
+                # A fixed loan attribute (e.g. Loan Amount): last month's total
+                # is the same column over the loans on the book last month.
+                extra_aggs.append({"alias": prev_alias, "func": func, "column": col,
+                                   "where": [dict(_WAS_ON_BOOK_LAST_MONTH)]})
+            else:
+                errs.append(f"can't compare '{alias}' with last month: '{col}' has no last-month value")
+                continue
             if typ == "change":
                 extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
 
         elif kind == "ratio":
             # Carry prev num/den sums through the same group_aggregate, then divide.
-            num_cols = _as_cols(mdef.get("numerator"))
-            den_cols = _as_cols(mdef.get("denominator"))
+            num_cols = as_list(mdef.get("numerator"))
+            den_cols = as_list(mdef.get("denominator"))
             prev_n, prev_d = [], []
             supported = True
             for i, c in enumerate(num_cols):
@@ -516,6 +617,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
                 extra_derives.append(derive)
                 if typ == "change":
                     extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+            else:
+                errs.append(f"can't compare '{alias}' with last month: its columns have no last-month value")
 
         elif kind == "count_ratio":
             # Same principle as "ratio": carry prev num/den counts through the
@@ -541,22 +644,82 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
                 extra_derives.append(derive)
                 if typ == "change":
                     extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+            else:
+                errs.append(_no_prev_msg(alias, (mdef.get("numerator_where") or []) + (mdef.get("denominator_where") or [])))
 
-        # count / count_distinct: no natural prev version; skip silently
+        elif kind == "count":
+            # Loans matching the same conditions last month; "count all" means
+            # every loan that was on the book last month.
+            prev_where = _map_where_to_prev(mdef.get("where") or [])
+            if prev_where is None:
+                errs.append(_no_prev_msg(alias, mdef.get("where") or []))
+                continue
+            extra_aggs.append({"alias": prev_alias, "func": "count", "where": prev_where})
+            if typ == "change":
+                extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+
+        elif kind == "count_distinct":
+            col = mdef.get("distinct") or mdef.get("column")
+            if col not in LABEL_COLUMNS:
+                errs.append(f"can't compare '{alias}' with last month: '{col}' has no last-month value")
+                continue
+            extra_aggs.append({"alias": prev_alias, "func": "nunique", "column": col,
+                               "where": [dict(_WAS_ON_BOOK_LAST_MONTH)]})
+            if typ == "change":
+                extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
 
     return extra_aggs, extra_derives
 
 
-def compile_logical(ir: dict, columns) -> tuple[list, list]:
+def _no_prev_msg(alias: str, conditions: list) -> str:
+    cols = sorted({c.get("column") for c in conditions if c.get("column") not in _BASE_TO_PREV})
+    return (f"can't compare '{alias}' with last month: no last-month value for "
+            f"{', '.join(map(str, cols)) or 'its columns'}")
+
+
+def _is_misplaced_entity_concept(concept) -> bool:
+    """True when `concept` names a registered ENTITY_CONCEPT and nothing else
+    (never a CONCEPTS entry too -- the two namespaces are disjoint by design).
+    An entity concept like fleet_operator reads like an ordinary filter/measure
+    from the LLM's side ("give me fleet owners...", "count of fleet owners"),
+    and the Planner regularly puts it in the wrong slot -- confirmed recurring
+    in production in two independent places (a top-level filter, and a "count"
+    measure), not a one-off. Single place owning this detection so a third
+    occurrence (e.g. inside "having" or "sort") reuses the same rule instead of
+    a third bespoke check."""
+    return concept in ENTITY_CONCEPTS and concept not in CONCEPTS
+
+
+def compile_logical(ir: dict, columns, as_of=None) -> tuple[list, list]:
     """Lower a logical IR into a physical step-plan. Returns (plan, errors).
     A non-empty errors list means the plan must NOT be executed (route to
     repair/clarification). The returned plan is also passed through the existing
     validate_plan so hallucinated columns are caught with the same gate the
-    LLM-authored path uses."""
+    LLM-authored path uses.
+
+    as_of is the file's reporting month: date-relative concepts (e.g. "recent
+    advances") are anchored to it, not to today."""
     errs: list[str] = []
     ir = ir or {}
 
-    conditions = _expand_filters(ir.get("filters") or [], errs)
+    # Reclassifying a {"concept": X} filter whose name is only an ENTITY_CONCEPT
+    # (see _is_misplaced_entity_concept) is a deterministic correction, not a
+    # guess -- the compiler derives structure the LLM doesn't need to get
+    # exactly right, same principle as the rest of this module. Without this,
+    # the query hard-fails as "unknown concept 'fleet_operator'" even after a
+    # repair attempt, because the repair feedback doesn't tell the Planner
+    # WHICH list a concept belongs in.
+    raw_filters = ir.get("filters") or []
+    misplaced_entity_filters: list = []
+    plain_filters: list = []
+    for f in raw_filters:
+        concept = f.get("concept") if isinstance(f, dict) else None
+        if _is_misplaced_entity_concept(concept):
+            misplaced_entity_filters.append({"concept": concept})
+        else:
+            plain_filters.append(f)
+
+    conditions = _expand_filters(plain_filters, errs)
     # The Logical Planner's own prompt says "loan_table: ... No dimensions or
     # measures needed" -- but an LLM doesn't always follow its own rules on an
     # ambiguous query (e.g. "...regionwise and branchwise... give all cases
@@ -573,24 +736,39 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
     ir_dims = [] if ir.get("intent") == "loan_table" else (ir.get("dimensions") or [])
     dims_raw = ir_dims
     group_by: list[str] = []
+    by_folded = {str(c).casefold().replace(" ", "_"): c for c in columns}
     for d in dims_raw:
         if d in DIMENSIONS:
             group_by.extend(resolve_dimension(d))
         elif d in columns:
             group_by.append(d)
+        elif str(d).casefold().replace(" ", "_") in by_folded:
+            # A real column in another case/spacing ("fuel_type" for FUEL_TYPE).
+            group_by.append(by_folded[str(d).casefold().replace(" ", "_")])
         else:
             errs.append(
                 f"unknown dimension alias '{d}': valid aliases are "
                 f"{', '.join(DIMENSIONS.keys())} (or an exact existing column name)"
             )
 
-    entity_filters = ir.get("entity_filters") or []
+    entity_filters = list(ir.get("entity_filters") or []) + misplaced_entity_filters
 
     plan: list = []
     if conditions:
         plan.append({"op": "filter", "conditions": conditions})
 
-    if entity_filters:
+    if entity_filters and not group_by and ir.get("intent") == "loan_table":
+        # loan_table shape ("give me every loan for fleet owners in NPA"): keep
+        # every original row for a qualifying entity, don't collapse to one row.
+        # Gated on intent, not just "no dimensions" -- a single_value/aggregation
+        # query with entity_filters and no explicit dimension (e.g. "how many
+        # fleet owners are in NPA") must still go through _build_nested's
+        # scalar-count fallback below, not this row-level path: routing it here
+        # would silently return raw per-loan rows (and a loan_table intent, not
+        # single_value/aggregation) instead of the single count the question
+        # actually asked for.
+        plan += _build_entity_semi_join(entity_filters, errs)
+    elif entity_filters:
         # NESTED path: the compiler derives a multi-pass plan from the grain lattice.
         plan += _build_nested(ir, group_by, entity_filters, errs, columns)
     elif group_by:
@@ -613,7 +791,15 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
             plan.append({"op": "derive", **d})
         if not aggs:
             aggs = [{"alias": "count", "func": "count"}]
-        plan.append({"op": "group_aggregate", "group_by": group_by, "aggregations": aggs})
+        if _wants_cust_name(group_by, {a.get("alias") for a in aggs}, columns):
+            aggs.append({"alias": "Cust Name", "func": "first", "column": "Cust Name"})
+        step = {"op": "group_aggregate", "group_by": group_by, "aggregations": aggs}
+        prev_file = _prev_file_pass(conditions, pre_derives, aggs)
+        if prev_file:
+            # The executor runs these on last month's file when it has one
+            # (agents/plan_executor.py); without it, the carried values stand.
+            step["prev_file"] = prev_file
+        plan.append(step)
         for d in post_derives:
             plan.append({"op": "derive", **d})
         for d in ir.get("metrics") or []:
@@ -660,6 +846,8 @@ def compile_logical(ir: dict, columns) -> tuple[list, list]:
         if display_cols and ir.get("intent") in (None, "", "loan_table"):
             plan.append({"op": "select", "columns": display_cols})
 
+    plan = resolve_dynamic_values(plan, as_of)
+
     # Reuse the existing deterministic column validator as the final gate.
     if plan and not errs:
         errs.extend(validate_plan(plan, columns))
@@ -702,15 +890,11 @@ def _build_having_pred(pred: dict, alias: str, errs: list) -> tuple[dict, dict]:
     return a, cond
 
 
-def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, columns=None) -> list:
-    """Derive an intermediate→filter→terminal plan from the grain lattice. The LLM
-    supplied only entity names + declarative predicates + measure names; ALL of the
-    structure below (keys, pass order, rollup decomposition) is derived here."""
-    if not group_by:
-        errs.append("nested aggregation currently requires a grouping dimension")
-        return []
-
-    # Resolve entity-concept references to concrete {entity, having} predicates.
+def _resolve_entity_filters(entity_filters: list, errs: list):
+    """Resolve entity-concept references to concrete {entity, having} predicates
+    and pin down the single entity they all share. Returns (entity_name,
+    resolved_predicates) -- entity_name is None if resolution failed (errs
+    already carries the reason) or entity_filters was empty."""
     resolved = []
     for ef in entity_filters:
         if "concept" in ef:
@@ -722,15 +906,54 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
         else:
             resolved.append(ef)
     if not resolved:
-        return []
+        return None, []
 
     entities = {ef.get("entity") for ef in resolved}
     if len(entities) > 1:
         errs.append(f"nested aggregation over multiple entities {sorted(entities)} is not supported yet")
-        return []
+        return None, []
     g = next(iter(entities))
     if g not in ENTITIES:
         errs.append(f"unknown entity '{g}' in entity_filters")
+        return None, []
+    return g, resolved
+
+
+def _build_entity_semi_join(entity_filters: list, errs: list) -> list:
+    """entity_filters with NO output dimension (loan_table intent: 'give me every
+    loan row for customers who are fleet owners') can't use _build_nested's
+    group-then-filter-then-regroup shape, since that COLLAPSES to one row per
+    entity -- exactly wrong for a request whose whole point is the individual
+    rows. Instead: compute which entity keys satisfy every having predicate,
+    then keep every original row belonging to a qualifying key (a semi-join),
+    so all original columns survive untouched."""
+    g, resolved = _resolve_entity_filters(entity_filters, errs)
+    if g is None:
+        return []
+    ekey = entity_key(g)
+
+    aggs: list = []
+    conditions: list = []
+    for i, ef in enumerate(resolved):
+        for j, pred in enumerate(ef.get("having") or []):
+            a, cond = _build_having_pred(pred, f"__ef{i}_{j}", errs)
+            aggs.append(a)
+            conditions.append(cond)
+
+    return [{"op": "entity_semi_join", "key_cols": ekey,
+             "aggregations": aggs, "having_conditions": conditions}]
+
+
+def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, columns=None) -> list:
+    """Derive an entity-filter→intermediate→terminal plan from the grain lattice. The LLM
+    supplied only entity names + declarative predicates + measure names; ALL of the
+    structure below (keys, pass order, rollup decomposition) is derived here."""
+    if not group_by:
+        errs.append("nested aggregation currently requires a grouping dimension")
+        return []
+
+    g, resolved = _resolve_entity_filters(entity_filters, errs)
+    if g is None:
         return []
 
     ekey = entity_key(g)
@@ -754,19 +977,61 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
                     f"'{pcol}' should be counted globally per entity or within each group"
                 )
 
-    # Intermediate aggregations: predicate aggregates + measure rollup partials.
-    inter_aggs: list = []
+    # Entity predicates are evaluated over each entity's WHOLE set of rows (a
+    # semi-join ahead of the passes), never inside one output group. Within a
+    # group, "customers with an NPA loan, by bucket" would test the predicate
+    # per (bucket, customer) and drop a qualifying customer's STD loans, since
+    # the STD group alone never holds an NPA loan. Same rule as fleet_operator's
+    # whole-upload CUSTOMER_LOAN_COUNT: a fact about the entity, not the slice.
+    pred_aggs: list = []
     pred_filters: list = []
     for i, ef in enumerate(resolved):
         for j, pred in enumerate(ef.get("having") or []):
             a, cond = _build_having_pred(pred, f"__ef{i}_{j}", errs)
-            inter_aggs.append(a)
+            pred_aggs.append(a)
             pred_filters.append(cond)
+
+    # Intermediate aggregations: measure rollup partials.
+    inter_aggs: list = []
 
     term_aggs: list = []
     term_post: list = []
     measures = ir.get("measures") or []
     for m in measures:
+        # Same misplacement _is_misplaced_entity_concept detects for the
+        # top-level filters list (see compile_logical): the Planner sometimes
+        # ALSO asks to "count" an entity concept directly as a measure (e.g.
+        # {"agg":"count","concept":"fleet_operator",...}), redundant with
+        # entity_filters already restricting to that entity. Since the entity
+        # is already fixed by entity_filters (this function's own `g`),
+        # "count of <entity concept>" unambiguously means "how many qualifying
+        # entities survived," i.e. nunique(ekey) -- exactly what the no-measure
+        # fallback below already computes.
+        if _is_misplaced_entity_concept(m.get("concept")):
+            if len(ekey) != 1:
+                errs.append(f"measure '{m.get('alias', m['concept'])}': entity '{g}' has a "
+                            "composite key; counting it directly is not supported")
+                continue
+            m = {"agg": "nunique", "distinct": ekey[0], "alias": m.get("alias") or "count"}
+        elif (_is_count_distinct_shape(m)
+              and (m.get("distinct") or m.get("column")) in entity_key("loan")):
+            # _is_count_distinct_shape is the SAME predicate _infer_kind uses
+            # (shared, not re-derived here) -- the Planner emits both
+            # {"agg":"nunique",...} and {"agg":"count","distinct":...} for the
+            # same intent, and _infer_kind classifies both as count_distinct
+            # regardless of the "agg" string, so this check can't key off
+            # "agg" alone either.
+            # e.g. "how many loans does each fleet owner have" -> nunique(Loan
+            # No). count_distinct can't generally roll up across a nested
+            # grain (see _r_count_distinct), but Loan No is the ATOMIC row key
+            # (one row = one loan) -- nunique(Loan No) over any grouping of raw
+            # loan rows is always identical to a plain row count, which DOES
+            # decompose across passes. Rewriting avoids a hard "cannot be
+            # rolled up" error for a request that's actually always answerable.
+            new_m = {"agg": "count", "alias": m.get("alias") or _default_measure_alias(m)}
+            if m.get("where"):
+                new_m["where"] = m["where"]
+            m = new_m
         mdef = _measure_def(m, errs, columns)
         if mdef is None:
             continue
@@ -787,9 +1052,18 @@ def _build_nested(ir: dict, group_by: list, entity_filters: list, errs: list, co
         else:
             errs.append(f"nested entity '{g}' has a composite key; an explicit measure is required")
 
+    if _wants_cust_name(group_by, {a.get("alias") for a in term_aggs}, columns):
+        inter_aggs.append({"alias": "Cust Name__p", "func": "first", "column": "Cust Name"})
+        term_aggs.append({"alias": "Cust Name", "func": "first", "column": "Cust Name__p"})
+
+    if not inter_aggs:
+        # group_aggregate needs one aggregation; the terminal pass only reads the keys.
+        inter_aggs.append({"alias": "__rows", "func": "count"})
+
     steps: list = [
+        {"op": "entity_semi_join", "key_cols": ekey,
+         "aggregations": pred_aggs, "having_conditions": pred_filters},
         {"op": "group_aggregate", "group_by": inter_keys, "aggregations": inter_aggs},
-        {"op": "filter", "conditions": pred_filters},
         {"op": "group_aggregate", "group_by": group_by, "aggregations": term_aggs},
     ]
     for d in term_post:

@@ -17,8 +17,13 @@ class TestAlertNonStarters:
         ("Y", 1), ("y", 1), ("N", 0),
     ], ids=["upper_y", "lower_y_case_insensitive", "n_not_flagged"])
     def test_flags_only_yes_case_insensitive(self, value, expected_count):
-        df = make_df([{"Loan No": "L001", "Non Starter": value}])
+        df = make_df([{"Loan No": "L001", "Non Starter": value, "Arrears / EMI": 1.0}])
         assert alert_non_starters(df)["count"] == expected_count
+
+    def test_flagged_but_no_longer_behind_is_not_a_non_starter(self):
+        # The shared rule (utils.non_starter_mask): flagged AND still behind.
+        df = make_df([{"Non Starter": "Y", "Arrears / EMI": 0.0}, {"Non Starter": "Y", "Arrears / EMI": 2.0}])
+        assert alert_non_starters(df)["count"] == 1
 
     def test_result_shape(self):
         df = make_df([{"Non Starter": "Y", "SOH": 50_000.0, "Closing Arrears": 5_000.0}])
@@ -103,7 +108,7 @@ class TestRunAllAlerts:
         # (one per alert function) into one check against the real pipeline output.
         expected_severity = {
             "Non Starters": "critical",
-            "Easy Settlements": "medium",
+            "Easy to Nil": "medium",
             "Co-lending Loans at Risk": "critical",
             "Insurance-Driven Delinquency": "high",
             "High Arrears: Loan at Risk": "critical",
@@ -198,7 +203,6 @@ class TestAlertRecentAdvancesAsOf:
         # silently. Every sibling as_of function in
         # analysis/portfolio_intelligence.py already defends against this
         # with pd.to_datetime(..., errors="coerce"); this one didn't.
-        import pandas as pd
         df = make_df([
             {"Loan No": "L1", "Ag_Date": "2023-07-01", "Arrears / EMI": 1.0},
             {"Loan No": "L2", "Ag_Date": "2020-01-01", "Arrears / EMI": 1.0},

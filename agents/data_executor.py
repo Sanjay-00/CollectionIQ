@@ -1,8 +1,6 @@
-﻿import pandas as pd
-from datetime import date
-from dateutil.relativedelta import relativedelta
+import pandas as pd
 
-from config import RECENT_ADVANCES_MONTHS
+from utils import CUTOFF_PLACEHOLDER, dates_only, resolve_dynamic_values
 
 # Bucket severity scores - higher = worse
 _BUCKET_SCORE = {"STD": 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
@@ -24,33 +22,55 @@ _COL_COMPARE_OPS = {
 }
 
 
+# Bucket-severity comparisons between two bucket columns (this month vs last).
+BUCKET_COMPARE_OPS = {
+    "bucket_worse_than":  lambda curr, prev: curr > prev,
+    "bucket_better_than": lambda curr, prev: curr < prev,
+    "bucket_stable":      lambda curr, prev: curr == prev,
+}
+
+_NUMERIC_OPS = {
+    "==": lambda s, v: s == v,
+    "!=": lambda s, v: s != v,
+    ">":  lambda s, v: s > v,
+    ">=": lambda s, v: s >= v,
+    "<":  lambda s, v: s < v,
+    "<=": lambda s, v: s <= v,
+}
+
+
 def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
     col = cond["column"]
     op = cond["op"]
     val = cond["value"]
 
+    # On a non-date column an unresolved placeholder falls through to the string
+    # branch and silently matches everything -- fail loud instead.
+    if isinstance(val, str) and val == CUTOFF_PLACEHOLDER:
+        raise ValueError(f"unresolved {CUTOFF_PLACEHOLDER} on '{col}': call utils.resolve_dynamic_values first")
+
+    # Every case below that can't apply the condition RAISES rather than returning
+    # df unchanged: an unfiltered table looks exactly like "everything matched"
+    # (a confident wrong answer); an error reaches the repair loop or the user.
     if col not in df.columns:
-        return df
+        raise ValueError(f"column '{col}' does not exist")
 
     # Cross-column bucket comparison operators
-    if op in ("bucket_worse_than", "bucket_better_than"):
+    if op in BUCKET_COMPARE_OPS:
         ref_col = str(val)
         if ref_col not in df.columns:
-            return df
+            raise ValueError(f"op '{op}' compares against column '{ref_col}', which does not exist")
         curr_score = df[col].map(_BUCKET_SCORE)
         prev_score = df[ref_col].map(_BUCKET_SCORE)
         # Exclude rows where either bucket is unknown/NaN (new accounts, missing prev)
         valid = curr_score.notna() & prev_score.notna()
-        if op == "bucket_worse_than":
-            return df[valid & (curr_score > prev_score)]
-        else:
-            return df[valid & (curr_score < prev_score)]
+        return df[valid & BUCKET_COMPARE_OPS[op](curr_score, prev_score)]
 
     # Generic column-vs-column numeric comparison
     if op in _COL_COMPARE_OPS:
         ref_col = str(val)
         if ref_col not in df.columns:
-            return df
+            raise ValueError(f"op '{op}' compares against column '{ref_col}', which does not exist")
         a = pd.to_numeric(df[col], errors="coerce")
         b = pd.to_numeric(df[ref_col], errors="coerce")
         valid = a.notna() & b.notna()
@@ -85,40 +105,41 @@ def _apply_condition(df: pd.DataFrame, cond: dict) -> pd.DataFrame:
             raise ValueError(f"op '{op}' is not valid for date column '{col}'")
         return df[mask]
 
-    # Numeric comparison
-    if pd.api.types.is_numeric_dtype(series):
+    # Numeric comparison. Only the requested comparison is built: building
+    # every one up front ran `series == [5, 10]` for an "in" filter and
+    # crashed with "Lengths must match".
+    # A column with no values at all loads as float NaN (e.g. CoLending_Loans in
+    # a file with no co-lending loans): a text match on it is "no rows", like
+    # utils.is_yes, not a type error.
+    numeric_col = pd.api.types.is_numeric_dtype(series) and not (series.isna().all() and op in ("==", "!=", "in"))
+    if numeric_col:
         try:
-            val_num = float(val) if not isinstance(val, list) else val
+            nums = [float(v) for v in val] if isinstance(val, list) else [float(val)]
         except (TypeError, ValueError):
-            return df
-        ops = {
-            "==": series == val_num,
-            "!=": series != val_num,
-            ">":  series > val_num,
-            ">=": series >= val_num,
-            "<":  series < val_num,
-            "<=": series <= val_num,
-            "in": series.isin([float(v) for v in val]) if isinstance(val, list) else series == val_num,
-        }
-        mask = ops.get(op)
-        # Same "loud failure, not silent unfiltered return" guard as the date branch above.
-        if mask is None:
+            raise ValueError(f"'{col}' is a number column; can't compare it with {val!r}")
+        if op == "in":
+            return df[series.isin(nums)]
+        compare = _NUMERIC_OPS.get(op)
+        if compare is None:
             raise ValueError(f"op '{op}' is not valid for numeric column '{col}'")
-        return df[mask]
+        if len(nums) != 1:
+            raise ValueError(f"op '{op}' on '{col}' needs one value, got {val!r}")
+        return df[compare(series, nums[0])]
 
-    # String / categorical comparison
+    # String / categorical comparison (case and surrounding spaces ignored on
+    # both sides: " pune " matches PUNE).
     str_series = series.astype(str).str.strip().str.upper()
     if op == "==":
-        return df[str_series == str(val).upper()]
+        return df[str_series == str(val).strip().upper()]
     if op == "!=":
-        return df[str_series != str(val).upper()]
+        return df[str_series != str(val).strip().upper()]
     if op == "in":
-        vals_upper = [str(v).upper() for v in (val if isinstance(val, list) else [val])]
+        vals_upper = [str(v).strip().upper() for v in (val if isinstance(val, list) else [val])]
         return df[str_series.isin(vals_upper)]
     if op == "contains":
-        return df[series.astype(str).str.contains(str(val), case=False, na=False)]
+        return df[series.astype(str).str.contains(str(val).strip(), case=False, na=False, regex=False)]
 
-    return df
+    raise ValueError(f"op '{op}' is not valid for text column '{col}'")
 
 
 def _build_mask(df: pd.DataFrame, conditions) -> pd.Series:
@@ -144,15 +165,6 @@ QUERY_DISPLAY_COLS = [
     "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
     "TyreFlag", "FUEL_TYPE",
 ]
-
-
-def _format_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert datetime columns to date-only for clean display."""
-    df = df.copy()
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].dt.date
-    return df
 
 
 def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
@@ -204,11 +216,10 @@ def compute_result_kpis(df_full: pd.DataFrame, filtered: pd.DataFrame) -> dict:
     }
 
 
-def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    """Run all priority rules in ranked order, combine results with a Priority column."""
-    from agents.domain_expert import PRIORITY_RULES
-
-    cutoff_1y = pd.Timestamp(date.today() - relativedelta(months=RECENT_ADVANCES_MONTHS))
+def execute_priority_mode(df: pd.DataFrame, as_of=None) -> tuple[pd.DataFrame, str]:
+    """Run all priority rules in ranked order, combine results with a Priority column.
+    as_of is the file's reporting month (anchors the "recent advances" tier)."""
+    from registry.ontology import PRIORITY_RULES
 
     all_rows = []
     seen_loans = set()
@@ -219,23 +230,14 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     # in rank order, but sort explicitly so that invariant can't silently break
     # if the list is ever reordered without updating ranks to match.
     for rule in sorted(PRIORITY_RULES, key=lambda r: r["rank"]):
-        conditions = rule["conditions"]
+        conditions = resolve_dynamic_values(rule["conditions"], as_of)
         subset = df.copy()
 
         for cond in conditions:
-            col = cond["column"]
-            op  = cond["op"]
-            val = cond["value"]
-
-            if col not in subset.columns:
+            if cond["column"] not in subset.columns:
                 subset = subset.iloc[0:0]
                 break
-
-            # Resolve dynamic cutoff placeholder
-            if val == "__CUTOFF_1Y__":
-                val = cutoff_1y
-
-            subset = _apply_condition(subset, {**cond, "value": val})
+            subset = _apply_condition(subset, cond)
 
         if len(subset) == 0:
             continue
@@ -262,7 +264,7 @@ def execute_priority_mode(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
                     "Net Collection Demand Inst+Exp+BC", "Closing Arrears"]
     display_cols = [c for c in display_cols if c in result.columns]
     out = result[display_cols] if display_cols else result
-    return _format_dates(out), ""
+    return dates_only(out), ""
 
 
 def distribute_priority_accounts(df: pd.DataFrame, total_n: int) -> pd.DataFrame:

@@ -1,14 +1,12 @@
-﻿"""Ontology  -  the VOCABULARY layer of the registry.
+"""Ontology  -  the VOCABULARY layer of the registry.
 
-Three things live here:
+Everything here is LIVE: the AI Query compiler, the priority framework and the
+Investigator all read these definitions, so editing one changes real answers.
 
-- PRIORITY_RULES  -  the 7-tier business priority framework. MIGRATED VERBATIM from
-  agents.domain_expert (which now re-exports it for back-compat). This is the
-  canonical home; agents.data_executor.execute_priority_mode and the prompt's
-  generated priority section both read it. Kept byte-identical so behavior is
-  unchanged in Phase 0.
+- PRIORITY_RULES  -  the 7-tier business priority framework. This is the canonical
+  home; agents.data_executor.execute_priority_mode reads it.
 
-- CONCEPTS  -  named, deterministic business rules the v2 compiler will expand. Each
+- CONCEPTS  -  named, deterministic business rules the compiler expands. Each
   concept is referenced by name in the logical IR; the compiler expands it to its
   full condition set, so a multi-condition concept (e.g. colending_at_risk) can
   NEVER silently lose a condition. Schema, per concept:
@@ -38,16 +36,20 @@ Three things live here:
   column itself is documented correctly in agents/logical_planner.py's glossary
   and usable directly as a raw column filter (Strike == "Y" / "N").
 
-  __CUTOFF_1Y__ is a dynamic placeholder (loan agreement date within last 12
-  months); execute_priority_mode resolves it today, and the v2 compiler resolves
-  it at lowering time. Same convention as PRIORITY_RULES.
+  __CUTOFF_1Y__ (utils.CUTOFF_PLACEHOLDER) is a dynamic placeholder: the start of
+  the "recent advances" window, RECENT_ADVANCES_MONTHS before the file's REPORTING
+  MONTH (not today). utils.resolve_dynamic_values resolves it -- once per compiled
+  plan in compile_logical, and in execute_priority_mode for PRIORITY_RULES.
+
+- ENTITY_CONCEPTS  -  per-customer predicates for nested aggregation (e.g.
+  fleet_operator).
 
 - METRICS  -  named numeric measures with their default aggregation AND grain. The
   grain is part of the definition (a measure is "sum of SOH AT loan grain"), so
   the compiler can prevent fan-out double-counting when grouping.
 
-Nothing here except PRIORITY_RULES is consumed yet  -  CONCEPTS/METRICS are additive
-in Phase 0, so they cannot change behavior.
+- AMBIGUOUS_TERMS  -  domain words (e.g. "business", "risky") the Logical Planner
+  must ask about instead of silently picking one reading.
 """
 
 # Thresholds shared with the dashboard (analysis/, smart_alerts.py) -- imported
@@ -61,6 +63,19 @@ from config import (
     RECENT_ADVANCES_MONTHS,
     HARD_BUCKET_ARREARS_EMI_MIN,
 )
+from utils import CUSTOMER_LOAN_COUNT
+
+# A Y/N flag is true for "Y" or "YES" (some extracts spell it out), the same
+# rule as utils.is_yes on the dashboard. Never "==" "Y": a file that writes
+# "Yes" would then match nothing here while the dashboard shows a count.
+_YES = ["Y", "YES"]
+
+# Never paid the first EMI and still behind: the same loans as
+# utils.non_starter_mask (Alerts, Action Lists, the report).
+_NON_STARTER = [
+    {"column": "Non Starter", "op": "in", "value": _YES},
+    {"column": "Arrears / EMI", "op": ">", "value": 0},
+]
 
 # ── Business Priority Framework (migrated verbatim  -  single source of truth) ───
 # Used by the system prompt's generated priority section AND by the data executor
@@ -69,13 +84,15 @@ PRIORITY_RULES = [
     {
         "rank": 1,
         "label": "Non Starters",
-        "why": "Never paid even 1st EMI - highest credit risk, possible fraud or disbursement issue",
-        "conditions": [{"column": "Non Starter", "op": "==", "value": "Y"}],
+        "why": "Never paid even 1st EMI: highest credit risk, possible fraud or disbursement issue",
+        # Any EMI cycle, not only the first: a customer on EMI 3 who has
+        # never paid is still a non-starter (business decision, 2026-10-16).
+        "conditions": [dict(c) for c in _NON_STARTER],
     },
     {
         "rank": 2,
-        "label": "Easy Settlements",
-        "why": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,} - one call can clear these, quick wins for collection team",
+        "label": "Easy to Nil",
+        "why": f"Closing arrears < ₹{EASY_SETTLEMENT_MAX_ARREARS:,}: one call can clear these, quick wins for collection team",
         "conditions": [
             {"column": "Closing Arrears", "op": ">",  "value": 0},
             {"column": "Closing Arrears", "op": "<",  "value": EASY_SETTLEMENT_MAX_ARREARS},
@@ -83,8 +100,8 @@ PRIORITY_RULES = [
     },
     {
         "rank": 3,
-        "label": "Recent Advances - High Bucket",
-        "why": f"Loans sanctioned within last {RECENT_ADVANCES_MONTHS} months already in SMA-1 or worse  -  early warning of sourcing quality issues",
+        "label": "Recent Advances: High Bucket",
+        "why": f"Loans sanctioned within last {RECENT_ADVANCES_MONTHS} months already in SMA-1 or worse: early warning of sourcing quality issues",
         "conditions": [
             {"column": "Ag_Date",       "op": ">=", "value": "__CUTOFF_1Y__"},
             {"column": "Arrears / EMI", "op": ">=", "value": 1},
@@ -93,7 +110,7 @@ PRIORITY_RULES = [
     {
         "rank": 4,
         "label": "Insurance-Driven Delinquency",
-        "why": "Customer paid EMI (no arrears against installment) but unpaid insurance/expense charge is creating artificial arrears - fixable via cash or child loan",
+        "why": "Customer paid EMI (no arrears against installment) but unpaid insurance/expense charge is creating artificial arrears: fixable via cash or child loan",
         "conditions": [
             {"column": "ARREARS AGAINST INST", "op": "<=", "value": 0},
             {"column": "ARREARS AGAINST EXP",  "op": ">",  "value": INSURANCE_EXP_ARREARS_MIN},
@@ -103,22 +120,22 @@ PRIORITY_RULES = [
     {
         "rank": 5,
         "label": "Co-lending at Risk",
-        "why": "Partner bank co-lending loans with any delinquency - SLA breach risk",
+        "why": "Partner bank co-lending loans with any delinquency: SLA breach risk",
         "conditions": [
-            {"column": "CoLending_Loans", "op": "==", "value": "Y"},
+            {"column": "CoLending_Loans", "op": "in", "value": _YES},
             {"column": "Arrears / EMI",   "op": ">",  "value": 0},
         ],
     },
     {
         "rank": 6,
         "label": "No Collection 3 Months",
-        "why": "No payment for 3+ months AND >6 EMI arrears - pre-NPA deterioration signal",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
+        "why": "No payment for 3+ months AND >6 EMI arrears: pre-NPA deterioration signal",
+        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "in", "value": _YES}],
     },
     {
         "rank": 7,
         "label": "NPA Accounts",
-        "why": "Fully non-performing - requires legal/recovery escalation",
+        "why": "Fully non-performing: requires legal/recovery escalation",
         "conditions": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
     },
 ]
@@ -128,22 +145,24 @@ PRIORITY_RULES = [
 CONCEPTS: dict[str, dict] = {
     "delinquent": {
         "label": "Delinquent",
-        "description": "Any account with arrears - Arrears/EMI > 0.",
+        "description": "Any account with arrears: Arrears/EMI > 0.",
         "conditions": [{"column": "Arrears / EMI", "op": ">", "value": 0}],
     },
     "non_starter": {
         "label": "Non Starter",
-        "description": "Customer has not paid even the 1st EMI - highest credit risk.",
-        "conditions": [{"column": "Non Starter", "op": "==", "value": "Y"}],
+        "description": "Customer has never paid even the 1st EMI and is still behind: highest credit risk.",
+        # The same list as the "Non Starters" priority tier above and
+        # utils.non_starter_mask (tests/test_metric_consistency.py checks).
+        "conditions": [dict(c) for c in _NON_STARTER],
     },
     "npa": {
         "label": "NPA",
-        "description": "Non-performing asset - current bucket is NPA.",
+        "description": "Non-performing asset: current bucket is NPA.",
         "conditions": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
     },
     "easy_settlement": {
-        "label": "Easy Settlement",
-        "description": f"Closing arrears between 0 and ₹{EASY_SETTLEMENT_MAX_ARREARS:,} - one call can clear these.",
+        "label": "Easy to Nil",
+        "description": f"Closing arrears between 0 and ₹{EASY_SETTLEMENT_MAX_ARREARS:,}: one call can clear these.",
         "conditions": [
             {"column": "Closing Arrears", "op": ">", "value": 0},
             {"column": "Closing Arrears", "op": "<", "value": EASY_SETTLEMENT_MAX_ARREARS},
@@ -151,9 +170,9 @@ CONCEPTS: dict[str, dict] = {
     },
     "colending_at_risk": {
         "label": "Co-lending at Risk",
-        "description": "Partner-bank co-lending loan with any delinquency - SLA breach risk.",
+        "description": "Partner-bank co-lending loan with any delinquency: SLA breach risk.",
         "conditions": [
-            {"column": "CoLending_Loans", "op": "==", "value": "Y"},
+            {"column": "CoLending_Loans", "op": "in", "value": _YES},
             {"column": "Arrears / EMI", "op": ">", "value": 0},
         ],
     },
@@ -167,7 +186,7 @@ CONCEPTS: dict[str, dict] = {
         ],
     },
     "recent_advance_high_bucket": {
-        "label": "Recent Advance - High Bucket",
+        "label": "Recent Advance: High Bucket",
         "description": f"Loan sanctioned within last {RECENT_ADVANCES_MONTHS} months already in SMA-1 or worse.",
         "conditions": [
             {"column": "Ag_Date", "op": ">=", "value": "__CUTOFF_1Y__"},
@@ -176,8 +195,8 @@ CONCEPTS: dict[str, dict] = {
     },
     "no_collection_3m": {
         "label": "No Collection 3 Months",
-        "description": "No payment for 3+ months AND arrears exceed 6 EMIs - pre-NPA signal.",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "==", "value": "Y"}],
+        "description": "No payment for 3+ months AND arrears exceed 6 EMIs: pre-NPA signal.",
+        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "in", "value": _YES}],
     },
     "hard_bucket": {
         "label": "Hard Bucket",
@@ -192,12 +211,12 @@ CONCEPTS: dict[str, dict] = {
         # instead of the Planner substituting the lookalike no_collection_3m concept.
         # Threshold and column intentionally match hard_bucket_pct's own
         # numerator_where below -- same definition, count form vs. row-filter form.
-        "description": f"Currently in hard bucket - Arrears/EMI >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue right now.",
+        "description": f"Currently in hard bucket: Arrears/EMI >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue right now.",
         "conditions": [{"column": "Arrears / EMI", "op": ">=", "value": HARD_BUCKET_ARREARS_EMI_MIN}],
     },
     "no_collection": {
         "label": "No Collection",
-        "description": "No cash received this month - Month Receipt Amount <= 0.",
+        "description": "No cash received this month: Month Receipt Amount <= 0.",
         "conditions": [
             {"column": "Month Receipt Amount", "op": "<=", "value": 0},
         ],
@@ -205,7 +224,7 @@ CONCEPTS: dict[str, dict] = {
     "short_collection": {
         "label": "Short Collection",
         "description": (
-            "This month's cash received is at or below what was due - Month Receipt "
+            "This month's cash received is at or below what was due: Month Receipt "
             "Amount <= Net Collection Demand Inst+Exp+BC. Includes zero-payers (also "
             "covered by no_collection) as well as partial payers."
         ),
@@ -227,7 +246,11 @@ ENTITY_CONCEPTS: dict[str, dict] = {
         "entity": "customer",
         "label": "Fleet Operator",
         "description": f"A customer holding {FLEET_MIN_LOANS} or more loans/vehicles.",
-        "having": [{"agg": "nunique", "column": "Loan No", "op": ">=", "value": FLEET_MIN_LOANS}],
+        # CUSTOMER_LOAN_COUNT is counted over the whole upload at load time, so a
+        # dimension (branch/region) or a sidebar filter never demotes a fleet
+        # operator whose other loans fall outside it -- same rule as
+        # utils.fleet_loan_mask, used by every dashboard fleet view.
+        "having": [{"agg": "max", "column": CUSTOMER_LOAN_COUNT, "op": ">=", "value": FLEET_MIN_LOANS}],
     },
 }
 
@@ -255,7 +278,7 @@ METRICS: dict[str, dict] = {
         "column": "POS",
         "default_agg": "sum",
         "grain": "loan",
-        "description": "Principal outstanding - future principal balance remaining.",
+        "description": "Principal outstanding: future principal balance remaining.",
     },
     "closing_arrears": {
         "label": "Closing Arrears",
@@ -354,7 +377,7 @@ METRICS: dict[str, dict] = {
         "denominator_where": [],  # empty = count all rows in the group
         "scale": 100,
         "grain": "loan",
-        "description": f"% of accounts >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue - a narrower, more severe signal than NPA.",
+        "description": f"% of accounts >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue: a narrower, more severe signal than NPA.",
     },
     "strike_pct": {
         "label": "Strike %",
@@ -372,6 +395,24 @@ METRICS: dict[str, dict] = {
         "scale": 100,
         "grain": "loan",
         "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",
+    },
+    "delinquency_pct": {
+        "label": "Delinquency %",
+        "kind": "count_ratio",
+        # Broadest delinquency reading: any arrears at all (Arrears/EMI > 0), i.e.
+        # everything except STD/NA -- same condition as CONCEPTS["delinquent"]
+        # above, just counted rather than used as a row filter. Deliberately
+        # wider than hard_bucket_pct (>= HARD_BUCKET_ARREARS_EMI_MIN) and npa_pct
+        # (curr_bucket == NPA): a 1-30 DPD account is delinquent here but neither
+        # hard-bucket nor NPA. Must match utils.compute_delinquency_pct (the
+        # shared helper used everywhere else -- dashboard + Portfolio
+        # Intelligence). tests/test_metric_consistency.py checks the two stay
+        # numerically identical.
+        "numerator_where": [{"column": "Arrears / EMI", "op": ">", "value": 0}],
+        "denominator_where": [],  # empty = count all rows in the group
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of accounts with any arrears (Arrears/EMI > 0): broadest delinquency reading, includes 1-30 DPD through NPA.",
     },
 }
 
@@ -396,28 +437,28 @@ AMBIGUOUS_TERMS = [
         "note": (
             '"business" is ambiguous in this NBFC domain, between TWO REAL, '
             "SEPARATELY-ANSWERABLE readings for whatever entity grain (region/branch/"
-            "executive) the query names -- not just two ways of describing the same "
+            "executive) the query names: not just two ways of describing the same "
             "answer:\n"
-            "    (1) NEW LOANS ORIGINATED this period -- the new_advances_by_<grain> view.\n"
-            "    (2) PORTFOLIO/COLLECTION PERFORMANCE -- whichever performance view "
+            "    (1) NEW LOANS ORIGINATED this period: the new_advances_by_<grain> view.\n"
+            "    (2) PORTFOLIO/COLLECTION PERFORMANCE: whichever performance view "
             "exists for that SAME grain (region_scorecard / branch_quadrant / "
             "executive_recovery).\n"
             "  These are computed from DIFFERENT rows (Ag_Date-filtered originations vs. "
-            "the whole current book) and give completely different rankings -- a branch "
+            "the whole current book) and give completely different rankings: a branch "
             "can lead on one and trail on the other. If the query does not already "
             'specify which reading (e.g. "new business", "new advances", "originated", '
             '"disbursed", "funded" clearly means (1); "collection performance", "NPA%", '
             '"delinquency" clearly means (2)), clarification_options MUST include exactly '
             "one option per reading. DO NOT copy a fixed/generic phrase for the option "
-            "text -- look up the ACTUAL matching view for the query's grain in the VIEWS "
+            "text: look up the ACTUAL matching view for the query's grain in the VIEWS "
             "catalog above and build each option from THAT view's own real "
             '"highlightable metrics" list, e.g. "New advances (accounts/funded this '
             'period)" for reading (1), and for reading (2) name 1-2 of the SPECIFIC '
             "metrics actually listed for that grain's performance view (executive_recovery "
-            "lists Collection%/Strike%/Net Recovery -- NOT NPA% or Concern Score, those "
+            "lists Collection%/Strike%/Net Recovery: NOT NPA% or Concern Score, those "
             "belong to region_scorecard/branch_quadrant only). Naming a metric that isn't "
             "in the matched view's own metrics list is a real error, not a stylistic "
-            "choice -- it describes an answer the system cannot actually produce for that "
+            "choice: it describes an answer the system cannot actually produce for that "
             "grain."
         ),
     },
@@ -426,13 +467,13 @@ AMBIGUOUS_TERMS = [
         "note": (
             '"risk"/"risky" is ambiguous: could mean NPA% (90+ DPD), SMA-2% '
             "(early-stage delinquency), Hard Bucket% (deep arrears), Co-lending "
-            "exposure (partner-bank risk), or -- ONLY when the query's grain is branch, "
-            "since branch_quadrant is the only view carrying it -- a composite Concern "
+            "exposure (partner-bank risk), or, ONLY when the query's grain is branch, "
+            "since branch_quadrant is the only view carrying it: a composite Concern "
             "Score. Each is a different metric with a different ranking. If the query "
             "does not already name one of these specifically, ask for clarification "
-            "listing options -- but check the VIEWS catalog above first and offer ONLY "
+            "listing options, but check the VIEWS catalog above first and offer ONLY "
             "the ones that are actually valid for the entity grain in question (e.g. "
-            "never offer Concern Score for a region or executive question -- "
+            "never offer Concern Score for a region or executive question: "
             "region_scorecard/executive_recovery don't have that metric)."
         ),
     },

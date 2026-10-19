@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from compiler.core import compile_logical
-from agents.plan_executor import execute_plan, validate_plan
+from agents.plan_executor import execute_plan
 
 
 def _loan_df():
@@ -62,7 +62,6 @@ class TestHavingKeyFallback:
         cols = list(_loan_df().columns)
         plan, errs = compile_logical(ir1, cols)
         assert errs == []
-        filter_steps = [s for s in plan if s["op"] == "filter" and s is not plan[0]]
         assert any(
             c["column"] == "npa" and c["op"] == ">=" and c["value"] == 1
             for s in plan if s["op"] == "filter"
@@ -195,13 +194,13 @@ class TestStandalonePrevMetric:
         assert "prev_coll" in result.columns and "coll_change" in result.columns
 
     def test_prev_metric_without_carryover_mapping_is_unresolved(self):
-        # lcc_pct's numerator/denominator columns (Cum Coll/Cum Due-*) have no
-        # PREV_CARRYOVER_COLS mapping -- must fail loudly (unknown metric),
+        # overdue_collection_pct's columns (OverdueCollected/Overdue, worked
+        # out at load) have no PREV_CARRYOVER_COLS mapping -- must fail loudly (unknown metric),
         # never silently return a wrong "0" for a metric it can't actually build.
         ir1 = {
             "intent": "aggregation", "view": None, "filters": [],
             "dimensions": ["branch"],
-            "measures": [{"metric": "prev_lcc_pct", "alias": "x"}],
+            "measures": [{"metric": "prev_overdue_collection_pct", "alias": "x"}],
             "metrics": [], "having": [], "order_by": [], "limit": None,
             "display_columns": [], "time": None,
         }
@@ -255,6 +254,50 @@ class TestViewNodeFallback:
         assert out["error"] == ""
         assert "_agg_rows" in out["result_kpis"]
         assert len(out["result_kpis"]["_agg_rows"]) > 0
+
+    def test_show_all_columns_is_ignored_by_default(self):
+        # Baseline: top_delinquent_accounts' curated column set (compute_
+        # top_accounts' own display cols) never includes "POS", even
+        # though the raw upload has it -- confirms the curated default
+        # BEFORE testing that show_all_columns overrides it.
+        from graph import view_node
+        state = self._state(ir1={"view": {"name": "top_delinquent_accounts", "params": {}, "filters": []}})
+        out = view_node(state)
+        assert "POS" not in out["result_df"].columns
+
+    def test_show_all_columns_true_returns_every_raw_column_on_a_view(self):
+        # The real, reported gap: show_all_columns is already enforced on
+        # the general compiler path (compiler/core.py skips its own
+        # "select" step) but the fast-path VIEW layer never checked it at
+        # all -- "show me top delinquent accounts with all columns" used
+        # to silently keep serving the view's fixed curated columns.
+        from graph import view_node
+        state = self._state(ir1={
+            "view": {"name": "top_delinquent_accounts", "params": {}, "filters": []},
+            "show_all_columns": True,
+        })
+        out = view_node(state)
+        assert out["error"] == ""
+        assert "POS" in out["result_df"].columns
+        assert "Strike" in out["result_df"].columns
+        # Same rows, same count -- only the COLUMNS changed, not the answer.
+        assert len(out["result_df"]) == len(_loan_df()[_loan_df()["curr_bucket"] != "STD"])
+        assert out["result_kpis"]["Count"] == len(out["result_df"])
+
+    def test_show_all_columns_is_a_no_op_on_an_aggregate_view(self):
+        # region_scorecard has no Loan No at all (one row per region, not
+        # per loan) -- show_all_columns must not crash or corrupt it, just
+        # leave it exactly as computed (expand_to_all_columns's own
+        # Loan-No check is the guard).
+        from graph import view_node
+        state = self._state(ir1={
+            "view": {"name": "region_scorecard", "params": {}, "filters": [], "sort_by": None},
+            "show_all_columns": True,
+        })
+        out = view_node(state)
+        assert out["error"] == ""
+        assert "Loan No" not in out["result_df"].columns
+        assert len(out["result_df"]) > 0
 
     def test_limit_shrinks_result_df_and_count_reflects_it_not_the_full_set(self):
         # Regression: caught live, not by a unit test -- {"Count": len(result_df),
@@ -482,7 +525,7 @@ class TestClarificationFollowupContext:
     """Regression guard for a real conflict caught before it shipped: the
     "use the clarified metric for sort_by/highlight_metrics" instruction is
     keyed off the query TEXT containing "(interpretation:" (the marker
-    ui/tabs/ai_query.py appends when a clarification option is clicked), NOT
+    ui/query_answer.py appends when a clarification option is clicked), NOT
     off allow_clarification=False -- that flag is ALSO set False by the
     unrelated compiler repair loop (graph.py's one-shot retry on a validation
     error), which must never receive clarification-specific instructions
@@ -767,6 +810,7 @@ class TestPriorityModeKeepsPriorityColumn:
             "Closing Arrears": [1000.0, 2000.0, 0.0],
             "Net Collection Demand Inst+Exp+BC": [5000.0, 6000.0, 7000.0],
             "Non Starter": ["N", "N", "N"],
+            "VehEMI Accrued": [1, 1, 1],
         })
 
     def test_execute_node_priority_action_keeps_priority_column(self):
@@ -803,12 +847,12 @@ class TestPriorityModeKeepsPriorityColumn:
         # a loan matching both a rank-1 and a rank-7 rule still lands under
         # rank 1 (its true highest priority), not whichever rule came first
         # in an out-of-order list.
-        import agents.domain_expert as domain_expert
-        rules = list(domain_expert.PRIORITY_RULES)
+        import registry.ontology as ontology
+        rules = list(ontology.PRIORITY_RULES)
         rank1 = next(r for r in rules if r["rank"] == 1)
         rank7 = next(r for r in rules if r["rank"] == 7)
         scrambled = [rank7, rank1] + [r for r in rules if r["rank"] not in (1, 7)]
-        monkeypatch.setattr(domain_expert, "PRIORITY_RULES", scrambled)
+        monkeypatch.setattr(ontology, "PRIORITY_RULES", scrambled)
 
         # A Non Starter (rank 1: Non Starters) that's also NPA (rank 7: NPA
         # Accounts) -- matches both tiers, must be claimed by rank 1.
@@ -837,12 +881,14 @@ class TestColumnVsColumnComparison:
         })
         assert set(result["Loan No"]) == {"L1", "L3", "L4"}
 
-    def test_col_compare_missing_ref_column_is_graceful_noop(self):
+    def test_col_compare_missing_ref_column_raises(self):
+        # An unfiltered table would read as "every loan matched": refuse instead.
+        import pytest
         from agents.data_executor import _apply_condition
-        result = _apply_condition(_loan_df(), {
-            "column": "Month Receipt Amount", "op": "col_lte", "value": "Nonexistent Col",
-        })
-        assert len(result) == len(_loan_df())  # unchanged, not an empty/crashed result
+        with pytest.raises(ValueError, match="Nonexistent Col"):
+            _apply_condition(_loan_df(), {
+                "column": "Month Receipt Amount", "op": "col_lte", "value": "Nonexistent Col",
+            })
 
     def test_no_collection_concept(self):
         ir1 = {

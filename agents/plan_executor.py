@@ -16,13 +16,15 @@ Design constraints:
 import re
 import pandas as pd
 
-from agents.data_executor import _apply_condition, _build_mask, _COL_COMPARE_OPS
+from agents.data_executor import BUCKET_COMPARE_OPS, _apply_condition, _build_mask, _COL_COMPARE_OPS
 
-_AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max"}
+from utils import as_list
+
+_AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max", "first"}
 
 # Ops whose "value" is a COLUMN NAME to compare against, not a literal -- both
 # the left ("column") and right ("value") sides must exist for these.
-_COLUMN_VALUE_OPS = set(_COL_COMPARE_OPS) | {"bucket_worse_than", "bucket_better_than"}
+_COLUMN_VALUE_OPS = set(_COL_COMPARE_OPS) | set(BUCKET_COMPARE_OPS)
 
 
 def _check_condition_columns(cond: dict, cols: set, where: str) -> list[str]:
@@ -55,16 +57,12 @@ def _check_condition_columns(cond: dict, cols: set, where: str) -> list[str]:
 _DANGEROUS_EXPR_RE = re.compile(r"__\w+__|\bimport\b|\bexec\b|\beval\b|\bopen\b|\bgetattr\b|\bsubprocess\b|\bos\.")
 
 
-def _as_list(x):
-    if x is None:
-        return []
-    return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
 # ── Step handlers ─────────────────────────────────────────────────────────────
 
 def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
-    group_by = [str(c) for c in _as_list(step.get("group_by"))]
+    group_by = [str(c) for c in as_list(step.get("group_by"))]
     if not group_by:
         raise ValueError("group_aggregate requires 'group_by'")
     missing = [c for c in group_by if c not in df.columns]
@@ -108,6 +106,11 @@ def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
             data[alias] = pd.Series(0, index=full_index)
         elif func == "nunique":
             data[alias] = src.groupby(group_by, sort=False)[col].nunique().reindex(full_index, fill_value=0)
+        elif func == "first":
+            # Non-numeric passthrough (e.g. attaching a display label like Cust
+            # Name to a group keyed on Cust Mob No) -- must NOT go through the
+            # pd.to_numeric coercion below, which would blank out text values.
+            data[alias] = src.groupby(group_by, sort=False)[col].first().reindex(full_index)
         else:
             numeric = pd.to_numeric(src[col], errors="coerce")
             series = numeric.groupby([src[g] for g in group_by], sort=False).agg(func)
@@ -115,6 +118,48 @@ def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
 
     out = pd.DataFrame(data, index=full_index).reset_index()
     return out
+
+
+def _group_aggregate_with_prev_file(df: pd.DataFrame, step: dict, df_prev: pd.DataFrame | None) -> pd.DataFrame:
+    """group_aggregate, with its last-month figures (step["prev_file"], built by
+    compiler.core._prev_file_pass) taken from LAST MONTH'S FILE: that file's
+    loans under its own labels, including loans that have since left the book.
+    The carried prev_* values stand when there's no last-month file or it lacks
+    a column the figures need. A group that only existed last month gets a row
+    (its this-month figures 0)."""
+    out = _op_group_aggregate(df, step)
+    pf = step.get("prev_file")
+    if not pf or df_prev is None or df_prev.empty:
+        return out
+    group_by = [str(c) for c in as_list(step.get("group_by"))]
+    prev_aggs = pf["aggregations"]
+    needed = set(group_by) | {c for a in prev_aggs for c in
+                              ([a["column"]] if a.get("column") else [])
+                              + [w["column"] for w in a.get("where") or []]
+                              + [w["value"] for w in a.get("where") or [] if w.get("op") in _COLUMN_VALUE_OPS]}
+    needed |= {c["column"] for c in pf.get("conditions") or []}
+    if not needed <= set(df_prev.columns):
+        return out
+    prev = _op_filter(df_prev, {"conditions": pf.get("conditions") or []})
+    if prev.empty:
+        prev_out = pd.DataFrame(columns=group_by + [a["alias"] for a in prev_aggs])
+    else:
+        prev_out = _op_group_aggregate(prev, {"group_by": group_by, "aggregations": prev_aggs})
+    aliases = [a["alias"] for a in prev_aggs]
+    for c in group_by:   # the same key read differently in the two files
+        if out[c].dtype != prev_out[c].dtype:
+            both_numeric = pd.api.types.is_numeric_dtype(out[c]) and pd.api.types.is_numeric_dtype(prev_out[c])
+            # 5 and 5.0 (a blank elsewhere makes one file's column float) are one zone.
+            cast = float if both_numeric else str
+            out[c], prev_out[c] = out[c].astype(cast), prev_out[c].astype(cast)
+    merged = out.drop(columns=aliases).merge(prev_out, on=group_by, how="outer", sort=False)
+    funcs = {a["alias"]: (a.get("func") or "").lower() for a in step.get("aggregations") or []}
+    for alias, func in funcs.items():
+        if func in ("count", "nunique"):
+            merged[alias] = merged[alias].fillna(0).astype(int)     # a group in one month only: 0, not 12.0
+        elif func == "sum":
+            merged[alias] = merged[alias].fillna(0)
+    return merged[out.columns]
 
 
 def _op_filter(df: pd.DataFrame, step: dict) -> pd.DataFrame:
@@ -183,8 +228,32 @@ def _op_select(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     return df[cols] if cols else df
 
 
+def _op_entity_semi_join(df: pd.DataFrame, step: dict) -> pd.DataFrame:
+    """Keep every original row belonging to an entity that satisfies the given
+    having predicates -- a loan_table-shaped counterpart to group_aggregate's
+    collapse-to-one-row-per-entity behavior. Used for queries like "list every
+    loan for fleet owners in NPA," where the answer must stay at loan grain."""
+    key_cols = [str(c) for c in as_list(step.get("key_cols"))]
+    if not key_cols:
+        raise ValueError("entity_semi_join requires 'key_cols'")
+    missing = [c for c in key_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"entity_semi_join key columns not found: {missing}")
+
+    agg_step = {"group_by": key_cols, "aggregations": step.get("aggregations") or []}
+    qualifying = _op_group_aggregate(df, agg_step)
+    qualifying = _op_filter(qualifying, {"conditions": step.get("having_conditions") or []})
+
+    # A plain key-column merge (not a row-wise tuple/isin check) -- vectorized
+    # regardless of whether the entity key is single- or multi-column (e.g. the
+    # executive entity's ["MNT NAME", "Unit"]), and avoids Python-level
+    # per-row tuple construction on a large upload.
+    return df.merge(qualifying[key_cols].drop_duplicates(), on=key_cols, how="inner")
+
+
 _OPS = {
-    "group_aggregate": _op_group_aggregate,
+    "group_aggregate":  _op_group_aggregate,
+    "entity_semi_join": _op_entity_semi_join,
     "filter":          _op_filter,
     "derive":          _op_derive,
     "sort":            _op_sort,
@@ -203,8 +272,9 @@ _HELPER_COL_RE = re.compile(r"__[nd]\d+$")
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
-def execute_plan(df: pd.DataFrame, plan: list) -> tuple[pd.DataFrame, str]:
-    """Run an ordered list of steps. Returns (result_df, error_message)."""
+def execute_plan(df: pd.DataFrame, plan: list, df_prev: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str]:
+    """Run an ordered list of steps. Returns (result_df, error_message).
+    df_prev: last month's file, for a group_aggregate's last-month figures."""
     if not plan:
         return pd.DataFrame(), "Empty plan."
     result = df.copy()
@@ -214,7 +284,10 @@ def execute_plan(df: pd.DataFrame, plan: list) -> tuple[pd.DataFrame, str]:
         if handler is None:
             return pd.DataFrame(), f"Step {i}: unknown operation '{op}'."
         try:
-            result = handler(result, step)
+            if op == "group_aggregate" and step.get("prev_file"):
+                result = _group_aggregate_with_prev_file(result, step, df_prev)
+            else:
+                result = handler(result, step)
         except Exception as e:
             return pd.DataFrame(), f"Step {i} ({op}) failed: {e}"
         if result is None:
@@ -247,7 +320,7 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
             continue
 
         if op == "group_aggregate":
-            gb = [str(c) for c in _as_list(step.get("group_by"))]
+            gb = [str(c) for c in as_list(step.get("group_by"))]
             if not gb:
                 errs.append(f"step {i}: group_aggregate needs 'group_by'")
             for c in gb:
@@ -273,6 +346,28 @@ def validate_plan(plan: list, initial_columns) -> list[str]:
                 new_cols.add(alias)
             # A group_aggregate drops every column except the keys and new aliases.
             cols = new_cols
+
+        elif op == "entity_semi_join":
+            # Preserves every original column (a semi-join, not a collapse) --
+            # 'cols' is intentionally left untouched, unlike group_aggregate above.
+            key_cols = [str(c) for c in as_list(step.get("key_cols"))]
+            if not key_cols:
+                errs.append(f"step {i}: entity_semi_join needs 'key_cols'")
+            for c in key_cols:
+                if c not in cols:
+                    errs.append(f"step {i}: entity_semi_join key column '{c}' does not exist")
+            for a in step.get("aggregations") or []:
+                func = (a.get("func") or "").lower()
+                col = a.get("column")
+                if func not in _AGG_FUNCS:
+                    errs.append(f"step {i}: unknown agg func '{func}'")
+                elif func != "count" and (not col or col not in cols):
+                    errs.append(f"step {i}: agg column '{col}' does not exist")
+                for cond in (a.get("where") or []):
+                    errs.extend(_check_condition_columns(cond, cols, f"step {i}: where"))
+            # having_conditions reference an aggregation alias defined above
+            # (e.g. "__ef0_0"), not a raw input column, so no column-existence
+            # check applies to them here.
 
         elif op == "filter":
             for cond in step.get("conditions") or []:

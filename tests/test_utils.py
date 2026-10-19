@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, build_html_export, compute_overdue_demand_pct, normalize_truncated_names
+from utils import assign_buckets, apply_filters, compute_metrics, fmt_value, to_num, account_count, expand_to_all_columns, is_yes, clean_mobile, REQUIRED_COLS, load_and_validate, compute_overdue_demand_pct, normalize_truncated_names
 from helpers import make_df
 
 
@@ -34,6 +34,40 @@ def _build_upload(overrides: dict, n: int = 3) -> io.BytesIO:
     buf.seek(0)
     buf.name = "test.xlsx"
     return buf
+
+
+class TestExcelReader:
+    """Files are read with calamine (about 5x faster than openpyxl); if
+    calamine can't read a file, the old per-format reader takes over."""
+
+    def test_calamine_and_openpyxl_read_the_same(self):
+        upload = _build_upload({"Ag_Date": pd.to_datetime(["2025-11-06", "2025-12-01", "2026-01-15"])})
+        fast = pd.read_excel(upload, engine="calamine")
+        upload.seek(0)
+        slow = pd.read_excel(upload, engine="openpyxl")
+        pd.testing.assert_frame_equal(fast, slow)
+
+    def test_falls_back_when_calamine_fails(self, monkeypatch):
+        import utils
+        real = pd.read_excel
+        used = []
+
+        def fake(file, engine=None, **kw):
+            used.append(engine)
+            if engine == "calamine":
+                raise ValueError("calamine cannot read this file")
+            return real(file, engine=engine, **kw)
+
+        monkeypatch.setattr(utils.pd, "read_excel", fake)
+        df, errs = load_and_validate.__wrapped__(_build_upload({}))
+        assert errs == [] and len(df) == 3
+        assert used[:2] == ["calamine", "openpyxl"]
+
+    def test_unreadable_file_reports_an_error(self):
+        bad = io.BytesIO(b"not an excel file")
+        bad.name = "broken.xlsx"
+        df, errs = load_and_validate.__wrapped__(bad)
+        assert df is None and errs and errs[0].startswith("Could not read file")
 
 
 class TestLoadAndValidateColumnOrder:
@@ -522,7 +556,7 @@ class TestComputeMetrics:
         metrics = compute_metrics(df, make_df([]))
         expected_keys = {
             "Month Demand", "Total Collection", "Collection %", "Strike %",
-            "NPA %", "Hard Bucket %", "SMA-2 %", "Count", "SOH", "LCC%", "CMD %",
+            "NPA %", "NPA % (SOH)", "Hard Bucket %", "SMA-2 %", "Delinquency %", "Count", "SOH", "LCC%", "CMD %",
         }
         assert set(metrics.keys()) == expected_keys
         for key, val in metrics.items():
@@ -531,7 +565,7 @@ class TestComputeMetrics:
     def test_lcc_pct_uses_cum_coll_inst_exp_not_total_cum_collection(self):
         # Deliberately make "Total Cum Collection" (a broader figure, includes BC)
         # differ from "Cum Coll (Inst+Exp)" -- the documented LCC% numerator
-        # (agents/domain_expert.py, registry/ontology.py's lcc_pct METRIC). LCC%
+        # (registry/ontology.py's lcc_pct METRIC). LCC%
         # must be computed off Cum Coll (Inst+Exp), never Total Cum Collection.
         df = make_df([{
             "Cum Coll (Inst+Exp)":   80_000.0,
@@ -656,6 +690,104 @@ class TestAccountCount:
         assert account_count(df, **kwargs) == expected
 
 
+class TestParseTextDates:
+    """Text dates try known formats before pandas' per-cell dateutil
+    fallback (slow on big files, and the source of 66 "Could not infer
+    format" warnings in this suite)."""
+
+    def _parse(self, values):
+        import warnings
+        from utils import _parse_date_column
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            parsed, failures, total = _parse_date_column(pd.Series(values, dtype=object))
+        assert not any("infer format" in str(w.message) for w in caught)
+        return parsed, failures, total
+
+    def test_iso_strings(self):
+        parsed, failures, _ = self._parse(["2024-01-15", "2023-12-31 00:00:00"])
+        assert list(parsed) == [pd.Timestamp("2024-01-15"), pd.Timestamp("2023-12-31")]
+        assert failures == 0
+
+    def test_day_first_column_detected_from_a_day_over_12(self):
+        parsed, _, _ = self._parse(["25/01/2024", "03/02/2024"])
+        assert list(parsed) == [pd.Timestamp("2024-01-25"), pd.Timestamp("2024-02-03")]
+
+    def test_fully_ambiguous_column_stays_month_first(self):
+        # Same order pandas' own inference chose before -- no silent change.
+        parsed, _, _ = self._parse(["03/04/2024"])
+        assert parsed.iloc[0] == pd.Timestamp("2024-03-04")
+
+    def test_named_month(self):
+        parsed, _, _ = self._parse(["15-Jan-2024"])
+        assert parsed.iloc[0] == pd.Timestamp("2024-01-15")
+
+    def test_garbage_is_nat_and_counted_without_warning(self):
+        parsed, failures, total = self._parse(["not a date", "2024-01-15", None])
+        assert pd.isna(parsed.iloc[0])
+        assert failures == 1
+        assert total == 2
+
+
+class TestExpandToAllColumns:
+    """Shared by investigator/steps.py's own all_columns lever and
+    graph.py's show_all_columns override for the AI Query fast-path view
+    layer -- "give me every column" gets fixed once here, not separately
+    in each pipeline."""
+
+    def test_swaps_curated_columns_for_every_raw_column_same_rows_same_order(self):
+        source = pd.DataFrame({
+            "Loan No": ["L2", "L1", "L3"], "CHANNEL": ["A", "B", "C"], "SOH": [900.0, 100.0, 500.0],
+        })
+        curated = pd.DataFrame({"Loan No": ["L1", "L3"], "SOH": [100.0, 500.0]})  # curated's own row order
+        result = expand_to_all_columns(curated, source)
+        assert list(result["Loan No"]) == ["L1", "L3"]  # curated's order preserved, not source's
+        assert "CHANNEL" in result.columns
+        assert result.iloc[0]["CHANNEL"] == "B"
+
+    def test_empty_curated_returns_empty_unchanged(self):
+        curated = pd.DataFrame(columns=["Loan No", "SOH"])
+        source = pd.DataFrame({"Loan No": ["L1"], "CHANNEL": ["A"]})
+        result = expand_to_all_columns(curated, source)
+        assert result.empty
+
+    def test_missing_loan_no_on_curated_is_a_no_op(self):
+        curated = pd.DataFrame({"SOH": [100.0]})
+        source = pd.DataFrame({"Loan No": ["L1"], "CHANNEL": ["A"]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result.columns) == ["SOH"]
+
+    def test_keeps_computed_columns_the_source_lacks(self):
+        # compute_good_customers derives "Tenure Completed %" -- the very
+        # column that defines membership -- so it must survive expansion.
+        source = pd.DataFrame({"Loan No": ["L1", "L2"], "CHANNEL": ["A", "B"]})
+        curated = pd.DataFrame({"Loan No": ["L2"], "Tenure Completed %": [82.5]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result.columns) == ["Loan No", "CHANNEL", "Tenure Completed %"]
+        assert result.iloc[0]["Tenure Completed %"] == 82.5
+
+    def test_curated_values_win_for_shared_columns(self):
+        # Curated tables carry cleaned values (to_num'd SOH, date-only
+        # Ag_Date) -- the download must match what's on screen.
+        source = pd.DataFrame({"Loan No": ["L1"], "SOH": ["1,000"]})
+        curated = pd.DataFrame({"Loan No": ["L1"], "SOH": [1000.0]})
+        result = expand_to_all_columns(curated, source)
+        assert result.iloc[0]["SOH"] == 1000.0
+
+    def test_loan_missing_from_source_does_not_raise(self):
+        source = pd.DataFrame({"Loan No": ["L1"], "CHANNEL": ["A"]})
+        curated = pd.DataFrame({"Loan No": ["L1", "L9"], "SOH": [1.0, 2.0]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result["Loan No"]) == ["L1", "L9"]
+        assert pd.isna(result.iloc[1]["CHANNEL"])
+
+    def test_missing_loan_no_on_source_is_a_no_op(self):
+        curated = pd.DataFrame({"Loan No": ["L1"], "SOH": [100.0]})
+        source = pd.DataFrame({"SOH": [100.0]})
+        result = expand_to_all_columns(curated, source)
+        assert list(result.columns) == ["Loan No", "SOH"]
+
+
 class TestIsYes:
     def test_matches_y_case_and_whitespace_insensitive(self):
         df = pd.DataFrame({"flag": [" y", "Y", "n", "N", "yes", None]})
@@ -727,6 +859,31 @@ class TestNormalizeTruncatedNames:
         result = normalize_truncated_names(s)
         assert result.isna().all()
 
+    def test_case_and_spacing_variants_are_one_segment(self):
+        s = pd.Series(["Category 1", "Category 1 ", " category 1", "CATEGORY  1", "Category1", "Category-1",
+                       "Category 1"])
+        result = normalize_truncated_names(s)
+        assert set(result) == {"Category 1"}                  # the most common spelling, spaces tidied
+
+    def test_spacing_variants_do_not_merge_different_numbers(self):
+        s = pd.Series(["Category 1", "category 2", "Category 2", "CATEGORY 12"])
+        assert normalize_truncated_names(s).tolist() == ["Category 1", "Category 2", "Category 2", "CATEGORY 12"]
+
+    def test_truncation_merges_across_case(self):
+        s = pd.Series(["PASSENGER COMMERC", "Passenger Commercial", "Passenger Commercial"])
+        assert set(normalize_truncated_names(s)) == {"Passenger Commercial"}
+
+    def test_blank_left_untouched(self):
+        s = pd.Series(["Bus", "", "  ", "bus"])
+        assert normalize_truncated_names(s).tolist() == ["Bus", "", "  ", "Bus"]
+
+    def test_segment_filter_matches_last_months_other_spelling(self):
+        # The sidebar picks names from this month's file; last month's file
+        # may spell the same segment differently and must still match.
+        prev = pd.DataFrame({"SegmentName": ["CATEGORY  1", "Category 2"], "Loan No": ["A", "B"]})
+        out = apply_filters(prev, "All", "All", "All", ["Category 1"], None)
+        assert out["Loan No"].tolist() == ["A"]
+
     def test_custom_prefix_length(self):
         s = pd.Series(["ABCDEFGHIJ-1", "ABCDEFGHIJ-2"])
         result = normalize_truncated_names(s, prefix_chars=10)
@@ -744,44 +901,98 @@ class TestLoadAndValidateSegmentNormalization:
         assert (result_df["SegmentName"] == "Passenger Commercial").all()
 
 
-class TestBuildHtmlExportEscaping:
-    """Regression: build_html_export interpolates filter values and the
-    scorecard's free-text 'Executive (Branch)' column into raw f-string HTML,
-    same bug class already fixed in report_agent/nodes/report_builder.py.
-    A manually-entered name like "RAJESH & SONS <TRANSPORT>" must not break
-    the surrounding table markup, and the file is offered as a raw download."""
+class TestCountAgreedAfterMonth:
+    """Flags day/month-swapped agreement dates (a real Aug extract had 98 loans
+    dated Sep-Dec, each valid once day and month were swapped)."""
 
-    def _metrics(self):
-        keys = ["Month Demand", "Total Collection", "Collection %", "Strike %",
-                 "NPA %", "Hard Bucket %", "Count", "SOH", "LCC%", "CMD %"]
-        return {k: (1.0, 0.0) for k in keys}
+    def test_counts_only_dates_after_the_reporting_month(self):
+        from utils import count_agreed_after_month
+        df = pd.DataFrame({"Ag_Date": pd.to_datetime(["2026-08-01", "2026-08-31", "2026-09-01", "2026-12-08"])})
+        assert count_agreed_after_month(df, "2026-08") == 2      # last day of the month still counts as in-month
 
-    def test_filter_values_are_escaped(self):
-        import plotly.graph_objects as go
+    def test_no_month_or_no_column_is_zero(self):
+        from utils import count_agreed_after_month
+        assert count_agreed_after_month(pd.DataFrame({"Ag_Date": ["2030-01-01"]}), None) == 0
+        assert count_agreed_after_month(pd.DataFrame(), "2026-08") == 0
 
-        html_out = build_html_export(
-            make_df([]), make_df([]), self._metrics(),
-            go.Figure(), go.Figure(), go.Figure(),
-            filters={"Branch": "RAJESH & SONS <TRANSPORT>"},
-            curr_month="Jan-2026",
-        )
-        assert "RAJESH & SONS <TRANSPORT>" not in html_out
-        assert "RAJESH &amp; SONS &lt;TRANSPORT&gt;" in html_out
 
-    def test_scorecard_executive_name_is_escaped(self):
-        import plotly.graph_objects as go
+class TestZoneFilter:
+    def test_zone_narrows_and_is_optional(self):
+        df = make_df([{"Zone": "Z1", "RegionName": "R1"}, {"Zone": "Z2", "RegionName": "R2"}, {"Zone": 3, "RegionName": "R3"}])
+        assert len(apply_filters(df, "All", "All", "All")) == 3                     # zone defaults to All
+        assert apply_filters(df, "All", "All", "All", zone="Z1")["RegionName"].tolist() == ["R1"]
+        assert apply_filters(df, "All", "All", "All", zone="3")["RegionName"].tolist() == ["R3"]   # numeric zones
+        assert apply_filters(df, "R2", "All", "All", zone="Z1").empty               # region outside the zone
 
-        scorecard_df = pd.DataFrame([{
-            "Executive (Branch)": "A & B <script>alert(1)</script>",
-            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
-            "Tier": "top",
-        }])
-        html_out = build_html_export(
-            make_df([]), make_df([]), self._metrics(),
-            go.Figure(), go.Figure(), go.Figure(),
-            filters={}, scorecard_df=scorecard_df,
-        )
-        assert "<script>alert(1)</script>" not in html_out
-        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
-        # Table structure survives - matching open/close tags around the row.
-        assert html_out.count("<tr") == html_out.count("</tr>")
+
+class TestFrameCache:
+    """utils.frame_cache: a @per_frame function runs once per frame inside the
+    block (a report asks for the same totals many times), never outside it."""
+
+    def _counted(self):
+        from utils import per_frame
+        calls = []
+
+        @per_frame
+        def total(df, col):
+            calls.append(col)
+            return {"sum": float(df[col].sum())}
+        return total, calls
+
+    def test_outside_the_block_nothing_is_cached(self):
+        total, calls = self._counted()
+        df = pd.DataFrame({"a": [1, 2]})
+        total(df, "a"); total(df, "a")
+        assert len(calls) == 2
+
+    def test_inside_the_block_each_frame_and_argument_runs_once(self):
+        from utils import frame_cache
+        total, calls = self._counted()
+        df, other = pd.DataFrame({"a": [1, 2], "b": [5, 5]}), pd.DataFrame({"a": [9]})
+        with frame_cache():
+            assert total(df, "a") == {"sum": 3.0} and total(df, "a") == {"sum": 3.0}
+            total(df, "b"); total(other, "a")
+        assert calls == ["a", "b", "a"]
+        total(df, "a")                                # the block is over: computed again
+        assert len(calls) == 4
+
+    def test_callers_get_copies_they_may_change(self):
+        from utils import frame_cache
+        total, _ = self._counted()
+        df = pd.DataFrame({"a": [1, 2]})
+        with frame_cache():
+            first = total(df, "a")
+            first["sum"] = -1                         # a caller changing its result...
+            assert total(df, "a") == {"sum": 3.0}     # ...doesn't change the cached one
+
+    def test_unit_metrics_is_the_same_with_and_without_the_cache(self):
+        from utils import frame_cache, unit_metrics
+        df = pd.DataFrame({"RegionName": ["A", "A", "B"], "Arrears / EMI": [0, 2, 4], "SOH": [1e5, 2e5, 3e5]})
+        plain = unit_metrics(df, ["RegionName"])
+        with frame_cache():
+            pd.testing.assert_frame_equal(unit_metrics(df, ["RegionName"]), plain)
+            pd.testing.assert_frame_equal(unit_metrics(df, ["RegionName"]), plain)
+
+
+class TestOptionalColumnsMayBeMissing:
+    """A column outside CRITICAL_COLS is optional: a file without it must
+    load (it once crashed the whole upload with KeyError: 'Due Dt')."""
+
+    def test_file_without_due_dt_loads(self):
+        df = pd.read_excel(_build_upload({}), engine="openpyxl").drop(columns=["Due Dt"])
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        buf.name = "no_due_dt.xlsx"
+        out, errs = load_and_validate.__wrapped__(buf)
+        assert errs == []
+        assert len(out) == 3
+        assert "Due Dt" in out.attrs["missing_optional_cols"]
+
+
+class TestAssignBucketsWithoutOptionalDemandColumns:
+    def test_missing_bc_demand_counts_as_zero(self):
+        # MONTH DUE (BC) is optional; its absence used to crash assign_buckets.
+        df = assign_buckets(make_df([{"Arrear Opening": 1_000.0, "Month Due-Inst": 9_500.0, "Month Due-Exp": 500.0}]))
+        assert df["MonthDemandExclPC"].tolist() == [10_000.0]
+        assert df["Overdue"].tolist() == [1_000.0]

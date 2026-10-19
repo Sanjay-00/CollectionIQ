@@ -66,18 +66,16 @@ class TestEsc:
         assert _esc(3.14) == 3.14
         assert _esc(None) is None
 
-    def test_scorecard_table_escapes_executive_names(self):
+    def test_executive_table_escapes_executive_names(self):
         # End-to-end: a malicious/awkward MNT NAME must not survive into the
-        # rendered scorecard HTML as live markup.
-        from analysis.executive_scorecard import build_scorecard_table_html
+        # rendered executive table (Portfolio Intelligence) as live markup.
+        from ui.tabs.portfolio_intelligence import units_table_html
 
         df = pd.DataFrame([{
-            "Rank": 1,
-            "Executive (Branch)": 'EVIL <img src=x onerror=alert(1)> & CO (PUNE)',
-            "Accounts": 10, "Collection %": 95.0, "Strike Rate %": 80.0,
-            "NPA": 0, "SMA-2": 1, "Tier": "top",
+            "Executive": 'EVIL <img src=x onerror=alert(1)> & CO', "Branch": "PUNE",
+            "Accounts": 10, "Collection%": 95.0, "Strike%": 80.0,
         }])
-        out = build_scorecard_table_html(df)
+        out = units_table_html(df, "Executive", extra=["Branch"])
         assert "<img" not in out
         assert "&lt;img" in out
 
@@ -85,6 +83,78 @@ class TestEsc:
         df = pd.DataFrame({"a": [1, 2, 3]})
         _dl_btn(df, "f1.xlsx", "k1")
         _dl_btn(df, "f2.xlsx", "k2")
+
+
+class TestFileFingerprintMemo:
+    """app.py fingerprints the uploads on every rerun; hashing a large file
+    each click was pure latency. Memoized per Streamlit file_id + size."""
+
+    class _Upload:
+        def __init__(self, data: bytes, file_id: str):
+            self.data, self.file_id, self.size, self.reads = data, file_id, len(data), 0
+
+        def getvalue(self):
+            self.reads += 1
+            return self.data
+
+    def setup_method(self):
+        st.session_state.pop("_file_fingerprint_memo", None)
+
+    teardown_method = setup_method
+
+    def test_same_upload_is_hashed_once(self):
+        from ui.components import _file_fingerprint
+        f = self._Upload(b"lcc-bytes", "id-1")
+        assert _file_fingerprint(f) == _file_fingerprint(f)
+        assert f.reads == 1
+
+    def test_new_upload_is_hashed_and_differs(self):
+        from ui.components import _file_fingerprint
+        a, b = self._Upload(b"month-a", "id-a"), self._Upload(b"month-b", "id-b")
+        assert _file_fingerprint(a) != _file_fingerprint(b)
+        assert (a.reads, b.reads) == (1, 1)
+
+    def test_objects_without_file_id_are_always_hashed(self):
+        from io import BytesIO
+        from ui.components import _file_fingerprint
+        f = BytesIO(b"plain")
+        assert _file_fingerprint(f) == _file_fingerprint(BytesIO(b"plain"))
+
+
+class TestDlBtnFullSource:
+    """Curated on screen, full raw + computed columns in the download."""
+
+    def _capture(self, monkeypatch):
+        """The button gets a function (built on click); "clicking" runs it."""
+        seen = {}
+
+        def fake_excel_bytes(df):
+            seen["df"] = df
+            return b"x"
+
+        def fake_button(label, data=None, **_):
+            assert callable(data), "downloads must be built on click, not on every page load"
+            assert "df" not in seen            # nothing built before the click
+            assert data() == b"x"
+
+        monkeypatch.setattr("ui.components._excel_bytes", fake_excel_bytes)
+        monkeypatch.setattr("ui.components.st.download_button", fake_button)
+        return seen
+
+    def test_download_carries_raw_and_computed_columns(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        source = pd.DataFrame({"Loan No": ["L1", "L2"], "CHANNEL": ["A", "B"], "POS": [1.0, 2.0]})
+        curated = pd.DataFrame({"Loan No": ["L2"], "Tenure Completed %": [75.0]})
+        _dl_btn(curated, "g.xlsx", "k_full", full_source=source)
+        out = seen["df"]
+        assert list(out.columns) == ["Loan No", "CHANNEL", "POS", "Tenure Completed %"]
+        assert out.iloc[0]["CHANNEL"] == "B"
+
+    def test_without_full_source_download_is_unchanged(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        curated = pd.DataFrame({"Loan No": ["L1"], "SOH": [1.0]})
+        _dl_btn(curated, "g.xlsx", "k_plain")
+        assert list(seen["df"].columns) == ["Loan No", "SOH"]
 
 
 class TestQueryConfidenceTier:
@@ -162,6 +232,15 @@ class TestKpiCardHtmlArrowAndColor:
         assert "kpi-mom-up" in html2
 
 
+def _in_memory(path):
+    """An upload-like file object (bytes + .name) that needs no closing."""
+    import io
+    from pathlib import Path
+    buf = io.BytesIO(Path(path).read_bytes())
+    buf.name = str(path)
+    return buf
+
+
 class TestLoadAndConcatDuplicateLoanCount:
     """_load_and_concat aggregates load_and_validate's per-file
     dropped_duplicate_loans count (df.attrs), plus any additional cross-file
@@ -177,7 +256,7 @@ class TestLoadAndConcatDuplicateLoanCount:
         buf = _build_upload(overrides)
         path = tmp_path / name
         path.write_bytes(buf.getvalue())
-        return open(path, "rb")  # real path on disk -> .name is already usable
+        return _in_memory(path)  # real path on disk -> .name is already usable
 
     def test_single_file_no_duplicates(self, tmp_path):
         f = self._real_upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"]})
@@ -211,7 +290,7 @@ class TestLoadAndConcatMissingOptionalCols:
         buf = _build_upload(overrides)
         path = tmp_path / name
         path.write_bytes(buf.getvalue())
-        return open(path, "rb")
+        return _in_memory(path)
 
     def test_single_file_reports_its_own_missing_cols(self, tmp_path):
         f = self._real_upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"]})
@@ -238,7 +317,7 @@ class TestLoadAndConcatMissingOptionalCols:
         buf = pd.DataFrame(data)
         path2 = tmp_path / "b.xlsx"
         buf.to_excel(path2, index=False, engine="openpyxl")
-        f2 = open(path2, "rb")
+        f2 = _in_memory(path2)
 
         result_df, errs = _load_and_concat([f1, f2])
         assert errs == []
@@ -266,58 +345,195 @@ class TestLoadAndConcatMissingOptionalCols:
         path2 = tmp_path / "b.xlsx"
         _build_without_colending(["L3", "L4"]).to_excel(path2, index=False, engine="openpyxl")
 
-        result_df, errs = _load_and_concat([open(path1, "rb"), open(path2, "rb")])
+        result_df, errs = _load_and_concat([_in_memory(path1), _in_memory(path2)])
         assert errs == []
         assert "CoLending_Loans" not in result_df.columns
         assert "CoLending_Loans" in result_df.attrs["missing_optional_cols"]
 
 
-class TestMomCellColoring:
-    """Regression: append_total_row leaves a %-named column with no
-    ratio_cols entry (e.g. Accounts MoM %/Funded MoM % on Section 3's Total
-    row -- see ui/tabs/business.py::_render_new_advances_by_dimension) as the
-    string "" rather than a number, since it has no numerator/denominator to
-    recompute a portfolio-wide ratio from. _color_mom_cell's `val >= 0`
-    crashed the whole Business tab the moment that Total row reached it
-    (str vs int comparison), caught live via a real screenshot of the error."""
+class TestMomChangeCells:
+    """Month-on-month change in the shared table (Business tab). A Total row
+    can carry "" for a % it can't sum; that once crashed the whole Business
+    tab, so it must render as a blank, and a rise is green (more business is
+    good), a fall red."""
 
-    def test_blank_string_from_total_row_does_not_raise(self):
-        from ui.tabs.business import _color_mom_cell
-        assert _color_mom_cell("") == ""
+    def _html(self, rows, total=None):
+        from ui.components import html_table
+        return html_table(pd.DataFrame(rows), [
+            {"key": "Branch"}, {"key": "Funded (Cr)", "fmt": "cr"},
+            {"key": "Accounts MoM %", "fmt": "pct_change", "good_if_up": True}], total=total)
 
-    def test_nan_is_still_blank(self):
-        from ui.tabs.business import _color_mom_cell
-        assert _color_mom_cell(float("nan")) == ""
+    def test_blank_and_missing_values_render_as_a_dash(self):
+        html = self._html([{"Branch": "A", "Funded (Cr)": 0.11, "Accounts MoM %": None}],
+                          total={"Branch": "Total", "Funded (Cr)": 0.11, "Accounts MoM %": ""})
+        assert html.count('color:#9ca3af;">-</span>') == 2
 
-    def test_positive_value_is_green_negative_is_red(self):
-        from ui.tabs.business import _color_mom_cell
-        assert "059669" in _color_mom_cell(12.5)
-        assert "dc2626" in _color_mom_cell(-3.2)
+    def test_rise_is_green_fall_is_red(self):
+        html = self._html([{"Branch": "A", "Funded (Cr)": 1.0, "Accounts MoM %": 9.49},
+                           {"Branch": "B", "Funded (Cr)": 1.0, "Accounts MoM %": -3.2}])
+        assert "▲ 9.5%" in html and "▼ 3.2%" in html
+        a, b = html.split("▲ 9.5%")[0].rsplit("<td", 1)[1], html.split("▼ 3.2%")[0].rsplit("<td", 1)[1]
+        assert "#16a34a" in a and "#dc2626" in b
 
-    def test_style_mom_columns_renders_without_raising_on_a_total_row(self):
-        from ui.components import append_total_row
-        from ui.tabs.business import _style_mom_columns
-        df = pd.DataFrame([
-            {"Branch": "BR1", "Accounts This Month": 5, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
-            {"Branch": "BR2", "Accounts This Month": 3, "Accounts MoM %": None, "Funded MoM %": 20.0},
-        ])
-        totaled = append_total_row(df)
-        assert totaled.iloc[-1]["Accounts MoM %"] == ""  # the exact shape that used to crash
-        styled = _style_mom_columns(totaled, ["Accounts MoM %", "Funded MoM %"])
-        styled.to_html()  # must not raise
+    def test_amounts_show_two_decimals(self):
+        html = self._html([{"Branch": "A", "Funded (Cr)": 0.11, "Accounts MoM %": 1.0}])
+        assert "₹0.11 Cr" in html and "0.110000" not in html
 
-    def test_float_columns_display_at_two_decimals_not_pandas_default_six(self):
-        # Regression: wrapping a frame in a pandas Styler (needed for the
-        # per-cell MoM coloring above) hands rendering over to pandas, whose
-        # Styler defaults every float column to 6 decimal places regardless
-        # of the value's own already-rounded precision -- e.g. a Funded (Cr)
-        # value of 0.11 rendered as "0.110000". Caught live via a real
-        # screenshot of Section 3's table on real data. precision=2 in
-        # _style_mom_columns must keep this from regressing.
-        from ui.tabs.business import _style_mom_columns
-        df = pd.DataFrame([
-            {"Branch": "BR1", "Funded (Cr)": 0.11, "Accounts MoM %": 10.0, "Funded MoM %": -5.0},
-        ])
-        html = _style_mom_columns(df, ["Accounts MoM %", "Funded MoM %"]).to_html()
-        assert "0.110000" not in html
-        assert "0.11" in html
+
+def test_every_table_on_screen_goes_through_safe_df():
+    # _safe_df strips the meaningless 00:00:00 from LCC dates (via _dateonly);
+    # a table shown without it prints "2023-09-23 00:00:00".
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    raw = []
+    for f in [root / "app.py", *sorted((root / "ui").rglob("*.py"))]:
+        text = f.read_text(encoding="utf-8-sig")
+        for m in re.finditer(r"^\s*st\.dataframe\(\s*([A-Za-z_][\w.]*)", text, re.MULTILINE):
+            arg = m.group(1)
+            if arg not in ("_safe_df", "styled_df"):   # styled_df applies _safe_df
+                raw.append(f"{f.relative_to(root)}: {m.group(0)}")
+    assert raw == []
+
+
+def test_safe_df_drops_midnight_time_from_dates():
+    import pandas as pd
+    from ui.components import _safe_df
+    df = pd.DataFrame({"Ag_Date": pd.to_datetime(["2023-09-23"]).astype("datetime64[us]")})
+    assert str(_safe_df(df)["Ag_Date"].iloc[0]) == "2023-09-23"
+
+
+def test_percent_and_count_share_one_cell():
+    from ui.components import html_table, pct_count
+    assert pct_count(11.94, 37) == '11.9% <span style="color:#6b7280;font-weight:400;">(37)</span>'
+    assert "-" in pct_count(None, 3)
+    df = pd.DataFrame({"Branch": ["A"], "NPA%": [12.5], "NPA": [5]})
+    html = html_table(df, [{"key": "Branch"}, {"key": "NPA%", "label": "NPA", "fmt": "pct_count", "count": "NPA"}])
+    assert "12.5% <span" in html and "(5)" in html and html.count("</th>") == 2   # one column, not two
+
+
+def test_percent_by_soh_and_its_crore_share_one_cell():
+    from ui.components import html_table, pct_amount
+    assert pct_amount(34.62, 121.4) == '34.6% <span style="color:#6b7280;font-weight:400;">(₹121.40 Cr)</span>'
+    assert "-" in pct_amount(None, 1.0)
+    df = pd.DataFrame({"Branch": ["A"], "NPA% (SOH)": [8.0], "NPA SOH (Cr)": [1.5]})
+    html = html_table(df, [{"key": "Branch"},
+                           {"key": "NPA% (SOH)", "fmt": "pct_cr", "amount": "NPA SOH (Cr)"}])
+    assert "8.0% <span" in html and "(₹1.50 Cr)" in html and html.count("</th>") == 2
+
+
+def test_top_x_in_each_branch(monkeypatch):
+    import ui.components as comp
+    df = pd.DataFrame({"Branch": ["A"] * 5 + ["B"] * 5, "SOH": list(range(10, 0, -1))})
+    picks = {"pi_t_n": 2, "pi_t_b": "All", "pi_t_each": "Branch"}
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
+    monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
+    out = comp.list_controls("pi_t", df, "Branch")
+    assert out.groupby("Branch").size().to_dict() == {"A": 2, "B": 2}      # top 2 from EACH branch
+    assert out["SOH"].tolist() == [10, 9, 5, 4]
+
+
+def test_region_filter_narrows_the_list(monkeypatch):
+    import ui.components as comp
+    df = pd.DataFrame({"Region": ["N", "N", "S", "S"], "Branch": ["A", "B", "C", "D"], "SOH": [4, 3, 2, 1]})
+    picks = {"pi_r_n": "All", "pi_r_r": "S", "pi_r_b": "All", "pi_r_each": "Whole list"}
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
+    monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
+    out = comp.list_controls("pi_r", df, "Branch")
+    assert set(out["Region"]) == {"S"} and len(out) == 2
+
+
+def test_top_x_in_each_zone_with_zone_looked_up_from_the_source(monkeypatch):
+    import ui.components as comp
+    loans = pd.DataFrame({"Loan No": list("ABCDEF"), "Region": ["R1", "R1", "R2", "R2", "R3", "R3"],
+                          "Branch": list("PQRSTU"), "SOH": [6, 5, 4, 3, 2, 1]})
+    source = pd.DataFrame({"Loan No": list("ABCDEF"), "Zone": ["N", "N", "N", "N", "S", "S"]})
+    picks = {"pi_z_n": 1, "pi_z_each": "Zone"}
+    monkeypatch.setattr(comp.st, "columns", lambda spec: [_Fake(picks)] * len(spec))
+    monkeypatch.setattr(comp.st, "caption", lambda *a, **k: None)
+    out = comp.list_controls("pi_z", loans, "Branch", source=source)
+    assert list(out["Zone"]) == ["N", "S"] and list(out["Loan No"]) == ["A", "E"]     # the top 1 of each zone
+
+
+class _Fake:
+    """Stands in for a Streamlit column: selectbox returns a preset, the
+    'each branch' checkbox is ticked."""
+    def __init__(self, picks):
+        self.picks = picks
+
+    def selectbox(self, label, options, index=0, key=None):
+        return self.picks.get(key, options[index])
+
+    def checkbox(self, label, key=None, disabled=False):
+        return True
+
+    def markdown(self, *a, **k):
+        return None
+
+
+def test_dashboard_cards_move_percent_metrics_in_points():
+    # A % metric's card shows the change in points, like every other tab and
+    # the report (59.00% from 58.36% is "0.64 pts", not the relative "1.10%").
+    from ui.tabs.dashboard import _change
+    metrics = {"Delinquency %": (59.0, 1.1), "Count": (8000, 0.38)}
+    prev = {"Delinquency %": (58.36, None), "Count": (7970, None)}
+    assert _change("Delinquency %", metrics, prev) == (0.64, " pts")
+    assert _change("Delinquency %", metrics, None) == (None, " pts")       # no last month: "no prev data"
+    assert _change("Count", metrics, prev) == (0.38, "%")                   # counts keep the % change
+
+
+def test_segments_group_by_loan_attributes():
+    # Payment mode, NACH, legal stage and security type are Segments groupings;
+    # a blank legal stage is "Not in legal" and NACH Y/N read as words.
+    from ui.tabs.portfolio_intelligence import _cached_segments
+    df = pd.DataFrame({"Loan No": ["A", "B", "C"], "Unit": ["X"] * 3, "Arrears / EMI": [0.0, 4.0, 1.0],
+                       "curr_bucket": ["STD", "NPA", "1-30 DPD"], "SOH": [1.0, 2.0, 3.0],
+                       "LGL_DESCRIPTION": [None, "Sec 138 Notice", ""], "NACHStatus": ["Y", "N", "y"]})
+    legal = _cached_segments.__wrapped__(df, 0, "", "LGL_DESCRIPTION", "Together", ())
+    assert set(legal["Name"]) == {"Not in legal", "Sec 138 Notice"}
+    assert int(legal.set_index("Name").loc["Not in legal", "Accounts"]) == 2
+    nach = _cached_segments.__wrapped__(df, 0, "", "NACHStatus", "Together", ())
+    assert set(nach["Name"]) == {"Registered", "Not registered"}
+
+
+def test_segments_break_down_by_zone_and_filter_by_place():
+    from ui.tabs.portfolio_intelligence import _cached_segments
+    df = pd.DataFrame({"Loan No": list("ABCDEF"), "Zone": ["N", "N", "N", "S", "S", "S"],
+                       "RegionName": ["R1", "R1", "R1", "R2", "R2", "R2"], "Unit": ["X", "X", "X", "Y", "Y", "Y"],
+                       "Arrears / EMI": [0.0, 4.0, 1.0, 0.0, 0.0, 4.0], "SOH": [1.0] * 6,
+                       "curr_bucket": ["STD", "NPA", "1-30 DPD", "STD", "STD", "NPA"], "FUEL_TYPE": ["D"] * 6})
+    by_zone = _cached_segments.__wrapped__(df, 0, "", "FUEL_TYPE", "By zone", ())
+    assert set(by_zone["Zone"]) == {"N", "S"} and by_zone["Accounts"].sum() == 6
+    south = _cached_segments.__wrapped__(df, 0, "", "FUEL_TYPE", "By region", (("Zone", "S"),))
+    assert list(south["Region"]) == ["R2"] and int(south["Accounts"].iloc[0]) == 3
+
+
+def test_apply_place_matches_last_month_loosely():
+    from ui.components import apply_place
+    df = pd.DataFrame({"Zone": ["N", "S"], "RegionName": ["Pune ", "NASHIK"], "Unit": ["A", "B"]})
+    assert len(apply_place(df, {"Region": "PUNE"})) == 0                    # exact by default
+    assert list(apply_place(df, {"Region": "PUNE"}, loose=True)["Unit"]) == ["A"]   # case and spaces ignored
+
+
+class TestLoadAndConcatAcrossFiles:
+    def _upload(self, tmp_path, name, overrides):
+        path = tmp_path / name
+        path.write_bytes(_build_upload(overrides).getvalue())
+        return _in_memory(path)
+
+    def test_date_warnings_survive_a_multi_file_upload(self, tmp_path):
+        # _build_upload fills date columns with "x", so each file warns.
+        f1 = self._upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"]})
+        f2 = self._upload(tmp_path, "b.xlsx", {"Loan No": ["L4", "L5", "L6"]})
+        combined, errs = _load_and_concat([f1, f2])
+        warnings_ = combined.attrs["date_parse_warnings"]
+        assert errs == []
+        assert any("a.xlsx: " in w for w in warnings_)
+        assert any("b.xlsx: " in w for w in warnings_)
+
+    def test_segment_truncated_differently_in_two_files_is_one_segment(self, tmp_path):
+        f1 = self._upload(tmp_path, "a.xlsx", {"Loan No": ["L1", "L2", "L3"], "SegmentName": ["Passenger Commerc"] * 3})
+        f2 = self._upload(tmp_path, "b.xlsx", {"Loan No": ["L4", "L5", "L6"], "SegmentName": ["Passenger Commercial"] * 3})
+        combined, errs = _load_and_concat([f1, f2])
+        assert errs == []
+        assert combined["SegmentName"].unique().tolist() == ["Passenger Commercial"]

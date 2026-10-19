@@ -31,6 +31,30 @@ class TestComputeExecutiveScorecard:
         assert sc.iloc[1]["Strike Rate %"] == 100.0
 
 
+class TestHardBucketAndEntityColumns:
+    """Additions for the Investigator feature: an explicit Hard Bucket %
+    column (previously only computed at the region/branch grain, never per
+    executive), plus explicit MNT NAME/Unit columns so a caller can group by
+    branch without re-parsing the "Executive (Branch)" display string."""
+
+    def test_hard_bucket_pct_matches_shared_threshold(self):
+        # HARD_BUCKET_ARREARS_EMI_MIN is 6 -- 2 of 5 accounts qualify.
+        rows = [
+            {"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 7.0},
+            {"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 6.0},
+            {"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 0.0},
+            {"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 0.0},
+            {"MNT NAME": "RAJ", "Unit": "MAHAD", "Arrears / EMI": 0.0},
+        ]
+        sc = compute_executive_scorecard(make_df(rows), min_accounts=5)
+        assert sc.iloc[0]["Hard Bucket %"] == 40.0
+
+    def test_exposes_raw_mnt_name_and_unit_columns(self):
+        sc = compute_executive_scorecard(_exec_df(), min_accounts=5)
+        assert set(sc["MNT NAME"]) == {"RAJ", "SUNIL"}
+        assert set(sc["Unit"]) == {"MAHAD"}
+
+
 class TestStrikeRateNormalization:
     def test_lowercase_and_padded_strike_values_are_still_counted(self):
         # Regression: compute_executive_scorecard used to filter the Strike
@@ -69,9 +93,8 @@ class TestRollRateNoPriorMatchIsNoneNotZero:
     is no basis to compute a roll rate at all. This used to fabricate 0.0% for both
     Roll Fwd % and Roll Bwd %, which reads as "verified: nothing got worse" -- a
     different, false claim from the true state "not enough history to say".
-    analysis/portfolio_intelligence.py::_roll_rates() already returns None for the
-    identical situation at the region/branch grain; this brings the executive
-    scorecard's own inline roll-rate calc back in line with it."""
+    The shared engine (utils.unit_metrics) leaves it blank (NaN) at the
+    region/branch grain; the executive scorecard must say "no data" too."""
 
     def _new_exec_df(self):
         rows = [{

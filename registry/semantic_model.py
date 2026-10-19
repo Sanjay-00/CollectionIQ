@@ -1,4 +1,4 @@
-﻿"""Semantic Data Model  -  the STRUCTURE layer of the registry.
+"""Semantic Data Model  -  the STRUCTURE layer of the registry.
 
 CollectionIQ operates over a single denormalised in-memory DataFrame: Loan,
 Customer, Executive, Branch and Region are all columns on the SAME table. So the
@@ -67,9 +67,32 @@ ENTITIES: dict[str, dict] = {
 DIMENSIONS: dict[str, list[str]] = {
     "branch":     ["Unit"],
     "region":     ["RegionName"],
+    "zone":       ["Zone"],
+    "bu":         ["BU"],
     "executive":  ["MNT NAME", "Unit"],
     "customer":   ["Cust Mob No"],
+    # Loan attributes a manager groups by ("NPA count by segment and fuel type").
+    "segment":    ["SegmentName"],
+    "fuel":       ["FUEL_TYPE"],
+    "source":     ["SRC Name"],
+    "make":       ["Make"],
+    "status":     ["Loan Status"],
 }
+
+
+# Columns that say WHO or WHERE a loan is (its labels), not its state this
+# month. A filter on these means the same thing applied to last month's file
+# ("Pune", "co-lending loans", "agreed since Nov"), so last month's figures can
+# come from last month's own file. A filter on a state column (bucket, arrears,
+# collection) picks THIS month's loans, and last month's figures for those
+# loans can only come from the values carried onto them.
+LABEL_COLUMNS: frozenset = frozenset(
+    {c for cols in DIMENSIONS.values() for c in cols} | {
+        "Loan No", "Cust Name", "StateName", "CHANNEL", "Segment", "SRC Code", "MNT CODE",
+        "Ag_Date", "Tenure", "Loan Amount", "scheme", "SaleType", "CoLending_Loans",
+        "Vehicle Description", "Year Of Manufacture", "Veh ID", "Due Dt",
+    }
+)
 
 
 # ── Helpers (used by the compiler; kept tiny and pure) ────────────────────────

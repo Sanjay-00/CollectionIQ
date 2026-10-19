@@ -1,9 +1,26 @@
-﻿import os
+"""Report tab: the monthly report (report_agent/story.py) for one reader level,
+as one file per unit in view (report_agent/packs.py) in the one format picked:
+Leadership (one file), Zone (one per zone), Regional (one per region), Branch
+(one per branch). Several files come as one ZIP."""
+import os
 
 import pandas as pd
 import streamlit as st
 
-from ui.components import _send_report_email, _esc
+from ui.components import _esc, _send_report_email
+
+_PRESET_HELP = {
+    "Leadership": "For leaders: everything in view, high level. How the zones and regions compare, where loans "
+                  "slip, and where to focus. Filter the sidebar to one zone or region for its own leadership view.",
+    "Zone": "For zonal managers, one file per zone: its regions compared, its best and worst branches, "
+            "where loans slip, and where to focus.",
+    "Regional": "For regional managers, one file per region, in detail: branches and executives ranked, "
+                "where loans slip and why, new business, and what to do first.",
+    "Branch": "For branch managers, one file per branch: executives ranked, where loans slip, what to do first, "
+              "and who to call.",
+}
+_UNIT_WORD = {"Zone": "zone", "Regional": "region", "Branch": "branch"}
+_SECONDS_PER_FILE = {"PDF": 0.9, "HTML": 0.6, "Excel": 1.0}    # measured on the demo book, for the "about N seconds" note
 
 
 def render_report_tab(
@@ -14,264 +31,222 @@ def render_report_tab(
     sel_region: str,
     sel_branch: str,
     sel_status: str,
-    scorecard_df,
-    rr_meta: dict | None,
+    sel_zone: str = "All",
 ) -> None:
-    from report_agent.graph import run_report
+    from report_agent.packs import FORMATS, units_in
+    from report_agent.story import DEFAULT_PRESET, MAIN_SECTIONS, OPTIONAL_SECTIONS, PRESETS
 
-    st.markdown("""
-    <div class="ai-panel">
-      <div class="ai-title">Monthly Portfolio Intelligence Report</div>
-      <div class="ai-subtitle">
-        Generates a board-ready HTML report covering nearly the full analysis toolkit:
-        verdict-first AI narrative, risk signals, month-over-month NPA/SMA-2 movement,
-        embedded charts, region/segment/branch breakdowns, at-risk and fleet exposure lists,
-        repossession candidates, good-customer retention targets, new advances (originations)
-        breakdowns, and executive/branch leaderboards. Download as HTML or send via email.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Streamlit forgets a widget's value when its tab isn't shown, so the picks
+    # are kept in plain session keys (_rpt2_last_preset, _rpt2_last_fmt,
+    # _rpt2_ticks) and restored.
+    last = st.session_state.get("_rpt2_last_preset")
+    if "rpt2_preset" not in st.session_state and last in PRESETS:
+        st.session_state["rpt2_preset"] = last
+    last_fmt = st.session_state.get("_rpt2_last_fmt")
+    if "rpt2_fmt" not in st.session_state and last_fmt in FORMATS:
+        st.session_state["rpt2_fmt"] = last_fmt
+    filters = {"Zone": sel_zone, "Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status}
 
-    # ── Section toggles ──────────────────────────────────────────────────────
-    # Core (default ON, always visible) vs Additional (default OFF, tucked
-    # into a collapsed expander) -- a flat 22-checkbox grid was the actual
-    # source of "the report feels too long," not just needing better columns.
-    # Core = what every monthly board report needs; Additional = opt-in
-    # deep-dive detail a leader checks only when this specific report calls
-    # for it.
-    st.markdown('<div class="section-label" style="margin-top:20px;">Report Sections</div>', unsafe_allow_html=True)
-    has_prev = len(df_prev) > 0
+    with st.container(border=True, key="rpt2_card"):
+        st.markdown('<div class="rpt2-hero"><div class="rpt2-hero-title">Monthly Report</div>'
+                    '<div class="rpt2-hero-sub">A short visual story for each reader: what went well, what went '
+                    "wrong, and where to focus, built from the same numbers as the Dashboard.</div></div>",
+                    unsafe_allow_html=True)
+        left, right = st.columns(2, gap="large")
+        with left:
+            st.markdown(_step(1, "Who is it for?"), unsafe_allow_html=True)
+            preset = st.segmented_control("Who is it for?", PRESETS, key="rpt2_preset",
+                                          default=None if "rpt2_preset" in st.session_state else DEFAULT_PRESET,
+                                          label_visibility="collapsed") or last or DEFAULT_PRESET
+            st.markdown(f'<div class="rpt2-help">{_PRESET_HELP[preset]}</div>', unsafe_allow_html=True)
+        # A new level ticks its own sections (the detail sections stay as picked).
+        if st.session_state.get("_rpt2_last_preset") != preset:
+            st.session_state["_rpt2_last_preset"] = preset
+            _tick_preset(preset)
 
-    def _col_caption(text: str) -> None:
-        st.markdown(
-            f'<div style="font-size:10px;font-weight:700;color:#9ca3af;'
-            f'text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">{text}</div>',
-            unsafe_allow_html=True,
-        )
-
-    with st.container(border=True):
-        st.markdown(
-            '<div style="font-size:13px;font-weight:800;color:#111827;margin-bottom:2px;">🎯 Core Sections</div>'
-            '<div style="font-size:11px;color:#6b7280;margin-bottom:16px;">'
-            'Included in every report by default : uncheck anything you don\'t need this month.</div>',
-            unsafe_allow_html=True,
-        )
-        core_c1, core_c2, core_c3 = st.columns(3)
-        with core_c1:
-            _col_caption("Health & Verdict")
-            inc_health  = st.checkbox("Portfolio Health",    value=True, key="rpt_health")
-            inc_verdict = st.checkbox("Good vs Bad Verdict", value=True, key="rpt_verdict")
-            inc_flags   = st.checkbox("Risk Flags",          value=True, key="rpt_flags")
-        with core_c2:
-            _col_caption("Movement & Region")
-            inc_movement = st.checkbox("NPA & SMA-2 Movement", value=True, key="rpt_movement",
-                                        help="This-month vs last-month NPA/SMA-2 counts, deltas, and %change - portfolio, region, branch, and executive")
-            inc_migrate  = st.checkbox(
-                "Bucket Migration", value=has_prev, key="rpt_migrate",
-                disabled=not has_prev, help="Upload previous month file to enable",
-            )
-            inc_region   = st.checkbox("Region Scorecard", value=True, key="rpt_region")
-        with core_c3:
-            _col_caption("Business & Leaders")
-            inc_new_advances = st.checkbox("New Advances (Business)", value=True, key="rpt_new_advances",
-                                            help="New business funded this reporting month - accounts, funded amount, segment breakdown, MoM comparison")
-            inc_branch = st.checkbox("Branch Performance", value=True, key="rpt_branch")
-            inc_exec   = st.checkbox("Executive Rankings", value=True, key="rpt_exec")
-
-    _ADDITIONAL_KEYS = [
-        "rpt_indicators", "rpt_product", "rpt_overdue_demand",
-        "rpt_quadrant", "rpt_concentration",
-        "rpt_new_advances_trend", "rpt_new_advances_dim",
-        "rpt_top_accounts", "rpt_fleet", "rpt_repo", "rpt_good",
-        "rpt_recovery", "rpt_exec_strike", "rpt_ai",
-    ]
-    with st.expander(f"➕ Additional Sections  ({len(_ADDITIONAL_KEYS)} more available)", expanded=False):
-        st.caption("✍️ Deep-dive detail: check whatever this specific report needs.")
-
-        # Select All / Clear All MUST render (and write to st.session_state)
-        # before ANY of _ADDITIONAL_KEYS' checkboxes are instantiated below --
-        # Streamlit raises StreamlitAPIException ("st.session_state.X cannot
-        # be modified after the widget with key X is instantiated") if you
-        # write to a widget's session_state key after that widget has already
-        # been created in the same script run. This used to sit inside add_c1,
-        # AFTER 3 of the checkboxes it modifies (rpt_indicators, rpt_product,
-        # rpt_overdue_demand) -- clicking either button raised that exception
-        # on the very first key in the loop and silently updated nothing, for
-        # ALL 14 checkboxes, not just those 3 (real bug, reported by users).
-        # No st.rerun() needed either: since these run before the checkboxes
-        # exist yet this pass, the checkboxes below pick up the new values in
-        # this SAME script run.
-        add_bulk_c1, add_bulk_c2, _add_bulk_spacer = st.columns([1, 1, 3])
-        with add_bulk_c1:
-            if st.button("Select All", key="rpt_additional_select_all"):
-                for k in _ADDITIONAL_KEYS:
-                    st.session_state[k] = True
-        with add_bulk_c2:
-            if st.button("Clear All", key="rpt_additional_clear_all"):
-                for k in _ADDITIONAL_KEYS:
-                    st.session_state[k] = False
-
-        add_c1, add_c2, add_c3, add_c4, add_c5 = st.columns(5)
-        with add_c1:
-            _col_caption("Risk & Segments")
-            inc_indicators = st.checkbox("Risk Indicators", value=False, key="rpt_indicators",
-                                          help="Early-warning signals: SMA-1 pool, fresh NPA formation, chronic defaulters, non-starters, co-lending risk")
-            inc_product = st.checkbox("Segment NPA Breakdown", value=False, key="rpt_product")
-            inc_overdue_demand = st.checkbox("Overdue vs Month Demand", value=False, key="rpt_overdue_demand")
-        with add_c2:
-            _col_caption("Charts")
-            inc_quadrant = st.checkbox("Branch Quadrant Chart", value=False, key="rpt_quadrant",
-                                        help="Collection% vs NPA% scatter, bubble = SOH")
-            inc_concentration = st.checkbox("Concentration Map", value=False, key="rpt_concentration")
-        with add_c3:
-            _col_caption("New Advances Detail")
-            inc_new_advances_trend = st.checkbox("New Advances Trend (36mo)", value=False, key="rpt_new_advances_trend",
-                                                  help="New advances by month, last 36 months")
-            inc_new_advances_dim = st.checkbox("New Advances by Region/Branch/Exec", value=False, key="rpt_new_advances_dim",
-                                                help="Top 5 Regions, Branches, and Executives by new advances this month")
-        with add_c4:
-            _col_caption("Account Lists")
-            inc_top_acc = st.checkbox("Top At-Risk Accounts", value=False, key="rpt_top_accounts")
-            inc_fleet   = st.checkbox("Fleet Exposure", value=False, key="rpt_fleet")
-            inc_repo    = st.checkbox("Repossession Candidates", value=False, key="rpt_repo")
-            inc_good    = st.checkbox("Good Customers", value=False, key="rpt_good")
-        with add_c5:
-            _col_caption("Executive Extras & AI")
-            inc_recovery = st.checkbox("Executive Recovery", value=False, key="rpt_recovery",
-                                        help="Rescued vs slipped accounts per executive - behavior signal, distinct from collection%")
-            inc_exec_strike = st.checkbox("Executive Rankings (Strike %)", value=False, key="rpt_exec_strike",
-                                           help="Same executives, ranked by Strike % instead of Collection % - who's actually current on installment obligation this month")
-            inc_ai = st.checkbox("AI Summary", value=False, key="rpt_ai",
-                                  help="Uncheck to skip Gemini and generate a faster, pandas-only report")
-
-    # ── Email (optional) ─────────────────────────────────────────────────────
-    smtp_ok = bool(os.environ.get("SMTP_HOST", ""))
-    if smtp_ok:
-        rpt_email_to = st.text_input(
-            "Send report to (email address)",
-            placeholder="manager@company.com, head@company.com",
-            key="rpt_email_to",
-            help="Separate multiple addresses with a comma",
-        )
-    else:
-        rpt_email_to = ""
-        st.caption("Email not configured  -  add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to enable.")
-
-    # ── Buttons ──────────────────────────────────────────────────────────────
-    _gc, _sc, _ = st.columns([2, 1, 3])
-    with _gc:
-        rpt_btn = st.button("Generate Monthly Report", type="primary", key="rpt_generate", width='stretch')
-    with _sc:
-        rpt_send_btn = st.button(
-            "📧 Send", key="rpt_send_only", width='stretch',
-            disabled=not (smtp_ok and st.session_state.get("report_result", {}).get("html_report")),
-        )
-
-    # ── Send existing report ─────────────────────────────────────────────────
-    if rpt_send_btn:
-        _cached = st.session_state.get("report_result", {})
-        if not rpt_email_to.strip():
-            st.warning("Enter an email address above.")
-        else:
-            with st.spinner("Sending report..."):
-                _ok, _err = _send_report_email(_cached["html_report"], rpt_email_to.strip(), curr_month)
-            if _ok:
-                st.success(f"Report sent to: {rpt_email_to}")
+        units = units_in(df_curr, preset)
+        word = _UNIT_WORD.get(preset)
+        with right:
+            st.markdown(_step(2, "Which ones?"), unsafe_allow_html=True)
+            if units:
+                picked = _pick_units(preset, units, word)
             else:
-                st.error(f"Failed: {_err}")
+                picked = None
+                st.markdown('<div class="rpt2-help" style="margin-top:6px;">One file for everything in view. '
+                            "To narrow it, filter the sidebar (zone, region or branch).</div>", unsafe_allow_html=True)
+        files = len(picked) if units else 1
+        files_text = (f"{files} files, one per {word} (ZIP)" if files > 1
+                      else f"1 file ({_esc(picked[0])})" if units and picked else "none picked" if units else "1 file")
 
-    # ── Generate ─────────────────────────────────────────────────────────────
-    if rpt_btn:
-        enabled_sections = []
-        if st.session_state.get("rpt_health"):        enabled_sections.append("portfolio_health")
-        if st.session_state.get("rpt_verdict"):       enabled_sections.append("verdict")
-        if st.session_state.get("rpt_flags"):         enabled_sections.append("risk_flags")
-        if st.session_state.get("rpt_indicators"):    enabled_sections.append("risk_indicators")
-        if st.session_state.get("rpt_migrate"):       enabled_sections.append("bucket_migration")
-        if st.session_state.get("rpt_movement"):      enabled_sections.append("npa_sma2_movement")
-        if st.session_state.get("rpt_quadrant"):      enabled_sections.append("branch_quadrant")
-        if st.session_state.get("rpt_concentration"): enabled_sections.append("concentration")
-        if st.session_state.get("rpt_region"):        enabled_sections.append("region_scorecard")
-        if st.session_state.get("rpt_overdue_demand"): enabled_sections.append("overdue_demand")
-        if st.session_state.get("rpt_new_advances"):  enabled_sections.append("new_advances")
-        if st.session_state.get("rpt_new_advances_trend"): enabled_sections.append("new_advances_trend")
-        if st.session_state.get("rpt_new_advances_dim"):   enabled_sections.append("new_advances_by_dimension")
-        if st.session_state.get("rpt_product"):       enabled_sections.append("product_analysis")
-        if st.session_state.get("rpt_top_accounts"):  enabled_sections.append("top_accounts")
-        if st.session_state.get("rpt_fleet"):         enabled_sections.append("fleet_exposure")
-        if st.session_state.get("rpt_repo"):          enabled_sections.append("repossession")
-        if st.session_state.get("rpt_good"):          enabled_sections.append("good_customers")
-        if st.session_state.get("rpt_branch"):        enabled_sections.append("branch_performance")
-        if st.session_state.get("rpt_recovery"):      enabled_sections.append("executive_recovery")
-        if st.session_state.get("rpt_exec"):          enabled_sections.append("executive_rankings")
-        if st.session_state.get("rpt_exec_strike"):   enabled_sections.append("executive_strike_rankings")
+        left, right = st.columns(2, gap="large")
+        with left:
+            st.markdown(_step(3, "Format"), unsafe_allow_html=True)
+            fmt = st.segmented_control("Format", list(FORMATS), key="rpt2_fmt",
+                                       default=None if "rpt2_fmt" in st.session_state else "PDF",
+                                       label_visibility="collapsed") or last_fmt or "PDF"
+            st.session_state["_rpt2_last_fmt"] = fmt
+            st.markdown('<div class="rpt2-help">' + {
+                "PDF": "To print or attach.", "HTML": "To paste into an email; looks the same in Gmail and Outlook.",
+                "Excel": "Every table in full, for anyone who wants to dig in."}[fmt] + "</div>", unsafe_allow_html=True)
+        with right:
+            st.markdown(_step(4, "What goes in"), unsafe_allow_html=True)
+            # A fixed title and key: a title that changed with each tick (a live
+            # count) made Streamlit treat it as a new expander and close it.
+            with st.expander("Choose the sections", key="rpt2_sec_box"):
+                _checkbox_grid({k: label for k, label in MAIN_SECTIONS.items()}, "rpt2_sec_", columns=2)
+                st.button(f"Back to the {preset} sections", key="rpt2_defaults", on_click=_tick_preset, args=(preset,))
+            with st.expander("Add detail sections", key="rpt2_extra_box"):
+                st.caption("Each adds its top rows to the report; the full lists go in the Excel annex.")
+                b1, b2 = st.columns(2)
+                b1.button("Select all", key="rpt2_extra_all", on_click=_set_extras, args=(True,), width="stretch")
+                b2.button("Clear all", key="rpt2_extra_none", on_click=_set_extras, args=(False,), width="stretch")
+                _checkbox_grid({k: label for k, (label, _) in OPTIONAL_SECTIONS.items()}, "rpt2_extra_", columns=2)
 
-        _skip_ai = not st.session_state.get("rpt_ai", True)
-        _spinner_msg = "Generating report (pandas only)..." if _skip_ai else "Running Portfolio Intelligence Agent (30 - 60 seconds)..."
-        with st.spinner(_spinner_msg):
-            _rpt_result = run_report(
-                df_curr=df_curr, df_prev=df_prev,
-                curr_month=curr_month, prev_month=prev_month,
-                enabled_sections=enabled_sections,
-                filters_applied={"Region": sel_region, "Branch": sel_branch, "Loan Status": sel_status},
-                email_to=rpt_email_to,
-                skip_ai=_skip_ai,
-            )
-        st.session_state["report_result"] = _rpt_result
+        main = [k for k in MAIN_SECTIONS if st.session_state.get(f"rpt2_sec_{k}")]
+        extras = [k for k in OPTIONAL_SECTIONS if st.session_state.get(f"rpt2_extra_{k}")]
+        scope = " · ".join(f"{k}: {_esc(v)}" for k, v in filters.items() if v not in (None, "", "All")) or "Whole portfolio"
+        st.markdown(
+            f'<div class="rpt2-summary"><span><b>Scope</b> {scope}</span><span><b>Files</b> {files_text}</span>'
+            f'<span><b>Sections</b> {len(main)} of {len(MAIN_SECTIONS)}'
+            + (f" + {len(extras)} detail" if extras else "") + f"</span><span><b>Format</b> {fmt}</span></div>",
+            unsafe_allow_html=True)
 
-    # ── Display result ────────────────────────────────────────────────────────
-    _rpt = st.session_state.get("report_result")
-    if not _rpt:
+        st.markdown(_step(5, "Generate"), unsafe_allow_html=True)
+        a, b = st.columns([3, 1], vertical_alignment="center")
+        use_ai = a.checkbox("Add an AI-written opening paragraph", value=False, key="rpt2_ai",
+                            help="Gemini rewrites the At a glance story into a paragraph (one call per file). Every "
+                                 "number it uses is checked against the data; if any doesn't match, it's dropped.")
+        if files > 1:
+            a.caption(f"About {round(files * _SECONDS_PER_FILE[fmt])} seconds for {files} files."
+                      + (" Pick fewer in step 2 to make it faster." if files > 15 else ""))
+        if units and not picked:
+            a.info(f"Pick at least one {word} in step 2.")
+        elif not main and not extras:
+            a.info("Tick at least one section.")
+        elif b.button("Generate", type="primary", key="rpt2_generate", width="stretch"):
+            _generate(df_curr, df_prev, curr_month, prev_month, preset, filters, main + extras, fmt, use_ai,
+                      picked if units else None)
+
+    st.markdown("""<style>
+    .st-key-rpt2_card { background: #ffffff !important; border-radius: 12px !important;
+                        border-bottom: 3px solid #FFC000 !important; }
+    .rpt2-hero { background: #0d0d0d; border-left: 5px solid #FFC000; border-radius: 10px;
+                 padding: 14px 18px; margin-bottom: 6px; }
+    .rpt2-hero-title { color: #FFC000; font-size: 18px; font-weight: 800; letter-spacing: 0.3px; }
+    .rpt2-hero-sub { color: #d1d5db; font-size: 12.5px; margin-top: 3px; }
+    .rpt2-step { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 700;
+                 color: #111827; margin: 6px 0 2px 0; }
+    .rpt2-step span { background: #FFC000; color: #000; border-radius: 50%; width: 22px; height: 22px;
+                      display: inline-flex; align-items: center; justify-content: center;
+                      font-size: 12px; font-weight: 800; }
+    .rpt2-help { font-size: 12px; color: #6b7280; margin-top: -6px; line-height: 1.45; }
+    .st-key-rpt2_card [data-testid="stButtonGroup"] { margin-bottom: 0 !important; }
+    .rpt2-summary { display: flex; flex-wrap: wrap; gap: 8px 26px; font-size: 12.5px; color: #ffffff;
+                    background: #1a1a1a; border-radius: 8px; padding: 9px 14px; margin: 10px 0 4px 0; }
+    .rpt2-summary b { color: #FFC000; font-weight: 700; margin-right: 5px; text-transform: uppercase;
+                      font-size: 11px; letter-spacing: 0.6px; }
+    .st-key-rpt2_card [data-testid="stExpander"] details { border-left: 4px solid #FFC000 !important; }
+    .st-key-rpt2_generate button, .st-key-rpt2_download button { color: #000 !important; font-weight: 800 !important;
+                                   border: 2px solid #000 !important; }
+    .st-key-rpt2_generate button:hover, .st-key-rpt2_download button:hover {
+        background: #000 !important; color: #FFC000 !important; }
+    </style>""", unsafe_allow_html=True)
+
+    _show_result()
+
+
+def _step(n: int, title: str) -> str:
+    return f'<div class="rpt2-step"><span>{n}</span>{title}</div>'
+
+
+def _tick(widget_key: str, on: bool) -> None:
+    st.session_state[widget_key] = on
+    st.session_state.setdefault("_rpt2_ticks", {})[widget_key] = on
+
+
+def _tick_preset(preset: str) -> None:
+    """Tick exactly the level's own main sections."""
+    from report_agent.story import MAIN_SECTIONS, PRESET_SECTIONS
+    for key in MAIN_SECTIONS:
+        _tick(f"rpt2_sec_{key}", key in PRESET_SECTIONS[preset])
+
+
+def _set_extras(on: bool) -> None:
+    from report_agent.story import OPTIONAL_SECTIONS
+    for key in OPTIONAL_SECTIONS:
+        _tick(f"rpt2_extra_{key}", on)
+
+
+def _checkbox_grid(options: dict, prefix: str, columns: int = 3) -> None:
+    """One checkbox per option ({key: label}), in columns. The ticks are also
+    kept in _rpt2_ticks, so they survive a visit to another tab."""
+    saved = st.session_state.setdefault("_rpt2_ticks", {})
+    cols = st.columns(columns)
+    for i, (key, label) in enumerate(options.items()):
+        wkey = f"{prefix}{key}"
+        if wkey not in st.session_state:
+            st.session_state[wkey] = saved.get(wkey, False)
+        saved[wkey] = cols[i % columns].checkbox(label, key=wkey)
+
+
+def _pick_units(preset: str, units: list[str], word: str) -> list[str]:
+    """The units to make files for (all by default), kept per level across tab visits."""
+    saved = st.session_state.setdefault("_rpt2_units", {})
+    key = f"rpt2_units_{preset}"
+    if key not in st.session_state:
+        st.session_state[key] = [u for u in saved.get(preset, units) if u in units] or list(units)
+    st.session_state[key] = [u for u in st.session_state[key] if u in units]     # filters may have changed
+    picked = st.multiselect(f"Which {word}s?", units, key=key, label_visibility="collapsed",
+                            placeholder=f"Pick one or more {word}s")
+    saved[preset] = picked
+    note = (f"All {len(units)} {word}s in view." if len(picked) == len(units)
+            else f"{len(picked)} of {len(units)} {word}s.")
+    st.markdown(f'<div class="rpt2-help" style="margin-top:2px;">{note} One file each.</div>', unsafe_allow_html=True)
+    return picked
+
+
+def _generate(df_curr, df_prev, curr_month, prev_month, preset, filters, sections, fmt, use_ai, only=None) -> None:
+    from report_agent.packs import MIME, build_files, zip_files
+    bar = st.progress(0.0, text="Building...")
+    out = build_files(df_curr, df_prev, curr_month, prev_month, preset, filters, sections=sections, fmt=fmt,
+                      use_ai=use_ai, only=only, progress=lambda i, n, u: bar.progress(i / n, text=f"{i} of {n}: {u}"))
+    bar.empty()
+    files = out["files"]
+    if len(files) == 1:
+        name, data = files[0]
+        mime = MIME[name.rsplit(".", 1)[1]]
+    else:
+        name, data, mime = f"{preset.lower()}_reports_{curr_month}.zip", zip_files(files), MIME["zip"]
+    st.session_state["rpt2"] = {"name": name, "data": data, "mime": mime, "n": len(files), "preset": preset,
+                                "fmt": fmt, "month": curr_month, "preview": out["preview"], "notes": out["notes"],
+                                "title": (out.get("titles") or [f"{preset} Report"])[0]}
+
+
+def _show_result() -> None:
+    out = st.session_state.get("rpt2")
+    if not out or "data" not in out:
         return
+    for note in out["notes"][:3]:
+        (st.success if "AI summary added" in note else st.warning)(note)
+    label = (f"⬇ Download {out['n']} {out['preset']} reports ({out['fmt']}, ZIP)" if out["n"] > 1
+             else f"⬇ Download the {out['preset']} report ({out['fmt']})")
+    st.download_button(label, out["data"], out["name"], out["mime"], key="rpt2_download", type="primary")
 
-    if _rpt.get("error"):
-        st.error(f"Report generation failed: {_rpt['error']}")
-        return
+    if out["fmt"] == "HTML" and out["n"] == 1:
+        if os.environ.get("SMTP_HOST", ""):
+            e1, e2 = st.columns([3, 1])
+            to = e1.text_input("Send the HTML report to", placeholder="manager@company.com, head@company.com",
+                               key="rpt2_email_to", help="Separate several addresses with a comma.")
+            e2.markdown('<div style="height:28px;"></div>', unsafe_allow_html=True)
+            if e2.button("📧 Send", key="rpt2_send", width="stretch"):
+                if not to.strip():
+                    st.warning("Enter an email address.")
+                else:
+                    ok, err = _send_report_email(out["data"].decode("utf-8"), to.strip(), out["month"],
+                                                 title=out.get("title", "Portfolio Report"), file_name=out["name"])
+                    (st.success(f"Sent to {to}") if ok else st.error(f"Failed: {err}"))
+        else:
+            st.caption("Email sending is off: add SMTP_HOST / SMTP_USER / SMTP_PASS to .env to turn it on.")
 
-    if not _rpt.get("html_report"):
-        return
-
-    st.success("Report generated successfully.")
-    if _rpt.get("ai_skipped") and not _rpt.get("skip_ai"):
-        st.warning("AI summary could not be generated (Gemini unavailable). Report sent without it.")
-    if _rpt.get("email_sent"):
-        st.info(f"Report emailed to: {_rpt.get('email_to', '')}")
-    elif _rpt.get("email_error") and os.environ.get("SMTP_HOST", "") and _rpt.get("email_to", ""):
-        st.warning(f"Email failed: {_rpt['email_error']}")
-
-    rpt_dl_col, _ = st.columns([1, 3])
-    with rpt_dl_col:
-        st.download_button(
-            label="⬇  Download Intelligence Report (HTML)",
-            data=_rpt["html_report"].encode("utf-8"),
-            file_name=f"portfolio_intelligence_{curr_month}.html",
-            mime="text/html",
-            width='stretch',
-        )
-
-    if _rpt.get("executive_narrative"):
-        bullets = [l.strip().lstrip("- ").strip() for l in _rpt["executive_narrative"].split("\n") if l.strip()]
-        narrative_html = "".join(
-            f'<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #1e293b;">'
-            f'<span style="color:#FFC000;font-size:14px;font-weight:900;flex-shrink:0;">&#8226;</span>'
-            f'<span style="color:#c9d1d9;font-size:13px;line-height:1.6;">{_esc(b)}</span>'
-            f'</div>'
-            for b in bullets
-        )
-        st.markdown(f"""
-        <div class="obs-card">
-          <div class="obs-title">AI Executive Narrative</div>
-          <div style="margin-top:8px;">{narrative_html}</div>
-        </div>""", unsafe_allow_html=True)
-
-    if _rpt.get("action_plan"):
-        lines = [l.strip() for l in _rpt["action_plan"].split("\n") if l.strip()][:5]
-        action_html = "".join(
-            f'<div style="padding:8px 0;border-bottom:1px solid #21262d;font-size:13px;color:#8b949e;">{_esc(l)}</div>'
-            for l in lines
-        )
-        st.markdown(f"""
-        <div class="obs-card" style="margin-top:12px;">
-          <div class="obs-title">Prioritized Action Plan</div>
-          {action_html}
-        </div>""", unsafe_allow_html=True)
+    with st.expander("Preview" + (" (the first file)" if out["n"] > 1 else ""), expanded=True, key="rpt2_preview"):
+        st.html(out["preview"])

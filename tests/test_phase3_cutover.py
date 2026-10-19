@@ -9,7 +9,6 @@ Validates that:
 5. Empty plan results are now returned as empty DataFrames (not errors)
 """
 import pandas as pd
-import pytest
 
 from agents.plan_executor import execute_plan, validate_plan
 from compiler.core import compile_logical
@@ -312,6 +311,21 @@ class TestGraphNodes:
         out = execute_node(state)
         assert out["error"] == ""
         assert len(out["result_df"]) == 2  # L1, L4
+
+    def test_execute_node_show_all_columns_skips_default_curated_trim(self):
+        # Caught live: "... show me all columns" returned 44 of 93 columns.
+        # compile_logical skipped its select step correctly, but execute_node's
+        # default QUERY_DISPLAY_COLS trim still ran afterwards.
+        from graph import execute_node
+        df = _loan_df().assign(LGL_FLAG="N")  # LGL_FLAG is outside QUERY_DISPLAY_COLS
+        plan = [{"op": "filter", "conditions": [{"column": "curr_bucket", "op": "==", "value": "NPA"}]}]
+        state = self._stub_state(ir1={"intent": "loan_table", "show_all_columns": True},
+                                 plan=plan, result_df_full=df)
+        out = execute_node(state)
+        assert out["error"] == ""
+        # Every input column survives (execute_node may add its own Rank).
+        assert set(df.columns) <= set(out["result_df"].columns)
+        assert "LGL_FLAG" in out["result_df"].columns
 
     def test_execute_node_aggregation(self):
         from graph import execute_node

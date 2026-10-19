@@ -1,4 +1,4 @@
-﻿"""Registry foundation tests (Phase 0 of the v2 architecture).
+"""Registry foundation tests (Phase 0 of the v2 architecture).
 
 These lock in two things:
 1. ZERO BEHAVIOR CHANGE  -  migrating PRIORITY_RULES into registry/ontology.py must
@@ -9,9 +9,8 @@ These lock in two things:
    both exist during the transition.
 """
 import importlib
-import re
 
-from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS
+from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS, CUSTOMER_LOAN_COUNT
 from registry import (
     CONCEPTS, METRICS, PRIORITY_RULES, ENTITIES, DIMENSIONS, ENTITY_CONCEPTS, VIEWS,
     entity_key, is_coarser, resolve_dimension,
@@ -22,7 +21,7 @@ from registry import (
 _DERIVED_COLS = {
     "curr_bucket", "curr_score", "SOH", "prev_bucket",
     "Overdue", "MonthDemandExclPC", "OverdueCollected", "DemandCollected",
-    "Overdue Collection %", "Month Demand Collection %",
+    "Overdue Collection %", "Month Demand Collection %", CUSTOMER_LOAN_COUNT,
 } | set(PREV_CARRYOVER_COLS.values())
 # The dynamic cutoff placeholder is resolved at execution time, not a real value.
 _DYNAMIC_VALUES = {"__CUTOFF_1Y__"}
@@ -32,8 +31,8 @@ _KNOWN_COLS = set(CRITICAL_COLS) | set(REQUIRED_COLS) | _DERIVED_COLS
 # Which concept each priority tier corresponds to (consistency guard).
 _PRIORITY_TO_CONCEPT = {
     "Non Starters":                  "non_starter",
-    "Easy Settlements":              "easy_settlement",
-    "Recent Advances - High Bucket": "recent_advance_high_bucket",
+    "Easy to Nil":                   "easy_settlement",
+    "Recent Advances: High Bucket": "recent_advance_high_bucket",
     "Insurance-Driven Delinquency":  "insurance_driven_delinquency",
     "Co-lending at Risk":            "colending_at_risk",
     "No Collection 3 Months":        "no_collection_3m",
@@ -42,21 +41,6 @@ _PRIORITY_TO_CONCEPT = {
 
 
 class TestZeroBehaviorChange:
-    def test_priority_rules_reexported_identically(self):
-        # The migrated registry list IS what agents.domain_expert exposes  -  no copy,
-        # no drift. execute_priority_mode imports it lazily from domain_expert.
-        from agents.domain_expert import PRIORITY_RULES as DE_RULES
-        assert DE_RULES is PRIORITY_RULES
-
-    def test_priority_text_unchanged(self):
-        # The generated prompt section must still list all 7 tiers in rank order
-        # with their exact labels  -  this is the text the LLM sees.
-        from agents.domain_expert import _build_priority_text
-        text = _build_priority_text()
-        for r in PRIORITY_RULES:
-            assert f"Priority {r['rank']} - {r['label']}" in text
-        assert text.count("Priority ") == len(PRIORITY_RULES) == 7
-
     def test_priority_mode_still_imports(self):
         # Guard the lazy import path used by the executor at runtime.
         from agents.data_executor import execute_priority_mode  # noqa: F401
@@ -257,3 +241,35 @@ class TestViewsIntegrity:
             assert spec["fn"].startswith("analysis."), f"view {name}: fn '{spec['fn']}' is not under analysis."
             module_path = spec["fn"].rsplit(".", 1)[0]
             importlib.import_module(module_path)  # raises if it doesn't exist
+
+
+def test_every_view_can_be_computed_on_demand():
+    # app.py precomputes only the scorecard and roll matrix for AI Query; every
+    # other view must be answerable straight from the data.
+    import graph
+    from analysis.roll_rate import compute_roll_rate_matrix
+    from registry.views import VIEWS
+    from tests.test_action_center import _book, _prev
+    c = _book()
+    p = _prev(c)
+    rr_meta = compute_roll_rate_matrix(c, p)[1]
+    failed = {}
+    for name, spec in VIEWS.items():
+        try:
+            graph._call_view_fn(name, spec, c, p, {}, rr_meta)
+        except Exception as e:      # noqa: BLE001 -- collect every failure
+            failed[name] = repr(e)
+    assert failed == {}
+
+
+def test_dimension_by_real_column_name_in_any_case():
+    # The planner sometimes writes a column name in its own case ("fuel_type"
+    # for FUEL_TYPE); that must group by the real column, not fail to compile.
+    import pandas as pd
+    from compiler.core import compile_logical
+    df = pd.DataFrame({"Loan No": ["L1", "L2"], "FUEL_TYPE": ["DIESEL", "CNG"], "SegmentName": ["A", "B"],
+                       "curr_bucket": ["NPA", "STD"], "Arrears / EMI": [4.0, 0.0]})
+    plan, errs = compile_logical({"intent": "aggregation", "dimensions": ["segment", "fuel_type"],
+                                  "measures": [{"name": "Count", "agg": "count"}]}, df)
+    assert errs == [], errs
+    assert any(s.get("op") == "group_aggregate" and s["group_by"] == ["SegmentName", "FUEL_TYPE"] for s in plan)

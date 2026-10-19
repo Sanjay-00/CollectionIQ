@@ -1,44 +1,56 @@
-﻿import os
-import time
-from google import genai
+import os
+import re
+
 from langsmith import traceable
 from config import GEMINI_MODEL
-
-
-def _call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2) -> object:
-    for attempt in range(max_retries + 1):
-        try:
-            return client.models.generate_content(model=model, contents=contents, config=config)
-        except Exception as e:
-            if attempt == max_retries:
-                raise
-            time.sleep(2 ** attempt)
-
-
-def _add_token_usage(response) -> None:
-    try:
-        from langsmith.run_helpers import get_current_run_tree
-        rt = get_current_run_tree()
-        if rt is None:
-            return
-        um = getattr(response, "usage_metadata", None)
-        if um:
-            rt.add_metadata({
-                "input_tokens":  int(getattr(um, "prompt_token_count",     0) or 0),
-                "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
-                "total_tokens":  int(getattr(um, "total_token_count",      0) or 0),
-            })
-    except Exception:
-        pass
+from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry, make_client
 
 SYSTEM_PROMPT = """You are a senior credit risk analyst at an NBFC (Non-Banking Financial Company).
 Generate concise, actionable observations from loan portfolio query results.
 Write exactly 4-5 bullet points.
 Each bullet must start with "• ".
-Be specific - use the numbers provided. Focus on risk, action, and urgency.
+Be specific: use the numbers provided. Focus on risk, action, and urgency.
 Do not use generic statements. Do not repeat the same fact in different words.
-Use a single hyphen (-) when a dash is needed. Never use double dash (--), em dash ( - ), or en dash ( - ).
+Use a single hyphen (-) when a dash is needed. Never use a double hyphen, an em dash, or an en dash.
+Quote every number exactly as it appears in the data. Do not convert units, round, add up or compute new numbers.
+Only describe the rows you are shown.
 """
+
+_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Counting words ("3 of the 5 branches", "top 10") are fine without a source.
+_SMALL_INT_MAX = 10
+
+
+def _values(text: str) -> set[float]:
+    return {float(n.replace(",", "")) for n in _NUM.findall(text)}
+
+
+def _unverified(line: str, allowed: set[float]) -> list[float]:
+    return [v for v in _values(line)
+            if v not in allowed and not (v.is_integer() and v <= _SMALL_INT_MAX)]
+
+
+def check_numbers(answer: str, facts: str) -> str:
+    """Keep only the bullets whose every number is in `facts` (compared by
+    value: "12.5" matches "12.50"), the same guard as the report's AI summary
+    (report_agent/ai_summary.py). Says how many were removed."""
+    allowed = _values(facts)
+    kept, removed = [], 0
+    for line in (ln for ln in answer.splitlines() if ln.strip()):
+        if _unverified(line, allowed):
+            removed += 1
+        else:
+            kept.append(line)
+    if removed and not kept:
+        return "• AI observations removed: they used numbers that are not in the result."
+    if removed:
+        kept.append(f"• {removed} observation(s) removed: they used numbers that are not in the result.")
+    return "\n".join(kept)
+
+
+def _cell(v):
+    """A table value as the model should quote it: floats to 2 decimals."""
+    return round(v, 2) if isinstance(v, float) else v
 
 
 def _fmt_money(val: float) -> str:
@@ -59,22 +71,25 @@ def generate_insights(
 ) -> str:
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
-        return "• GOOGLE_API_KEY not set - AI observations unavailable."
+        return "• GOOGLE_API_KEY not set: AI observations unavailable."
 
     agg_rows = kpis.get("_agg_rows")
 
     if agg_rows:
         # Aggregation result  -  build context from the grouped table rows
         rows_text = "\n".join(
-            "  " + ", ".join(f"{k}: {v}" for k, v in row.items() if k != "Rank")
+            "  " + ", ".join(f"{k}: {_cell(v)}" for k, v in row.items() if k != "Rank")
             for row in agg_rows
         )
+        total = kpis.get("Count", len(agg_rows))
+        shown = (f"all {total} rows" if len(agg_rows) >= total
+                 else f"the first {len(agg_rows)} of {total} rows, in the table's order")
         context = f"""
 User query: "{query}"
 Interpreted as: {plain_english}
 Focus area: {insight_focus if insight_focus else "General portfolio risk analysis"}
 
-AGGREGATION RESULT ({kpis.get('Count', 0)} groups):
+RESULT TABLE ({shown}):
 {rows_text}
 """
     else:
@@ -110,10 +125,10 @@ BUCKET DISTRIBUTION (% of matched accounts):
 {chr(10).join(f"  {k}: {v}%" for k, v in bucket_dist.items()) if bucket_dist else "  No data"}
 """
 
-    client = genai.Client(api_key=api_key)
+    client = make_client(api_key)
     response = _call_gemini_with_retry(
         client, GEMINI_MODEL, context,
         {"system_instruction": SYSTEM_PROMPT},
     )
     _add_token_usage(response)
-    return response.text.strip()
+    return check_numbers(response.text.strip(), context)

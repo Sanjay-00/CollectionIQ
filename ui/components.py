@@ -1,5 +1,6 @@
 """Shared UI helpers used across multiple tab modules."""
 
+import datetime
 import hashlib
 import html
 import re
@@ -7,8 +8,15 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
-from utils import load_and_validate, REQUIRED_COLS, CRITICAL_COLS
+from utils import (
+    load_and_validate, expand_to_all_columns, add_customer_loan_count, normalize_truncated_names,
+    REQUIRED_COLS, CRITICAL_COLS,
+)
+from utils import dates_only as _dateonly      # noqa: F401  (its old name here, for existing callers)
 
 
 def _esc(val):
@@ -21,7 +29,7 @@ def _esc(val):
     and since uploads are user-supplied they're also a stored-XSS vector on
     a shared deployment. Gemini/planner output (query titles, insight
     bullets, plan descriptions) is the same risk class and must go through
-    here too. report_agent/nodes/report_builder.py has its own _esc for the
+    here too. report_agent/render.py escapes its own HTML for the
     same reason; this is the dashboard-side twin.
 
     Strings are escaped (quote=True so it's also safe inside attribute
@@ -58,7 +66,7 @@ def query_confidence_tier(result: dict) -> tuple[str, str, str]:
     if result.get("view_render"):
         return (
             "Verified", "#16a34a",
-            "Served by the same pre-built analysis used on the dashboard tabs -- this number matches what you'd see there.",
+            "Served by the same pre-built analysis used on the dashboard tabs: this number matches what you'd see there.",
         )
     # Priority Rules: routed to the fixed seven-tier business-priority
     # framework (agents/data_executor.py::execute_priority_mode) instead of
@@ -172,10 +180,28 @@ def _file_fingerprint(files) -> str:
         return "none"
     if not isinstance(files, list):
         files = [files]
+
+    # app.py calls this on EVERY rerun (the stale-file guard), and hashing a
+    # 200MB upload each click is real latency. Streamlit gives each upload a
+    # unique file_id, so remember the digest per (file_id, size) and only
+    # hash when a new file actually appears. Objects without a file_id
+    # (tests, non-Streamlit callers) are always hashed.
+    ident = tuple((getattr(f, "file_id", None), getattr(f, "size", None)) for f in files)
+    memo = None
+    if all(fid is not None for fid, _ in ident):
+        memo = st.session_state.setdefault("_file_fingerprint_memo", {})
+        if ident in memo:
+            return memo[ident]
+
     h = hashlib.sha256()
     for f in files:
         h.update(f.getvalue())
-    return h.hexdigest()[:16]
+    digest = h.hexdigest()[:16]
+    if memo is not None:
+        if len(memo) >= 8:  # only the current curr/prev selections matter
+            memo.clear()
+        memo[ident] = digest
+    return digest
 
 
 def _bump_data_version(fingerprint: str | None = None) -> None:
@@ -207,50 +233,6 @@ def _bump_data_version(fingerprint: str | None = None) -> None:
         st.session_state["_data_version"] = st.session_state.get("_data_version", 0) + 1
 
 
-def _style_main_content_selectbox(color: str = "#fff") -> None:
-    """Fix near-invisible dark-on-dark text on a main-content (non-sidebar)
-    st.selectbox -- ui/styles.py's white-text rule only targets
-    `[data-testid="stSidebar"] .stSelectbox`, so any selectbox rendered
-    outside the sidebar keeps the default dark text on the dark selectbox
-    background.
-
-    This targets EVERY `stSelectbox` on the page (Streamlit doesn't scope
-    injected `st.markdown` styles to one call site), so every caller should
-    use the SAME color for visual consistency. Only the active tab's render
-    code runs per rerun (app.py's segmented-control switcher), so a mismatched
-    color between callers can no longer leak into a different, inactive tab --
-    it would just look inconsistent if this tab's own color ever differed from
-    the others'. Callers: ui/tabs/migration.py, ui/tabs/ai_query.py,
-    ui/tabs/business.py.
-    """
-    # data-baseweb="select" is gone as of Streamlit 1.59.0 (the Selectbox
-    # widget dropped BaseWeb entirely) -- role="combobox" is the new stable
-    # target. Both kept side by side, same cross-version-safety reasoning as
-    # ui/styles.py's own tab-navigation/sidebar-selectbox fixes.
-    st.markdown(f"""
-<style>
-div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-div[data-testid="stSelectbox"] [data-baseweb="select"] span,
-div[data-testid="stSelectbox"] [role="combobox"],
-div[data-testid="stSelectbox"] [role="combobox"] * {{ color: {color} !important; }}
-</style>""", unsafe_allow_html=True)
-
-
-def _dateonly(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop the always-00:00:00 time component from datetime64 columns.
-
-    LCC date columns (Ag_Date, Last Receipt Date, etc.) carry no real time-of-day
-    signal -- they're loan-level dates, not timestamps -- but pandas' datetime64
-    dtype always renders the full "2022-11-01 00:00:00" in both st.dataframe and
-    an exported .xlsx cell. .dt.date yields plain python date objects, which
-    display and export as a bare date with no formatting/dtype trickery needed."""
-    df = df.copy()
-    for col in df.select_dtypes(include="datetime64[ns]").columns:
-        df[col] = df[col].dt.date
-    return df
-
-
 def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce mixed-type object columns to string for safe st.dataframe display."""
     df = _dateonly(df)
@@ -259,16 +241,112 @@ def _safe_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+TOP_CHOICES = [10, 20, 50, 100, "All"]
+
+
+WHOLE_LIST = "Whole list"
+
+
+def list_controls(key: str, df: pd.DataFrame, branch_col: str = "Branch", noun: str = "rows",
+                  region_col: str = "Region", source: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Top X with Zone, Region and Branch filters (each narrowing the next)
+    and "Top X in each" zone / region / branch, for any list already sorted
+    with the most important rows first. A level shows only when the list has
+    its column with 2+ values. source: the loans the list came from; when the
+    list has Loan No but no Zone, each loan's zone is looked up from it."""
+    if "Zone" not in df.columns and source is not None and "Loan No" in df.columns \
+            and {"Loan No", "Zone"} <= set(source.columns):
+        zone_of = source.drop_duplicates("Loan No").set_index("Loan No")["Zone"]
+        df = df.assign(Zone=df["Loan No"].map(zone_of))
+    levels = [(label, col) for label, col in (("Zone", "Zone"), ("Region", region_col), ("Branch", branch_col))
+              if col in df.columns and df[col].nunique(dropna=True) > 1]
+    boxes = st.columns([1] + [1.1] * len(levels) + [1.3])
+    n = boxes[0].selectbox("Show top", TOP_CHOICES, index=0, key=f"{key}_n")
+    scope = df
+    for (label, col), box in zip(levels, boxes[1:]):
+        options = ["All"] + sorted(scope[col].dropna().astype(str).unique())
+        wkey = f"{key}_{label[0].lower()}"            # _z, _r, _b
+        if st.session_state.get(wkey) not in options:  # e.g. a branch outside the region just picked
+            st.session_state[wkey] = "All"
+        pick = box.selectbox(label, options, key=wkey)
+        if pick != "All":
+            scope = scope[scope[col].astype(str) == pick]
+    # "Top X in each": only the levels still with 2+ values after the filters.
+    group_by = {label: col for label, col in levels if scope[col].nunique(dropna=True) > 1}
+    each_options = [WHOLE_LIST, *group_by]
+    if st.session_state.get(f"{key}_each") not in each_options:
+        st.session_state[f"{key}_each"] = WHOLE_LIST
+    each = boxes[-1].selectbox(f"Top {n} in each" if n != "All" else "Group by", each_options, key=f"{key}_each")
+    d = scope
+    if each != WHOLE_LIST:
+        col = group_by[each]
+        d = d.groupby(col, sort=True, group_keys=False).head(n if n != "All" else len(d))
+        d = d.sort_values(col, kind="stable")
+    elif n != "All":
+        d = d.head(n)
+    st.caption(f"Showing {len(d):,} of {len(df):,} {noun}"
+               + (f": the top {n} in each {each.lower()}." if each != WHOLE_LIST and n != "All" else "."))
+    return d
+
+
+# The place hierarchy every screen filters and breaks down by: (label, column).
+PLACE_LEVELS = (("Zone", "Zone"), ("Region", "RegionName"), ("Branch", "Unit"))
+
+
+def place_filters(df: pd.DataFrame, key: str, container=None) -> tuple[pd.DataFrame, dict]:
+    """Zone, Region and Branch dropdowns over loan rows, each narrowing the
+    next (a level shows only when its column has 2+ values in view). A pick
+    that no longer fits (a branch outside the region just picked) goes back to
+    All. Returns (the loans in the chosen place, {label: pick} for each level
+    not on All)."""
+    levels = [(label, col) for label, col in PLACE_LEVELS if col in df.columns and df[col].nunique(dropna=True) > 1]
+    if not levels:
+        return df, {}
+    boxes = (container or st).columns(len(levels))
+    scope, picks = df, {}
+    for (label, col), box in zip(levels, boxes):
+        options = ["All"] + sorted(scope[col].dropna().astype(str).unique())
+        wkey = f"{key}_{label.lower()}"
+        if st.session_state.get(wkey) not in options:
+            st.session_state[wkey] = "All"
+        pick = box.selectbox(label, options, key=wkey)
+        if pick != "All":
+            scope, picks[label] = scope[scope[col].astype(str) == pick], pick
+    return scope, picks
+
+
+def apply_place(df: pd.DataFrame, picks: dict, loose: bool = False) -> pd.DataFrame:
+    """Rows in the place `picks` names ({label: value}, as place_filters
+    returns). loose: match ignoring case and spaces (last month's file, whose
+    names may be typed differently)."""
+    from utils import _unit_key
+    cols = dict(PLACE_LEVELS)
+    for label, value in picks.items():
+        col = cols[label]
+        if col not in df.columns:
+            continue
+        df = df[df[col].map(_unit_key) == _unit_key(value)] if loose else df[df[col].astype(str) == str(value)]
+    return df
+
+
+def takeaway(text: str) -> None:
+    """The one-line yellow summary at the top of a view (text may hold <b>)."""
+    st.markdown(f'<div style="border-left:4px solid #FFC000;background:#fffbea;padding:8px 12px;'
+                f'border-radius:6px;font-size:13.5px;color:#111827;margin:4px 0 10px 0;">{text}</div>',
+                unsafe_allow_html=True)
+
+
+def section_label(title: str, margin_top: str = "0px") -> None:
+    """The yellow section heading used across the tabs."""
+    st.markdown(f'<div class="section-label" style="margin-top:{margin_top};">{title}</div>',
+                unsafe_allow_html=True)
+
+
 def _chart_card(fig) -> None:
     """Render a Plotly figure inside the standard bordered .chart-card wrapper."""
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
     st.plotly_chart(fig, width='stretch')
     st.markdown('</div>', unsafe_allow_html=True)
-
-
-def _divider(margin: str = "24px 0") -> None:
-    """Standard horizontal section divider."""
-    st.markdown(f'<div style="border-top:1px solid #e5e7eb;margin:{margin};"></div>', unsafe_allow_html=True)
 
 
 def _empty_state(icon: str, title: str, sub: str) -> None:
@@ -283,19 +361,156 @@ def _empty_state(icon: str, title: str, sub: str) -> None:
     )
 
 
-# max_entries=64: one entry per distinct table rendered behind a download
-# button (~20+ per full tab walk, x filter combinations). Excel bytes are
-# smaller than the DataFrames upstream, so the limit is looser -- but still
-# bounded, since by default st.cache_data keeps every entry forever.
-@st.cache_data(show_spinner=False, max_entries=64)
+# max_entries=24: one entry per download actually clicked (downloads are
+# built on click). A full-column loan list can be tens of MB, and the cache is
+# shared by every session, so it stays bounded.
+@st.cache_data(show_spinner=False, max_entries=24)
 def _excel_bytes(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
-    _dateonly(df).to_excel(buf, index=False, engine="openpyxl")
+    out = _dateonly(df)
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        out.to_excel(writer, index=False, sheet_name="Sheet1")
+        style_excel_sheet(writer.sheets["Sheet1"], out)
     return buf.getvalue()
 
 
-def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
+# ── Excel download styling ────────────────────────────────────────────────────
+# Same look as the app's own tables: black header with amber text, bold Total
+# row with an amber rule, and red/green colour scales on metric columns.
+# One header style for every Excel download: blue with white text.
+XL_HEADER_BLUE, XL_HEADER_TEXT, XL_TOTAL_TINT = "1F4E78", "FFFFFF", "DDEBF7"
+_XL_HEADER_FILL = PatternFill("solid", fgColor=XL_HEADER_BLUE)
+_XL_HEADER_FONT = Font(bold=True, color=XL_HEADER_TEXT)
+_XL_TOTAL_FILL = PatternFill("solid", fgColor=XL_TOTAL_TINT)
+_XL_TOTAL_BORDER = Border(top=Side(style="medium", color=XL_HEADER_BLUE))
+_XL_GREEN, _XL_YELLOW, _XL_RED = "63BE7B", "FFEB84", "F8696B"  # Excel's own default scale
+_XL_WHITE = "FFFFFF"
+
+# Colour direction by column name. Only "%" columns (and Concern Score) get a
+# scale -- plain counts and amounts aren't "good" or "bad" on their own.
+_XL_HIGHER_IS_WORSE = (
+    "NPA", "SMA", "DELINQUEN", "HARD BUCKET", "ROLL FWD", "ROLL FORWARD", "1-30 DPD",
+    "NOT PAYING", "HARD +", "INSURANCE-ONLY", "INSTALLMENT-ONLY", "CONCERN SCORE",
+)
+_XL_HIGHER_IS_BETTER = ("COLLECTION", "STRIKE", "LCC", "ROLL BWD", "ROLL BACK")
+
+# Per-cell number formats are the one slow part (openpyxl styles cell by cell);
+# past this size (e.g. a 60k-row x 90-col loan dump) they're skipped. The
+# header, filters, widths and colour scales are cheap at any size.
+_XL_FORMAT_MAX_CELLS = 200_000
+
+
+def _xl_metric_direction(col) -> str | None:
+    name = str(col).upper()
+    if "%" not in name and "CONCERN SCORE" not in name:
+        return None
+    if any(k in name for k in _XL_HIGHER_IS_WORSE):
+        return "worse"
+    if any(k in name for k in _XL_HIGHER_IS_BETTER):
+        return "better"
+    return None
+
+
+def xl_color_scale(direction: str) -> ColorScaleRule:
+    """Risk ("worse") columns: white -> red, never green. Good ("better")
+    columns keep Excel's red -> yellow -> green."""
+    if direction == "worse":
+        return ColorScaleRule(start_type="min", start_color=_XL_WHITE, end_type="max", end_color=_XL_RED)
+    return ColorScaleRule(
+        start_type="min", start_color=_XL_RED,
+        mid_type="percentile", mid_value=50, mid_color=_XL_YELLOW,
+        end_type="max", end_color=_XL_GREEN,
+    )
+
+
+def style_excel_sheet(ws, df: pd.DataFrame) -> None:
+    """Format a sheet that `df` was just written to (header in row 1, no index)."""
+    n_rows, n_cols = len(df), len(df.columns)
+    if n_cols == 0:
+        return
+
+    for cell in ws[1]:
+        cell.fill, cell.font = _XL_HEADER_FILL, _XL_HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = "A2"
+    if n_rows:
+        ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{n_rows + 1}"
+
+    sample = df.head(200)
+    for j, col in enumerate(df.columns, start=1):
+        lengths = [len(str(v)) for v in sample[col].tolist() if not _is_blank(v)]
+        ws.column_dimensions[get_column_letter(j)].width = min(max([len(str(col))] + lengths) + 3, 40)
+
+    first = str(df.iloc[-1, 0]).strip() if n_rows else ""
+    has_total = first == "Grand Total" or first == "Total" or first.startswith("Total (")
+    n_data = n_rows - 1 if has_total else n_rows
+    if has_total:
+        for cell in ws[n_rows + 1]:
+            cell.font, cell.fill, cell.border = Font(bold=True), _XL_TOTAL_FILL, _XL_TOTAL_BORDER
+
+    small = n_rows * n_cols <= _XL_FORMAT_MAX_CELLS
+    for j, col in enumerate(df.columns, start=1):
+        values = pd.to_numeric(df[col].iloc[:n_data], errors="coerce")
+        non_blank = int((~df[col].iloc[:n_data].map(_is_blank)).sum())
+        if pd.api.types.is_bool_dtype(df[col]) or non_blank == 0 or values.notna().sum() != non_blank:
+            continue  # not a numeric column
+        letter = get_column_letter(j)
+
+        direction = _xl_metric_direction(col)
+        if direction and n_data >= 2:
+            ws.conditional_formatting.add(f"{letter}2:{letter}{n_data + 1}", xl_color_scale(direction))
+
+        if not small:
+            continue
+        if "%" in str(col):
+            fmt = '0.0"%"'  # values are already on a 0-100 scale
+        elif _is_id_like_column(str(col)):
+            continue
+        elif (values.dropna() % 1 == 0).all():
+            if values.abs().max() < 10_000:
+                continue  # small whole numbers (counts, years, tenure) read fine as-is
+            fmt = "#,##0"
+        else:
+            fmt = "#,##0.00"
+        for (cell,) in ws.iter_rows(min_row=2, max_row=n_rows + 1, min_col=j, max_col=j):
+            cell.number_format = fmt
+
+
+def _is_blank(v) -> bool:
+    return v is None or v == "" or (not isinstance(v, (list, tuple, dict)) and pd.isna(v))
+
+
+# The app's tabs, in order (app.py's tab bar). Shared so a "See details"
+# button can switch to a tab by its exact label.
+TAB_LABELS = ["🗂️ Dashboard", "🎯 Action Lists", "📈 Migration", "📊 Portfolio Intelligence",
+              "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
+TAB_KEY = "_active_section"
+
+
+def goto_tab_button(tab: str, key: str, label: str | None = None, state: dict | None = None) -> None:
+    """A small button that opens another tab (sets the tab bar's value), and
+    optionally a view inside it (`state`: session keys to set)."""
+    def _go() -> None:
+        st.session_state[TAB_KEY] = tab
+        for k, v in (state or {}).items():
+            st.session_state[k] = v
+    st.button(label or f"See details in {tab.split(' ', 1)[1]} →", key=key, on_click=_go)
+
+
+def _download_frame(df: pd.DataFrame, full_source: pd.DataFrame | None) -> pd.DataFrame:
+    """What a table's download contains: the table itself, or (with
+    full_source) every raw upload column for the same loans."""
+    return expand_to_all_columns(df, full_source) if full_source is not None else df
+
+
+def _dl_btn(df: pd.DataFrame, filename: str, key: str, full_source: pd.DataFrame | None = None) -> None:
     """Right-aligned compact Excel download button.
+
+    full_source: pass the loan-level frame the table was derived from (e.g.
+    df_curr) to make the DOWNLOAD carry every raw upload column plus the
+    table's own computed columns, while the on-screen table stays curated.
+    A no-op for tables without a Loan No column (aggregates, scorecards) --
+    see utils.expand_to_all_columns.
 
     Streamlit reruns the ENTIRE script (all 7 tabs, not just the active one --
     tabs are only CSS-hidden when inactive, their code still executes) on
@@ -317,46 +532,17 @@ def _dl_btn(df: pd.DataFrame, filename: str, key: str) -> None:
     data). Content hashing fixes this correctly regardless of object
     identity -- verified: a fresh, freshly-copied 2,000-row DataFrame with
     identical content hits cache in ~0.025s vs a ~3.3s cold write."""
-    data = _excel_bytes(df)
-
     _, col = st.columns([5, 1])
     with col:
         st.download_button(
-            "⬇ Excel", data=data, file_name=filename,
+            # A function, not bytes: Streamlit builds the file only when the
+            # button is clicked. Building every table's styled workbook up
+            # front cost seconds per page load (~10s for an 8,000-loan table)
+            # for files nobody downloaded.
+            "⬇ Excel", data=lambda: _excel_bytes(_download_frame(df, full_source)), file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key, width='stretch',
         )
-
-
-def _cached_html_export(cache_key: tuple, build_fn, *args, **kwargs) -> str:
-    """ui/tabs/dashboard.py's build_html_export call ran unconditionally on
-    every render (not gated behind the download button click -- Streamlit's
-    download_button needs its `data=` bytes ready upfront, so there's no
-    native "compute on click" for this), and it's expensive: pio.to_html() on
-    3 full Plotly figures plus assembling a large formatted HTML string, every
-    single Streamlit rerun of the ENTIRE app, since Dashboard is tabs[0] and
-    always executes regardless of which tab is actually visible.
-
-    `cache_key` must be the same (data_version, region, branch, status,
-    segment) tuple app.py's own _cached_* functions already use as their
-    cache key -- NOT `df_curr is` the object from last time. That was the
-    original design here (mirroring _dl_btn's old approach) but it never
-    actually worked: df_curr itself comes from a @st.cache_data call
-    (_cached_filter), and st.cache_data returns a fresh COPY on every cache
-    hit, not the original object -- proven directly by calling a trivial
-    @st.cache_data function twice with identical args and getting `is` False
-    both times. So this was a guaranteed cache miss on every single rerun.
-    build_fn/its figure args aren't reliably auto-hashable by st.cache_data
-    (Plotly Figure objects, arbitrary callables), so this uses the same
-    explicit-tuple-key idiom the rest of app.py's caching already relies on,
-    rather than trying to make Streamlit hash them."""
-    cache = st.session_state.setdefault("_html_export_cache", {})
-    cached = cache.get("dashboard")
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-    html_content = build_fn(*args, **kwargs)
-    cache["dashboard"] = (cache_key, html_content)
-    return html_content
 
 
 def _kpi_card_html(
@@ -405,7 +591,7 @@ def _kpi_card_html(
             good  = (count_delta < 0) if inverse else (count_delta > 0)
             cls   = "kpi-mom-up" if good else "kpi-mom-down"
         elif is_tied and count_delta == 0:
-            arrow, cls = "–", "kpi-mom-neutral"
+            arrow, cls = "●", "kpi-mom-neutral"
         elif is_tied and zero_delta_bad:
             arrow = "▲" if delta >= 0 else "▼"
             cls   = "kpi-mom-down" if inverse else "kpi-mom-up"
@@ -441,16 +627,177 @@ def _static_kpi_card_html(
     )
 
 
-def _npa_pct_color(val: float, hi: float = 10.0, mid: float = 5.0) -> str:
-    """Red/orange/green threshold color for an NPA%-style risk percentage."""
-    v = val or 0
-    return "#dc2626" if v > hi else ("#d97706" if v > mid else "#16a34a")
+# ── One table builder for every on-screen table ─────────────────────────────
+# A % with a count behind it is ONE cell: "11.9% (37)". The count tells the
+# reader how big the base is without a second column; downloads keep both as
+# separate numeric columns so they can still be sorted and summed in Excel.
+
+def pct_count(pct, count, decimals: int = 1) -> str:
+    """'11.9% (37)' as HTML (the count in grey). '-' when the % is missing."""
+    if pct is None or pct == "" or (isinstance(pct, float) and pd.isna(pct)):
+        return '<span style="color:#9ca3af;">-</span>'
+    tail = "" if count is None or count == "" or (isinstance(count, float) and pd.isna(count)) else \
+        f' <span style="color:#6b7280;font-weight:400;">({int(count):,})</span>'
+    return f"{float(pct):.{decimals}f}%{tail}"
 
 
-def _sma2_pct_color(val: float, hi: float = 10.0, mid: float = 5.0) -> str:
-    """Red/orange/grey threshold color for a SMA-2%-style risk percentage."""
-    v = val or 0
-    return "#ef4444" if v > hi else ("#d97706" if v > mid else "#374151")
+def pct_amount(pct, cr, decimals: int = 1) -> str:
+    """'34.6% (₹121.40 Cr)' as HTML (the amount in grey): a % by SOH with the
+    money behind it, as pct_count does for a % by count."""
+    if pct is None or pct == "" or (isinstance(pct, float) and pd.isna(pct)):
+        return '<span style="color:#9ca3af;">-</span>'
+    tail = "" if cr is None or cr == "" or (isinstance(cr, float) and pd.isna(cr)) else \
+        f' <span style="color:#6b7280;font-weight:400;">(₹{float(cr):,.2f} Cr)</span>'
+    return f"{float(pct):.{decimals}f}%{tail}"
+
+
+def is_blank(v) -> bool:
+    """None / NaN / NA (an empty string is a value, not a blank)."""
+    return v is None or (not isinstance(v, str) and pd.isna(v))
+
+
+_NUMBER_KINDS = ("int", "pct", "num", "cr", "inr", "rs_cr", "rs_l", "pp", "count_change", "pct_change")
+_CHANGE_KINDS = ("pp", "count_change", "pct_change")     # coloured: red when worse, green when better
+
+
+def format_value(v, kind: str) -> str:
+    """One value as plain text, by kind: int "1,234" | pct "12.3%" | num "1.23"
+    | cr "₹1.23 Cr" | inr "₹1,234" | rs_cr (rupees shown in crore) | pp
+    "▲ 0.25 pts" | count_change "▲ 12" | pct_change "▲ 9.5%" (a relative change); "-" when blank. The one formatter
+    behind the on-screen tables and the report (HTML, PDF)."""
+    if is_blank(v):
+        return "-"
+    if kind == "int":
+        return f"{int(v):,}"
+    if kind == "pct":
+        return f"{float(v):.1f}%"
+    if kind == "num":
+        return f"{float(v):.2f}"
+    if kind == "cr":
+        return f"₹{float(v):,.2f} Cr"
+    if kind == "inr":
+        return f"₹{round(float(v)):,}"
+    if kind == "rs_cr":
+        return f"₹{float(v) / 1e7:,.2f} Cr"
+    if kind == "rs_l":                       # rupees shown in lakh: a unit's demand / collection
+        return f"₹{float(v) / 1e5:,.2f} L"
+    if kind == "pp":
+        v = float(v)
+        return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):.2f} pts"
+    if kind == "count_change":
+        v = int(v)
+        return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):,}"
+    if kind == "pct_change":
+        v = float(v)
+        return "no change" if v == 0 else f"{'▲' if v > 0 else '▼'} {abs(v):.1f}%"
+    if isinstance(v, (pd.Timestamp, datetime.date)):
+        return pd.Timestamp(v).strftime("%Y-%m-%d")
+    return str(v)
+
+
+def _fmt_cell(v, kind: str, row=None, count_key: str | None = None, amount_key: str | None = None) -> str:
+    if callable(kind):              # trusted HTML from code (a badge, an icon)
+        return kind(v, row)
+    if kind == "pct_count":
+        return pct_count(v, row.get(count_key) if row is not None and count_key else None)
+    if kind == "pct_cr":
+        return pct_amount(v, row.get(amount_key) if row is not None and amount_key else None)
+    if is_blank(v) or (kind in _NUMBER_KINDS and isinstance(v, str) and not v.strip()):
+        return '<span style="color:#9ca3af;">-</span>'   # "" = a Total-row cell that can't be summed
+    if kind in _NUMBER_KINDS:
+        return format_value(v, kind)
+    return _esc(v)
+
+
+def _align(c: dict) -> str:
+    return c.get("align") or ("left" if c.get("fmt", "text") == "text" else "right")
+
+
+def html_table(df: pd.DataFrame, cols: list[dict], total: dict | None = None, max_height: int | None = None,
+               highlight=None) -> str:
+    """cols: {"key", "label"?, "fmt": text|int|pct|pct_count|pct_cr|cr|inr|num|pp|count_change|pct_change, or a
+    function (value, row) -> trusted HTML, "align"?: "left"/"right" (default: text left, numbers right),
+    "count"?: count column for pct_count, "amount"?: ₹ Cr column for pct_cr, "heat"?: True (red shading by rank,
+    lowest = palest), "good_if_up"?: True, or row -> bool for a per-row choice (a rise is good: green arrows),
+    "help"?: hover text, "bold"?: True}. total: an optional final row (dict).
+    max_height: scroll inside the table with the header kept in view.
+    highlight: optional row -> bool; True rows get a red edge and a pale red
+    tint (e.g. a customer with a loan behind on payment)."""
+    heat = {c["key"]: heat_range(df[c["key"]].tolist()) for c in cols if c.get("heat") and c["key"] in df.columns}
+    head = "".join(
+        f'<th style="text-align:{_align(c)};">{_esc(c.get("label", c["key"]))}'
+        f'{_info(c.get("help"))}</th>' for c in cols)
+    rows = []
+    frames = [(r, False) for _, r in df.iterrows()] + ([(pd.Series(total), True)] if total else [])
+    for r, is_total in frames:
+        tds = ""
+        flagged = not is_total and highlight is not None and bool(highlight(r))
+        for i, c in enumerate(cols):
+            kind, v = c.get("fmt", "text"), r.get(c["key"])
+            style = f'text-align:{_align(c)};'
+            if flagged:
+                style += "background:#fff1f2;" + ("box-shadow:inset 4px 0 0 #dc2626;" if i == 0 else "")
+            if c.get("bold"):
+                style += "font-weight:700;"
+            if not is_total and c["key"] in heat:
+                style += heat_style(v, heat[c["key"]])
+            if kind in _CHANGE_KINDS and not is_blank(v) and v != "" and float(v) != 0:
+                good_up = c.get("good_if_up")
+                worse = (float(v) > 0) != bool(good_up(r) if callable(good_up) else good_up)
+                style += f'color:{"#dc2626" if worse else "#16a34a"};font-weight:700;'
+            tds += f'<td style="{style}">{_fmt_cell(v, kind, r, c.get("count"), c.get("amount"))}</td>'
+        rows.append(f'<tr class="{"ht-total" if is_total else ""}">{tds}</tr>')
+    scroll = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
+    css = ("<style>.ht th{background:#111;color:#FFC000;padding:7px 10px;font-size:11px;white-space:nowrap;"
+           "position:sticky;top:0;z-index:1;}.ht td{padding:6px 10px;font-size:12.5px;border-bottom:1px solid #f0f0f0;"
+           "background:#fff;white-space:nowrap;}.ht tr.ht-total td{font-weight:800;border-top:2px solid #FFC000;"
+           "background:#fffbea;}</style>")
+    return (f'{css}<div style="overflow-x:auto;{scroll}border-radius:10px;border:1px solid #e5e7eb;">'
+            f'<table class="ht" style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
+            f'<thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+
+
+def _info(text: str | None) -> str:
+    if not text:
+        return ""
+    return (f'<span title="{_esc(text)}" style="cursor:help;color:#fde68a;font-weight:400;'
+            f'font-size:0.9em;margin-left:3px;">&#9432;</span>')
+
+
+# ── Risk heat-map shading ────────────────────────────────────────────────────
+# Risk measures (NPA, SMA, Delinquent, Hard Bucket, Roll Fwd...) have no "safe"
+# level, so they're never green: each cell is shaded from pale pink (lowest in
+# its column) to red (highest). Zero or missing gets no shade. Text stays dark.
+_HEAT_LOW, _HEAT_HIGH = (254, 242, 242), (248, 113, 113)  # #fef2f2 -> #f87171
+HEAT_TEXT = "#7f1d1d"
+
+
+def _is_num(v) -> bool:
+    try:
+        return v is not None and not pd.isna(v) and float(v) == float(v)
+    except (TypeError, ValueError):
+        return False
+
+
+def heat_range(values) -> tuple[float, float] | None:
+    """(lowest, highest) of the positive values in a column, or None if none."""
+    pos = [float(v) for v in values if _is_num(v) and float(v) > 0]
+    return (min(pos), max(pos)) if pos else None
+
+
+def heat_bg(val, rng: tuple[float, float] | None) -> str | None:
+    """Background hex for `val` within its column's `rng`, or None (no shade)."""
+    if rng is None or not _is_num(val) or float(val) <= 0:
+        return None
+    lo, hi = rng
+    t = 0.5 if hi <= lo else min(max((float(val) - lo) / (hi - lo), 0.0), 1.0)
+    return "#" + "".join(f"{round(a + (b - a) * t):02x}" for a, b in zip(_HEAT_LOW, _HEAT_HIGH))
+
+
+def heat_style(val, rng: tuple[float, float] | None) -> str:
+    """Inline CSS for a shaded cell ("" when unshaded)."""
+    bg = heat_bg(val, rng)
+    return f"background:{bg};color:{HEAT_TEXT};font-weight:600;" if bg else ""
 
 
 def _send_feedback(run_id: str, score: float) -> None:
@@ -462,15 +809,12 @@ def _send_feedback(run_id: str, score: float) -> None:
         pass
 
 
-def _send_report_email(html_report: str, email_to: str, curr_month: str) -> tuple[bool, str]:
-    """Send the HTML report via SMTP. Returns (success, error_msg).
-
-    Thin wrapper around report_agent's send_report_email - the same function
-    the auto-send-on-generate LangGraph node uses, so this tab's standalone
-    "resend" button can't silently drift out of sync with it.
-    """
+def _send_report_email(html_report: str, email_to: str, curr_month: str,
+                       title: str = "Portfolio Report", file_name: str | None = None) -> tuple[bool, str]:
+    """Send the HTML report via SMTP. Returns (success, error_msg). Thin
+    wrapper around report_agent's send_report_email."""
     from report_agent.nodes.email_dispatcher import send_report_email
-    return send_report_email(html_report, email_to, curr_month)
+    return send_report_email(html_report, email_to, curr_month, title=title, file_name=file_name)
 
 
 def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
@@ -482,12 +826,17 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
 
     dfs, errors = [], []
     dropped_dupes = 0  # per-file dupes (from load_and_validate) + any cross-file dupes below
+    data_fixes: list[str] = []
+    date_warnings: list[str] = []
     for f in files:
         df, errs = load_and_validate(f)
         if errs:
             errors.append(f"{getattr(f, 'name', 'file')}: {errs[0]}")
         else:
             dropped_dupes += df.attrs.get("dropped_duplicate_loans", 0)
+            prefix = f"{getattr(f, 'name', 'file')}: " if len(files) > 1 else ""
+            data_fixes += [prefix + n for n in df.attrs.get("data_fixes", [])]
+            date_warnings += [prefix + w for w in df.attrs.get("date_parse_warnings", [])]
             dfs.append(df)
 
     if not dfs:
@@ -510,6 +859,14 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
         before = len(combined)
         combined = combined.drop_duplicates(subset=["Loan No"], keep="first")
         dropped_dupes += before - len(combined)
+    # Each file merged its own truncated segment spellings; two regional files
+    # can cut the same name at different lengths, so merge once more across all.
+    for col in ("SegmentName", "Segment"):
+        if col in combined.columns:
+            combined[col] = normalize_truncated_names(combined[col])
+    # Recount across ALL files: a customer's loans can sit in different
+    # regional files, and each file only counted its own.
+    combined = add_customer_loan_count(combined)
     # pd.concat doesn't propagate .attrs from its inputs, so set it explicitly
     # on the combined frame -- this is the only place callers need to check.
     combined.attrs["dropped_duplicate_loans"] = dropped_dupes
@@ -520,4 +877,6 @@ def _load_and_concat(files) -> tuple[pd.DataFrame | None, list[str]]:
     combined.attrs["missing_optional_cols"] = [
         c for c in REQUIRED_COLS if c not in CRITICAL_COLS and c not in combined.columns
     ]
+    combined.attrs["data_fixes"] = data_fixes
+    combined.attrs["date_parse_warnings"] = date_warnings
     return combined, errors

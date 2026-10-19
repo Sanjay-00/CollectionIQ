@@ -28,6 +28,31 @@ class TestDisplayColumnsPromptAccuracy:
             assert col in prompt, f"prompt doesn't mention '{col}' as outside the default view"
 
 
+class TestBareYearDateRule:
+    # Caught live: "agreement date > 2024" was planned as Ag_Date > 2024-01-01
+    # (17 loans) instead of "after 2024" (6 loans), with no clarification.
+    def test_prompt_defines_bare_year_comparisons_as_whole_year(self):
+        prompt = _build_full_system_prompt()
+        assert '"> 2024" / "after 2024" = >= 2025-01-01' in prompt
+        assert '"in 2024" = >= 2024-01-01 AND < 2025-01-01' in prompt
+
+
+class TestCustomerConditionRule:
+    # "fleet owners in NPA, give all loans of them" was planned with npa in
+    # top-level filters, which drops the owners' non-NPA loans. The prompt must
+    # teach the entity_filters count form (compiled + executed in
+    # tests/test_nested.py::TestQuery11_AllLoansOfFleetOwnersInNpa).
+    def test_prompt_teaches_condition_as_customer_count(self):
+        prompt = _build_full_system_prompt()
+        assert "ROW FILTER vs CUSTOMER CONDITION" in prompt
+        assert '{"entity":"customer","having":[{"agg":"count","concept":"npa","op":">=","value":1}]}' in prompt
+
+    def test_prompt_shows_per_owner_and_per_bucket_counts(self):
+        prompt = _build_full_system_prompt()
+        assert '{"agg":"count","alias":"npa_loans","where":[{"concept":"npa"}]}' in prompt
+        assert 'per bucket: dimensions: ["curr_bucket"]' in prompt
+
+
 class TestAmbiguousTermsPromptWiring:
     """Verifies wiring only -- whether the LLM actually asks for clarification on
     a given real query is a live-judgment call this suite can't exercise (no live

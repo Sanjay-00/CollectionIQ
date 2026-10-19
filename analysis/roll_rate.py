@@ -1,4 +1,4 @@
-﻿"""
+"""
 Bucket Migration / Roll-Rate Analysis
 Pure pandas - no LLM dependency.
 Requires both current and previous month DataFrames matched on Loan No.
@@ -6,6 +6,7 @@ Requires both current and previous month DataFrames matched on Loan No.
 import pandas as pd
 import plotly.graph_objects as go
 
+from analysis import roll_flow
 from utils import BUCKET_ORDER, BUCKET_SCORE
 
 # Exclude NA bucket from migration analysis  -  not a meaningful delinquency state
@@ -36,6 +37,18 @@ def compute_roll_rate_matrix(
 
     new_entries = len(curr_keys - prev_keys)
     exits       = len(prev_keys - curr_keys)
+
+    if bucket_col == "curr_bucket" and roll_flow.has_roll_data(df_curr):
+        # Last month's bucket already rides on each loan (app.py), so use the
+        # same engine as the early warning and roll tables: every loan in this
+        # view is counted where it sits now, including one that moved here
+        # from another branch since last month. "New this month" is then a
+        # loan that wasn't in last month's file at all.
+        matrix = roll_flow.migration_matrix(df_curr, "count").astype(int)
+        no_history = df_curr.loc[df_curr["prev_bucket"].isna(), key_col].dropna()
+        meta = {"matched_count": int(matrix.values.sum()), "new_entries": int(no_history.nunique()),
+                "exits": exits, **compute_roll_rate_kpis(matrix)}
+        return matrix, meta
 
     prev_slim = df_prev[[key_col, bucket_col]].rename(columns={bucket_col: "prev_bucket"})
     curr_slim = df_curr[[key_col, bucket_col]].rename(columns={bucket_col: "curr_bucket"})
@@ -142,15 +155,33 @@ def compute_bucket_roll_summary(matrix: pd.DataFrame) -> pd.DataFrame:
             "Roll Fwd%":  fwd_pct,
             "Stable%":    stable_pct,
             "Roll Bwd%":  bwd_pct,
+            # The loans behind each %, shown beside it on screen ("12.0% (37)").
+            "Roll Fwd":   fwd,
+            "Stable":     stable,
+            "Roll Bwd":   bwd,
         })
     return pd.DataFrame(rows)
 
 
-def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
+_VALUE_FORMAT = {
+    # value_kind: (cell text, hover label)
+    "count": (lambda v: f"{int(v):,}", "Accounts"),
+    "pct":   (lambda v: f"{v:.1f}%", "Share of row"),
+    "soh":   (lambda v: f"₹{v:,.2f} Cr", "Last month's SOH"),
+}
+
+
+def build_roll_rate_heatmap(matrix: pd.DataFrame, value_kind: str = "count",
+                            detail: pd.DataFrame | None = None, detail_kind: str = "count") -> go.Figure:
     """
     Annotated Plotly heatmap of the migration matrix.
     Diagonal = stable (neutral). Above diagonal = deterioration (red). Below = improvement (green).
+    value_kind: "count" (loans), "pct" (% of each row) or "soh" (₹ Cr), which
+    only changes how the cells are written; the colour logic is the same.
+    detail: an optional second matrix written under each value in brackets,
+    so a % reads "11.9% (37)" or "34.6% (₹1.21 Cr)" like every other table.
     """
+    fmt, hover_label = _VALUE_FORMAT[value_kind]
     buckets = [b for b in VALID_BUCKETS if b in matrix.index and b in matrix.columns]
     z_values = matrix.loc[buckets, buckets].values.tolist()
     total = sum(sum(row) for row in z_values) or 1
@@ -167,7 +198,10 @@ def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
             curr_score = BUCKET_SCORE.get(col_bucket, 0)
             direction = curr_score - prev_score   # positive = worsened, negative = improved
             row_color.append(direction * (count / total * 100))
-            row_text.append(str(int(count)))
+            text = fmt(count)
+            if detail is not None and row_bucket in detail.index and col_bucket in detail.columns and count:
+                text += f"<br>({_VALUE_FORMAT[detail_kind][0](detail.loc[row_bucket, col_bucket])})"
+            row_text.append(text)
         color_matrix.append(row_color)
         text_matrix.append(row_text)
 
@@ -190,7 +224,7 @@ def build_roll_rate_heatmap(matrix: pd.DataFrame) -> go.Figure:
             [1.0,  "#991b1b"],   # dark red (severe worsening)
         ],
         showscale=False,
-        hovertemplate="From %{y}<br>To %{x}<br>Accounts: %{text}<extra></extra>",
+        hovertemplate=f"From %{{y}}<br>To %{{x}}<br>{hover_label}: %{{text}}<extra></extra>",
     ))
     fig.update_layout(
         title=dict(text="Bucket Migration Matrix (Prev Month → Curr Month)", font=dict(size=14, color="#000")),

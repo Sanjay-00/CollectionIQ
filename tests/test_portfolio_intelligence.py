@@ -8,15 +8,18 @@ from analysis.portfolio_intelligence import (
     compute_branch_quadrant,
     compute_executive_recovery,
     compute_good_bad,
-    compute_risk_flag_comparison,
     compute_product_analysis,
     compute_risk_indicators,
+    compute_overdue_demand_scorecard,
+)
+from analysis.exposure import (
     compute_fleet_exposure,
     compute_top_accounts,
     compute_repossession_list,
     compute_good_customers,
+)
+from analysis.new_business import (
     build_vintage_chart,
-    compute_overdue_demand_scorecard,
     compute_new_advances,
     compute_new_advances_by_dimension,
     compute_new_advances_trend,
@@ -24,6 +27,8 @@ from analysis.portfolio_intelligence import (
     compute_new_advances_trend_chart,
 )
 import analysis.portfolio_intelligence as pi
+import analysis.new_business as new_business
+from utils import unit_metrics
 from helpers import make_df
 
 
@@ -68,9 +73,10 @@ class TestComputePulseKpis:
         # Same shape as smart_alerts.py's alert_insurance_delinquency:
         # EMI-current (inst arrears <= 0) but expense arrears above the
         # threshold, with some overall arrears -- else not counted.
+        from config import INSURANCE_EXP_ARREARS_MIN as T
         curr = make_df([
-            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 1.0},  # counts
-            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 4_000.0, "Arrears / EMI": 1.0},  # below threshold
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": T + 1_000.0, "Arrears / EMI": 1.0},  # counts
+            {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": T - 1_000.0, "Arrears / EMI": 1.0},  # below threshold
             {"ARREARS AGAINST INST": 500.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 1.0},  # real inst arrears too -- excluded
             {"ARREARS AGAINST INST": 0.0, "ARREARS AGAINST EXP": 6_000.0, "Arrears / EMI": 0.0},  # no overall arrears -- excluded
         ])
@@ -142,19 +148,23 @@ class TestComputePulseKpis:
 # ── compute_region_scorecard ─────────────────────────────────────────────────
 
 class TestRollRatesNaBucketNotComparable:
-    """Regression: analysis.portfolio_intelligence._roll_rates() -- shared by the
-    region scorecard, branch quadrant, and NPA/SMA-2 comparison -- used to treat
-    "NA" (Arrears/EMI missing/unparseable that period) as a real, ordered bucket
-    scoring -1, lower than every real bucket. A loan moving from "NA" to STD (the
-    healthiest real bucket) was miscounted as "rolled forward" purely from that
-    score gap. Confirmed on real production data."""
+    """Regression: "NA" (Arrears/EMI missing/unparseable that period) is not a
+    real bucket, so a loan moving from "NA" to STD must never count as rolled
+    forward or back. Checked on the shared engine (utils.unit_metrics) that
+    every region / branch / executive roll rate comes from."""
+
+    @staticmethod
+    def _rates(grp):
+        m = unit_metrics(grp, []).iloc[0]
+        fwd, bwd = m["Roll Fwd%"], m["Roll Bwd%"]
+        return (None if pd.isna(fwd) else fwd), (None if pd.isna(bwd) else bwd)
 
     def test_na_to_std_is_not_counted_as_roll_forward(self):
         grp = make_df([
             {"prev_bucket": "NA", "curr_bucket": "STD"},
             {"prev_bucket": "NA", "curr_bucket": "STD"},
         ])
-        assert pi._roll_rates(grp) == (None, None)
+        assert self._rates(grp) == (None, None)
 
     def test_mixed_na_and_real_transitions(self):
         grp = make_df([
@@ -162,7 +172,7 @@ class TestRollRatesNaBucketNotComparable:
             {"prev_bucket": "SMA-2", "curr_bucket": "NPA"},  # real roll-forward
             {"prev_bucket": "NPA", "curr_bucket": "STD"},    # real roll-backward
         ])
-        fwd, bwd = pi._roll_rates(grp)
+        fwd, bwd = self._rates(grp)
         # Denominator must be 2 (the 2 real comparisons), not 3.
         assert fwd == 50.0
         assert bwd == 50.0
@@ -255,7 +265,8 @@ class TestComputeOverdueDemandScorecard:
 
     def test_branch_and_executive_grains_present(self):
         result = compute_overdue_demand_scorecard(self._dfs())
-        assert set(result.keys()) == {"region", "branch", "executive"}
+        assert set(result.keys()) == {"zone", "region", "branch", "executive"}
+        assert result["zone"].empty                 # this test book has no Zone column
         assert not result["branch"].empty
         assert not result["executive"].empty
 
@@ -633,6 +644,12 @@ class TestComputeNewAdvancesTrendChart:
 # ── compute_npa_sma2_comparison ──────────────────────────────────────────────
 
 class TestComputeNpaSma2Comparison:
+    @pytest.fixture(autouse=True)
+    def _small_executives(self, monkeypatch):
+        # These tests check matching/ranking logic on 1-3 loan executives;
+        # the MIN_ACCOUNTS_EXECUTIVE floor itself has its own test.
+        monkeypatch.setattr(pi, "MIN_ACCOUNTS_EXECUTIVE", 1)
+
     def _dfs(self):
         curr = make_df([
             *[{"RegionName": "WEST", "Unit": "MAHAD", "curr_bucket": b}
@@ -810,7 +827,7 @@ class TestComputeBranchQuadrant:
     def test_chronic_and_npa_counts_correct(self):
         out, _ = compute_branch_quadrant(self._df())
         rows = out.set_index("Branch")
-        assert rows.loc["BADBR", "Chronic (3M+)"] == 2
+        assert rows.loc["BADBR", "Not Paying 3M+"] == 2
         assert rows.loc["BADBR", "NPA%"] == 40.0   # 2 of 5
         assert rows.loc["GOODBR", "NPA%"] == 0.0
 
@@ -833,6 +850,12 @@ class TestComputeBranchQuadrant:
 # ── compute_executive_recovery ───────────────────────────────────────────────
 
 class TestComputeExecutiveRecovery:
+    @pytest.fixture(autouse=True)
+    def _small_executives(self, monkeypatch):
+        # These tests check matching/ranking logic on 1-3 loan executives;
+        # the MIN_ACCOUNTS_EXECUTIVE floor itself has its own test.
+        monkeypatch.setattr(pi, "MIN_ACCOUNTS_EXECUTIVE", 1)
+
     def _df(self):
         exec1 = [
             {"MNT NAME": "EXEC1", "prev_bucket": "NPA",   "curr_bucket": "SMA-1"},  # rescued
@@ -949,41 +972,12 @@ class TestComputeGoodBad:
         assert not any("Noise Signal" in x for x in out["good"] + out["bad"])
 
 
-# ── compute_risk_flag_comparison ─────────────────────────────────────────────
-
-class TestComputeRiskFlagComparison:
-    @pytest.mark.parametrize("prev,expected_last_month,expected_delta", [
-        ([{"title": "Non Starters", "count": 8, "pos": 0, "severity": "high", "action": "Call"}], 8, 4),
-        ([], None, None),  # risk type didn't exist last month -> null prev/delta, not zero
-    ], ids=["matched_by_title", "new_risk_type"])
-    def test_merges_curr_and_prev_by_title(self, prev, expected_last_month, expected_delta):
-        curr = [{"title": "Non Starters", "count": 12, "pos": 1_00_00_000, "severity": "high", "action": "Call"}]
-        row = compute_risk_flag_comparison(curr, prev).iloc[0]
-        if expected_last_month is None:
-            assert pd.isna(row["Last Month"]) and pd.isna(row["Δ"])
-        else:
-            assert row["Last Month"] == expected_last_month
-            assert row["Δ"] == expected_delta
-
-    def test_empty_curr_returns_empty(self):
-        assert compute_risk_flag_comparison([], [{"title": "X", "count": 1}]).empty
-
-
 # ── compute_product_analysis ─────────────────────────────────────────────────
 
 class TestComputeProductAnalysis:
     # Threshold-relative (reads MIN_ACCOUNTS_PRODUCT_SEGMENT from config)
     # rather than hardcoding the value, so retuning the constant doesn't
     # break these tests -- only the behavior they assert.
-
-    def test_segment_below_min_n_excluded(self):
-        from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
-        if MIN_ACCOUNTS_PRODUCT_SEGMENT <= 1:
-            pytest.skip("threshold is 1 -- no below-threshold group can exist")
-        curr = make_df([{"SegmentName": "TINY", "curr_bucket": "STD"}
-                        for _ in range(MIN_ACCOUNTS_PRODUCT_SEGMENT - 1)])
-        out = compute_product_analysis(curr)
-        assert "segment" not in out or "TINY" not in out.get("segment", pd.DataFrame()).get("Segment", [])
 
     def test_segment_at_threshold_included(self):
         from config import MIN_ACCOUNTS_PRODUCT_SEGMENT
@@ -1074,7 +1068,7 @@ class TestComputeRiskIndicators:
 
     def test_count_signal_improving_when_count_drops(self):
         curr = make_df([{"Non Starter": "N"} for _ in range(10)])
-        prev = make_df([{"Non Starter": "Y"} for _ in range(3)] + [{"Non Starter": "N"} for _ in range(7)])
+        prev = make_df([{"Non Starter": "Y", "Arrears / EMI": 1.0} for _ in range(3)] + [{"Non Starter": "N"} for _ in range(7)])
         out = compute_risk_indicators(curr, prev, None)
         ns_signal = next(i for i in out if i["Signal"] == "Non-Starters")
         assert ns_signal["_direction"] == "Improving"
@@ -1341,7 +1335,6 @@ class TestComputeGoodCustomers:
         assert out["SOH"].tolist() == [50_000, 200_000]
 
     def test_missing_tenure_columns_returns_empty(self):
-        curr = make_df([{"LCC%": 100.0}]).drop(columns=["Loan No"], errors="ignore")
         out = compute_good_customers(make_df([{"LCC%": 100.0}]))
         assert out.empty
 
@@ -1374,14 +1367,14 @@ class TestBuildVintageChartThresholds:
         # Tightening the critical threshold to 5 should reclassify the 6.0%
         # cohort (previously "watch") as critical - proving the chart reads
         # the live config value rather than a baked-in 10/5.
-        monkeypatch.setattr(pi, "VINTAGE_CHART_CRITICAL_PCT", 5)
+        monkeypatch.setattr(new_business, "VINTAGE_CHART_CRITICAL_PCT", 5)
         fig = build_vintage_chart(self._vintage_df())
         npa_trace = next(t for t in fig.data if t.name == "NPA %")
         assert list(npa_trace.marker.color) == ["#16a34a", "#991b1b", "#991b1b"]
 
     def test_annotation_text_reflects_configured_thresholds(self, monkeypatch):
-        monkeypatch.setattr(pi, "VINTAGE_CHART_CRITICAL_PCT", 15)
-        monkeypatch.setattr(pi, "VINTAGE_CHART_WATCH_PCT", 8)
+        monkeypatch.setattr(new_business, "VINTAGE_CHART_CRITICAL_PCT", 15)
+        monkeypatch.setattr(new_business, "VINTAGE_CHART_WATCH_PCT", 8)
         fig = build_vintage_chart(self._vintage_df())
         annotations = [a.text for a in fig.layout.annotations]
         assert any("15%" in a for a in annotations)

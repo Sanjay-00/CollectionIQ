@@ -1,6 +1,6 @@
 import io
+from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
 from ui.components import _bump_data_version
@@ -15,8 +15,16 @@ def _fetch_sample_from_github():
     FILES = {"curr": "Current_Month_Demo.xlsx", "prev": "Previous_Month_Demo.xlsx"}
 
     def _load(fname):
-        with urllib.request.urlopen(BASE + fname, timeout=20) as resp:
-            buf = io.BytesIO(resp.read())
+        # The demo files ship with the repo, so read them from disk when present
+        # (always true on Streamlit Cloud); GitHub is only a fallback. Reading
+        # locally also keeps a local run on the SAME data as its own code,
+        # instead of whatever is currently on the main branch.
+        local = Path(__file__).resolve().parents[1] / "sample_data" / fname
+        if local.exists():
+            buf = io.BytesIO(local.read_bytes())
+        else:
+            with urllib.request.urlopen(BASE + fname, timeout=20) as resp:
+                buf = io.BytesIO(resp.read())
         buf.name = fname
         # Route through the same pipeline every uploaded file goes through, so
         # the sample data gets identical normalization (mobile-number cleanup,
@@ -57,7 +65,7 @@ def render_landing() -> None:
     _FEATURES = [
         ("#FFBF00", "DASHBOARD",              "Collection %, POS, demand, strike rate and NPA with month-on-month movement."),
         ("#111111", "SCORECARD",              "Every field executive ranked by collection efficiency, strike rate and roll rates."),
-        ("#FFBF00", "SMART ALERTS",           "Flagged non-starters, co-lending risk, easy settlements and insurance-driven arrears."),
+        ("#FFBF00", "SMART ALERTS",           "Flagged non-starters, co-lending risk, easy to nil loans and insurance-driven arrears."),
         ("#111111", "MIGRATION",              "Bucket migration matrix with roll-forward / roll-backward rates between two periods."),
         ("#FFBF00", "PORTFOLIO INTELLIGENCE", "Pulse KPIs, risk indicators, concentration map, repossession and good-customer lists."),
         ("#111111", "BUSINESS",               "New advances this month, trend over time, and by region/branch/executive breakdown."),
@@ -91,14 +99,15 @@ def render_landing() -> None:
     with col_s:
         if st.button("Fill Sample Data", type="primary", width='stretch'):
             try:
-                with st.spinner("Fetching sample data from GitHub..."):
+                with st.spinner("Loading sample data..."):
                     _dc, _dp = _fetch_sample_from_github()
                 # Same reset app.py's Generate-click handler does -- a stale
                 # Region/Branch/Status selection left over from a real upload
                 # earlier in this session could otherwise silently carry over
                 # onto the sample data.
-                for _k in ["ai_result", "report_result", "_last_filter_key",
-                           "_sel_branch", "_prev_region", "sel_region_key", "sel_status_key"]:
+                for _k in ["rpt2", "rpt2_packs", "_last_filter_key",
+                           "_sel_branch", "_prev_region", "_prev_zone", "sel_zone_key", "sel_region_key", "sel_status_key",
+                           "sel_date_from_key"]:
                     st.session_state.pop(_k, None)
                 st.session_state["df_curr_raw"]       = _dc
                 st.session_state["df_prev_raw"]       = _dp

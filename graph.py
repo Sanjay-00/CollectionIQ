@@ -1,4 +1,4 @@
-﻿import re
+import re
 import threading
 import uuid as _uuid
 from typing import Any, Callable, Optional, TypedDict
@@ -14,13 +14,15 @@ from agents.data_executor import (
     compute_result_kpis,
     execute_priority_mode,
 )
-from agents.plan_executor import execute_plan
+from agents.plan_executor import _check_condition_columns, execute_plan
 from agents.logical_planner import plan_logical
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
 from registry.views import VIEWS, _METRIC_DIRECTION, _METRIC_AGG, normalize_view_output, resolve_view_fn
+from config import PII_COLUMNS
 from query_log import log_query_outcome
+from utils import expand_to_all_columns, resolve_dynamic_values
 
 
 # ── Per-thread step callback ──────────────────────────────────────────────────
@@ -59,6 +61,12 @@ def _fetch_large(state: dict, key: str, default=None):
     return state.get(key, default)
 
 
+def _report_month(state: dict):
+    """The uploaded file's reporting month -- the anchor for date-relative
+    rules like "recent advances". None falls back to today downstream."""
+    return (state.get("snapshot_dates") or {}).get("curr")
+
+
 _STEP_LABELS: dict[str, str] = {
     "planner":  "🧠  Query Planner: understanding your question",
     "compile":  "⚙️   Compiler: building and validating the execution plan",
@@ -69,11 +77,15 @@ _STEP_LABELS: dict[str, str] = {
 
 _MAX_REPAIRS = 1
 
+# Rows of a result table the Insight Generator sees (it is told how many of
+# the total these are, and its numbers are checked against them).
+_INSIGHT_ROWS = 15
+
 
 def _trace_metadata(fields: dict) -> None:
     """Attach observability metadata to the CURRENT LangSmith run (the
     @traceable-wrapped node function this is called from), same established
-    pattern as agents/domain_expert.py's/agents/insight_generator.py's token-
+    pattern as gemini_client.add_token_usage's token-
     usage recording. Only the 2 Gemini-call functions were traced before this
     pass -- graph.py's own nodes (view matching, compiler repair, executor)
     had zero visibility: no way to see which view matched, whether a fast-path
@@ -122,7 +134,7 @@ _LARGE_STATE_FIELDS = ("result_df_full", "df_prev", "result_df", "precomputed_vi
 # agents/plan_executor.py's derive-expression check at both compile and
 # execute time) -- so a future code path populating _agg_rows without going
 # through the same construction site still can't leak this to LangSmith.
-_PII_COLS_IN_AGG_ROWS = ("Cust Name", "Cust Mob No", "Guar Name", "Guar Mob No")
+_PII_COLS_IN_AGG_ROWS = PII_COLUMNS + ("Cust Name (Cust Mob No)",)  # + the merged customer-grain display column below
 
 
 def _strip_pii_from_agg_rows(rows: list) -> list:
@@ -268,6 +280,12 @@ def logical_planner_node(state: QueryState) -> QueryState:
             # executive dimension → show as combined "MNT NAME (Unit)" label in the UI header
             if dims[0] == "executive" and len(group_by_cols) >= 2:
                 group_col = f"{group_by_cols[0]} ({group_by_cols[1]})"
+            elif dims[0] == "customer":
+                # A branch cares who the customer IS, not their mobile number --
+                # lead with Cust Name (the compiler always attaches it for a
+                # customer-grain result) and keep the number as a parenthetical
+                # reference, same convention as "MNT NAME (Unit)" above.
+                group_col = "Cust Name (Cust Mob No)"
             else:
                 group_col = group_by_cols[0] if group_by_cols else dims[0]
         else:
@@ -461,7 +479,18 @@ def _build_highlights(spec: dict, result_df: pd.DataFrame, requests: list) -> li
     return highlights
 
 
-def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame) -> list:
+# A rate card is the whole portfolio's own rate (all loans, summed then
+# divided once, utils.unit_metrics), never an average of each unit's rate: an
+# average lets a small region with a high NPA% pull the card off.
+_PORTFOLIO_RATE = {
+    "NPA%": "NPA%", "NPA %": "NPA%", "SMA-2%": "SMA-2%", "SMA-2 %": "SMA-2%",
+    "Hard Bucket%": "Hard Bucket%", "Collection%": "Collection%", "Collection %": "Collection%",
+    "Strike%": "Strike%", "Strike Rate %": "Strike%", "Roll Fwd%": "Roll Fwd%", "Roll Fwd %": "Roll Fwd%",
+    "Roll Bwd%": "Roll Bwd%", "Roll Bwd %": "Roll Bwd%",
+}
+
+
+def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame, source_df: pd.DataFrame | None = None) -> list:
     """Unconditional portfolio-wide rollup for every view that declares
     "metrics" -- e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
     table. Unlike highlight_metrics/sort_by, this needs no LLM judgment call
@@ -472,12 +501,21 @@ def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame) -> list:
     if not metrics or result_df is None or result_df.empty:
         return []
 
+    portfolio = None
+    if source_df is not None and len(source_df) and any(c in _PORTFOLIO_RATE for c in metrics):
+        from utils import portfolio_metrics
+        portfolio = portfolio_metrics(source_df)
+
     kpis = []
     for col in metrics:
         if col not in result_df.columns or col not in _METRIC_AGG:
             continue
         series = result_df[col].dropna()
         if series.empty:
+            continue
+        rate = _PORTFOLIO_RATE.get(col)
+        if portfolio is not None and rate in portfolio.index and pd.notna(portfolio[rate]):
+            kpis.append({"label": f"Portfolio {col}", "value": _format_metric_value(col, float(portfolio[rate]))})
             continue
         agg = _METRIC_AGG[col]
         value = series.mean() if agg == "mean" else series.sum()
@@ -528,7 +566,7 @@ def view_node(state: QueryState) -> QueryState:
                 "ir1": {**ir1, "view": None},
                 "error": (
                     f"Couldn't compute \"{spec.get('label', name)}\" ({reason}), and this "
-                    "question can't be answered a different way -- try rephrasing, or ask "
+                    "question can't be answered a different way: try rephrasing, or ask "
                     "for a different metric."
                 ),
             }
@@ -563,6 +601,7 @@ def view_node(state: QueryState) -> QueryState:
     rr_meta = state.get("rr_meta")
 
     cache_hit = False
+    source_df = df_curr          # the loans the view was computed from
     try:
         if not filters and not non_default_params:
             # Reuse the literal cached object -- zero recomputation, guarantees
@@ -580,18 +619,26 @@ def view_node(state: QueryState) -> QueryState:
             input_df, input_df_prev = df_curr, df_prev
             if filters:
                 errs: list = []
-                conditions = _expand_filters(filters, errs)
+                conditions = resolve_dynamic_values(_expand_filters(filters, errs), _report_month(state))
                 if errs:
                     return _fallthrough("filter_expansion_error")
+                # The view path never goes through validate_plan, so check the
+                # columns here: a filter that can't apply must not serve the
+                # whole-portfolio view under a filtered title.
+                if _missing_filter_columns(conditions, df_curr.columns):
+                    return _fallthrough("filter_column_missing")
                 input_df = df_curr[_build_mask(df_curr, conditions)]
+                source_df = input_df
                 # Apply the SAME conditions to df_prev too -- a view that consumes
                 # both (e.g. region_scorecard) must compare like-for-like (e.g.
                 # "Pune this month" against "Pune last month", never "Pune this
-                # month" against "the whole portfolio last month"). Conditions on
-                # columns df_prev doesn't have (e.g. curr_bucket, which only
-                # exists post-merge on df_curr) are gracefully skipped by
-                # _apply_condition, not an error.
+                # month" against "the whole portfolio last month"). If last
+                # month's file lacks a filter column, the comparison can't be
+                # like-for-like, so fall through instead of comparing against
+                # an unfiltered last month.
                 if input_df_prev is not None and len(input_df_prev):
+                    if _missing_filter_columns(conditions, input_df_prev.columns):
+                        return _fallthrough("filter_column_missing_in_prev")
                     input_df_prev = input_df_prev[_build_mask(input_df_prev, conditions)]
 
             raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
@@ -631,9 +678,27 @@ def view_node(state: QueryState) -> QueryState:
     result_highlights = _build_highlights(
         spec, result_df, view_spec.get("highlight_metrics") or []
     )
-    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df)
+    result_portfolio_kpis = _build_portfolio_kpis(spec, result_df, source_df)
 
     result_df = _apply_limit(result_df, ir1.get("limit"), spec)
+
+    # show_all_columns is already enforced on the general compiler path
+    # (compiler/core.py skips its own "select" step entirely when set) --
+    # but the fast-path VIEW layer here never checked it at all, a real,
+    # confirmed gap: a loan-level view (top_delinquent_accounts,
+    # repossession_eligible, good_customers -- each backed by the SAME
+    # curated-by-design analysis/ function the Investigator's own
+    # top_accounts/repossession_list/good_customers steps wrap) always
+    # served its fixed curated columns regardless of "show me all
+    # columns," with no override and no error. Fixed the same way the
+    # Investigator's own all_columns lever is: re-pull every raw column
+    # from df_curr for the SAME rows already selected, in the SAME order
+    # -- a no-op (via expand_to_all_columns's own Loan-No check) for any
+    # view whose grain has no Loan No at all (executive/branch/region
+    # scorecards, roll-rate matrix, risk indicators, portfolio pulse),
+    # since there's no additional raw column to reveal on those.
+    if ir1.get("show_all_columns"):
+        result_df = expand_to_all_columns(result_df, df_curr)
 
     # "Count" must come AFTER spreading result_kpis, not before: some
     # normalizers (e.g. _normalize_dict_subkey_df) already put their OWN
@@ -657,7 +722,7 @@ def view_node(state: QueryState) -> QueryState:
         # Insight Generator only needs the analytical columns to describe the
         # pattern, so strip identity columns before this ever reaches a Gemini
         # prompt. See _PII_COLS_IN_AGG_ROWS's docstring above for the full story.
-        result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(5).to_dict(orient="records"))
+        result_kpis["_agg_rows"] = _strip_pii_from_agg_rows(result_df.head(_INSIGHT_ROWS).to_dict(orient="records"))
 
     _trace_metadata({
         "view_name": name,
@@ -691,12 +756,17 @@ def view_node(state: QueryState) -> QueryState:
     }
 
 
+def _missing_filter_columns(conditions: list, columns) -> list[str]:
+    """Problems with the columns a view filter needs (empty = all present)."""
+    cols = set(map(str, columns))
+    return [e for c in conditions for e in _check_condition_columns(c, cols, "view filter")]
+
+
 def _call_view_fn(name: str, spec: dict, df_curr, df_prev, call_params: dict, rr_meta=None):
     """Resolve and invoke a VIEWS entry's analysis/ function, supplying whichever
     inputs it declares (df_curr / df_prev / rr_meta, in order) plus any accepted
-    params. A view with no fresh-callable inputs (e.g. good_bad_summary, which
-    composes from OTHER views' outputs) will TypeError here on a cache miss --
-    caught by view_node's try/except and treated as a normal fall-through."""
+    params. A failure here is caught by view_node's try/except and treated as
+    a normal fall-through."""
     fn = resolve_view_fn(name)
     args = []
     for inp in spec.get("inputs") or []:
@@ -729,7 +799,7 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
 
     for attempt in range(_MAX_REPAIRS + 1):
         try:
-            plan, errs = compile_logical(ir1, cols)
+            plan, errs = compile_logical(ir1, cols, as_of=_report_month(state))
         except Exception as e:
             _trace_metadata({"repair_attempts": attempt, "compiled_ok": False, "compiler_exception": str(e)})
             return {**state, "error": f"Compiler failed: {e}"}
@@ -788,9 +858,9 @@ def execute_node(state: QueryState) -> QueryState:
 
     try:
         if intent == "priority_action":
-            display_df, err = execute_priority_mode(df)
+            display_df, err = execute_priority_mode(df, as_of=_report_month(state))
         else:
-            display_df, err = execute_plan(df, state.get("plan") or [])
+            display_df, err = execute_plan(df, state.get("plan") or [], df_prev=_fetch_large(state, "df_prev"))
 
         if err:
             return {**state, "result_df": pd.DataFrame(), "error": err}
@@ -810,12 +880,43 @@ def execute_node(state: QueryState) -> QueryState:
                                   display_df["MNT NAME"] + " (" + display_df["Unit"] + ")")
                 display_df = display_df.drop(columns=["MNT NAME", "Unit"])
 
-            # Grouped results are entity-level (region/branch/executive), not
-            # customer-level, so this shouldn't carry PII in practice -- stripped
-            # anyway for consistency with the fast-path view construction site
-            # above, in case a future dimension ever groups by something
-            # customer-identifying.
-            kpis     = {"Count": len(display_df), "_agg_rows": _strip_pii_from_agg_rows(display_df.head(5).to_dict(orient="records"))}
+            # Same treatment for customer: Cust Mob No is the correctness key
+            # (see compiler/core.py's _wants_cust_name), but a branch identifies
+            # a customer by name, not by phone number -- lead with the name,
+            # keep the number as a parenthetical reference.
+            if (
+                "customer" in dims
+                and "Cust Name" in display_df.columns
+                and "Cust Mob No" in display_df.columns
+            ):
+                display_df = display_df.copy()
+                pos = display_df.columns.get_loc("Cust Mob No")
+                # Unlike MNT NAME above (no known blank cases in practice), Cust
+                # Name is optional in REQUIRED_COLS -- utils.py only warns, never
+                # rejects, on a missing/blank value -- so a raw .astype(str) here
+                # would render the literal text "nan (9876543210)" for any
+                # customer with no name on file. Fall back to the bare number.
+                names = display_df["Cust Name"].fillna("").astype(str).str.strip()
+                mobs = display_df["Cust Mob No"].astype(str)
+                label = (names + " (" + mobs + ")").where(names != "", mobs)
+                display_df.insert(pos, "Cust Name (Cust Mob No)", label)
+                display_df = display_df.drop(columns=["Cust Name", "Cust Mob No"])
+            elif "customer" in dims:
+                # Cust Name is optional (REQUIRED_COLS, warn-only) -- this
+                # upload doesn't have it, so the merge above never ran and the
+                # raw "Cust Mob No" column survives untouched. Correct the
+                # header label logical_planner_node already committed to
+                # "Cust Name (Cust Mob No)", so the UI doesn't style/label a
+                # column that doesn't actually exist in this result.
+                spec = dict(state.get("aggregation_spec") or {})
+                spec["group_by"] = "Cust Mob No"
+                state = {**state, "aggregation_spec": spec}
+
+            # Most grouped results are entity-level (region/branch/executive), not
+            # customer-level -- but "customer" dimension results ARE customer-
+            # identifying (the merged "Cust Name (Cust Mob No)" column above), so
+            # this strip is load-bearing here, not just defensive consistency.
+            kpis     = {"Count": len(display_df), "_agg_rows": _strip_pii_from_agg_rows(display_df.head(_INSIGHT_ROWS).to_dict(orient="records"))}
             rankings = {}
         else:
             # Apply default curated columns when the planner didn't specify any.
@@ -824,7 +925,11 @@ def execute_node(state: QueryState) -> QueryState:
             # curated display columns led by "Priority", which QUERY_DISPLAY_COLS
             # doesn't know about; overriding here silently dropped that column
             # and crashed the UI's later groupby("Priority", ...) with a KeyError).
-            if intent != "priority_action" and not ir1.get("display_columns") and not display_df.empty:
+            # show_all_columns must win here too: compile_logical already
+            # skips its own select step for it, but this default trim ran
+            # afterwards and cut "all columns" back down to QUERY_DISPLAY_COLS.
+            if (intent != "priority_action" and not ir1.get("display_columns")
+                    and not ir1.get("show_all_columns") and not display_df.empty):
                 from agents.data_executor import QUERY_DISPLAY_COLS
                 rank_col = ["Rank"] if "Rank" in display_df.columns else []
                 keep = rank_col + [c for c in QUERY_DISPLAY_COLS if c in display_df.columns]
