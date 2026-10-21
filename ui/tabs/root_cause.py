@@ -14,6 +14,9 @@ from analysis.root_cause import (
     build_root_cause_workbook, load_daily_missed_feed,
     ARREARS_GROUPS, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY,
     compute_recent_advances_daily_match, compute_recent_advances_status_by_grain,
+    compute_recent_advances_movement_by_grain, compute_recent_advances_bucket_movement,
+    compute_recent_advances_then_vs_now_by_grain,
+    list_report_date, list_month_warning,
 )
 
 _STATUS_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706", "-": "#9ca3af"}
@@ -382,7 +385,153 @@ def _render_match_notes(match: dict) -> None:
             )
 
 
-def _render_daily_match(df_curr: pd.DataFrame, df_all: pd.DataFrame | None = None) -> dict | None:
+def _render_movement_table(move_df: pd.DataFrame, grain_label: str) -> None:
+    if move_df.empty:
+        st.warning(f"Could not build the {grain_label.lower()} table: the LCC needs an Arrears / EMI column.")
+        return
+    label_cols = [c for c in move_df.columns if c in ("Zone", "Region", "Branch", "Executive")]
+    cols = [{"key": lc, "align": "left", "bold": lc == label_cols[0]} for lc in label_cols]
+    cols += [
+        {"key": "Running Loans", "fmt": "int", "bold": True},
+        {"key": "Pending at Close", "fmt": "int",
+         "help": "Behind on EMI (Arrears/EMI above 0) in the LCC at month close."},
+        {"key": "Still Pending %", "label": "Still Pending", "fmt": "pct_count", "count": "Still Pending", "heat": True,
+         "help": "Pending at close and still on the list. % of Pending at Close."},
+        {"key": "Cleared %", "label": "Cleared", "fmt": "pct_count", "count": "Cleared",
+         "help": "Pending at close but not on the list now. % of Pending at Close."},
+        {"key": "Clean at Close", "fmt": "int", "help": "Not behind on EMI in the LCC at month close."},
+        {"key": "Due by List Date", "fmt": "int",
+         "help": "Clean at close, and the EMI due day (Due Dt) is on or before the list date."},
+        {"key": "New Slippage %", "label": "New Slippage", "fmt": "pct_count", "count": "New Slippage", "heat": True,
+         "help": "Clean at close, EMI already due, and now on the list. % of Due by List Date."},
+    ]
+    if "On List, Not Yet Due" in move_df.columns:
+        cols.append({"key": "On List, Not Yet Due", "fmt": "int",
+                     "help": "Clean at close and on the list, though the EMI due day is after the list date "
+                             "(often an overdue charge). Not in New Slippage."})
+    if "New, No EMI at Close" in move_df.columns:
+        cols += [
+            {"key": "New, No EMI at Close", "fmt": "int",
+             "help": "New loans with no EMI due day in the LCC at close: their first EMI had not come yet. "
+                     "Kept out of New Slippage, since the LCC does not say when the first EMI falls due."},
+            {"key": "First EMI Missed", "fmt": "int", "heat": True,
+             "help": "New loans with no EMI at close that are now on the list: the first EMI was missed."},
+        ]
+    st.markdown(_table(move_df, cols, last_row_is_total=True), unsafe_allow_html=True)
+    _dl_btn(move_df, f"recent_advances_close_vs_list_by_{grain_label.lower()}.xlsx",
+            f"dl_root_cause_{grain_label.lower()}_movement")
+
+
+def _signed(v, _row=None, unit: str = "") -> str:
+    """A change as a plain signed figure: no colour or arrow, so no verdict."""
+    if _is_missing(v):
+        return '<span style="color:#9ca3af;">-</span>'
+    v = float(v)
+    text = f"{v:+,.0f}" if not unit else f"{v:+.2f}{unit}"
+    return "0" if v == 0 else text
+
+
+def _render_then_vs_now_table(df: pd.DataFrame, grain_label: str, close_lbl: str, list_lbl: str) -> None:
+    if df.empty:
+        st.warning(f"Could not build the {grain_label.lower()} table: the LCC needs an Arrears / EMI column.")
+        return
+    label_cols = [c for c in df.columns if c in ("Zone", "Region", "Branch", "Executive")]
+    cols = [{"key": lc, "align": "left", "bold": lc == label_cols[0]} for lc in label_cols]
+    cols.append({"key": "Running Loans", "fmt": "int", "bold": True})
+    for side, lbl in (("Close", close_lbl), ("List", list_lbl)):
+        for c in [c for c in df.columns if c.startswith(f"{side} ") and not c.endswith(" %")]:
+            part = c[len(side) + 1:]
+            cols.append({"key": f"{c} %", "label": f"{lbl} {part}", "fmt": "pct_count", "count": c,
+                         "bold": part == "Delinquent",
+                         "help": f"{part} on {lbl}: count, and % of Running Loans."})
+    cols += [
+        {"key": "Change in Delinquent", "label": "Change (loans)", "fmt": _signed,
+         "help": f"Delinquent loans on {list_lbl} minus at {close_lbl}."},
+        {"key": "Change in Delinquent % (pts)", "label": "Change (pts)",
+         "fmt": lambda v, row: _signed(v, unit=" pts"),
+         "help": f"Delinquent % on {list_lbl} minus at {close_lbl}, in percentage points."},
+    ]
+    st.markdown(_table(df, cols, last_row_is_total=True), unsafe_allow_html=True)
+    _dl_btn(df, f"recent_advances_then_vs_now_by_{grain_label.lower()}.xlsx",
+            f"dl_root_cause_{grain_label.lower()}_then_now")
+
+
+def _render_close_vs_list(df_curr: pd.DataFrame, daily_df: pd.DataFrame, curr_month: str) -> dict:
+    """Then vs now (bucket figures at close and on the list date), old cases
+    vs new slippage (per zone/region/branch/executive) and the bucket
+    movement from month close to the list date."""
+    list_date = list_report_date(daily_df)
+    close_lbl = f"{pd.Period(curr_month, freq='M').strftime('%b')} close" if curr_month else "Close"
+    list_lbl = f"{list_date:%d %b}" if list_date is not None else "List"
+    section_label(f"Then vs Now: {close_lbl} vs {list_lbl}", margin_top="20px")
+    st.caption(
+        f"The same running loans at the LCC month close (its Arrears/EMI) and on {list_lbl} (the list's "
+        "Arrears/EMI). Every % is of Running Loans. The list date can fall mid-month, before customers "
+        "who missed an EMI have paid, so figures on it run higher than at a month end. "
+        "Sorted by the largest rise in delinquent %."
+    )
+    then_now = {g: compute_recent_advances_then_vs_now_by_grain(df_curr, daily_df, grain=g, list_date=list_date)
+                for g in ("zone", "region", "branch", "executive")}
+    tn_keys = (["zone"] if not then_now["zone"].empty else []) + ["region", "branch", "executive"]
+    for tab, g in zip(st.tabs([f"By {g.title()}" for g in tn_keys], key="rc_then_now_tabs"), tn_keys):
+        with tab:
+            _render_then_vs_now_table(then_now[g], g.title(), close_lbl, list_lbl)
+
+    section_label("Since Month Close: Old Cases vs New Slippage", margin_top="20px")
+    date_txt = f"{list_date:%d %b %Y}" if list_date is not None else "the list date"
+    st.caption(
+        f"The same running loans, at the LCC month close and on {date_txt}. Pending at close splits into "
+        "Still Pending (still on the list) and Cleared. Clean at close counts only loans whose EMI due day "
+        "has passed by the list date; New Slippage is those now on the list. Sorted by New Slippage, worst first."
+    )
+    warn = list_month_warning(curr_month, list_date)
+    if warn:
+        st.warning(warn)
+    if "Due Dt" not in df_curr.columns:
+        st.warning("The LCC has no Due Dt column, so every clean loan is treated as due by the list date.")
+
+    grains = {g: compute_recent_advances_movement_by_grain(df_curr, daily_df, grain=g, list_date=list_date)
+              for g in ("zone", "region", "branch", "executive")}
+    total = grains["region"].iloc[-1] if not grains["region"].empty else None
+    if total is not None:
+        def _p(v):
+            return "-" if _is_missing(v) else f"{float(v):.1f}%"
+        takeaway(
+            f"<b>{int(total['Pending at Close']):,}</b> loans were pending at close: "
+            f"<b>{int(total['Still Pending']):,}</b> still pending, <b>{int(total['Cleared']):,}</b> cleared "
+            f"(<b>{_p(total['Cleared %'])}</b>). Of <b>{int(total['Due by List Date']):,}</b> clean loans "
+            f"already due, <b>{int(total['New Slippage']):,}</b> are new slippage (<b>{_p(total['New Slippage %'])}</b>)."
+            + (f" Of <b>{int(total['New, No EMI at Close']):,}</b> new loans with no EMI at close, "
+               f"<b>{int(total['First EMI Missed']):,}</b> missed their first EMI."
+               if "New, No EMI at Close" in total else "")
+        )
+    names = (["By Zone"] if not grains["zone"].empty else []) + ["By Region", "By Branch", "By Executive"]
+    keys = (["zone"] if not grains["zone"].empty else []) + ["region", "branch", "executive"]
+    for tab, g in zip(st.tabs(names, key="rc_movement_tabs"), keys):
+        with tab:
+            _render_movement_table(grains[g], g.title())
+
+    section_label("Bucket Movement: Month Close to List Date", margin_top="20px")
+    st.caption(
+        "Rows are the bucket in the LCC at month close; columns are where the same loans stand on the list "
+        "(Not on List means no EMI pending now). No EMI Yet is new loans with no EMI due at close. "
+        "Better, Same and Worse compare the two."
+    )
+    moves = compute_recent_advances_bucket_movement(df_curr, daily_df, list_date=list_date)
+    if moves.empty:
+        st.warning("Could not build the bucket movement: the LCC needs an Arrears / EMI column.")
+    else:
+        mcols = [{"key": "Bucket at Close", "align": "left", "bold": True}]
+        mcols += [{"key": c, "fmt": "int"} for c in moves.columns if c not in ("Bucket at Close", "Better", "Same", "Worse", "Total")]
+        mcols += [{"key": "Better", "fmt": "int"}, {"key": "Same", "fmt": "int"},
+                  {"key": "Worse", "fmt": "int", "heat": True}, {"key": "Total", "fmt": "int", "bold": True}]
+        st.markdown(_table(moves, mcols, last_row_is_total=True), unsafe_allow_html=True)
+        _dl_btn(moves, "recent_advances_bucket_movement.xlsx", "dl_root_cause_bucket_movement")
+    return {"region": grains["region"], "branch": grains["branch"], "executive": grains["executive"], "buckets": moves,
+            **{f"then_now_{g}": then_now[g] for g in ("region", "branch", "executive")}}
+
+
+def _render_daily_match(df_curr: pd.DataFrame, df_all: pd.DataFrame | None = None, curr_month: str = "") -> dict | None:
     """Optional: upload today's due-date-missed list to see, per region/branch/
     executive, how many running recent loans are delinquent and in which bucket.
     Returns the match dict (also stashed in session_state) for the Excel export."""
@@ -420,6 +569,7 @@ def _render_daily_match(df_curr: pd.DataFrame, df_all: pd.DataFrame | None = Non
     st.session_state["rc_branch_status"] = branch_status
     st.session_state["rc_executive_status"] = executive_status
     _render_match_notes(match)
+    st.session_state["rc_movement"] = _render_close_vs_list(df_curr, daily_df, curr_month)
     return match
 
 
@@ -431,7 +581,7 @@ def _cached_workbook_bytes(
     recent_by_region_count: pd.DataFrame, recent_by_region_soh: pd.DataFrame,
     recent_by_branch_count: pd.DataFrame, recent_by_branch_soh: pd.DataFrame,
     daily_match: dict, region_status: pd.DataFrame,
-    branch_status: pd.DataFrame, executive_status: pd.DataFrame,
+    branch_status: pd.DataFrame, executive_status: pd.DataFrame, movement: dict,
 ) -> bytes:
     return build_root_cause_workbook(
         why_df, insurance_split_df, chronic_shock_df, contamination, generated_for,
@@ -439,7 +589,7 @@ def _cached_workbook_bytes(
         recent_by_region_count=recent_by_region_count, recent_by_region_soh=recent_by_region_soh,
         recent_by_branch_count=recent_by_branch_count, recent_by_branch_soh=recent_by_branch_soh,
         daily_match=daily_match, region_status=region_status,
-        branch_status=branch_status, executive_status=executive_status,
+        branch_status=branch_status, executive_status=executive_status, movement=movement,
     )
 
 
@@ -477,6 +627,7 @@ def render_root_cause_tab(
         _region_status = st.session_state.get("rc_region_status", pd.DataFrame())
         _branch_status = st.session_state.get("rc_branch_status", pd.DataFrame())
         _executive_status = st.session_state.get("rc_executive_status", pd.DataFrame())
+        _movement = st.session_state.get("rc_movement") or {}
         if not why_df.empty:
             st.download_button(
                 "⬇ Root Cause workbook",
@@ -485,7 +636,7 @@ def render_root_cause_tab(
                     recent_summary or {}, recent_bucket_df,
                     recent_by_region_count, recent_by_region_soh,
                     recent_by_branch_count, recent_by_branch_soh,
-                    _daily_match, _region_status, _branch_status, _executive_status,
+                    _daily_match, _region_status, _branch_status, _executive_status, _movement,
                 ),
                 file_name=f"root_cause_diagnostics_{curr_month or 'report'}.xlsx".replace(" ", "_"),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -511,4 +662,4 @@ def render_root_cause_tab(
         _render_recent_advances_by_group(recent_by_region_count, recent_by_region_soh, "Region", group_col="RegionName")
         _render_recent_advances_by_group(recent_by_branch_count, recent_by_branch_soh, "Branch", group_col="Unit")
         if df_curr is not None:
-            _render_daily_match(df_curr, df_all)
+            _render_daily_match(df_curr, df_all, curr_month)

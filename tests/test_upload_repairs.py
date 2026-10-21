@@ -40,6 +40,26 @@ class TestSwappedColendingColumns:
         assert notes == []
 
 
+class TestSwappedExecutiveColumns:
+    def _df(self):
+        # Real Mumbai BU Sept closing: 29,189 rows (mostly NAGPUR) had these traded.
+        return pd.DataFrame({
+            "MNT CODE": ["EMP10234", "Ravi Patil", "Asha Kale", "Vacant Post", None],
+            "MNT NAME": ["Amit Rao", "EMP20456", "EMP3045", "Sunil Jha", "EMP4"],
+        })
+
+    def test_swaps_back_only_when_both_sides_prove_it(self):
+        df, notes = repair_upload(self._df())
+        assert list(df["MNT CODE"])[:4] == ["EMP10234", "EMP20456", "EMP3045", "Vacant Post"]
+        assert list(df["MNT NAME"])[:4] == ["Amit Rao", "Ravi Patil", "Asha Kale", "Sunil Jha"]
+        assert df["MNT NAME"].iloc[4] == "EMP4"                              # blank code: no proof, left alone
+        assert len(notes) == 1 and "Fixed 2 row(s)" in notes[0]
+
+    def test_clean_file_has_no_notes(self):
+        _, notes = repair_upload(pd.DataFrame({"MNT CODE": ["EMP1"], "MNT NAME": ["Amit Rao"]}))
+        assert notes == []
+
+
 def test_load_and_validate_applies_repairs_and_records_them():
     upload = _build_upload({
         "RegionName": ["CS NAGAR", "AKOLA", "AKOLA"],

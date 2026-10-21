@@ -376,8 +376,26 @@ def repair_upload(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
       - rows where CoLending_Loans and CUSTOMER_STATUS traded places (ALIVE/DEAD
         under co-lending AND Y/N under customer status -- only a swap produces
         that pair, so swapping back is not a guess);
+      - rows where MNT CODE and MNT NAME traded places (seen on a real Mumbai BU
+        closing, mostly NAGPUR zone): a name never has a digit and a code
+        always does here, so a digit-free MNT CODE next to a one-word MNT NAME
+        with a digit can only be a swap. Rows where both look like names stay;
       - alternate spellings of the same region."""
     notes: list[str] = []
+    if {"MNT CODE", "MNT NAME"}.issubset(df.columns):
+        # fillna first: under pandas 3 astype(str) keeps a missing value missing.
+        code = df["MNT CODE"].fillna("").astype(str).str.strip()
+        name = df["MNT NAME"].fillna("").astype(str).str.strip()
+        blank = ("", "NAN", "NONE", "<NA>")
+        swapped = (
+            name.str.fullmatch(r"\S*\d\S*") & ~code.str.contains(r"\d")
+            & ~code.str.upper().isin(blank) & ~name.str.upper().isin(blank)
+        ).fillna(False).astype(bool)
+        if swapped.any():
+            df = df.copy()
+            df.loc[swapped, ["MNT CODE", "MNT NAME"]] = df.loc[swapped, ["MNT NAME", "MNT CODE"]].to_numpy()
+            notes.append(f"Fixed {int(swapped.sum()):,} row(s) where MNT CODE and MNT NAME (executive code and name) "
+                         "were swapped in the source file.")
     if {"CoLending_Loans", "CUSTOMER_STATUS"}.issubset(df.columns):
         co = df["CoLending_Loans"].astype(str).str.strip().str.upper()
         cs = df["CUSTOMER_STATUS"].astype(str).str.strip().str.upper()

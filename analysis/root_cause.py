@@ -683,6 +683,232 @@ def compute_recent_advances_status_by_grain(
     return table[ordered]
 
 
+# ── Month close -> list date (old cases vs new slippage) ─────────────────────
+# The same running cohort, read at two moments: the LCC's month close (its own
+# Arrears/EMI) and the list's date (on the list or not). A loan pending at close
+# is either still on the list or cleared; a loan clean at close whose EMI due
+# day has passed by the list date is either fresh slippage or still clean. The
+# fresh-slippage % divides by loans that were DUE: a loan due on the 20th can't
+# have missed anything on a list dated the 12th. A loan with no due day at close
+# is a new loan with no EMI yet (verified on a real Mumbai BU Sept closing: all
+# agreed Jul to Sep, Month Due-Inst 0). When its first EMI falls due is not in
+# the LCC, so it is its own group (on the list = first EMI missed) and never
+# enters the slippage % either way.
+
+_DAILY_FEED_DATE_CANDIDATES = ["MISMONTH", "MIS MONTH", "MIS DATE"]
+_NOT_ON_LIST = "Not on List"
+_BUCKET_RANK = {"STD": 0, _NOT_ON_LIST: 0, _OTHER_BUCKET: 0, "1-30 DPD": 1, "SMA-1": 2, "SMA-2": 3, "NPA": 4}
+_EARLY = "On List, Not Yet Due"
+_NO_EMI = "No EMI Yet"            # bucket-at-close label for a new loan with no due day
+_NEW = "New, No EMI at Close"
+_FIRST_MISSED = "First EMI Missed"
+_BUCKET_RANK[_NO_EMI] = 0
+
+
+def list_report_date(daily_df: pd.DataFrame) -> pd.Timestamp | None:
+    """The list's report date from MISMONTH (20260929, a date, or a date
+    string); the most common value when rows disagree. None when absent."""
+    col = _first_col(daily_df, _DAILY_FEED_DATE_CANDIDATES)
+    if col is None:
+        return None
+    raw = daily_df[col].dropna()
+    if raw.empty:
+        return None
+    if pd.api.types.is_datetime64_any_dtype(raw):
+        dates = raw
+    else:
+        text = raw.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        dates = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+        dates = dates.fillna(pd.to_datetime(text[dates.isna()], errors="coerce", dayfirst=True))
+    dates = dates.dropna()
+    return None if dates.empty else pd.Timestamp(dates.dt.normalize().mode().iloc[0])
+
+
+def list_month_warning(lcc_month: str, list_date: pd.Timestamp | None) -> str | None:
+    """Plain warning when the list is not from the month right after the LCC
+    (e.g. an Aug LCC with a Sep list): the close-to-list split assumes it."""
+    if list_date is None:
+        return ("The list has no MISMONTH date, so every loan is treated as due. "
+                "The new slippage % may count loans whose EMI date has not come yet.")
+    if not lcc_month:
+        return None
+    closes = pd.Period(lcc_month, freq="M")
+    expected = closes + 1
+    if pd.Period(list_date, freq="M") != expected:
+        return (f"The list is dated {list_date:%d %b %Y}, but this LCC closes {closes.strftime('%b %Y')}. "
+                f"The comparison expects a list from {expected.strftime('%b %Y')}, so treat these figures with care.")
+    return None
+
+
+def _close_vs_list(
+    df_curr: pd.DataFrame, daily_df: pd.DataFrame, cohort_start: str, list_date: pd.Timestamp | None,
+) -> pd.DataFrame | None:
+    """The running cohort with, per loan: bucket at close (LCC Arrears/EMI;
+    No EMI Yet for a clean loan with no due day), on_list, bucket on the list
+    date, new (that no-EMI-yet loan) and due (its due day has passed by the
+    list date; True for every loan when the list date or the Due Dt column is
+    missing, which the page warns about)."""
+    cohort = _running_cohort(df_curr, cohort_start)
+    feed = _feed_by_loan(daily_df)
+    if cohort.empty or feed is None or "Arrears / EMI" not in cohort.columns:
+        return None
+    keys = _loan_key(cohort["Loan No"])
+    on_list = keys.isin(set(feed.index)).to_numpy()
+    close = bucket_from_arrears_emi(to_num(cohort, "Arrears / EMI")).replace({"NA": "STD"})
+    on_date = bucket_from_arrears_emi(keys.map(feed["arrears"]))
+    on_date = on_date.mask(on_date.isin(["STD", "NA"]), _OTHER_BUCKET).where(on_list, _NOT_ON_LIST)
+    pending = (close != "STD").to_numpy()
+    due = pd.Series(True, index=cohort.index)
+    new = pd.Series(False, index=cohort.index)
+    if "Due Dt" in cohort.columns:
+        day = pd.to_numeric(cohort["Due Dt"], errors="coerce")
+        new = day.isna() & ~pending
+        if list_date is not None:
+            due = day <= list_date.day
+    close = close.mask(new, _NO_EMI)
+    return cohort.assign(_close=close.to_numpy(), _on_list=on_list, _on_date=on_date.to_numpy(),
+                         _due=due.to_numpy(), _new=new.to_numpy(), _pending=pending)
+
+
+def compute_recent_advances_movement_by_grain(
+    df_curr: pd.DataFrame, daily_df: pd.DataFrame, grain: str = "region",
+    cohort_start: str = RECENT_ADVANCES_COHORT_START, list_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """One row per zone/region/branch/executive + Grand Total, splitting the
+    running cohort by its month-close position:
+      Pending at Close = Still Pending (on the list) + Cleared (not on it)
+      Clean at Close   -> Due by List Date -> New Slippage (on the list)
+      New, No EMI at Close -> First EMI Missed (on the list)
+    Still Pending % and Cleared % are of Pending at Close; New Slippage % is
+    of Due by List Date. A clean loan on the list though its EMI date has not
+    come yet (an overdue charge, say) is its own column. That column and the
+    two new-loan ones show only when any exist; every list loan is counted
+    once. Sorted by New Slippage %."""
+    spec = _GRAIN_SPECS[grain]
+    if list_date is None:
+        list_date = list_report_date(daily_df)
+    base = _close_vs_list(df_curr, daily_df, cohort_start, list_date)
+    if base is None or not set(spec["master_cols"]).issubset(base.columns):
+        return pd.DataFrame()
+
+    pend, on, due, new = base["_pending"], base["_on_list"], base["_due"], base["_new"]
+    clean = ~pend & ~new
+    flags = pd.DataFrame({
+        "Running Loans": True,
+        "Pending at Close": pend,
+        "Still Pending": pend & on,
+        "Cleared": pend & ~on,
+        "Clean at Close": clean,
+        "Due by List Date": clean & due,
+        "New Slippage": clean & due & on,
+        _EARLY: clean & ~due & on,
+        _NEW: new,
+        _FIRST_MISSED: new & on,
+    }, index=base.index)
+    out_cols = spec["out_cols"]
+    labels = [base[c].astype(str).str.strip().rename(o) for c, o in zip(spec["master_cols"], out_cols)]
+    table = flags.groupby(labels).sum().astype(int).reset_index()
+    total = {c: "" for c in out_cols}
+    total[out_cols[0]] = "Grand Total"
+    total.update({c: int(table[c].sum()) for c in flags.columns})
+    optional = [_EARLY] * (total[_EARLY] > 0) + [_NEW, _FIRST_MISSED] * (total[_NEW] > 0)
+
+    def _pcts(df):
+        for num, den in (("Still Pending", "Pending at Close"), ("Cleared", "Pending at Close"),
+                         ("New Slippage", "Due by List Date")):
+            d = df[den]
+            df[f"{num} %"] = (df[num] / d.where(d > 0) * 100).round(2)
+        return df
+
+    table = _pcts(table).sort_values(["New Slippage %", "Still Pending %"], ascending=False, na_position="last")
+    table = pd.concat([table, _pcts(pd.DataFrame([total]))], ignore_index=True)
+    ordered = out_cols + ["Running Loans", "Pending at Close", "Still Pending", "Still Pending %", "Cleared", "Cleared %",
+                          "Clean at Close", "Due by List Date", "New Slippage", "New Slippage %"]
+    return table[ordered + optional]
+
+
+def compute_recent_advances_then_vs_now_by_grain(
+    df_curr: pd.DataFrame, daily_df: pd.DataFrame, grain: str = "region",
+    cohort_start: str = RECENT_ADVANCES_COHORT_START, list_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Side by side per zone/region/branch/executive + Grand Total: the same
+    running loans at the LCC month close (its Arrears/EMI) and on the list
+    date (the list's). Delinquent and each bucket (0-1/1-2/2-3/NPA) as a count
+    and a % of Running Loans, then the change. No verdict: the list date is
+    mid-cycle, so the reader compares the figures. "List Other" (on the list
+    with no EMI arrears) shows only when any exist; List Delinquent counts it,
+    as the status table does. Sorted by the largest rise in Delinquent %."""
+    spec = _GRAIN_SPECS[grain]
+    if list_date is None:
+        list_date = list_report_date(daily_df)
+    base = _close_vs_list(df_curr, daily_df, cohort_start, list_date)
+    if base is None or not set(spec["master_cols"]).issubset(base.columns):
+        return pd.DataFrame()
+
+    bands = [_RECENT_BUCKET_LABEL.get(b, b) for b in STATUS_BUCKETS]          # 0-1, 1-2, 2-3, NPA
+    close = base["_close"].map(lambda b: _RECENT_BUCKET_LABEL.get(b, b))
+    on_date = base["_on_date"].map(lambda b: _RECENT_BUCKET_LABEL.get(b, b))
+    flags = {"Running Loans": pd.Series(True, index=base.index), "Close Delinquent": base["_pending"]}
+    flags.update({f"Close {b}": close == b for b in bands})
+    flags["List Delinquent"] = base["_on_list"]
+    flags.update({f"List {b}": on_date == b for b in bands})
+    flags[f"List {_OTHER_BUCKET}"] = on_date == _OTHER_BUCKET
+    flags = pd.DataFrame(flags)
+
+    out_cols = spec["out_cols"]
+    labels = [base[c].astype(str).str.strip().rename(o) for c, o in zip(spec["master_cols"], out_cols)]
+    table = flags.groupby(labels).sum().astype(int).reset_index()
+    total = {c: "" for c in out_cols}
+    total[out_cols[0]] = "Grand Total"
+    total.update({c: int(table[c].sum()) for c in flags.columns})
+    show_other = total[f"List {_OTHER_BUCKET}"] > 0
+    counted = [c for c in flags.columns if c != "Running Loans" and (show_other or c != f"List {_OTHER_BUCKET}")]
+
+    def _pcts(df):
+        run = df["Running Loans"].where(df["Running Loans"] > 0)
+        for c in counted:
+            df[f"{c} %"] = (df[c] / run * 100).round(2)
+        df["Change in Delinquent"] = df["List Delinquent"] - df["Close Delinquent"]
+        df["Change in Delinquent % (pts)"] = (df["List Delinquent %"] - df["Close Delinquent %"]).round(2)
+        return df
+
+    table = _pcts(table).sort_values("Change in Delinquent % (pts)", ascending=False, na_position="last")
+    table = pd.concat([table, _pcts(pd.DataFrame([total]))], ignore_index=True)
+    ordered = out_cols + ["Running Loans"] + [x for c in counted for x in (c, f"{c} %")]
+    return table[ordered + ["Change in Delinquent", "Change in Delinquent % (pts)"]]
+
+
+def compute_recent_advances_bucket_movement(
+    df_curr: pd.DataFrame, daily_df: pd.DataFrame,
+    cohort_start: str = RECENT_ADVANCES_COHORT_START, list_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Rows = bucket at month close (LCC Arrears/EMI), columns = position on
+    the list date (Not on List, then the list's own bucket), plus Better /
+    Same / Worse and a Total row. "Not on List" and "Other" (on the list with
+    no EMI arrears) rank with STD, as does a first row "No EMI Yet" (new loans
+    with no due day at close). Each row adds up to its Total."""
+    if list_date is None:
+        list_date = list_report_date(daily_df)
+    base = _close_vs_list(df_curr, daily_df, cohort_start, list_date)
+    if base is None:
+        return pd.DataFrame()
+    rows_order = [_NO_EMI, "STD"] + STATUS_BUCKETS
+    cols_order = [_NOT_ON_LIST] + STATUS_BUCKETS + ([_OTHER_BUCKET] if (base["_on_date"] == _OTHER_BUCKET).any() else [])
+    grid = pd.crosstab(base["_close"], base["_on_date"]).reindex(index=rows_order, columns=cols_order, fill_value=0)
+
+    close_rank = base["_close"].map(_BUCKET_RANK)
+    date_rank = base["_on_date"].map(_BUCKET_RANK)
+    moves = pd.DataFrame({
+        "Better": date_rank < close_rank, "Same": date_rank == close_rank, "Worse": date_rank > close_rank,
+    }).groupby(base["_close"]).sum().reindex(rows_order, fill_value=0)
+    table = grid.join(moves).astype(int)
+    table["Total"] = grid.sum(axis=1)
+    table = table[table["Total"] > 0]
+    table.loc["Total"] = table.sum()
+    table.index.name = "Bucket at Close"
+    return table.reset_index()
+
+
 # ── Standalone, manager-presentable Excel export ─────────────────────────────
 # openpyxl (not xlsxwriter -- that's only present in this venv as some other
 # package's transitive dependency, not a pinned requirement here) to match
@@ -756,7 +982,7 @@ def _apply_worst_first_colorscale(ws, n_data_rows: int, pct_col_letters: list[st
     the min/max the color scale computes."""
     if n_data_rows <= 1:
         return
-    last_row = n_data_rows  # data rows are 2..(n_data_rows+1); Grand Total is row n_data_rows+1
+    last_row = n_data_rows + 1  # header is row 1, data rows 2..(n_data_rows+1), Grand Total after them
     rule = ColorScaleRule(
         start_type="min", start_color=_COLORSCALE_WHITE,
         end_type="max", end_color=_COLORSCALE_RED,
@@ -777,6 +1003,16 @@ def _write_status_sheet(ws, df: pd.DataFrame) -> None:
     _apply_worst_first_colorscale(ws, n_data_rows=len(df) - 1, pct_col_letters=col_letters)
 
 
+# Month close vs list date sheets (compute_recent_advances_movement_by_grain /
+# _bucket_movement); each table's last row is its total.
+_MOVEMENT_SHEETS = {
+    "then_now_region": "Then vs Now Region", "then_now_branch": "Then vs Now Branch",
+    "then_now_executive": "Then vs Now Executive",
+    "region": "Close vs List Region", "branch": "Close vs List Branch",
+    "executive": "Close vs List Executive", "buckets": "Bucket Movement",
+}
+
+
 def build_root_cause_workbook(
     why_df: pd.DataFrame,
     insurance_split_df: pd.DataFrame,
@@ -793,6 +1029,7 @@ def build_root_cause_workbook(
     region_status: pd.DataFrame | None = None,
     branch_status: pd.DataFrame | None = None,
     executive_status: pd.DataFrame | None = None,
+    movement: dict | None = None,
 ) -> bytes:
     """One styled workbook, presentation-ready for a manager: a Summary/cover
     sheet (title, generation date, data-quality notice) plus one sheet per
@@ -824,6 +1061,10 @@ def build_root_cause_workbook(
             contents.append(f"Recent Advances: {label} Delinquency Status (worst first)")
     if daily_match:
         contents.append("Recent Advances: Daily Feed Match")
+    movement = {k: v for k, v in (movement or {}).items() if v is not None and not v.empty}
+    for key, label in _MOVEMENT_SHEETS.items():
+        if key in movement:
+            contents.append(f"Recent Advances: {label}")
     for label in contents:
         cover.cell(row=row, column=1, value=f"•  {label}")
         row += 1
@@ -901,6 +1142,10 @@ def build_root_cause_workbook(
             ws.cell(row=i, column=1, value=label).font = Font(bold=True)
             ws.cell(row=i, column=2, value=val)
         ws.column_dimensions["A"].width = 86
+
+    for key, label in _MOVEMENT_SHEETS.items():
+        if key in movement:
+            _write_status_sheet(wb.create_sheet(label), movement[key])
 
     buf = io.BytesIO()
     wb.save(buf)
