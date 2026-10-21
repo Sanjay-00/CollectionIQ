@@ -312,22 +312,15 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
 
 
 # ── Recent Advances (Nov'25 onward) cohort profile ──────────────────────────
-# A SEPARATE bucket scheme from utils.BUCKET_ORDER/curr_bucket (STD/1-30 DPD/
-# SMA-1/SMA-2/NPA/NA) -- this one matches the Excel Automation project's own
-# bucket_analysis.yaml thresholds on raw Arrears/EMI exactly (0-1/1-2/2-3/NPA,
-# the same buckets that project already emails to branches daily), so a
-# manager sees the SAME bucket definitions here as in that report, not a
-# second, subtly different scheme.
-_RECENT_BUCKET_ORDER = ["STD", "0-1", "1-2", "2-3", "NPA"]
-
-
-_RECENT_BUCKET_LABEL = {"1-30 DPD": "0-1", "SMA-1": "1-2", "SMA-2": "2-3"}
+# utils.bucket_from_arrears_emi's thresholds on raw Arrears/EMI, with the app's
+# own labels (1-30 DPD / SMA-1 / SMA-2 / NPA): one naming on every Recent
+# Advances table, chosen 2026-10-21 over the EMI-band labels (0-1/1-2/2-3).
+_RECENT_BUCKET_ORDER = ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]
 
 
 def _assign_recent_bucket(arrears_emi: pd.Series) -> pd.Series:
-    """utils.bucket_from_arrears_emi (the app's one bucket rule), shown with
-    the EMI-band labels this report uses (0-1/1-2/2-3)."""
-    return _bucket_rule(arrears_emi).replace(_RECENT_BUCKET_LABEL)
+    """utils.bucket_from_arrears_emi, the app's one bucket rule."""
+    return _bucket_rule(arrears_emi)
 
 
 def compute_recent_advances_summary(df_curr: pd.DataFrame, cohort_start: str = RECENT_ADVANCES_COHORT_START) -> dict:
@@ -363,7 +356,7 @@ def _cohort_df(df_curr: pd.DataFrame, cohort_start: str) -> pd.DataFrame:
 
 def compute_recent_advances_bucket_summary(df_curr: pd.DataFrame, cohort_start: str = RECENT_ADVANCES_COHORT_START) -> pd.DataFrame:
     """Portfolio-wide bucket-wise split of the Nov'25+ cohort: one row per
-    bucket (STD/0-1/1-2/2-3/NPA), Count/Count%/SOH(Cr)/SOH% -- % is of the
+    bucket (STD/1-30 DPD/SMA-1/SMA-2/NPA), Count/Count%/SOH(Cr)/SOH% -- % is of the
     COHORT total, not the whole portfolio. Loans with no parseable Arrears/EMI
     are excluded from bucketing but still counted in the cohort total via the
     'NA' share implicitly missing from the 100% (surfaced in the caller if needed)."""
@@ -833,7 +826,7 @@ def compute_recent_advances_then_vs_now_by_grain(
 ) -> pd.DataFrame:
     """Side by side per zone/region/branch/executive + Grand Total: the same
     running loans at the LCC month close (its Arrears/EMI) and on the list
-    date (the list's). Delinquent and each bucket (0-1/1-2/2-3/NPA) as a count
+    date (the list's). Delinquent and each bucket (1-30 DPD .. NPA) as a count
     and a % of Running Loans, then the change. No verdict: the list date is
     mid-cycle, so the reader compares the figures. "List Other" (on the list
     with no EMI arrears) shows only when any exist; List Delinquent counts it,
@@ -845,9 +838,8 @@ def compute_recent_advances_then_vs_now_by_grain(
     if base is None or not set(spec["master_cols"]).issubset(base.columns):
         return pd.DataFrame()
 
-    bands = [_RECENT_BUCKET_LABEL.get(b, b) for b in STATUS_BUCKETS]          # 0-1, 1-2, 2-3, NPA
-    close = base["_close"].map(lambda b: _RECENT_BUCKET_LABEL.get(b, b))
-    on_date = base["_on_date"].map(lambda b: _RECENT_BUCKET_LABEL.get(b, b))
+    bands = STATUS_BUCKETS
+    close, on_date = base["_close"], base["_on_date"]
     flags = {"Running Loans": pd.Series(True, index=base.index), "Close Delinquent": base["_pending"]}
     flags.update({f"Close {b}": close == b for b in bands})
     flags["List Delinquent"] = base["_on_list"]
@@ -876,6 +868,25 @@ def compute_recent_advances_then_vs_now_by_grain(
     table = pd.concat([table, _pcts(pd.DataFrame([total]))], ignore_index=True)
     ordered = out_cols + ["Running Loans"] + [x for c in counted for x in (c, f"{c} %")]
     return table[ordered + ["Change in Delinquent", "Change in Delinquent % (pts)"]]
+
+
+def compute_recent_advances_story_by_grain(
+    df_curr: pd.DataFrame, daily_df: pd.DataFrame, grain: str = "region",
+    cohort_start: str = RECENT_ADVANCES_COHORT_START, list_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """The Recent Advances page's one main table: then vs now (behind at the
+    month close and on the list date, each bucket, the change) joined with
+    what happened to each group (Cleared, New Slippage, First EMI Missed and
+    the rest) on the same zone/region/branch/executive rows. Same order as
+    compute_recent_advances_then_vs_now_by_grain (largest rise first, Grand
+    Total last); every figure comes from those two functions unchanged."""
+    then_now = compute_recent_advances_then_vs_now_by_grain(df_curr, daily_df, grain, cohort_start, list_date)
+    move = compute_recent_advances_movement_by_grain(df_curr, daily_df, grain, cohort_start, list_date)
+    if then_now.empty or move.empty:
+        return pd.DataFrame()
+    keys = _GRAIN_SPECS[grain]["out_cols"]
+    extra = [c for c in move.columns if c not in keys and c not in then_now.columns]
+    return then_now.merge(move[keys + extra], on=keys, how="left", validate="one_to_one")
 
 
 def compute_recent_advances_bucket_movement(

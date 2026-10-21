@@ -212,7 +212,7 @@ class TestRecentBucketsAndCleaning:
             "Arrears / EMI": [0, 0.5, 1.0, 2.0, 3.0, None], "SOH": [1e7] * 6,
         })
         b = compute_recent_advances_bucket_summary(df).set_index("Bucket")
-        assert b["Count"].to_dict() == {"STD": 1, "0-1": 1, "1-2": 1, "2-3": 1, "NPA": 1}
+        assert b["Count"].to_dict() == {"STD": 1, "1-30 DPD": 1, "SMA-1": 1, "SMA-2": 1, "NPA": 1}
 
     def test_contaminated_flag_values_become_null_and_are_counted(self):
         df = pd.DataFrame({"Non Starter": ["Yes", "No", "NEMCV", None], "CoLending_Loans": ["Y", "ALIVE", "N", "N"]})
@@ -226,6 +226,7 @@ from analysis.root_cause import (  # noqa: E402
     compute_recent_advances_bucket_movement,
     compute_recent_advances_then_vs_now_by_grain,
     compute_recent_advances_movement_by_grain,
+    compute_recent_advances_story_by_grain,
     list_month_warning,
     list_report_date,
 )
@@ -328,8 +329,8 @@ class TestCloseVsList:
     def test_then_vs_now_figures_side_by_side(self):
         t = compute_recent_advances_then_vs_now_by_grain(_master_at_close(), _list()).set_index("Region")
         # PUNE: L1 (0.5 -> 1.2), L2 (1.5 -> cleared), L3 (clean -> 1.0). 3 running loans.
-        assert t.loc["PUNE", "Close Delinquent"] == 2 and t.loc["PUNE", "Close 0-1"] == 1 and t.loc["PUNE", "Close 1-2"] == 1
-        assert t.loc["PUNE", "List Delinquent"] == 2 and t.loc["PUNE", "List 1-2"] == 2
+        assert t.loc["PUNE", "Close Delinquent"] == 2 and t.loc["PUNE", "Close 1-30 DPD"] == 1 and t.loc["PUNE", "Close SMA-1"] == 1
+        assert t.loc["PUNE", "List Delinquent"] == 2 and t.loc["PUNE", "List SMA-1"] == 2
         assert t.loc["PUNE", "Close Delinquent %"] == 66.67 and t.loc["PUNE", "Change in Delinquent"] == 0
         # CS NAGAR: none at close, L5 on the list (0.3).
         assert t.loc["CS NAGAR", "Change in Delinquent % (pts)"] == 50.0
@@ -338,13 +339,26 @@ class TestCloseVsList:
     def test_then_vs_now_buckets_add_up_and_match_other_tables(self):
         master, lst = _master_at_close(), _list(day="20260930")
         t = compute_recent_advances_then_vs_now_by_grain(master, lst, grain="branch").set_index(["Branch", "Region"])
-        bands = ["0-1", "1-2", "2-3", "NPA"]
+        bands = ["1-30 DPD", "SMA-1", "SMA-2", "NPA"]
         assert (t[[f"Close {b}" for b in bands]].sum(axis=1) == t["Close Delinquent"]).all()
         assert (t[[f"List {b}" for b in bands]].sum(axis=1) == t["List Delinquent"]).all()
         status = compute_recent_advances_status_by_grain(master, lst, grain="branch").set_index(["Branch", "Region"])
         move = compute_recent_advances_movement_by_grain(master, lst, grain="branch").set_index(["Branch", "Region"])
         assert (t["List Delinquent"].sort_index() == status["Delinquent"].sort_index()).all()
         assert (t["Close Delinquent"].sort_index() == move["Pending at Close"].sort_index()).all()
+
+    def test_story_table_joins_then_vs_now_and_movement_unchanged(self):
+        master, lst = _master_at_close(), _list(day="20260916")
+        for grain, keys in (("region", ["Region"]), ("branch", ["Branch", "Region"]), ("executive", ["Executive", "Branch"])):
+            story = compute_recent_advances_story_by_grain(master, lst, grain=grain)
+            tn = compute_recent_advances_then_vs_now_by_grain(master, lst, grain=grain)
+            mv = compute_recent_advances_movement_by_grain(master, lst, grain=grain)
+            assert list(story[keys[0]]) == list(tn[keys[0]])                         # same rows, same order
+            assert story.iloc[-1][keys[0]] == "Grand Total"
+            for src in (tn, mv):
+                a = story.set_index(keys)[src.columns.drop(keys)].sort_index()
+                b = src.set_index(keys).sort_index()
+                pd.testing.assert_frame_equal(a, b, check_dtype=False)
 
     def test_then_vs_now_has_no_verdict_column(self):
         t = compute_recent_advances_then_vs_now_by_grain(_master_at_close(), _list())
