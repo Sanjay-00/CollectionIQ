@@ -12,8 +12,8 @@ from ui.glossary import DRIVER_HELP, help_for, info_icon
 from config import HARD_BUCKET_ARREARS_EMI_MIN
 from analysis.root_cause import (
     build_root_cause_workbook, load_daily_missed_feed,
-    ARREARS_GROUPS, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY,
-    compute_recent_advances_daily_match, compute_recent_advances_status_by_grain,
+    ARREARS_GROUPS, GROUP_LABELS, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY,
+    compute_recent_advances_daily_match, story_for_export, bucket_moves_for_export,
     compute_recent_advances_bucket_movement,
     compute_recent_advances_story_by_grain,
     list_report_date, list_month_warning,
@@ -175,14 +175,14 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
         {"key": "Prev Delinquency%", "fmt": "pct", "help": _PREV_DELINQ_HELP},
         {"key": "Δ Delinquency%", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
         # Shares of the DELINQUENT loans (each with its count).
-        {"key": "Insurance-Only %", "label": "Insurance-Only", "fmt": "pct_count", "count": "Insurance-Only"},
-        {"key": "Installment-Only %", "label": "Installment-Only", "fmt": "pct_count", "count": "Installment-Only"},
+        {"key": "Insurance-Only %", "label": GROUP_LABELS["Insurance-Only"], "fmt": "pct_count", "count": "Insurance-Only"},
+        {"key": "Installment-Only %", "label": GROUP_LABELS["Installment-Only"], "fmt": "pct_count", "count": "Installment-Only"},
         # "Both" = genuine shortfall on both legs -- the most severe of the three, shaded accordingly.
-        {"key": "Both %", "label": "Both", "fmt": "pct_count", "count": "Both", "heat": True},
-        {"key": "Other %", "label": "Other", "fmt": "pct_count", "count": "Other"},
+        {"key": "Both %", "label": GROUP_LABELS["Both"], "fmt": "pct_count", "count": "Both", "heat": True},
+        {"key": "Other %", "label": GROUP_LABELS["Other"], "fmt": "pct_count", "count": "Other"},
     ]
     cols = [c for c in cols if c["key"] in view.columns]
-    _summary_line(view.iloc[-1], [("Insurance-Only", "Insurance-Only %"), ("Installment-Only", "Installment-Only %"), ("Both", "Both %"), ("Other", "Other %")])
+    _summary_line(view.iloc[-1], [(GROUP_LABELS[g], f"{g} %") for g in ("Insurance-Only", "Installment-Only", "Both", "Other")])
     st.markdown(_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
     _dl_btn(ins_df, "insurance_vs_installment_split.xlsx", "dl_root_cause_insurance")
 
@@ -206,13 +206,13 @@ def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
         {"key": "Prev Delinquency%", "fmt": "pct", "help": _PREV_DELINQ_HELP},
         {"key": "Δ Delinquency%", "fmt": "pp", "help": _DELTA_DELINQ_HELP},
         # Shares of the DELINQUENT loans (each with its count).
-        {"key": f"{HARD_NOT_PAYING} %", "label": HARD_NOT_PAYING, "fmt": "pct_count", "count": HARD_NOT_PAYING, "heat": True},
-        {"key": f"{HARD_STILL_PAYING} %", "label": HARD_STILL_PAYING, "fmt": "pct_count", "count": HARD_STILL_PAYING, "heat": True},
-        {"key": f"{WAS_SILENT} %", "label": WAS_SILENT, "fmt": "pct_count", "count": WAS_SILENT},
-        {"key": f"{EARLY_DELINQUENCY} %", "label": EARLY_DELINQUENCY, "fmt": "pct_count", "count": EARLY_DELINQUENCY},
+        {"key": f"{HARD_NOT_PAYING} %", "label": GROUP_LABELS[HARD_NOT_PAYING], "fmt": "pct_count", "count": HARD_NOT_PAYING, "heat": True},
+        {"key": f"{HARD_STILL_PAYING} %", "label": GROUP_LABELS[HARD_STILL_PAYING], "fmt": "pct_count", "count": HARD_STILL_PAYING, "heat": True},
+        {"key": f"{WAS_SILENT} %", "label": GROUP_LABELS[WAS_SILENT], "fmt": "pct_count", "count": WAS_SILENT},
+        {"key": f"{EARLY_DELINQUENCY} %", "label": GROUP_LABELS[EARLY_DELINQUENCY], "fmt": "pct_count", "count": EARLY_DELINQUENCY},
     ]
     cols = [c for c in cols if c["key"] in view.columns]
-    _summary_line(view.iloc[-1], [(g, f"{g} %") for g in ARREARS_GROUPS])
+    _summary_line(view.iloc[-1], [(GROUP_LABELS[g], f"{g} %") for g in ARREARS_GROUPS])
     st.markdown(_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
     _dl_btn(cs_df, "deep_arrears_paying_vs_not_paying.xlsx", "dl_root_cause_chronic_shock")
 
@@ -274,7 +274,7 @@ def _render_profile(recent_summary: dict, bucket_df: pd.DataFrame, by_group: dic
     if bucket_df.empty:
         st.info("Not enough data for the bucket split.")
         return
-    st.markdown("")
+    st.caption("Bucket shares are of recent loans that have had an EMI due; new loans with no EMI yet are left out.")
     st.markdown(_table(bucket_df, [
         {"key": "Bucket", "align": "left", "bold": True},
         {"key": "Count %", "label": "Loans", "fmt": "pct_count", "count": "Count"},
@@ -331,10 +331,8 @@ def _list_bundle(df_curr: pd.DataFrame, df_all: pd.DataFrame, uploaded, curr_mon
     list_date = list_report_date(daily_df)
     story = {g: compute_recent_advances_story_by_grain(df_curr, daily_df, grain=g, list_date=list_date)
              for g in _GRAIN_LABELS}
-    status = {g: compute_recent_advances_status_by_grain(df_curr, daily_df, grain=g)
-              for g in ("region", "branch", "executive")}
     bundle = {
-        "key": key, "error": None, "match": match, "list_date": list_date, "story": story, "status": status,
+        "key": key, "error": None, "match": match, "list_date": list_date, "story": story,
         "buckets": compute_recent_advances_bucket_movement(df_curr, daily_df, list_date=list_date),
         "warnings": [w for w in (
             list_month_warning(curr_month, list_date),
@@ -418,7 +416,7 @@ def _render_bucket_moves(moves: pd.DataFrame) -> None:
     cols += [{"key": "Better", "fmt": "int"}, {"key": "Same", "fmt": "int"}, {"key": "Worse", "fmt": "int"},
              {"key": "Total", "label": "Loans", "fmt": "int", "bold": True}]
     st.markdown(_table(view, cols, last_row_is_total=True), unsafe_allow_html=True)
-    _dl_btn(moves, "recent_loans_bucket_movement.xlsx", "dl_root_cause_bucket_movement")
+    _dl_btn(bucket_moves_for_export(moves), "recent_loans_bucket_movement.xlsx", "dl_root_cause_bucket_movement")
 
 
 def _render_about(match: dict, close_lbl: str, list_lbl: str) -> None:
@@ -478,8 +476,7 @@ def _render_recent_advances(
             help="The daily list of loans that missed a due date. It is matched to the month-end file by loan number.",
         )
     if uploaded is None:
-        for k in ("rc_ra_bundle", "rc_daily_match", "rc_region_status", "rc_branch_status",
-                  "rc_executive_status", "rc_movement"):
+        for k in ("rc_ra_bundle", "rc_daily_match", "rc_movement"):
             st.session_state.pop(k, None)
         if df_curr is not None:
             st.caption("Upload a due-date list to see how the same recent loans moved since month end, "
@@ -500,14 +497,8 @@ def _render_recent_advances(
     list_lbl = f"{list_date:%d %b}" if list_date is not None else "the list date"
     story = bundle["story"]
     st.session_state["rc_daily_match"] = bundle["match"]
-    st.session_state["rc_region_status"] = bundle["status"]["region"]
-    st.session_state["rc_branch_status"] = bundle["status"]["branch"]
-    st.session_state["rc_executive_status"] = bundle["status"]["executive"]
-    st.session_state["rc_movement"] = {
-        **{g: story[g] for g in ("region", "branch", "executive")},
-        **{f"then_now_{g}": story[g] for g in ("region", "branch", "executive")},
-        "buckets": bundle["buckets"],
-    }
+    st.session_state["rc_movement"] = {**{g: story[g] for g in ("region", "branch", "executive")},
+                                       "buckets": bundle["buckets"]}
 
     section_label(f"Recent loans: {close_lbl} vs {list_lbl}", margin_top="16px")
     region = story["region"]
@@ -530,7 +521,7 @@ def _render_recent_advances(
         show_buckets = st.toggle("Show bucket split", key="rc_ra_buckets")
     grain = picked.lower()
     with c_dl:
-        _dl_btn(story[grain], f"recent_loans_month_end_vs_{list_lbl.replace(' ', '_')}_by_{grain}.xlsx",
+        _dl_btn(story_for_export(story[grain]), f"recent_loans_month_end_vs_{list_lbl.replace(' ', '_')}_by_{grain}.xlsx",
                 "dl_root_cause_story")
     _story_table(story[grain], close_lbl, list_lbl, show_buckets)
 
@@ -590,29 +581,6 @@ def render_root_cause_tab(
         st.markdown('<div style="font-size:13.5px;color:#374151;">Why delinquency, NPA and collection are '
                     'moving, region by region and branch by branch, so the fix can follow.</div>',
                     unsafe_allow_html=True)
-    with dl_col:
-        # Read now (page render), used when the button is clicked.
-        _daily_match = st.session_state.get("rc_daily_match") or {}
-        _region_status = st.session_state.get("rc_region_status", pd.DataFrame())
-        _branch_status = st.session_state.get("rc_branch_status", pd.DataFrame())
-        _executive_status = st.session_state.get("rc_executive_status", pd.DataFrame())
-        _movement = st.session_state.get("rc_movement") or {}
-        if not why_df.empty:
-            st.download_button(
-                "⬇ Root Cause workbook",
-                data=lambda: _cached_workbook_bytes(
-                    why_df, insurance_split_df, chronic_shock_df, contamination, curr_month,
-                    recent_summary or {}, recent_bucket_df,
-                    recent_by_region_count, recent_by_region_soh,
-                    recent_by_branch_count, recent_by_branch_soh,
-                    _daily_match, _region_status, _branch_status, _executive_status, _movement,
-                ),
-                file_name=f"root_cause_diagnostics_{curr_month or 'report'}.xlsx".replace(" ", "_"),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_root_cause_workbook",
-                width='stretch',
-            )
-
     _render_contamination_notice(contamination)
     view = st.segmented_control("View", VIEWS, default=VIEWS[0], key="rc_view", label_visibility="collapsed") or VIEWS[0]
     if view == VIEWS[0]:
@@ -628,3 +596,26 @@ def render_root_cause_tab(
             ("branch", (recent_by_branch_count, recent_by_branch_soh)),
         ) if pair[0] is not None and not pair[0].empty}
         _render_recent_advances(df_curr, df_all, curr_month, recent_summary or {}, recent_bucket_df, by_group)
+
+    # The workbook button sits in the header but is built LAST: the Recent
+    # advances view computes the list figures above, and a button built first
+    # would hand out a workbook without them (it did, on the first download
+    # after an upload).
+    with dl_col:
+        _daily_match = st.session_state.get("rc_daily_match") or {}
+        _movement = st.session_state.get("rc_movement") or {}
+        if not why_df.empty:
+            st.download_button(
+                "⬇ Root Cause workbook",
+                data=lambda: _cached_workbook_bytes(
+                    why_df, insurance_split_df, chronic_shock_df, contamination, curr_month,
+                    recent_summary or {}, recent_bucket_df,
+                    recent_by_region_count, recent_by_region_soh,
+                    recent_by_branch_count, recent_by_branch_soh,
+                    _daily_match, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), _movement,
+                ),
+                file_name=f"root_cause_diagnostics_{curr_month or 'report'}.xlsx".replace(" ", "_"),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_root_cause_workbook",
+                width='stretch',
+            )

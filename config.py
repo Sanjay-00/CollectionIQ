@@ -172,9 +172,16 @@ REPOSSESSION_BUCKETS = ("SMA-2", "NPA")
 # ...and not already seized and sold (Loan Status "S&S").
 REPOSSESSION_EXCLUDE_STATUSES = ("S&S",)
 
-# "Not paying 3M+": the LCC flag for no payment in 3 months with more than
-# HARD_BUCKET_ARREARS_EMI_MIN EMIs overdue.
-NOT_PAYING_3M_FLAG_COL = "No Coll 3 Months and >6 EMI"
+# "Not paying 3M+": behind on payment and no receipt in the NOT_PAYING_RECEIPT_MONTHS
+# months up to month end, worked out from Last Receipt Date at upload
+# (utils.add_not_paying_flag) into NOT_PAYING_3M_FLAG_COL. Every count, list and
+# table reads that column. The file's own flag (NOT_PAYING_SOURCE_FLAG_COL) is
+# not trusted: on a real Sept closing it was Y for every 6+ EMI loan, including
+# 1,267 that had paid since 1 Jul (business decision 2026-10-21). It is used
+# only when a file has no Last Receipt Date.
+NOT_PAYING_SOURCE_FLAG_COL = "No Coll 3 Months and >6 EMI"
+NOT_PAYING_3M_FLAG_COL = "Not Paying 3M (receipts)"
+NOT_PAYING_RECEIPT_MONTHS = 3
 
 # Portfolio Pulse "NOV'25 Onward Delinquency" KPI: a fixed cohort-start date
 # (NOT a rolling window relative to the report month, unlike

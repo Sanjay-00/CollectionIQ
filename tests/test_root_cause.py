@@ -372,7 +372,7 @@ class TestCloseVsList:
         data = build_root_cause_workbook(pd.DataFrame({"Region": ["PUNE"]}), pd.DataFrame(), pd.DataFrame(), {},
                                          movement=movement)
         names = load_workbook(io.BytesIO(data)).sheetnames
-        assert "Close vs List Region" in names and "Bucket Movement" in names
+        assert "Recent Loans by Region" in names and "Bucket Movement" in names
 
     def test_shading_covers_every_unit_but_not_grand_total(self):
         # Regression: the range stopped one row early, leaving the last unit unshaded.

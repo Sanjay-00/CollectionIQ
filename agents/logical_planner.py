@@ -151,7 +151,8 @@ NBFC GLOSSARY:
 - Advances = loans disbursed; Ag_Date = agreement/disbursement date (e.g. "Nov 2025 onward
   advances" = Ag_Date >= 2025-11-01)
 - CoLending_Loans = Y: partner-bank co-lending loan, priority for collections
-- No Coll 3 Months and >6 EMI: Y = zero payment for ≥3 consecutive months AND >6 EMI arrears
+- Not Paying 3M (receipts): Y = behind on payment AND no receipt in the 3 months up to month end
+  (worked out from Last Receipt Date; the file's own "No Coll 3 Months and >6 EMI" flag is not reliable)
 - LCC% = cumulative collection efficiency = Cum Coll / Cum Due × 100, capped at 100
 {snapshot_block}
 
@@ -244,7 +245,7 @@ VIEW MATCHING (try this FIRST, before building filters/dimensions/measures from 
 KEY COLUMNS FOR FILTERS (exact names; prefer catalog concepts when they fit):
   Flags (Y/N/NA): Non Starter | Strike | NACHStatus | LGL_FLAG | CoLending_Loans
   Bucket cols: curr_bucket | prev_bucket  (values: STD | 1-30 DPD | SMA-1 | SMA-2 | NPA)
-  Special flag: "No Coll 3 Months and >6 EMI"   -  for "3 months no payment" or "chronic defaulters"
+  Special flag: "Not Paying 3M (receipts)"   -  for "3 months no payment" or "chronic defaulters"
   Loan Status: RUN | MAT | S&S
   Numeric: SOH | POS | Closing Arrears | Arrears / EMI | LCC%
            Month Collection (Excluding Reserve Collection) | Net Collection Demand Inst+Exp+BC

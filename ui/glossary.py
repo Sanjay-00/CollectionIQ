@@ -8,8 +8,8 @@ from ui.components import _esc
 
 _H = HARD_BUCKET_ARREARS_EMI_MIN
 
-_NOT_PAYING = f"No payment received in the last 3 months AND more than {_H} EMIs overdue."
-_STILL_PAYING = (f"{_H} or more EMIs overdue, but the customer has paid something in the last 3 months: "
+_NOT_PAYING = "Behind on payment and no receipt in the 3 months up to month end (from Last Receipt Date)."
+_STILL_PAYING = (f"{_H} or more EMIs overdue, but a receipt came in during the last 3 months: "
                  "trying, but not keeping up.")
 _FLEET = f"A customer (same mobile number) with {FLEET_MIN_LOANS} or more loans in the whole upload."
 
@@ -20,12 +20,12 @@ GLOSSARY: dict[str, str] = {
     "NPA % (SOH)": "NPA measured by money: SOH of NPA loans as % of total SOH (NPA % counts loans instead).",
     "Hard Bucket": f"{_H} or more EMIs overdue right now.",
     "Hard Bucket%": f"% of loans with {_H} or more EMIs overdue right now.",
-    HARD_NOT_PAYING: (f"{_H} or more EMIs overdue AND no payment in the last 3 months. "
+    HARD_NOT_PAYING: (f"{_H} or more EMIs overdue AND no receipt in the 3 months up to month end. "
                       "Legal, repossession or write-off candidates."),
     HARD_STILL_PAYING: _STILL_PAYING + " Worth a restructuring conversation.",
-    WAS_SILENT: (f"Paid nothing for 3+ months at some point, but now under {_H} EMIs overdue after "
-                 "paying part of it down. Call before they go silent again."),
-    EARLY_DELINQUENCY: (f"Behind on payments, but under {_H} EMIs overdue and not silent for 3 months. "
+    WAS_SILENT: (f"Under {_H} EMIs overdue, but no receipt in the 3 months up to month end. "
+                 f"Call now, before it reaches {_H} EMIs."),
+    EARLY_DELINQUENCY: (f"Behind, under {_H} EMIs overdue, with a receipt in the last 3 months. "
                         "Normal follow-up by the field executive."),
     "Insurance-Only": (f"EMI fully paid; only the insurance/expense charge (over ₹{INSURANCE_EXP_ARREARS_MIN:,}) "
                        "is unpaid. Fix with a cash or WCL adjustment, not a credit problem."),

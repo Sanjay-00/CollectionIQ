@@ -70,7 +70,11 @@ def test_load_and_validate_applies_repairs_and_records_them():
     assert errs == []
     assert df.loc[df["Loan No"] == "L0", "RegionName"].iloc[0] == "CHHATRAPATI SAMBHAJI NAGAR"
     assert df.loc[df["Loan No"] == "L0", "CoLending_Loans"].iloc[0] == "Y"
-    assert len(df.attrs["data_fixes"]) == 2
+    fixes = df.attrs["data_fixes"]
+    assert any("CoLending_Loans and CUSTOMER_STATUS were swapped" in f for f in fixes)
+    assert any(f.startswith("Merged region spellings") for f in fixes)
+    assert any("not paying 3 months" in f for f in fixes)                 # which rule ran is always said
+    assert len(fixes) == 3
 
 
 def test_multi_file_upload_keeps_each_files_notes(monkeypatch):

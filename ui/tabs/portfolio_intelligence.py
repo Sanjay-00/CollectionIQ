@@ -9,6 +9,8 @@ and Migration tabs. Zero AI calls.
 import pandas as pd
 import streamlit as st
 
+from config import MIN_ACCOUNTS_EXECUTIVE
+
 from ui.components import (
     _dl_btn, _safe_df, _chart_card, _esc, apply_place, html_table, place_filters, section_label, takeaway,
     list_controls,
@@ -317,7 +319,8 @@ def _view_executives(c, p, data_version, filter_key) -> None:
     st.markdown(html_table(df, [x for x in cols if x["key"] in df.columns], total=total,
                            max_height=560 if len(df) > 15 else None,
                            highlight=lambda row: row.get("Tier") == _TIER_LABEL["bottom"]), unsafe_allow_html=True)
-    st.caption("Executives with fewer than the minimum number of loans are left out (config.MIN_ACCOUNTS_EXECUTIVE).")
+    st.caption(f"Executives with fewer than {MIN_ACCOUNTS_EXECUTIVE} loans are not listed; "
+               "the Total row still counts every loan.")
     _dl_btn(_with_total_row(df, total), "executives.xlsx", "dl_pi_exec")
 
 

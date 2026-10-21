@@ -482,8 +482,10 @@ def _is_blank(v) -> bool:
 
 # The app's tabs, in order (app.py's tab bar). Shared so a "See details"
 # button can switch to a tab by its exact label.
-TAB_LABELS = ["🗂️ Dashboard", "🎯 Action Lists", "📈 Migration", "📊 Portfolio Intelligence",
-              "🔎 Root Cause", "💼 Business", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
+# In the order a manager asks: what happened, where, how loans moved, why,
+# new business, what to do, ask a question, share it.
+TAB_LABELS = ["🗂️ Dashboard", "📊 Portfolio Intelligence", "📈 Migration", "🔎 Root Cause",
+              "💼 Business", "🎯 Action Lists", "🤖 AI Query", "🕵️ Investigator", "📋 Report"]
 TAB_KEY = "_active_section"
 
 

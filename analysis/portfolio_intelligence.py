@@ -8,6 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 from utils import (
+    delinquent_mask, not_paying_3m_mask, can_tell_not_paying,
     _EXEC_KEY, _exec_name, _with_exec_key, _safe_pct, BUCKET_ORDER, BUCKET_COLORS, to_num, account_count,
     is_yes, compute_overdue_demand_pct, attach_prev_delinquency, _unit_key, order_unit_columns, unit_metrics,
     first_value, as_of_or_today, segment_column, match_prev, loan_flags, portfolio_metrics, non_starter_mask,
@@ -17,8 +18,7 @@ from config import (
     MIN_ACCOUNTS_SOURCE_VINTAGE, MIN_ACCOUNTS_OVERDUE_DEMAND_EXECUTIVE, REGION_STATUS_DELTA_PP,
     GOOD_BAD_REGION_DELTA_PP, CONCERN_SCORE_BAD_THRESHOLD, CONCERN_SCORE_GOOD_THRESHOLD,
     CONCERN_SCORE_WEIGHTS, RISK_INDICATOR_STABLE_PP, RISK_INDICATOR_MATERIALITY_PP,
-    RISK_INDICATOR_MATERIALITY_COUNT, RECENT_ADVANCES_COHORT_START, NOT_PAYING_3M_FLAG_COL,
-    HARD_BUCKET_ARREARS_EMI_MIN,
+    RISK_INDICATOR_MATERIALITY_COUNT, RECENT_ADVANCES_COHORT_START,
 )
 
 VALID_BUCKETS = [b for b in BUCKET_ORDER if b != "NA"]
@@ -956,12 +956,11 @@ def compute_risk_indicators(
         _add("Fresh NPA Formation", rr_meta["npa_formation_rate"], None, "%", "down",
              "Non-NPA accounts that became NPA this month: more important than total NPA count")
 
-    col3m = NOT_PAYING_3M_FLAG_COL
-    if col3m in df_curr.columns:
-        c = int(is_yes(df_curr, col3m).sum())
-        p = int(is_yes(df_prev, col3m).sum()) if has_prev and col3m in df_prev.columns else 0
+    if can_tell_not_paying(df_curr):
+        c = int(not_paying_3m_mask(df_curr).sum())
+        p = int(not_paying_3m_mask(df_prev).sum()) if has_prev and can_tell_not_paying(df_prev) else 0
         _add("Not Paying 3M+", c, p, "", "down",
-             f"No payment in 3 months AND more than {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue", is_count=True)
+             "Behind on payment and no receipt in the 3 months up to month end", is_count=True)
 
     if "Non Starter" in df_curr.columns:
         c = int(non_starter_mask(df_curr).sum())
@@ -969,10 +968,10 @@ def compute_risk_indicators(
         _add("Non-Starters", c, p, "", "down", "Never paid first EMI: highest NPA risk", is_count=True)
 
     if "CoLending_Loans" in df_curr.columns and "Arrears / EMI" in df_curr.columns:
-        c = int((is_yes(df_curr, "CoLending_Loans") & (to_num(df_curr, "Arrears / EMI") > 0)).sum())
+        c = int((is_yes(df_curr, "CoLending_Loans") & delinquent_mask(df_curr)).sum())
         p_val = 0
         if has_prev and "CoLending_Loans" in df_prev.columns and "Arrears / EMI" in df_prev.columns:
-            p_val = int((is_yes(df_prev, "CoLending_Loans") & (to_num(df_prev, "Arrears / EMI") > 0)).sum())
+            p_val = int((is_yes(df_prev, "CoLending_Loans") & delinquent_mask(df_prev)).sum())
         _add("Co-Lending At Risk", c, p_val, "", "down", "Partner-bank loans showing delinquency", is_count=True)
 
     return indicators

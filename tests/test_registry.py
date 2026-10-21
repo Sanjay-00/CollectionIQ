@@ -10,6 +10,7 @@ These lock in two things:
 """
 import importlib
 
+from config import NOT_PAYING_3M_FLAG_COL
 from utils import CRITICAL_COLS, REQUIRED_COLS, PREV_CARRYOVER_COLS, CUSTOMER_LOAN_COUNT
 from registry import (
     CONCEPTS, METRICS, PRIORITY_RULES, ENTITIES, DIMENSIONS, ENTITY_CONCEPTS, VIEWS,
@@ -19,7 +20,7 @@ from registry import (
 # Columns that exist only AFTER load + assign_buckets() / the prev-file merge,
 # so they are legitimately not in the raw REQUIRED_COLS list.
 _DERIVED_COLS = {
-    "curr_bucket", "curr_score", "SOH", "prev_bucket",
+    "curr_bucket", "curr_score", "SOH", "prev_bucket", NOT_PAYING_3M_FLAG_COL,
     "Overdue", "MonthDemandExclPC", "OverdueCollected", "DemandCollected",
     "Overdue Collection %", "Month Demand Collection %", CUSTOMER_LOAN_COUNT,
 } | set(PREV_CARRYOVER_COLS.values())

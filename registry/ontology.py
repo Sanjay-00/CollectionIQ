@@ -57,6 +57,7 @@ Investigator all read these definitions, so editing one changes real answers.
 # desync the AI Query pipeline's definition of the same concept from what the
 # dashboard tabs already show.
 from config import (
+    NOT_PAYING_3M_FLAG_COL,
     EASY_SETTLEMENT_MAX_ARREARS,
     INSURANCE_EXP_ARREARS_MIN,
     FLEET_MIN_LOANS,
@@ -129,8 +130,8 @@ PRIORITY_RULES = [
     {
         "rank": 6,
         "label": "No Collection 3 Months",
-        "why": "No payment for 3+ months AND >6 EMI arrears: pre-NPA deterioration signal",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "in", "value": _YES}],
+        "why": "Behind on payment and no receipt in the 3 months up to month end: pre-NPA deterioration signal",
+        "conditions": [{"column": NOT_PAYING_3M_FLAG_COL, "op": "in", "value": _YES}],
     },
     {
         "rank": 7,
@@ -195,8 +196,8 @@ CONCEPTS: dict[str, dict] = {
     },
     "no_collection_3m": {
         "label": "No Collection 3 Months",
-        "description": "No payment for 3+ months AND arrears exceed 6 EMIs: pre-NPA signal.",
-        "conditions": [{"column": "No Coll 3 Months and >6 EMI", "op": "in", "value": _YES}],
+        "description": "Behind on payment and no receipt in the 3 months up to month end: pre-NPA signal.",
+        "conditions": [{"column": NOT_PAYING_3M_FLAG_COL, "op": "in", "value": _YES}],
     },
     "hard_bucket": {
         "label": "Hard Bucket",

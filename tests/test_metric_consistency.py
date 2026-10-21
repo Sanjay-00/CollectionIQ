@@ -135,6 +135,7 @@ class TestFlagConceptsMatchDashboard:
     co-lending / not-paying-3M concepts matched "Y" but not "Yes"."""
 
     def _flags(self):
+        from config import NOT_PAYING_3M_FLAG_COL
         from helpers import make_df
         return make_df([
             {"Non Starter": "Y",   "Arrears / EMI": 1.0, "VehEMI Accrued": 1},
@@ -144,7 +145,7 @@ class TestFlagConceptsMatchDashboard:
             {"CoLending_Loans": "Yes", "Arrears / EMI": 1.0},
             {"CoLending_Loans": "Y",   "Arrears / EMI": 0.5},
             {"CoLending_Loans": "Y",   "Arrears / EMI": 0.0},
-        ]).assign(**{"No Coll 3 Months and >6 EMI": ["Yes", "Y", "N", "NO", "N", "N", "N"]})
+        ]).assign(**{NOT_PAYING_3M_FLAG_COL: ["Yes", "Y", "N", "NO", "N", "N", "N"]})
 
     def _concept(self, df, name):
         from investigator.steps import concept_filter

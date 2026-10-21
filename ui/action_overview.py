@@ -1,6 +1,6 @@
 """The Dashboard tab's summary of the whole portfolio, below the KPI cards:
-what changed and where, early warning, league tables, business, alerts, and
-what to do. Each section is short and links to the tab with the detail.
+what changed and where, why, early warning, league tables, business, recent
+loans, alerts, and what to do. Each section is short and links to the tab with the detail.
 Numbers come from analysis/summary.py and analysis/action_center.py; this
 file only lays them out."""
 import pandas as pd
@@ -119,6 +119,41 @@ def _render_moves(moves: dict) -> None:
                 unsafe_allow_html=True)
 
 
+def _render_why(why: dict) -> None:
+    """The book's delinquent loans by why (Root Cause's groups), so the
+    Dashboard says what is driving the number, not only where."""
+    from analysis.root_cause import GROUP_LABELS, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY
+    if not why:
+        st.caption("No loans behind on payment in this view.")
+        return
+    st.caption(f"What the {why['delinquent']:,} loans behind on payment have in common. "
+               "Shares of those loans. Insurance charge only overlaps the others: it says what is unpaid, "
+               "not how far behind.")
+    order = (HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY, "Insurance-Only")
+    accent = {HARD_NOT_PAYING: "#dc2626", HARD_STILL_PAYING: "#d97706"}
+    tiles = [_tile(GROUP_LABELS[g], f"{why['groups'][g][1]:.1f}%", f"{why['groups'][g][0]:,} loans",
+                   accent.get(g, "#e5e7eb"), help_for(g))
+             for g in order if g in why["groups"]]
+    st.markdown(_grid(tiles, len(tiles)), unsafe_allow_html=True)
+
+
+def _render_recent(why: dict) -> None:
+    rec = (why or {}).get("recent")
+    if not rec:
+        st.caption("No agreement dates in this file.")
+        return
+    start = pd.Timestamp(rec["cohort_start"])
+    st.caption(f"Loans agreed from {start:%d %b %Y}. Upload a due-date-missed list in Root Cause to see "
+               "how the same loans moved since month end.")
+    tiles = [
+        _tile("Recent loans", f"{rec['cohort_count']:,}", f"{rec['cohort_count_pct']:.1f}% of all loans"),
+        _tile("Their SOH", f"₹{rec['cohort_soh_cr']:,.2f} Cr", f"{rec['cohort_soh_pct']:.1f}% of all SOH"),
+        _tile("Behind at month end", f"{rec['behind_pct']:.1f}%", f"{rec['behind']:,} of {rec['running']:,} running loans",
+              "#d97706"),
+    ]
+    st.markdown(_grid(tiles, 3), unsafe_allow_html=True)
+
+
 def _render_early_warning(r: dict) -> None:
     from analysis import roll_flow as rf
     s = r.get("roll_summary")
@@ -231,7 +266,9 @@ def _cached_league(_df_c, _df_p, data_version: int, filter_key: str, metric: str
 @st.cache_data(show_spinner=False, max_entries=16)
 def _cached_summary(_df_c, _df_p, data_version: int, filter_key: str, as_of: str) -> dict:
     from analysis import summary as sm
+    from analysis.root_cause import root_cause_snapshot
     return {
+        "why": root_cause_snapshot(_df_c),
         "moves": {lvl: sm.biggest_moves(_df_c, _df_p, lvl, 2 if lvl == "Region" else 3) for lvl in ("Region", "Branch")},
         "business": sm.business_snapshot(_df_c, as_of),
     }
@@ -255,6 +292,9 @@ def render_summary(df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: i
     else:
         st.caption("Upload last month's file to compare.")
 
+    _header("Why It's Moving", tab["Root Cause"], "go_root_cause", state={"rc_view": "Why, by region"})
+    _render_why(sm["why"])
+
     _header("Early Warning: Loans That Slipped", tab["Migration"], "go_migration")
     _render_early_warning(r)
 
@@ -263,6 +303,9 @@ def render_summary(df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: i
 
     _header("New Business", tab["Business"], "go_business")
     _render_business(sm["business"])
+
+    _header("Recent Loans", tab["Root Cause"], "go_recent_loans", state={"rc_view": "Recent advances"})
+    _render_recent(sm["why"])
 
     _header("Risk Alerts", tab["Action Lists"], "go_alerts", state={"al_pick": "High Arrears: Loan at Risk"})
     _render_alerts(alert_snapshot(alerts, alerts_prev))

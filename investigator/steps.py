@@ -45,6 +45,7 @@ from config import (
 from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
 from utils import (
+    delinquent_mask, can_tell_not_paying,
     BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, loan_flags, resolve_dynamic_values, to_num,
     unit_metrics,
 )
@@ -1169,8 +1170,8 @@ def non_paying_customers(
 ) -> pd.DataFrame:
     """Customers of the given executives (entities: a table with MNT NAME/Unit
     columns, e.g. intersect_entities' output) who are NOT paying: the
-    Dashboard's own "Not Paying 3M+" rule (config.NOT_PAYING_3M_FLAG_COL, no
-    collection for 3 months with more than 6 EMIs overdue, read through
+    Dashboard's own "Not Paying 3M+" rule (config.NOT_PAYING_3M_FLAG_COL:
+    behind and no receipt in the 3 months to month end, read through
     utils.loan_flags), so "not paying" means one thing in every tab
     (business decision, 2026-10-16; it used to be Arrears/EMI >= 6 here).
     Worst arrears first. A file without that flag column is refused, not
@@ -1193,8 +1194,9 @@ def non_paying_customers(
     if scoped.empty:
         return pd.DataFrame()
 
-    if NOT_PAYING_3M_FLAG_COL not in scoped.columns:
-        raise ValueError(f"this file has no '{NOT_PAYING_3M_FLAG_COL}' column, so I can't tell who isn't paying")
+    if not can_tell_not_paying(scoped):
+        raise ValueError("this file has neither Last Receipt Date nor the No Coll 3 Months flag, "
+                         "so I can't tell who isn't paying")
     scoped = scoped[loan_flags(scoped)["not_paying_3m"]]
     scoped = scoped.assign(_ae=to_num(scoped, "Arrears / EMI")).sort_values("_ae", ascending=False).drop(columns="_ae")
     if all_columns:
@@ -1232,7 +1234,7 @@ def customer_loan_summary(df: pd.DataFrame, cust_mob_no: str) -> dict:
         return {"loan_count": 0, "delinquent_count": 0, "total_soh": 0.0}
     # Behind on any amount (Arrears/EMI > 0), the app's one definition of
     # delinquent (utils.loan_flags); SMA-1 or worse left out 1-30 DPD loans.
-    delinquent = to_num(book, "Arrears / EMI") > 0
+    delinquent = delinquent_mask(book)
     return {
         "loan_count":       int(len(book)),
         "delinquent_count": int(delinquent.sum()),
@@ -1527,7 +1529,7 @@ def fleet_defaulters(
     if fleet_df.empty:
         return pd.DataFrame()
 
-    delinquent = to_num(fleet_df, "Arrears / EMI") > 0
+    delinquent = delinquent_mask(fleet_df)
     result = fleet_df[delinquent]
     if result.empty:
         return pd.DataFrame()

@@ -686,10 +686,10 @@ def _roll_forward(c, ac: dict, child: str | None, name: str = "") -> list[dict]:
     return blocks
 
 
-_WHY_LABEL = {"Insurance-Only": "Insurance charge only", "Installment-Only": "EMI only", "Both": "EMI and insurance",
-              "Other": "Other charges", "Hard + Not Paying": f"{_HARD}+ EMIs, not paying",
-              "Hard + Still Paying": f"{_HARD}+ EMIs, still paying", "Early Delinquency": f"Under {_HARD} EMIs"}
-SILENT_LABEL = f"Was not paying, now under {_HARD} EMIs"   # root_cause.WAS_SILENT (its name carries the threshold)
+from analysis.root_cause import GROUP_LABELS as _GROUP_LABELS, WAS_SILENT as _WAS_SILENT   # noqa: E402
+# The same plain labels the Root Cause tab shows (analysis.root_cause.GROUP_LABELS).
+_WHY_LABEL = {k: v for k, v in _GROUP_LABELS.items() if k != _WAS_SILENT}
+SILENT_LABEL = _GROUP_LABELS[_WAS_SILENT]
 
 
 def _why(c, preset: str) -> list[dict]:
@@ -803,11 +803,14 @@ _MEANING = {
     "EMI only": "EMI unpaid, no insurance or expense charge unpaid.",
     "EMI and insurance": "Both the EMI and the insurance or expense charge are unpaid.",
     "Other charges": f"A small insurance charge (₹{_INS:,} or less) or only bounce or penal charges.",
-    f"{_HARD}+ EMIs, not paying": f"{_HARD} or more EMIs overdue and nothing paid in 3 months: legal or repossession candidates.",
-    f"{_HARD}+ EMIs, still paying": f"{_HARD} or more EMIs overdue, but paying something: worth a restructuring talk.",
-    SILENT_LABEL: "Went 3+ months without paying and crossed 6 EMIs overdue at some point, but has paid part since "
-                  f"and is now under {_HARD} EMIs. Call before they go quiet again.",
-    f"Under {_HARD} EMIs": f"Behind, but under {_HARD} EMIs overdue. Normal field follow-up.",
+    f"{_HARD}+ EMIs, not paying": f"{_HARD} or more EMIs overdue and no receipt in the 3 months to month end: "
+                                  "legal or repossession candidates.",
+    f"{_HARD}+ EMIs, still paying": f"{_HARD} or more EMIs overdue, but a receipt in the last 3 months: "
+                                    "worth a restructuring talk.",
+    SILENT_LABEL: f"Under {_HARD} EMIs overdue, but no receipt in the 3 months to month end. "
+                  f"Call now, before it reaches {_HARD}.",
+    _WHY_LABEL["Early Delinquency"]: f"Behind, under {_HARD} EMIs overdue, with a receipt in the last 3 months. "
+                                     "Normal field follow-up.",
     "Loans in book": "Every loan in this report's files: running, matured (MAT) and S&S.",
     "POS": "Principal outstanding: the loan amount still to be repaid, excluding interest and charges.",
     "Matured accounts (MAT)": "Loans whose tenure is over (Loan Status MAT) but money is still owed.",

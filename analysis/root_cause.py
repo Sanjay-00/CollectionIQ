@@ -19,13 +19,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule
 
 from utils import (
-    to_num, account_count, is_yes, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask,
+    delinquent_mask, not_paying_3m_mask,
+    to_num, account_count, recent_advances_cutoff, bucket_from_arrears_emi, fleet_loan_mask,
     canonical_region, delinquency_by, attach_prev_delinquency, _unit_key, _safe_pct, order_unit_columns,
     insurance_only_mask, bucket_from_arrears_emi as _bucket_rule, parse_date_columns,
 )
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN,
-    NOT_PAYING_3M_FLAG_COL,
     RECENT_ADVANCES_COHORT_START,
 )
 
@@ -91,7 +91,7 @@ def compute_insurance_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.Dat
     if df.empty or not required.issubset(df.columns):
         return pd.DataFrame()
 
-    delinquent = df[to_num(df, "Arrears / EMI") > 0].copy()
+    delinquent = df[delinquent_mask(df)].copy()
     if delinquent.empty:
         return pd.DataFrame()
 
@@ -138,6 +138,49 @@ WAS_SILENT = f"Was Silent, Now Under {HARD_BUCKET_ARREARS_EMI_MIN} EMIs"
 EARLY_DELINQUENCY = "Early Delinquency"
 ARREARS_GROUPS = [HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY]
 
+# Plain words for every group, the same on screen and in the report. The keys
+# stay the column names (tables, downloads, glossary help).
+GROUP_LABELS = {
+    "Insurance-Only": "Insurance charge only", "Installment-Only": "EMI only", "Both": "EMI and insurance",
+    "Other": "Other charges",
+    HARD_NOT_PAYING: f"{HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs, not paying",
+    HARD_STILL_PAYING: f"{HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs, still paying",
+    WAS_SILENT: f"Not paying, under {HARD_BUCKET_ARREARS_EMI_MIN} EMIs",
+    EARLY_DELINQUENCY: f"Under {HARD_BUCKET_ARREARS_EMI_MIN} EMIs, still paying",
+}
+
+
+def root_cause_snapshot(df: pd.DataFrame) -> dict:
+    """The Dashboard's one-glance "why" and "recent loans": the whole book's
+    delinquent loans by group (the Root Cause tab's two splits, counted over
+    every loan as ONE unit, so a blank branch can't drop a loan), and the
+    recent loans' size and how many were behind at month end. {} when there
+    are no delinquent loans."""
+    clean, _ = clean_contaminated_flags(df)
+    # One group for the whole book (not "_": the splits keep "_" columns as
+    # flags), and no RegionName: the splits would add it to the grouping and
+    # return one row per region (a blank region would be dropped outright).
+    whole = clean.drop(columns=["RegionName"], errors="ignore").assign(**{"Whole book": "All"})
+    ins = compute_insurance_split(whole, group_col="Whole book")
+    deep = compute_chronic_shock_split(whole, group_col="Whole book")
+    if deep.empty:
+        return {}
+    # Counts added over every row, % recomputed: right however many rows come back.
+    delinquent = int(deep["Delinquent Accounts"].sum())
+    counts = {g: int(deep[g].sum()) for g in ARREARS_GROUPS if g in deep.columns}
+    if "Insurance-Only" in ins.columns:
+        counts["Insurance-Only"] = int(ins["Insurance-Only"].sum())
+    out = {"delinquent": delinquent, "groups": {g: (n, _safe_div(n, delinquent)) for g, n in counts.items()}}
+    # Behind at month end over the running recent loans: the same base as the
+    # Recent advances page's "Behind at month end", so the two never disagree.
+    summary = compute_recent_advances_summary(clean)
+    running = _running_cohort(clean, RECENT_ADVANCES_COHORT_START)
+    if summary and not running.empty:
+        behind = int(delinquent_mask(running).sum())
+        out["recent"] = {**summary, "running": len(running), "behind": behind,
+                         "behind_pct": _safe_div(behind, len(running))}
+    return out
+
 
 def add_unit_delinquency(table: pd.DataFrame, df_curr: pd.DataFrame, df_prev: pd.DataFrame | None,
                          group_col: str = "Unit") -> pd.DataFrame:
@@ -158,8 +201,8 @@ def add_unit_delinquency(table: pd.DataFrame, df_curr: pd.DataFrame, df_prev: pd
 
 
 def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd.DataFrame:
-    """Cross a BEHAVIORAL flag (No Coll 3 Months and >6 EMI -- a zero-payment
-    streak that at some point crossed 6 EMIs of arrears) against a SNAPSHOT
+    """Cross a BEHAVIORAL flag (NOT_PAYING_3M_FLAG_COL: behind and no receipt
+    in the 3 months to month end, from Last Receipt Date) against a SNAPSHOT
     flag (currently Arrears/EMI >= HARD_BUCKET_ARREARS_EMI_MIN, today's
     severity regardless of history). The two can diverge -- a customer can hit
     one without the other -- so treating them as the same signal hides which
@@ -175,11 +218,11 @@ def compute_chronic_shock_split(df: pd.DataFrame, group_col: str = "Unit") -> pd
     if df.empty or not required.issubset(df.columns):
         return pd.DataFrame()
 
-    delinquent = df[to_num(df, "Arrears / EMI") > 0].copy()
+    delinquent = df[delinquent_mask(df)].copy()
     if delinquent.empty:
         return pd.DataFrame()
 
-    chronic = is_yes(delinquent, NOT_PAYING_3M_FLAG_COL)
+    chronic = not_paying_3m_mask(df).loc[delinquent.index]
     hard = to_num(delinquent, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
 
     delinquent["_chronic_hard"] = chronic & hard
@@ -243,20 +286,21 @@ def compute_region_why_table(df_curr: pd.DataFrame, region_scorecard: pd.DataFra
     # Fleet status from the customer's whole-upload loan count (a fleet owner's
     # loans can span branches/regions); blank mobiles are never fleet.
     is_fleet_loan = fleet_loan_mask(df_curr)
+    not_paying = not_paying_3m_mask(df_curr)
 
     recent_cutoff = recent_advances_cutoff(as_of)
     ag_date = pd.to_datetime(df_curr.get("Ag_Date"), errors="coerce") if "Ag_Date" in df_curr.columns else None
 
     rows = []
     for region, grp in df_curr.groupby("RegionName"):
-        delinquent = grp[to_num(grp, "Arrears / EMI") > 0]
+        delinquent = grp[delinquent_mask(grp)]
         n = account_count(delinquent)
         if n == 0:
             continue
 
         insurance_only = insurance_only_mask(delinquent).sum()
 
-        chronic = is_yes(delinquent, NOT_PAYING_3M_FLAG_COL)
+        chronic = not_paying.loc[delinquent.index]
         hard = to_num(delinquent, "Arrears / EMI") >= HARD_BUCKET_ARREARS_EMI_MIN
         shock = (~chronic & hard).sum()
 
@@ -1017,11 +1061,45 @@ def _write_status_sheet(ws, df: pd.DataFrame) -> None:
 # Month close vs list date sheets (compute_recent_advances_movement_by_grain /
 # _bucket_movement); each table's last row is its total.
 _MOVEMENT_SHEETS = {
-    "then_now_region": "Then vs Now Region", "then_now_branch": "Then vs Now Branch",
-    "then_now_executive": "Then vs Now Executive",
-    "region": "Close vs List Region", "branch": "Close vs List Branch",
-    "executive": "Close vs List Executive", "buckets": "Bucket Movement",
+    "region": "Recent Loans by Region", "branch": "Recent Loans by Branch",
+    "executive": "Recent Loans by Executive", "buckets": "Bucket Movement",
 }
+
+
+# The Recent advances tables in downloads use the words on screen, not the
+# working names ("Running Loans", "Close Delinquent"). "Pending at Close" is
+# dropped: it is the same count as Close Delinquent.
+_STORY_NAMES = {
+    "Running Loans": "Loans",
+    "Change in Delinquent": "Change (loans)", "Change in Delinquent % (pts)": "Change (% points)",
+    "Still Pending": "Still behind", "Cleared": "Month-end cases cleared",
+    "Clean at Close": "Not behind at month end", "Due by List Date": "EMI due by list date",
+    "New Slippage": "Newly behind", "New, No EMI at Close": "New loans, no EMI at month end",
+    "First EMI Missed": "Missed first EMI", "On List, Not Yet Due": "On list before due date",
+}
+
+
+def _story_name(col: str) -> str:
+    base, pct = (col[:-2], " %") if col.endswith(" %") else (col, "")
+    if base in _STORY_NAMES:
+        return _STORY_NAMES[base] + pct
+    for side, when in (("Close ", "at month end"), ("List ", "on list date")):
+        if base.startswith(side):
+            part = base[len(side):]
+            return (f"Behind {when}" if part == "Delinquent" else f"{part} {when}") + pct
+    return col
+
+
+def story_for_export(df: pd.DataFrame) -> pd.DataFrame:
+    """compute_recent_advances_story_by_grain's table in screen wording."""
+    out = df.drop(columns=[c for c in ("Pending at Close", "Pending at Close %") if c in df.columns])
+    return out.rename(columns=_story_name)
+
+
+def bucket_moves_for_export(df: pd.DataFrame) -> pd.DataFrame:
+    """compute_recent_advances_bucket_movement's table in screen wording."""
+    return df.replace({"Bucket at Close": {"No EMI Yet": "New, no EMI yet"}}).rename(
+        columns={"Bucket at Close": "At month end", "Not on List": "Not behind now", "Total": "Loans"})
 
 
 def build_root_cause_workbook(
@@ -1156,7 +1234,8 @@ def build_root_cause_workbook(
 
     for key, label in _MOVEMENT_SHEETS.items():
         if key in movement:
-            _write_status_sheet(wb.create_sheet(label), movement[key])
+            export = bucket_moves_for_export if key == "buckets" else story_for_export
+            _write_status_sheet(wb.create_sheet(label), export(movement[key]))
 
     buf = io.BytesIO()
     wb.save(buf)

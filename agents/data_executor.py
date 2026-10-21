@@ -162,7 +162,7 @@ QUERY_DISPLAY_COLS = [
     "ARREARS AGAINST INST", "ARREARS AGAINST EXP",
     "LCC%", "Arrears / EMI", "DelinquencyDays", "VehEMI Accrued", "ClosingPC",
     "POS", "SOH", "Non Starter", "Strike", "Last Receipt Date", "Last Receipt Amount",
-    "ParentLDueDate", "No Coll 3 Months and >6 EMI", "NACHStatus",
+    "ParentLDueDate", "No Coll 3 Months and >6 EMI", "Not Paying 3M (receipts)", "NACHStatus",
     "TyreFlag", "FUEL_TYPE",
 ]
 

@@ -11,6 +11,7 @@ import numpy as np
 from config import (
     HARD_BUCKET_ARREARS_EMI_MIN, LCC_DATE_MIN_YEAR, LCC_DATE_MAX_YEAR, SEGMENT_NAME_PREFIX_MATCH_CHARS,
     RECENT_ADVANCES_MONTHS, REGION_NAME_ALIASES, INSURANCE_EXP_ARREARS_MIN, NOT_PAYING_3M_FLAG_COL,
+    NOT_PAYING_SOURCE_FLAG_COL, NOT_PAYING_RECEIPT_MONTHS,
     KNOWN_DATE_COLUMNS, NOT_DATE_COLUMNS, DATE_COLUMN_MIN_PARSED_SHARE,
 )
 from dateutil.relativedelta import relativedelta
@@ -380,8 +381,19 @@ def repair_upload(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         closing, mostly NAGPUR zone): a name never has a digit and a code
         always does here, so a digit-free MNT CODE next to a one-word MNT NAME
         with a digit can only be a swap. Rows where both look like names stay;
-      - alternate spellings of the same region."""
+      - alternate spellings of the same region;
+      - loan numbers with extra spaces or lower case (16 on a real Sept
+        closing), which never matched the same loan in another file."""
     notes: list[str] = []
+    if "Loan No" in df.columns:
+        raw = df["Loan No"]
+        clean = loan_key(raw)
+        # Only text that changed is reported; a number turned into text is not a fault.
+        changed = raw.map(lambda v: isinstance(v, str)) & clean.ne(raw.astype(str))
+        df = df.assign(**{"Loan No": clean})
+        if changed.any():
+            notes.append(f"Cleaned {int(changed.sum()):,} loan number(s) with extra spaces or lower case, "
+                         "so they match the same loan in other files.")
     if {"MNT CODE", "MNT NAME"}.issubset(df.columns):
         # fillna first: under pandas 3 astype(str) keeps a missing value missing.
         code = df["MNT CODE"].fillna("").astype(str).str.strip()
@@ -758,6 +770,9 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             df[col] = clean_mobile(df[col])
 
     df, data_fixes = repair_upload(df)
+    df, not_paying_note = add_not_paying_flag(df)
+    if not_paying_note:
+        data_fixes.append(not_paying_note)
     df = assign_buckets(df)
 
     # Drop duplicate Loan Nos  -  keep the first occurrence.
@@ -974,6 +989,85 @@ def segment_column(df: pd.DataFrame) -> str | None:
     return next((c for c in ("SegmentName", "Segment") if c in df.columns), None)
 
 
+def delinquent_mask(df: pd.DataFrame) -> pd.Series:
+    """Behind on payment: Arrears/EMI above 0 (blank counts as not behind).
+    The app's one delinquency rule: every count, %, list and table uses it."""
+    return to_num(df, "Arrears / EMI") > 0
+
+
+def loan_key(s: pd.Series) -> pd.Series:
+    """Loan numbers as one comparable form: text, trimmed, upper case. A number
+    read as 12345.0 becomes "12345"; a blank stays blank. Applied once at
+    upload (repair_upload), so every match on Loan No (last month, multi-file
+    duplicates, the due-date list) compares like with like."""
+    if pd.api.types.is_float_dtype(s):
+        whole = s.dropna()
+        if (whole == whole.round()).all():
+            s = s.astype("Int64")
+    out = s.astype(str).str.strip().str.upper()
+    return out.where(s.notna())
+
+
+def receipt_window_start(df: pd.DataFrame, months: int = NOT_PAYING_RECEIPT_MONTHS) -> pd.Timestamp | None:
+    """First day of the "last N months" receipt window: the file's latest month
+    holding at least 5% of its dated receipts, and the N-1 months before. A
+    receipt dated after today can't be real and is ignored, and the 5% floor
+    keeps a few mistyped dates from moving the window (in a month-end file
+    most paying customers paid that month). None without Last Receipt Date."""
+    if "Last Receipt Date" not in df.columns:
+        return None
+    dated = pd.to_datetime(df["Last Receipt Date"], errors="coerce").dropna()
+    dated = dated[dated <= pd.Timestamp.today().normalize()]
+    if dated.empty:
+        return None
+    per_month = dated.dt.to_period("M").value_counts()
+    dense = per_month[per_month >= max(1, 0.05 * len(dated))]
+    return (dense.index.max() - (months - 1)).to_timestamp()
+
+
+def add_not_paying_flag(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+    """Add NOT_PAYING_3M_FLAG_COL (Y/N): behind on payment (delinquent_mask)
+    and no receipt since receipt_window_start, a blank Last Receipt Date
+    meaning never paid. Worked out once at upload over the whole file, so a
+    filter can't change what "not paying" means. Without Last Receipt Date the
+    file's own flag is copied in. Returns (df, a note saying which rule ran)."""
+    start = receipt_window_start(df)
+    if start is None:
+        if NOT_PAYING_SOURCE_FLAG_COL in df.columns:
+            return (df.assign(**{NOT_PAYING_3M_FLAG_COL: df[NOT_PAYING_SOURCE_FLAG_COL]}),
+                    f"No Last Receipt Date in this file: \"not paying 3 months\" uses the file's own "
+                    f"{NOT_PAYING_SOURCE_FLAG_COL} flag.")
+        return df, None
+    receipt = pd.to_datetime(df["Last Receipt Date"], errors="coerce")
+    flag = delinquent_mask(df) & (receipt.isna() | (receipt < start))
+    df = df.assign(**{NOT_PAYING_3M_FLAG_COL: flag.map({True: "Y", False: "N"})})
+    note = (f"\"Not paying 3 months\" means behind on payment with no receipt since {start:%d %b %Y} "
+            "(from Last Receipt Date).")
+    if NOT_PAYING_SOURCE_FLAG_COL in df.columns:
+        paid = int((is_yes(df, NOT_PAYING_SOURCE_FLAG_COL) & ~flag).sum())
+        if paid:
+            note += (f" The file's own {NOT_PAYING_SOURCE_FLAG_COL} flag also marks {paid:,} loan(s) that "
+                     "are not behind or did pay in that time; they are not counted as not paying.")
+    return df, note
+
+
+def not_paying_3m_mask(df: pd.DataFrame) -> pd.Series:
+    """Not paying for 3 months: NOT_PAYING_3M_FLAG_COL, set at upload by
+    add_not_paying_flag. A table built without the upload step (a test, a
+    hand-made frame) gets the same rule worked out on the spot, as curr_bucket
+    is. All False when the file has neither Last Receipt Date nor the flag."""
+    if NOT_PAYING_3M_FLAG_COL not in df.columns:
+        df, _ = add_not_paying_flag(df)
+    if NOT_PAYING_3M_FLAG_COL not in df.columns:
+        return pd.Series(False, index=df.index)
+    return is_yes(df, NOT_PAYING_3M_FLAG_COL)
+
+
+def can_tell_not_paying(df: pd.DataFrame) -> bool:
+    """True when the file says enough to work out "not paying 3 months"."""
+    return any(c in df.columns for c in (NOT_PAYING_3M_FLAG_COL, "Last Receipt Date", NOT_PAYING_SOURCE_FLAG_COL))
+
+
 def insurance_only_mask(df: pd.DataFrame) -> pd.Series:
     """Delinquent only because of the insurance/expense charge: EMI fully paid
     (installment arrears <= 0), insurance/expense arrears above
@@ -981,13 +1075,13 @@ def insurance_only_mask(df: pd.DataFrame) -> pd.Series:
     installment/expense arrears means none recorded (0)."""
     return ((to_num(df, "ARREARS AGAINST INST", fill=0) <= 0)
             & (to_num(df, "ARREARS AGAINST EXP", fill=0) > INSURANCE_EXP_ARREARS_MIN)
-            & (to_num(df, "Arrears / EMI") > 0))
+            & delinquent_mask(df))
 
 
 def non_starter_mask(df: pd.DataFrame) -> pd.Series:
     """Never paid the first EMI: flagged Non Starter (Y / Yes) and still behind
     (Arrears/EMI above 0). The focus list and the report count the same loans."""
-    return is_yes(df, "Non Starter") & (to_num(df, "Arrears / EMI") > 0)
+    return is_yes(df, "Non Starter") & delinquent_mask(df)
 
 
 # ── A cache for one piece of work (e.g. building one report) ─────────────────
@@ -1045,12 +1139,12 @@ def loan_flags(df: pd.DataFrame) -> pd.DataFrame:
     npa = bucket == "NPA"
     strike = df["Strike"].astype(str).str.strip().str.upper() if "Strike" in df.columns else pd.Series("", index=df.index)
     f = pd.DataFrame({
-        "delinquent": ae > 0,
+        "delinquent": delinquent_mask(df),
         "sma1": bucket == "SMA-1",
         "sma2": bucket == "SMA-2",
         "npa": npa,
         "hard": ae >= HARD_BUCKET_ARREARS_EMI_MIN,
-        "not_paying_3m": is_yes(df, NOT_PAYING_3M_FLAG_COL),
+        "not_paying_3m": not_paying_3m_mask(df),
         "insurance_only": insurance_only_mask(df),
         "soh": soh,
         "npa_soh": soh.where(npa, 0.0),
