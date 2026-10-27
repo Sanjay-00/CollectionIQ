@@ -66,6 +66,7 @@ from investigator.steps import (
     summarize_worst_loans,
 )
 from investigator.suggestions import suggest_mechanism_steps
+from registry.metric_names import executive_column
 from registry.semantic_model import resolve_dimension
 from ui.components import TAB_LABELS, _dl_btn, _esc, _safe_df
 from ui.review_panel import (
@@ -139,11 +140,7 @@ def _top_active_alerts(alerts_curr: list | None, limit: int = 3) -> list[dict]:
 # metric" hands that metric name to underperformer_quartile, which operates
 # on the executive scorecard's own column names, not the branch scorecard's.
 _BRANCH_TO_EXEC_METRIC = {
-    "Collection%":   "Collection %",
-    "NPA%":          "NPA %",
-    "Strike%":       "Strike Rate %",
-    "Hard Bucket%":  "Hard Bucket %",
-    "Delinquency%":  "Delinquency %",
+    m: executive_column(m) for m in ("Collection%", "NPA%", "Strike%", "Hard Bucket%", "Delinquency%")
 }
 
 

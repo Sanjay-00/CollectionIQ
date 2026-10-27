@@ -61,6 +61,8 @@ import importlib
 
 import pandas as pd
 
+from registry.metric_names import METRICS
+
 VIEWS: dict[str, dict] = {
     "top_delinquent_accounts": {
         "label": "Top Delinquent Accounts by SOH",
@@ -477,29 +479,13 @@ VIEWS: dict[str, dict] = {
 # view above in "metrics"), which direction is "bad". The Logical Planner only
 # ever picks WHICH columns are relevant to a question and whether to take the
 # max or min row -- it never invents a number. view_node does the actual
-# idxmax/idxmin lookup in pandas, so this dict is the one place direction is
-# encoded, shared across every view that reports the same column name.
+# idxmax/idxmin lookup in pandas. Direction itself lives in
+# registry/metric_names.py, with every spelling ("NPA%" vs "NPA %").
 # "high_bad": a higher value is worse (e.g. NPA%). "low_bad": a lower value is
-# worse (e.g. Collection%). Column names vary in spacing/casing between
-# analysis/ functions ("NPA%" vs "NPA %"), so both spellings are listed.
+# worse (e.g. Collection%).
 _METRIC_DIRECTION: dict[str, str] = {
-    "NPA%": "high_bad", "NPA %": "high_bad",
-    "SMA-2%": "high_bad", "SMA-2 %": "high_bad",
-    "Hard Bucket%": "high_bad",
-    "Roll Fwd%": "high_bad", "Roll Fwd %": "high_bad",
-    "Δ NPA%": "high_bad", "Δ SMA-2%": "high_bad",
-    "Concern Score": "high_bad",
-    "Slipped": "high_bad",
-    "Collection%": "low_bad", "Collection %": "low_bad",
-    "Strike%": "low_bad", "Strike Rate %": "low_bad",
-    "Roll Bwd%": "low_bad", "Roll Bwd %": "low_bad",
-    "Net Recovery": "low_bad", "Rescued": "low_bad",
-    # New-business/origination metrics -- more new loans/funded amount/MoM
-    # growth is always the good direction here (unlike a delinquency %, there's
-    # no "too much new business" reading in this catalog), so a LOW value is
-    # the "bad" (attention-worthy) one for all four.
-    "Accounts This Month": "low_bad", "Funded (Cr)": "low_bad",
-    "Accounts MoM %": "low_bad", "Funded MoM %": "low_bad",
+    s: ("low_bad" if m.higher_is_better else "high_bad")
+    for m in METRICS.values() if m.rollup for s in (m.name, *m.aliases)
 }
 
 
@@ -514,22 +500,7 @@ _METRIC_DIRECTION: dict[str, str] = {
 # averaging a count column like Rescued would answer "average per executive"
 # rather than the portfolio total, so this must be explicit per column, not
 # inferred from the column name.
-_METRIC_AGG: dict[str, str] = {
-    "NPA%": "mean", "NPA %": "mean",
-    "SMA-2%": "mean", "SMA-2 %": "mean",
-    "Hard Bucket%": "mean",
-    "Roll Fwd%": "mean", "Roll Fwd %": "mean",
-    "Roll Bwd%": "mean", "Roll Bwd %": "mean",
-    "Δ NPA%": "mean", "Δ SMA-2%": "mean",
-    "Concern Score": "mean",
-    "Collection%": "mean", "Collection %": "mean",
-    "Strike%": "mean", "Strike Rate %": "mean",
-    "Net Recovery": "sum", "Rescued": "sum", "Slipped": "sum",
-    # Accounts/Funded are count-like (totaled across entities for a portfolio
-    # total); MoM% is a rate (averaged, summing a % across branches is meaningless).
-    "Accounts This Month": "sum", "Funded (Cr)": "sum",
-    "Accounts MoM %": "mean", "Funded MoM %": "mean",
-}
+_METRIC_AGG: dict[str, str] = {s: m.rollup for m in METRICS.values() if m.rollup for s in (m.name, *m.aliases)}
 
 
 # ── Output normalization ────────────────────────────────────────────────────

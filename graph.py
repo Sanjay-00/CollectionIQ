@@ -17,6 +17,7 @@ from agents.data_executor import (
 from agents.plan_executor import _check_condition_columns, execute_plan
 from agents.logical_planner import plan_logical
 from agents.plan_cache import PLAN_CACHE, planner_cache_key
+from registry.metric_names import canonical
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
@@ -497,12 +498,13 @@ def _build_highlights(spec: dict, result_df: pd.DataFrame, requests: list) -> li
 # A rate card is the whole portfolio's own rate (all loans, summed then
 # divided once, utils.unit_metrics), never an average of each unit's rate: an
 # average lets a small region with a high NPA% pull the card off.
-_PORTFOLIO_RATE = {
-    "NPA%": "NPA%", "NPA %": "NPA%", "SMA-2%": "SMA-2%", "SMA-2 %": "SMA-2%",
-    "Hard Bucket%": "Hard Bucket%", "Collection%": "Collection%", "Collection %": "Collection%",
-    "Strike%": "Strike%", "Strike Rate %": "Strike%", "Roll Fwd%": "Roll Fwd%", "Roll Fwd %": "Roll Fwd%",
-    "Roll Bwd%": "Roll Bwd%", "Roll Bwd %": "Roll Bwd%",
-}
+_PORTFOLIO_RATES = {"NPA%", "SMA-2%", "Hard Bucket%", "Collection%", "Strike%", "Roll Fwd%", "Roll Bwd%"}
+
+
+def _portfolio_rate(col: str) -> str | None:
+    """The portfolio_metrics row for a view column, any spelling."""
+    rate = canonical(col)
+    return rate if rate in _PORTFOLIO_RATES else None
 
 
 def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame, source_df: pd.DataFrame | None = None) -> list:
@@ -517,7 +519,7 @@ def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame, source_df: pd.Dat
         return []
 
     portfolio = None
-    if source_df is not None and len(source_df) and any(c in _PORTFOLIO_RATE for c in metrics):
+    if source_df is not None and len(source_df) and any(_portfolio_rate(c) for c in metrics):
         from utils import portfolio_metrics
         portfolio = portfolio_metrics(source_df)
 
@@ -528,7 +530,7 @@ def _build_portfolio_kpis(spec: dict, result_df: pd.DataFrame, source_df: pd.Dat
         series = result_df[col].dropna()
         if series.empty:
             continue
-        rate = _PORTFOLIO_RATE.get(col)
+        rate = _portfolio_rate(col)
         if portfolio is not None and rate in portfolio.index and pd.notna(portfolio[rate]):
             kpis.append({"label": f"Portfolio {col}", "value": _format_metric_value(col, float(portfolio[rate]))})
             continue

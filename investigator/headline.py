@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from registry.metric_names import METRICS
 from registry.ontology import CONCEPTS
 
 # "How I got this" names a step in plain words, not its code name.
@@ -53,8 +54,7 @@ _PLURAL = {"region": "regions", "branch": "branches", "zone": "zones", "bu": "bu
 
 # The executive scorecard spells metrics with a space; everything else
 # without. Shown one way.
-_METRIC_SHOWN = {"Collection %": "Collection%", "NPA %": "NPA%", "Delinquency %": "Delinquency%",
-                 "Strike Rate %": "Strike%", "Hard Bucket %": "Hard Bucket%", "SMA-2 %": "SMA-2%"}
+_METRIC_SHOWN = {m.executive: m.name for m in METRICS.values() if m.executive}
 
 # File column names in plain words, for the table on screen.
 _COLUMN_SHOWN = {"RegionName": "Region", "Unit": "Branch", "MNT NAME": "Executive", "curr_bucket": "Bucket",

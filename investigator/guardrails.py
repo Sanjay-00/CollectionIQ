@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from investigator.state import EntityMemory
 from investigator.steps import distinct_executive_matches
+from registry.metric_names import canonical
 from registry.semantic_model import resolve_dimension
 
 # Which metric columns each step type can actually produce -- known
@@ -58,7 +59,9 @@ _EXECUTIVE_GRAIN_ENTITY_TYPES = {"executive_group", "branch_executives"}
 
 
 def _normalize(metric: str) -> str:
-    return metric.replace(" %", "%")
+    # Was metric.replace(" %", "%"), which turns "Strike Rate %" into
+    # "Strike Rate%", never "Strike%": executive steps refused "Strike%".
+    return canonical(metric) or metric
 
 
 def _metric_producible(step_type: str, metric: str) -> bool:

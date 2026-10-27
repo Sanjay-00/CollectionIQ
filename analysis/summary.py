@@ -8,6 +8,7 @@ import pandas as pd
 
 from analysis import roll_flow as rf
 from config import ACTION_MIN_ACCOUNTS, DASHBOARD_TOP_N
+from registry.metric_names import higher_is_better
 from utils import _unit_key, per_frame, prev_held_now, unit_metrics
 
 _GRAIN = {  # grain: (group columns, display name column); hierarchy Zone > Region > Branch > Executive
@@ -20,15 +21,19 @@ _MIN = {"Zone": 1, "Region": 1, "Branch": ACTION_MIN_ACCOUNTS["branch"], "Execut
 
 # League-table metrics: label -> (source column, a higher value is worse).
 # "New defaulters %" comes from the roll analysis (needs last month's file).
+def _league(col: str) -> tuple[str, bool]:
+    return col, not higher_is_better(col)
+
+
 LEAGUE_METRICS = {
-    "NPA %": ("NPA%", True),
-    "NPA % (SOH)": ("NPA% (SOH)", True),
-    "Delinquency %": ("Delinquency%", True),
-    "SMA-2 %": ("SMA-2%", True),
-    "Hard Bucket %": ("Hard Bucket%", True),
-    "New defaulters %": ("STD → Delinquent | %", True),
-    "Collection %": ("Collection%", False),
-    "Strike %": ("Strike%", False),
+    "NPA %": _league("NPA%"),
+    "NPA % (SOH)": _league("NPA% (SOH)"),
+    "Delinquency %": _league("Delinquency%"),
+    "SMA-2 %": _league("SMA-2%"),
+    "Hard Bucket %": _league("Hard Bucket%"),
+    "New defaulters %": _league("STD → Delinquent | %"),
+    "Collection %": _league("Collection%"),
+    "Strike %": _league("Strike%"),
 }
 
 

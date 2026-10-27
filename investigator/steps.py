@@ -42,6 +42,7 @@ from compiler.core import _expand_filters
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN, MIN_ACCOUNTS_EXECUTIVE, NOT_PAYING_3M_FLAG_COL,
 )
+from registry.metric_names import METRICS, canonical, executive_column
 from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
 from utils import (
@@ -83,30 +84,21 @@ def _scope(df: pd.DataFrame | None, scope_col, scope_value, required: bool = Tru
 # (e.g. for a metric not listed here), but nothing here silently assumes
 # "lowest raw value = worst" the way a naive bottom-quartile cut would for
 # NPA%/Hard Bucket% (where the highest value is the worst one).
+# Built from registry/metric_names.py: both spellings of each metric the
+# Investigator ranks by (the AI may use either).
+_INVESTIGATOR_METRICS = ("Collection%", "Strike%", "NPA%", "Hard Bucket%", "SMA-2%", "Delinquency%")
 METRIC_DIRECTION: dict[str, bool] = {
-    "Collection %": True, "Collection%": True,
-    "Strike Rate %": True, "Strike%": True,
-    "NPA %": False, "NPA%": False,
-    "Hard Bucket %": False, "Hard Bucket%": False,
-    "SMA-2 %": False, "SMA-2%": False,
-    "Delinquency %": False, "Delinquency%": False,
+    s: METRICS[n].higher_is_better for n in _INVESTIGATOR_METRICS for s in (n, METRICS[n].executive)
 }
 
-# The executive scorecard spells its columns with a space ("NPA %",
-# "Strike Rate %"); the branch/region tables without ("NPA%", "Strike%").
-# A caller may use either, so executive steps map the name first: a
-# spelling that matched no column used to come back as an empty table,
-# shown as "No rows matched" (a false zero).
-_EXEC_METRIC_NAME = {
-    "Collection%": "Collection %", "NPA%": "NPA %", "Strike%": "Strike Rate %", "Strike Rate%": "Strike Rate %",
-    "Hard Bucket%": "Hard Bucket %", "SMA-2%": "SMA-2 %", "Delinquency%": "Delinquency %",
-}
 
 
 def _exec_metric(metric: str, scorecard: pd.DataFrame) -> str:
     """`metric` as the executive scorecard's column name. Refuses (shown to
     the user) a metric the scorecard doesn't have, instead of an empty table."""
-    name = _EXEC_METRIC_NAME.get(str(metric).strip(), str(metric).strip())
+    # A spelling that matched no column used to come back as an empty table,
+    # shown as "No rows matched" (a false zero).
+    name = executive_column(metric)
     if not scorecard.empty and name not in scorecard.columns:
         known = ", ".join(m for m in METRIC_DIRECTION if " %" in m)
         raise ValueError(f"I can't rank executives by '{metric}'. I can rank by {known}.")
@@ -262,7 +254,7 @@ def dimension_breakdown(
     # caller getting the spelling wrong should never silently do the wrong
     # thing.
     if metric:
-        metric = metric.replace(" %", "%")
+        metric = canonical(metric) or metric
     sort_metric = metric if metric in curr.columns else "Collection%"
     hib = _higher_is_better(sort_metric, higher_is_better)
     return curr.sort_values(sort_metric, ascending=hib).reset_index(drop=True)
@@ -1395,17 +1387,15 @@ def concept_breakdown(df: pd.DataFrame, dimension: str) -> pd.DataFrame:
 # space) are registered, matching the convention every other metric-name
 # dict in this module already follows, since callers use either depending
 # on which grain they're thinking in.
+_DRILL_FILTER = {
+    "NPA%":          {"concept": "npa"},
+    "Hard Bucket%":  {"concept": "hard_bucket"},
+    "Collection%":   {"concept": "short_collection"},
+    "Strike%":       {"column": "Strike", "op": "in", "value": ["N", "NO"]},
+    "Delinquency%":  {"concept": "delinquent"},
+}
 METRIC_DRILL_FILTER: dict[str, dict] = {
-    "NPA %":          {"concept": "npa"},
-    "NPA%":           {"concept": "npa"},
-    "Hard Bucket %":  {"concept": "hard_bucket"},
-    "Hard Bucket%":   {"concept": "hard_bucket"},
-    "Collection %":   {"concept": "short_collection"},
-    "Collection%":    {"concept": "short_collection"},
-    "Strike Rate %":  {"column": "Strike", "op": "in", "value": ["N", "NO"]},
-    "Strike%":        {"column": "Strike", "op": "in", "value": ["N", "NO"]},
-    "Delinquency %":  {"concept": "delinquent"},
-    "Delinquency%":   {"concept": "delinquent"},
+    s: f for n, f in _DRILL_FILTER.items() for s in (n, METRICS[n].executive)
 }
 
 
