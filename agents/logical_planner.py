@@ -12,14 +12,13 @@ Prompt structure:
   - Rules for routing, clarification, priority, bucket ops, and display_columns
 """
 import os
-import json
 import re
 from functools import lru_cache
 
 from langsmith import traceable
 
 from config import GEMINI_MODEL, PLANNER_TEMPERATURE
-from gemini_client import make_client
+from gemini_client import JSONReplyError, json_config, make_client, parse_json_object
 from registry.ontology import CONCEPTS, METRICS, AMBIGUOUS_TERMS
 from registry.semantic_model import DIMENSIONS
 from registry.views import VIEWS, _METRIC_DIRECTION
@@ -787,8 +786,8 @@ def plan_logical(
     client = make_client(api_key)
     response = _call_gemini_with_retry(
         client, GEMINI_MODEL, repair_context + clarification_followup_context + query,
-        {
-            "system_instruction": system_prompt,
+        json_config(
+            system_instruction=system_prompt,
             # This is structured classification/extraction (pick an intent, pick
             # filters/views from a fixed vocabulary, decide needs_clarification),
             # not creative writing -- the default temperature (~1.0) is tuned for
@@ -804,21 +803,18 @@ def plan_logical(
             # (plan_logical's OWN retry path above) a real chance to differ if
             # the first attempt was actually wrong, not just re-confirm the same
             # mistake deterministically forever.
-            "temperature": PLANNER_TEMPERATURE,
-        },
+            temperature=PLANNER_TEMPERATURE,
+        ),
     )
     _add_token_usage(response)
 
-    raw = response.text.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
     try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+        parsed = parse_json_object(response.text)
+    except JSONReplyError:
         # The model broke JSON format -- in practice this happens on wildly
         # off-topic/adversarial input where it drops into prose instead of
-        # complying. Never surface a raw parser exception to the user; treat
-        # it the same as an out-of-scope question.
+        # complying (JSON mode makes it rare). Never surface a raw parser
+        # exception to the user; treat it the same as an out-of-scope question.
         return _out_of_scope_ir(
             "I couldn't understand that as a portfolio question. I can answer "
             "things like \"top 10 delinquent customers by SOH\" or \"NPA% by branch\"."

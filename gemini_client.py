@@ -6,14 +6,17 @@ exception -- including a bad API key or a malformed request, which can never
 succeed -- and created clients with no timeout, so a hung connection blocked
 a query indefinitely. One implementation here fixes both everywhere.
 """
+import json
 import logging
+import os
+import re
 import time
 
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
-from config import GEMINI_TIMEOUT_MS
+from config import GEMINI_MODEL, GEMINI_TIMEOUT_MS
 
 logger = logging.getLogger(__name__)
 
@@ -67,3 +70,52 @@ def call_gemini_with_retry(client, model: str, contents: str, config: dict, max_
                 raise
             logger.warning("Gemini call failed (attempt %d/%d), retrying: %s", attempt + 1, max_retries + 1, e)
             time.sleep(2 ** attempt)
+
+
+# ── Structured (JSON) replies ────────────────────────────────────────────────
+# Every call whose reply is parsed as data (the AI Query planner, the
+# Investigator router, the review analyst) asks for JSON mode and parses here.
+# Before (code review, 2026-10-27) only the analyst used JSON mode; the other
+# two asked for free text and each stripped markdown fences with its own regex.
+
+class JSONReplyError(ValueError):
+    """The model's reply wasn't the one JSON object asked for."""
+
+
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+
+
+def json_config(temperature: float, system_instruction: str | None = None, response_schema=None) -> dict:
+    """Gemini config for a reply that must be one JSON object: JSON mode
+    returns JSON text, never prose or a markdown fence."""
+    config = {"temperature": temperature, "response_mime_type": "application/json"}
+    if system_instruction:
+        config["system_instruction"] = system_instruction
+    if response_schema is not None:
+        config["response_schema"] = response_schema
+    return config
+
+
+def parse_json_object(text) -> dict:
+    """The one JSON object in a model reply. A stray markdown fence is still
+    removed (another provider, or a model ignoring JSON mode). Raises
+    JSONReplyError for anything else, so a caller never acts on prose."""
+    raw = _FENCE.sub("", (text or "").strip())
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise JSONReplyError(f"not JSON: {raw[:80]!r}") from e
+    if not isinstance(data, dict):
+        raise JSONReplyError(f"expected a JSON object, got {type(data).__name__}")
+    return data
+
+
+def generate_json_text(contents: str, *, temperature: float, system_instruction: str | None = None,
+                       response_schema=None, model: str | None = None) -> str:
+    """One JSON-mode call with this app's client, timeout and retry policy;
+    the raw reply text (parse it with parse_json_object)."""
+    client = make_client(os.environ["GOOGLE_API_KEY"])
+    response = call_gemini_with_retry(client, model or GEMINI_MODEL, contents,
+                                      json_config(temperature, system_instruction, response_schema))
+    add_token_usage(response)
+    return response.text or ""

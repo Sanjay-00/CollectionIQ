@@ -21,7 +21,6 @@ existing Flash-Lite cost discipline (CLAUDE.md's "Model Choice" section).
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -31,7 +30,7 @@ import pandas as pd
 
 from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry
 from config import GEMINI_MODEL, MAX_QUERY_CHARS, PII_COLUMNS, PLANNER_TEMPERATURE
-from gemini_client import make_client
+from gemini_client import JSONReplyError, json_config, make_client, parse_json_object
 from investigator.state import EntityMemory
 from investigator.steps import METRIC_DIRECTION, STEP_REGISTRY
 from registry.ontology import CONCEPTS
@@ -44,13 +43,6 @@ STEP_TYPES = sorted(STEP_REGISTRY.keys())
 PORTFOLIO_QUERY = "portfolio_query"
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_code_fence(raw: str) -> str:
-    raw = raw.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-    return raw
 
 
 _MAX_NAMES_LISTED = 20
@@ -814,8 +806,8 @@ def _normalize_turn_response(raw_text: str, allow_multi: bool = False) -> dict:
     agents/logical_planner.py::plan_logical's own JSON-failure handling.
     allow_multi: a workspace question, whose "parts" are kept."""
     try:
-        parsed = json.loads(_strip_code_fence(raw_text))
-    except (json.JSONDecodeError, ValueError):
+        parsed = parse_json_object(raw_text)
+    except JSONReplyError:
         return _fallback_turn_result(
             "I couldn't understand that as a portfolio question. Could you rephrase it?"
         )
@@ -858,7 +850,7 @@ def parse_turn(question: str, entity_memory: EntityMemory, allow_multi: bool = F
     try:
         response = _call_gemini_with_retry(
             client, GEMINI_MODEL, build_turn_prompt(question, entity_memory, allow_multi=allow_multi),
-            {"temperature": PLANNER_TEMPERATURE},
+            json_config(PLANNER_TEMPERATURE),
         )
     except Exception as e:
         # Retries exhausted (or a permanent error) -- a friendly message in

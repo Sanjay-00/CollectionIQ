@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from agents.insight_generator import _unverified, _values
-from config import GEMINI_MODEL, PLANNER_TEMPERATURE
+from config import PLANNER_TEMPERATURE
+from gemini_client import JSONReplyError, generate_json_text, parse_json_object
 from investigation.review.brief import LIST_NAMES, Brief
 from investigation.review.outcomes import IMPROVED, NO_CLEAR_CHANGE, WORSE as OUTCOME_WORSE
 
@@ -227,12 +228,9 @@ def _last_month_problems(text: str, last_month: list) -> list[str]:
 
 
 def _parse(raw: str) -> dict | None:
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip())
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(data, dict):
+        data = parse_json_object(raw)
+    except JSONReplyError:
         return None
     out = {k: _clean(data.get(k)) for k in ("summary", "why", "tradeoff", "watch")}
     rec = data.get("recommended_option")
@@ -242,12 +240,7 @@ def _parse(raw: str) -> dict | None:
 
 def gemini_generate(prompt: str) -> str:
     """One Gemini call, JSON out (the app's model, timeout and retry policy)."""
-    from gemini_client import add_token_usage, call_gemini_with_retry, make_client
-    client = make_client(os.environ["GOOGLE_API_KEY"])
-    response = call_gemini_with_retry(client, GEMINI_MODEL, prompt,
-                                      {"temperature": PLANNER_TEMPERATURE, "response_mime_type": "application/json"})
-    add_token_usage(response)
-    return response.text or ""
+    return generate_json_text(prompt, temperature=PLANNER_TEMPERATURE)
 
 
 def write_analysis(brief: Brief, generate: Callable[[str], str] | None = None,
