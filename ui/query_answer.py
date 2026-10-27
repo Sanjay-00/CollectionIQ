@@ -183,16 +183,33 @@ def render_query_result(result: dict, df_curr: pd.DataFrame, key: str) -> None:
         st.error(f"Query failed: {result['error']}")
         return
     filtered_df = result["result_df"]
-    kpis_q      = result["result_kpis"]
-    rankings    = result["result_rankings"]
-    insights    = result.get("insights") or ""
     plain       = (result.get("parsed_filters") or {}).get("plain_english") or ""
-
-    is_priority    = result.get("priority_mode", False)
+    view_render = result.get("view_render") or ""
     is_aggregation = result.get("aggregation_mode", False)
-    result_type    = result.get("result_type") or "loan_table"
-    result_grain   = result.get("result_grain") or "loan"
-    view_render    = result.get("view_render") or ""
+    single_stat = (result.get("result_type") or "loan_table") == "single_stat"
+
+    _render_header(result)
+    _render_context_cards(result)
+    if view_render == "kpi_cards":
+        _render_kpi_cards(filtered_df, result["result_kpis"])
+    elif view_render == "risk_indicator_table":
+        _render_risk_indicators(filtered_df)
+    elif result.get("priority_mode", False):
+        _render_priority(filtered_df, result["result_kpis"], df_curr, key)
+    elif single_stat and not is_aggregation:
+        _render_single_stat(result["result_kpis"], result.get("query_title") or "", plain)
+    elif single_stat:
+        _render_top_answer(result, filtered_df, plain, key)
+    elif is_aggregation:
+        _render_ranked_table(result, filtered_df, plain, key)
+    else:
+        _render_matching_rows(result, filtered_df, plain, df_curr, key)
+    _render_observations(result.get("insights") or "")
+    _render_feedback(result, key)
+
+
+def _render_header(result: dict) -> None:
+    """The card on top: category, title, confidence and risk, and how the question was read."""
     category       = (result.get("query_category") or "general").replace("_", " ").title()
     query_title    = result.get("query_title") or ""
     enriched       = result.get("enriched_query") or ""
@@ -220,6 +237,8 @@ def render_query_result(result: dict, df_curr: pd.DataFrame, key: str) -> None:
     </div>
     """, unsafe_allow_html=True)
 
+
+def _render_context_cards(result: dict) -> None:
     # ── Portfolio-wide KPI rollup: unconditional context for a matched view's
     # own table (e.g. "Avg NPA% 15.7%" alongside region_scorecard's per-region
     # rows). Unlike the highlight cards below, this isn't query-specific -- it
@@ -249,439 +268,396 @@ def render_query_result(result: dict, df_curr: pd.DataFrame, key: str) -> None:
         )
         st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;margin-bottom:16px;">{cards_html}</div>', unsafe_allow_html=True)
 
-    # ── Fast-path view: KPI cards (e.g. portfolio pulse) ──────────────────────
-    if view_render == "kpi_cards":
-        rows = (kpis_q.get("_agg_rows") or []).copy()
-        # _agg_rows is capped at 5 by view_node (shared with the insight-generator
-        # context); re-derive the FULL card set straight from filtered_df so every
-        # KPI is shown, not just the first 5.
-        if len(filtered_df) and {"label", "value", "delta"}.issubset(filtered_df.columns):
-            rows = filtered_df.to_dict(orient="records")
-        cards_html = "".join(
-            _kpi_card_html(
-                r.get("label", ""), r.get("value", ""), r.get("delta"),
-                unit=r.get("unit") or "%", inverse=bool(r.get("inverse")),
-            )
-            for r in rows
+
+def _render_kpi_cards(filtered_df: pd.DataFrame, kpis_q: dict) -> None:
+    """A fast-path view's KPI cards (e.g. portfolio pulse), then this month vs last."""
+    rows = (kpis_q.get("_agg_rows") or []).copy()
+    # _agg_rows is capped at 5 by view_node (shared with the insight-generator
+    # context); re-derive the FULL card set straight from filtered_df so every
+    # KPI is shown, not just the first 5.
+    if len(filtered_df) and {"label", "value", "delta"}.issubset(filtered_df.columns):
+        rows = filtered_df.to_dict(orient="records")
+    cards_html = "".join(
+        _kpi_card_html(
+            r.get("label", ""), r.get("value", ""), r.get("delta"),
+            unit=r.get("unit") or "%", inverse=bool(r.get("inverse")),
         )
-        st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;">{cards_html}</div>', unsafe_allow_html=True)
+        for r in rows
+    )
+    st.markdown(f'<div class="kpi-row" style="flex-wrap:wrap;">{cards_html}</div>', unsafe_allow_html=True)
 
-        # Comparison table: This Month | Previous Month | Delta | % Change, using
-        # the raw (unformatted) curr_raw/prev_raw numbers so Delta/%Change are the
-        # literal arithmetic difference, not the sign-flipped-for-card-color delta.
-        if rows and any(r.get("prev_raw") is not None for r in rows):
-            def _fmt_side(val, unit):
-                if val is None:
-                    return "-"
-                if unit == "Cr":
-                    return f"₹{val:.2f}Cr"
-                if unit == "%":
-                    return f"{val:.2f}%"
-                return f"{val:,.0f}"
+    # Comparison table: This Month | Previous Month | Delta | % Change, using
+    # the raw (unformatted) curr_raw/prev_raw numbers so Delta/%Change are the
+    # literal arithmetic difference, not the sign-flipped-for-card-color delta.
+    if rows and any(r.get("prev_raw") is not None for r in rows):
+        def _fmt_side(val, unit):
+            if val is None:
+                return "-"
+            if unit == "Cr":
+                return f"₹{val:.2f}Cr"
+            if unit == "%":
+                return f"{val:.2f}%"
+            return f"{val:,.0f}"
 
-            table_rows = ""
-            for r in rows:
-                cv, pv = r.get("curr_raw"), r.get("prev_raw")
-                unit, inverse = r.get("unit") or "", bool(r.get("inverse"))
-                if pv is None:
-                    delta_cell, pct_cell = "-", "-"
-                    color = "#9ca3af"
-                else:
-                    diff = cv - pv
-                    pct = (diff / pv * 100) if pv else None
-                    good = (diff < 0) if inverse else (diff > 0)
-                    color = "#16a34a" if (diff != 0 and good) else ("#dc2626" if diff != 0 else "#9ca3af")
-                    arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "-")
-                    delta_cell = f"{arrow} {abs(diff):,.2f}" if unit != "" else f"{arrow} {abs(int(diff)):,}"
-                    pct_cell = f"{pct:+.1f}%" if pct is not None else "-"
-                table_rows += (
-                    f'<tr style="background:#161b22;border-bottom:1px solid #0d1117;">'
-                    f'<td style="padding:8px 14px;font-size:12px;font-weight:700;color:#e6edf3;">{r.get("label","")}</td>'
-                    f'<td style="padding:8px 14px;font-size:13px;font-weight:800;text-align:right;color:#e6edf3;">{_fmt_side(cv, unit)}</td>'
-                    f'<td style="padding:8px 14px;font-size:12px;text-align:right;color:#8b949e;">{_fmt_side(pv, unit)}</td>'
-                    f'<td style="padding:8px 14px;font-size:12px;font-weight:700;text-align:right;color:{color};">{delta_cell}</td>'
-                    f'<td style="padding:8px 14px;font-size:12px;font-weight:700;text-align:right;color:{color};">{pct_cell}</td>'
-                    f'</tr>'
-                )
-            st.markdown(
-                "<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
-                "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>This Month vs Previous Month</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f'<div style="background:#161b22;border:1px solid #21262d;border-radius:10px;overflow-x:auto;">'
-                f'<table style="width:100%;border-collapse:collapse;">'
-                f'<thead><tr>'
-                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:left;">KPI</th>'
-                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">This Month</th>'
-                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">Previous Month</th>'
-                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">Δ</th>'
-                f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">% Change</th>'
-                f'</tr></thead><tbody>{table_rows}</tbody></table></div>',
-                unsafe_allow_html=True,
-            )
-
-    # ── Fast-path view: risk indicator signal table ───────────────────────────
-    elif view_render == "risk_indicator_table":
-        rows = filtered_df.to_dict(orient="records") if len(filtered_df) else []
-        _DIR_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706"}
-        headers = ["Signal", "This Month", "Last Month", "Δ", "Direction", "Note"]
-        th = "".join(
-            f'<th style="background:#0d1117;color:#FFC000;padding:7px 12px;font-size:11px;'
-            f'text-align:{"left" if h in ("Signal","Note") else "center"};white-space:nowrap;">{h}</th>'
-            for h in headers
-        )
-        rows_html = ""
+        table_rows = ""
         for r in rows:
-            d = r.get("Direction", "-")
-            dc = _DIR_COLOR.get(d, "#9ca3af")
-            rows_html += (
+            cv, pv = r.get("curr_raw"), r.get("prev_raw")
+            unit, inverse = r.get("unit") or "", bool(r.get("inverse"))
+            if pv is None:
+                delta_cell, pct_cell = "-", "-"
+                color = "#9ca3af"
+            else:
+                diff = cv - pv
+                pct = (diff / pv * 100) if pv else None
+                good = (diff < 0) if inverse else (diff > 0)
+                color = "#16a34a" if (diff != 0 and good) else ("#dc2626" if diff != 0 else "#9ca3af")
+                arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "-")
+                delta_cell = f"{arrow} {abs(diff):,.2f}" if unit != "" else f"{arrow} {abs(int(diff)):,}"
+                pct_cell = f"{pct:+.1f}%" if pct is not None else "-"
+            table_rows += (
                 f'<tr style="background:#161b22;border-bottom:1px solid #0d1117;">'
-                f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:#e6edf3;">{r.get("Signal","")}</td>'
-                f'<td style="padding:7px 12px;font-size:13px;font-weight:800;text-align:center;color:#e6edf3;">{r.get("This Month","")}</td>'
-                f'<td style="padding:7px 12px;font-size:12px;color:#8b949e;text-align:center;">{r.get("Last Month","")}</td>'
-                f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:{dc};text-align:center;">{r.get("Δ","")}</td>'
-                f'<td style="padding:7px 12px;text-align:center;color:{dc};font-weight:700;font-size:12px;">{d}</td>'
-                f'<td style="padding:7px 12px;font-size:11px;color:#8b949e;">{r.get("Note","")}</td>'
+                f'<td style="padding:8px 14px;font-size:12px;font-weight:700;color:#e6edf3;">{r.get("label","")}</td>'
+                f'<td style="padding:8px 14px;font-size:13px;font-weight:800;text-align:right;color:#e6edf3;">{_fmt_side(cv, unit)}</td>'
+                f'<td style="padding:8px 14px;font-size:12px;text-align:right;color:#8b949e;">{_fmt_side(pv, unit)}</td>'
+                f'<td style="padding:8px 14px;font-size:12px;font-weight:700;text-align:right;color:{color};">{delta_cell}</td>'
+                f'<td style="padding:8px 14px;font-size:12px;font-weight:700;text-align:right;color:{color};">{pct_cell}</td>'
                 f'</tr>'
             )
         st.markdown(
+            "<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
+            "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>This Month vs Previous Month</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
             f'<div style="background:#161b22;border:1px solid #21262d;border-radius:10px;overflow-x:auto;">'
             f'<table style="width:100%;border-collapse:collapse;">'
-            f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
-            f'</table></div>',
+            f'<thead><tr>'
+            f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:left;">KPI</th>'
+            f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">This Month</th>'
+            f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">Previous Month</th>'
+            f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">Δ</th>'
+            f'<th style="background:#0d1117;color:#FFC000;padding:7px 14px;font-size:11px;text-align:right;">% Change</th>'
+            f'</tr></thead><tbody>{table_rows}</tbody></table></div>',
             unsafe_allow_html=True,
         )
 
-    # ── Priority mode ─────────────────────────────────────────────────────────
-    elif is_priority:
-        from agents.data_executor import distribute_priority_accounts
+
+def _render_risk_indicators(filtered_df: pd.DataFrame) -> None:
+    """A fast-path view's risk signals: this month, last month and direction."""
+    rows = filtered_df.to_dict(orient="records") if len(filtered_df) else []
+    _DIR_COLOR = {"Improving": "#16a34a", "Worsening": "#dc2626", "Stable": "#d97706"}
+    headers = ["Signal", "This Month", "Last Month", "Δ", "Direction", "Note"]
+    th = "".join(
+        f'<th style="background:#0d1117;color:#FFC000;padding:7px 12px;font-size:11px;'
+        f'text-align:{"left" if h in ("Signal","Note") else "center"};white-space:nowrap;">{h}</th>'
+        for h in headers
+    )
+    rows_html = ""
+    for r in rows:
+        d = r.get("Direction", "-")
+        dc = _DIR_COLOR.get(d, "#9ca3af")
+        rows_html += (
+            f'<tr style="background:#161b22;border-bottom:1px solid #0d1117;">'
+            f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:#e6edf3;">{r.get("Signal","")}</td>'
+            f'<td style="padding:7px 12px;font-size:13px;font-weight:800;text-align:center;color:#e6edf3;">{r.get("This Month","")}</td>'
+            f'<td style="padding:7px 12px;font-size:12px;color:#8b949e;text-align:center;">{r.get("Last Month","")}</td>'
+            f'<td style="padding:7px 12px;font-size:12px;font-weight:700;color:{dc};text-align:center;">{r.get("Δ","")}</td>'
+            f'<td style="padding:7px 12px;text-align:center;color:{dc};font-weight:700;font-size:12px;">{d}</td>'
+            f'<td style="padding:7px 12px;font-size:11px;color:#8b949e;">{r.get("Note","")}</td>'
+            f'</tr>'
+        )
+    st.markdown(
+        f'<div style="background:#161b22;border:1px solid #21262d;border-radius:10px;overflow-x:auto;">'
+        f'<table style="width:100%;border-collapse:collapse;">'
+        f'<thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody>'
+        f'</table></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_priority(filtered_df: pd.DataFrame, kpis_q: dict, df_curr: pd.DataFrame, key: str) -> None:
+    """Accounts to act on, grouped by priority rule, with how many to review."""
+    from agents.data_executor import distribute_priority_accounts
+
+    st.markdown(f"""
+    <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
+                padding:16px 20px;margin:0 0 16px 0;">
+      <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
+        🎯 PRIORITY ACTION MODE
+      </div>
+      <div style="font-size:11px;color:#94a3b8;">
+        Accounts ranked across 7 priority rules. Each account appears only once under its highest priority.
+        Total available: <strong style="color:#fff">{kpis_q.get('Count', 0)} accounts</strong>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    sel_col, _ = st.columns([1, 3])
+    with sel_col:
+        n_accounts = st.selectbox(
+            "How many accounts to review?",
+            options=[20, 30, 40, 50], index=1, key=f"{key}_priority_n",
+        )
+
+    distributed = distribute_priority_accounts(filtered_df, n_accounts)
+    for priority_label, grp in distributed.groupby("Priority", sort=False):
+        p_num   = priority_label.split(":")[0].strip()
+        p_name  = priority_label.split(":")[-1].strip()
+        p_color = "#dc2626" if p_num in ("P1", "P5") else "#f97316" if p_num in ("P2", "P3", "P6", "P7") else "#d97706"
 
         st.markdown(f"""
-        <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
-                    padding:16px 20px;margin:0 0 16px 0;">
-          <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
-            🎯 PRIORITY ACTION MODE
-          </div>
-          <div style="font-size:11px;color:#94a3b8;">
-            Accounts ranked across 7 priority rules. Each account appears only once under its highest priority.
-            Total available: <strong style="color:#fff">{kpis_q.get('Count', 0)} accounts</strong>
-          </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:16px 0 6px 0;">
+          <span style="background:{p_color};color:#fff;font-size:11px;font-weight:800;
+                       padding:3px 10px;border-radius:12px;">{p_num}</span>
+          <span style="font-size:14px;font-weight:700;color:#1a1a1a;">{p_name}</span>
+          <span style="font-size:12px;color:#888;">{len(grp)} accounts</span>
         </div>
         """, unsafe_allow_html=True)
 
-        sel_col, _ = st.columns([1, 3])
-        with sel_col:
-            n_accounts = st.selectbox(
-                "How many accounts to review?",
-                options=[20, 30, 40, 50], index=1, key=f"{key}_priority_n",
-            )
+        disp = grp.drop(columns=["Priority", "Why", "_rank"], errors="ignore")
+        disp = disp.loc[:, ~disp.columns.duplicated()].reset_index(drop=True)
+        st.dataframe(_safe_df(disp.head(1000)), width='stretch',
+                     height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
+        if len(disp) > 1000:
+            st.caption(f"Showing 1,000 of {len(disp):,} rows: download Excel for full list.")
+        _dl_btn(disp, f"priority_{p_num}.xlsx", f"{key}_dl_priority_{p_num}", full_source=df_curr)
 
-        distributed = distribute_priority_accounts(filtered_df, n_accounts)
-        for priority_label, grp in distributed.groupby("Priority", sort=False):
-            p_num   = priority_label.split(":")[0].strip()
-            p_name  = priority_label.split(":")[-1].strip()
-            p_color = "#dc2626" if p_num in ("P1", "P5") else "#f97316" if p_num in ("P2", "P3", "P6", "P7") else "#d97706"
 
-            st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:10px;margin:16px 0 6px 0;">
-              <span style="background:{p_color};color:#fff;font-size:11px;font-weight:800;
-                           padding:3px 10px;border-radius:12px;">{p_num}</span>
-              <span style="font-size:14px;font-weight:700;color:#1a1a1a;">{p_name}</span>
-              <span style="font-size:12px;color:#888;">{len(grp)} accounts</span>
-            </div>
-            """, unsafe_allow_html=True)
+def _render_single_stat(kpis_q: dict, query_title: str, plain: str) -> None:
+    """A scalar answer: big numbers, no table."""
+    _QKIND = {"Count":"count","Total POS":"money","Avg Arrears/EMI":"pct",
+              "Total Demand":"money","Total Collection":"money","Collection %":"pct"}
+    kpi_html = "".join(
+        f'<div style="min-width:140px;text-align:center;">'
+        f'<div style="font-size:11px;color:#6b7280;font-weight:700;text-transform:uppercase;'
+        f'letter-spacing:1px;margin-bottom:8px;">{k}</div>'
+        f'<div style="font-size:42px;font-weight:900;color:#FFC000;line-height:1;letter-spacing:-1px;">'
+        f'{fmt_value(v, _QKIND.get(k, "count"))}</div></div>'
+        for k, v in kpis_q.items() if v not in (0, 0.0, "")
+    )
+    st.markdown(f"""
+    <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
+                padding:32px 36px;margin:0 0 20px 0;text-align:center;">
+      <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:2px;margin-bottom:16px;">{_esc(query_title)}</div>
+      <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">{kpi_html}</div>
+      <div style="font-size:13px;color:#4b5563;margin-top:20px;font-style:italic;">{_esc(plain)}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-            disp = grp.drop(columns=["Priority", "Why", "_rank"], errors="ignore")
-            disp = disp.loc[:, ~disp.columns.duplicated()].reset_index(drop=True)
-            st.dataframe(_safe_df(disp.head(1000)), width='stretch',
-                         height=min(280, 45 + min(len(grp), 1000) * 36), hide_index=True)
-            if len(disp) > 1000:
-                st.caption(f"Showing 1,000 of {len(disp):,} rows: download Excel for full list.")
-            _dl_btn(disp, f"priority_{p_num}.xlsx", f"{key}_dl_priority_{p_num}", full_source=df_curr)
 
-    elif result.get("plan_mode"):
-        # ── Multi-step plan result ────────────────────────────────────────────
-        plan = result.get("plan") or []
-
-        def _step_text(s: dict) -> str:
-            op = s.get("op")
-            if op == "group_aggregate":
-                gb = ", ".join(str(c) for c in (s.get("group_by") if isinstance(s.get("group_by"), list) else [s.get("group_by")]))
-                aggs = ", ".join(
-                    f"{a.get('func')}({a.get('column') or 'rows'}) as {a.get('alias')}"
-                    for a in (s.get("aggregations") or [])
-                )
-                return f"Group by [{gb}] → {aggs}"
-            if op == "filter":
-                conds = ", ".join(
-                    f"{c.get('column')} {c.get('op')} {c.get('value')}"
-                    for c in (s.get("conditions") or [])
-                )
-                return f"Keep rows where {conds}"
-            if op == "derive":
-                return f"Add column '{s.get('column')}' = {s.get('expr')}"
-            if op == "sort":
-                return f"Sort by {s.get('by')} ({'ascending' if s.get('ascending') else 'descending'})"
-            if op == "limit":
-                return f"Take top {s.get('n')}"
-            return str(op)
-
-        steps_html = "".join(
-            f'<div style="display:flex;gap:10px;margin:4px 0;font-size:12px;color:#94a3b8;">'
-            f'<span style="color:#FFC000;font-weight:800;min-width:18px;">{i}.</span>'
-            f'<span>{_esc(_step_text(s))}</span></div>'
-            for i, s in enumerate(plan, start=1)
-        )
-        st.markdown(f"""
-        <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
-                    padding:16px 20px;margin:0 0 16px 0;">
-          <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:8px;letter-spacing:1px;">
-            🧩 MULTI-STEP PLAN: {len(filtered_df)} rows
-          </div>
-          <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">{_esc(plain)}</div>
-          {steps_html}
-        </div>
-        """, unsafe_allow_html=True)
-
-        if len(filtered_df) > 0:
-            display_plan = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            st.dataframe(_safe_df(display_plan.head(1000)), width='stretch',
-                         height=min(420, 50 + min(len(display_plan), 1000) * 36), hide_index=True)
-            if len(display_plan) > 1000:
-                st.caption(f"Showing 1,000 of {len(display_plan):,} rows: download Excel for full list.")
-            _dl_btn(display_plan, "plan_result.xlsx", f"{key}_dl_plan")
-        else:
-            st.warning("The plan returned no rows.")
-
-    elif result_type == "single_stat" and not is_aggregation:
-        # ── Scalar result ─────────────────────────────────────────────────────
-        _QKIND = {"Count":"count","Total POS":"money","Avg Arrears/EMI":"pct",
-                  "Total Demand":"money","Total Collection":"money","Collection %":"pct"}
-        kpi_html = "".join(
-            f'<div style="min-width:140px;text-align:center;">'
-            f'<div style="font-size:11px;color:#6b7280;font-weight:700;text-transform:uppercase;'
-            f'letter-spacing:1px;margin-bottom:8px;">{k}</div>'
-            f'<div style="font-size:42px;font-weight:900;color:#FFC000;line-height:1;letter-spacing:-1px;">'
-            f'{fmt_value(v, _QKIND.get(k, "count"))}</div></div>'
-            for k, v in kpis_q.items() if v not in (0, 0.0, "")
-        )
+def _render_top_answer(result: dict, filtered_df: pd.DataFrame, plain: str, key: str) -> None:
+    """A "which one is highest/lowest" answer: the winner, then the full ranking."""
+    agg_spec     = result.get("aggregation_spec") or {}
+    _metrics     = agg_spec.get("metrics") or []
+    metric_label = _metrics[0]["label"] if _metrics else (agg_spec.get("metric_label") or "Metric")
+    _gb          = agg_spec.get("group_by") or "Group"
+    group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
+    sort_asc     = agg_spec.get("sort_asc")
+    if sort_asc is None:
+        sort_asc = True
+    if len(filtered_df) > 0 and metric_label in filtered_df.columns:
+        top_row   = filtered_df.iloc[0]
+        top_name  = top_row.get(group_col, " - ")
+        top_val   = top_row.get(metric_label, 0)
+        direction = "lowest" if sort_asc else "highest"
         st.markdown(f"""
         <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
-                    padding:32px 36px;margin:0 0 20px 0;text-align:center;">
+                    padding:28px 36px;margin:0 0 20px 0;text-align:center;">
           <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
-                      letter-spacing:2px;margin-bottom:16px;">{_esc(query_title)}</div>
-          <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">{kpi_html}</div>
-          <div style="font-size:13px;color:#4b5563;margin-top:20px;font-style:italic;">{_esc(plain)}</div>
+                      letter-spacing:2px;margin-bottom:12px;">{direction} {_esc(metric_label)}</div>
+          <div style="font-size:36px;font-weight:900;color:#FFC000;letter-spacing:-0.5px;">{_esc(top_name)}</div>
+          <div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:6px;">{int(top_val) if isinstance(top_val, (int, float)) and top_val == int(top_val) else round(top_val, 4)}</div>
+          <div style="font-size:12px;color:#4b5563;margin-top:12px;font-style:italic;">{_esc(plain)}</div>
         </div>
         """, unsafe_allow_html=True)
+    if len(filtered_df) > 1:
+        st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
+        st.dataframe(_safe_df(filtered_df.head(1000)), width='stretch',
+                     height=min(400, 50 + min(len(filtered_df), 1000) * 36), hide_index=True)
+        if len(filtered_df) > 1000:
+            st.caption(f"Showing 1,000 of {len(filtered_df):,} rows: download Excel for full list.")
+        _dl_btn(filtered_df, "ranking_result.xlsx", f"{key}_dl_ranking")
 
-    elif result_type == "single_stat" and is_aggregation:
-        # ── Aggregation single-answer ─────────────────────────────────────────
-        agg_spec     = result.get("aggregation_spec") or {}
-        _metrics     = agg_spec.get("metrics") or []
-        metric_label = _metrics[0]["label"] if _metrics else (agg_spec.get("metric_label") or "Metric")
-        _gb          = agg_spec.get("group_by") or "Group"
-        group_col    = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
-        sort_asc     = agg_spec.get("sort_asc")
-        if sort_asc is None:
-            sort_asc = True
-        if len(filtered_df) > 0 and metric_label in filtered_df.columns:
-            top_row   = filtered_df.iloc[0]
-            top_name  = top_row.get(group_col, " - ")
-            top_val   = top_row.get(metric_label, 0)
-            direction = "lowest" if sort_asc else "highest"
-            st.markdown(f"""
-            <div style="background:#0d1117;border:1px solid #21262d;border-radius:14px;
-                        padding:28px 36px;margin:0 0 20px 0;text-align:center;">
-              <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
-                          letter-spacing:2px;margin-bottom:12px;">{direction} {_esc(metric_label)}</div>
-              <div style="font-size:36px;font-weight:900;color:#FFC000;letter-spacing:-0.5px;">{_esc(top_name)}</div>
-              <div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:6px;">{int(top_val) if isinstance(top_val, (int, float)) and top_val == int(top_val) else round(top_val, 4)}</div>
-              <div style="font-size:12px;color:#4b5563;margin-top:12px;font-style:italic;">{_esc(plain)}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        if len(filtered_df) > 1:
-            st.markdown("<div style='font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;'>Full Ranking</div>", unsafe_allow_html=True)
-            st.dataframe(_safe_df(filtered_df.head(1000)), width='stretch',
-                         height=min(400, 50 + min(len(filtered_df), 1000) * 36), hide_index=True)
-            if len(filtered_df) > 1000:
-                st.caption(f"Showing 1,000 of {len(filtered_df):,} rows: download Excel for full list.")
-            _dl_btn(filtered_df, "ranking_result.xlsx", f"{key}_dl_ranking")
 
-    elif is_aggregation:
-        # ── Ranked aggregation table ──────────────────────────────────────────
-        agg_spec      = result.get("aggregation_spec") or {}
-        _metrics_list = agg_spec.get("metrics") or []
-        metric_labels = [m["label"] for m in _metrics_list if m.get("label")]
-        metric_label  = metric_labels[0] if metric_labels else (agg_spec.get("metric_label") or "Metric")
-        _gb           = agg_spec.get("group_by") or "Group"
-        group_col     = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
-        header_title  = " · ".join(metric_labels) if metric_labels else metric_label
-        # Naively appending "s" to a composite label reads badly ("Cust Name
-        # (Cust Mob No)s"); use a friendly plural for the combined labels
-        # graph.py builds (see logical_planner_node), fall back to the naive
-        # suffix for a raw column name.
-        group_plural  = {
-            "Cust Name (Cust Mob No)": "Customers",
-            "MNT NAME (Unit)": "Executives",
-        }.get(group_col, f"{group_col}s")
+def _render_ranked_table(result: dict, filtered_df: pd.DataFrame, plain: str, key: str) -> None:
+    """A grouped, ranked table (e.g. NPA% by branch)."""
+    agg_spec      = result.get("aggregation_spec") or {}
+    _metrics_list = agg_spec.get("metrics") or []
+    metric_labels = [m["label"] for m in _metrics_list if m.get("label")]
+    metric_label  = metric_labels[0] if metric_labels else (agg_spec.get("metric_label") or "Metric")
+    _gb           = agg_spec.get("group_by") or "Group"
+    group_col     = f"{_gb[0]} ({_gb[1]})" if isinstance(_gb, list) else str(_gb)
+    header_title  = " · ".join(metric_labels) if metric_labels else metric_label
+    # Naively appending "s" to a composite label reads badly ("Cust Name
+    # (Cust Mob No)s"); use a friendly plural for the combined labels
+    # graph.py builds (see logical_planner_node), fall back to the naive
+    # suffix for a raw column name.
+    group_plural  = {
+        "Cust Name (Cust Mob No)": "Customers",
+        "MNT NAME (Unit)": "Executives",
+    }.get(group_col, f"{group_col}s")
+
+    st.markdown(f"""
+    <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
+                padding:16px 20px;margin:0 0 16px 0;">
+      <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:6px;letter-spacing:1px;">
+        📊 AGGREGATION RESULT: {_esc(header_title.upper())}
+      </div>
+      <div style="font-size:12px;color:#94a3b8;">
+        {_esc(plain)}&nbsp; &nbsp;
+        <strong style="color:#fff">{len(filtered_df)} {_esc(group_plural)}</strong> ranked
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if len(filtered_df) > 0:
+        header_cols = list(filtered_df.columns)
+        th_cells = "".join(
+            f'<th style="padding:10px 14px;text-align:{"right" if c not in ("Rank", group_col) else "left"};'
+            f'font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;'
+            f'letter-spacing:1.2px;border-bottom:1px solid #21262d;">{_esc(c)}</th>'
+            for c in header_cols
+        )
+        rows_html = ""
+        for i, row in filtered_df.iterrows():
+            rank_val = int(row.get("Rank", i + 1))
+            row_bg   = "rgba(255,192,0,0.06)" if rank_val <= 3 else "transparent"
+            cells = ""
+            for c in header_cols:
+                val = row[c]
+                if c == "Rank":
+                    cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">#{rank_val}</td>'
+                elif c == group_col:
+                    cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{_esc(val)}</td>'
+                elif c in metric_labels or c == metric_label:
+                    _disp = int(val) if isinstance(val, (int, float)) and val == int(val) else round(val, 2)
+                    cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{_disp}</td>'
+                else:
+                    cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else _esc(val)}</td>'
+            rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #0d1117;">{cells}</tr>'
 
         st.markdown(f"""
-        <div style="background:#0f172a;border:1px solid #FFC000;border-radius:12px;
-                    padding:16px 20px;margin:0 0 16px 0;">
-          <div style="font-size:13px;font-weight:800;color:#FFC000;margin-bottom:6px;letter-spacing:1px;">
-            📊 AGGREGATION RESULT: {_esc(header_title.upper())}
-          </div>
-          <div style="font-size:12px;color:#94a3b8;">
-            {_esc(plain)}&nbsp; &nbsp;
-            <strong style="color:#fff">{len(filtered_df)} {_esc(group_plural)}</strong> ranked
-          </div>
+        <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;overflow-x:auto;margin-top:8px;">
+          <table style="width:100%;border-collapse:collapse;min-width:600px;">
+            <thead><tr style="background:#0d1117;">{th_cells}</tr></thead>
+            <tbody>{rows_html}</tbody>
+          </table>
         </div>
         """, unsafe_allow_html=True)
-
-        if len(filtered_df) > 0:
-            header_cols = list(filtered_df.columns)
-            th_cells = "".join(
-                f'<th style="padding:10px 14px;text-align:{"right" if c not in ("Rank", group_col) else "left"};'
-                f'font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;'
-                f'letter-spacing:1.2px;border-bottom:1px solid #21262d;">{_esc(c)}</th>'
-                for c in header_cols
-            )
-            rows_html = ""
-            for i, row in filtered_df.iterrows():
-                rank_val = int(row.get("Rank", i + 1))
-                row_bg   = "rgba(255,192,0,0.06)" if rank_val <= 3 else "transparent"
-                cells = ""
-                for c in header_cols:
-                    val = row[c]
-                    if c == "Rank":
-                        cells += f'<td style="padding:10px 14px;font-weight:800;color:#FFC000;">#{rank_val}</td>'
-                    elif c == group_col:
-                        cells += f'<td style="padding:10px 14px;font-weight:600;color:#e6edf3;font-size:13px;">{_esc(val)}</td>'
-                    elif c in metric_labels or c == metric_label:
-                        _disp = int(val) if isinstance(val, (int, float)) and val == int(val) else round(val, 2)
-                        cells += f'<td style="padding:10px 14px;text-align:right;font-weight:800;color:#FFC000;font-size:14px;">{_disp}</td>'
-                    else:
-                        cells += f'<td style="padding:10px 14px;text-align:right;color:#8b949e;font-size:13px;">{int(val) if isinstance(val, (int, float)) and val == int(val) else _esc(val)}</td>'
-                rows_html += f'<tr style="background:{row_bg};border-bottom:1px solid #0d1117;">{cells}</tr>'
-
-            st.markdown(f"""
-            <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;overflow-x:auto;margin-top:8px;">
-              <table style="width:100%;border-collapse:collapse;min-width:600px;">
-                <thead><tr style="background:#0d1117;">{th_cells}</tr></thead>
-                <tbody>{rows_html}</tbody>
-              </table>
-            </div>
-            """, unsafe_allow_html=True)
-            _dl_btn(filtered_df, "aggregation_result.xlsx", f"{key}_dl_aggregation")
-        else:
-            st.warning("No data returned for this aggregation.")
-
+        _dl_btn(filtered_df, "aggregation_result.xlsx", f"{key}_dl_aggregation")
     else:
-        # ── Row-level filter result ───────────────────────────────────────────
-        st.markdown(f"""
-        <div style="background:#1a2e1a;border-left:4px solid #16a34a;border-radius:8px;
-                    padding:12px 16px;margin:0 0 16px 0;color:#86efac;font-weight:600;font-size:14px;">
-            ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} {_grain_noun(result_grain)}</strong>
-            &nbsp; {_esc(plain)}
-        </div>
-        """, unsafe_allow_html=True)
+        st.warning("No data returned for this aggregation.")
 
-        _QKIND = {"Count":"count","Total POS":"money","Avg Arrears/EMI":"pct",
-                  "Total Demand":"money","Total Collection":"money","Collection %":"pct"}
-        kpi_html = "".join(
-            f'<div class="result-kpi"><div class="result-kpi-label">{k}</div>'
-            f'<div class="result-kpi-value">{fmt_value(v, _QKIND.get(k, "count"))}</div></div>'
-            # Keys starting with "_" (e.g. "_agg_rows") are internal-only, consumed
-            # by the insight generator, never meant to render as a KPI card -- they
-            # aren't scalars, so fmt_value would crash on them (e.g. abs() on a list).
-            for k, v in kpis_q.items() if not str(k).startswith("_")
-        )
-        st.markdown(
-            f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">{kpi_html}</div>',
-            unsafe_allow_html=True,
-        )
 
-        def _rank_rows(items, val_fmt="count"):
-            rows = ""
-            for name, val in list(items)[:5]:
-                display = fmt_value(val, val_fmt) if val_fmt == "money" else f"{int(val)}"
-                rows += (
-                    f'<div class="rank-row">'
-                    f'<span class="rank-name">{_esc(name)}</span>'
-                    f'<span class="rank-value">{display}</span>'
-                    f'</div>'
-                )
-            return rows
+def _render_matching_rows(result: dict, filtered_df: pd.DataFrame, plain: str, df_curr: pd.DataFrame,
+                          key: str) -> None:
+    """The rows that matched (accounts, customers...), their totals and where they sit."""
+    kpis_q, rankings = result["result_kpis"], result["result_rankings"]
+    result_grain = result.get("result_grain") or "loan"
+    st.markdown(f"""
+    <div style="background:#1a2e1a;border-left:4px solid #16a34a;border-radius:8px;
+                padding:12px 16px;margin:0 0 16px 0;color:#86efac;font-weight:600;font-size:14px;">
+        ✓ Found <strong style="color:#fff">{kpis_q.get('Count',0)} {_grain_noun(result_grain)}</strong>
+        &nbsp; {_esc(plain)}
+    </div>
+    """, unsafe_allow_html=True)
 
-        r1, r2 = st.columns(2)
-        with r1:
-            left_html = ""
-            if rankings.get("region_counts"):
-                left_html += (
-                    f'<div class="rank-card" style="margin-bottom:12px;">'
-                    f'<div class="rank-title">🗺 Top Regions by Account Count</div>'
-                    f'{_rank_rows(rankings["region_counts"].items())}</div>'
-                )
-            if rankings.get("bucket_dist"):
-                bucket_rows = "".join(
-                    f'<div class="rank-row">'
-                    f'<span class="rank-name">{b}</span>'
-                    f'<span class="rank-value">{p}%</span>'
-                    f'</div>'
-                    for b, p in rankings["bucket_dist"].items()
-                )
-                left_html += (
-                    f'<div class="rank-card" style="margin-bottom:12px;">'
-                    f'<div class="rank-title">📊 Bucket Distribution</div>'
-                    f'{bucket_rows}</div>'
-                )
-            if rankings.get("mnt_details"):
-                mnt_rows = "".join(
-                    f'<div class="rank-row" style="gap:6px;">'
-                    f'<span class="rank-name" style="flex:1.4;font-weight:600;">{_esc(e["name"])}</span>'
-                    f'<span class="rank-name" style="flex:0.9;color:#9ca3af;font-size:11px;">{_esc(e["branch"])}</span>'
-                    f'<span class="rank-value" style="min-width:36px;text-align:right;">{e["count"]}</span>'
-                    f'<span class="rank-value" style="min-width:52px;text-align:right;color:#FFC000;">{fmt_value(e["pos"], "money")}</span>'
-                    f'</div>'
-                    for e in rankings["mnt_details"]
-                )
-                left_html += (
-                    f'<div class="rank-card">'
-                    f'<div class="rank-title">👤 Top Executives by Account Count</div>'
-                    f'{mnt_rows}</div>'
-                )
-            st.markdown(left_html, unsafe_allow_html=True)
+    _QKIND = {"Count":"count","Total POS":"money","Avg Arrears/EMI":"pct",
+              "Total Demand":"money","Total Collection":"money","Collection %":"pct"}
+    kpi_html = "".join(
+        f'<div class="result-kpi"><div class="result-kpi-label">{k}</div>'
+        f'<div class="result-kpi-value">{fmt_value(v, _QKIND.get(k, "count"))}</div></div>'
+        # Keys starting with "_" (e.g. "_agg_rows") are internal-only, consumed
+        # by the insight generator, never meant to render as a KPI card -- they
+        # aren't scalars, so fmt_value would crash on them (e.g. abs() on a list).
+        for k, v in kpis_q.items() if not str(k).startswith("_")
+    )
+    st.markdown(
+        f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">{kpi_html}</div>',
+        unsafe_allow_html=True,
+    )
 
-        with r2:
-            right_html = ""
-            if rankings.get("branch_counts"):
-                right_html += (
-                    f'<div class="rank-card" style="margin-bottom:12px;">'
-                    f'<div class="rank-title">🏢 Top Branches by Account Count</div>'
-                    f'{_rank_rows(rankings["branch_counts"].items())}</div>'
-                )
-            if rankings.get("branch_pos"):
-                right_html += (
-                    f'<div class="rank-card">'
-                    f'<div class="rank-title">💰 Top Branches by POS</div>'
-                    f'{_rank_rows(rankings["branch_pos"].items(), "money")}</div>'
-                )
-            st.markdown(right_html, unsafe_allow_html=True)
+    def _rank_rows(items, val_fmt="count"):
+        rows = ""
+        for name, val in list(items)[:5]:
+            display = fmt_value(val, val_fmt) if val_fmt == "money" else f"{int(val)}"
+            rows += (
+                f'<div class="rank-row">'
+                f'<span class="rank-name">{_esc(name)}</span>'
+                f'<span class="rank-value">{display}</span>'
+                f'</div>'
+            )
+        return rows
 
-        st.markdown(
-            f"<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
-            f"text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching {_grain_noun(result_grain).title()} Records</div>",
-            unsafe_allow_html=True,
-        )
-        display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-        st.dataframe(_safe_df(display_filtered.head(1000)), width='stretch', height=320, hide_index=True)
-        if len(display_filtered) > 1000:
-            st.caption(f"Showing 1,000 of {len(display_filtered):,} rows: download Excel for full list.")
-        _dl_btn(display_filtered, "filtered_accounts.xlsx", f"{key}_dl_filter_table", full_source=df_curr)
+    r1, r2 = st.columns(2)
+    with r1:
+        left_html = ""
+        if rankings.get("region_counts"):
+            left_html += (
+                f'<div class="rank-card" style="margin-bottom:12px;">'
+                f'<div class="rank-title">🗺 Top Regions by Account Count</div>'
+                f'{_rank_rows(rankings["region_counts"].items())}</div>'
+            )
+        if rankings.get("bucket_dist"):
+            bucket_rows = "".join(
+                f'<div class="rank-row">'
+                f'<span class="rank-name">{b}</span>'
+                f'<span class="rank-value">{p}%</span>'
+                f'</div>'
+                for b, p in rankings["bucket_dist"].items()
+            )
+            left_html += (
+                f'<div class="rank-card" style="margin-bottom:12px;">'
+                f'<div class="rank-title">📊 Bucket Distribution</div>'
+                f'{bucket_rows}</div>'
+            )
+        if rankings.get("mnt_details"):
+            mnt_rows = "".join(
+                f'<div class="rank-row" style="gap:6px;">'
+                f'<span class="rank-name" style="flex:1.4;font-weight:600;">{_esc(e["name"])}</span>'
+                f'<span class="rank-name" style="flex:0.9;color:#9ca3af;font-size:11px;">{_esc(e["branch"])}</span>'
+                f'<span class="rank-value" style="min-width:36px;text-align:right;">{e["count"]}</span>'
+                f'<span class="rank-value" style="min-width:52px;text-align:right;color:#FFC000;">{fmt_value(e["pos"], "money")}</span>'
+                f'</div>'
+                for e in rankings["mnt_details"]
+            )
+            left_html += (
+                f'<div class="rank-card">'
+                f'<div class="rank-title">👤 Top Executives by Account Count</div>'
+                f'{mnt_rows}</div>'
+            )
+        st.markdown(left_html, unsafe_allow_html=True)
 
-    # ── AI Observations ───────────────────────────────────────────────────────
+    with r2:
+        right_html = ""
+        if rankings.get("branch_counts"):
+            right_html += (
+                f'<div class="rank-card" style="margin-bottom:12px;">'
+                f'<div class="rank-title">🏢 Top Branches by Account Count</div>'
+                f'{_rank_rows(rankings["branch_counts"].items())}</div>'
+            )
+        if rankings.get("branch_pos"):
+            right_html += (
+                f'<div class="rank-card">'
+                f'<div class="rank-title">💰 Top Branches by POS</div>'
+                f'{_rank_rows(rankings["branch_pos"].items(), "money")}</div>'
+            )
+        st.markdown(right_html, unsafe_allow_html=True)
+
+    st.markdown(
+        f"<div style='margin-top:20px;font-size:11px;font-weight:700;color:#888;"
+        f"text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;'>Matching {_grain_noun(result_grain).title()} Records</div>",
+        unsafe_allow_html=True,
+    )
+    display_filtered = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
+    st.dataframe(_safe_df(display_filtered.head(1000)), width='stretch', height=320, hide_index=True)
+    if len(display_filtered) > 1000:
+        st.caption(f"Showing 1,000 of {len(display_filtered):,} rows: download Excel for full list.")
+    _dl_btn(display_filtered, "filtered_accounts.xlsx", f"{key}_dl_filter_table", full_source=df_curr)
+
+
+def _render_observations(insights: str) -> None:
     # Empty when "Generate AI summary" was left unchecked (skip_insights=True) --
     # don't render an empty card in that case, not just an empty-looking one.
     if insights.strip():
@@ -696,7 +672,8 @@ def render_query_result(result: dict, df_curr: pd.DataFrame, key: str) -> None:
         </div>
         """, unsafe_allow_html=True)
 
-    # ── LangSmith feedback ────────────────────────────────────────────────────
+
+def _render_feedback(result: dict, key: str) -> None:
     _ls_key = (os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY", "")).strip()
     _run_id = result.get("run_id", "")
     if _ls_key and _run_id:

@@ -656,384 +656,417 @@ def _render_analyse_further(
     record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str,
     df_prev: pd.DataFrame | None = None, as_of=None,
 ) -> None:
+    """The "Analyse further" controls under an answer: what the next drill is
+    depends on which step produced it (and, for a summary, at which grain)."""
     result_df = record.result_df
+    step, grain = record.step_type, record.entity_type
+    if step == "priority_menu" and "Category" in result_df.columns:
+        drill = _drill_priority_menu
+    elif step == "priority_accounts" and "Cust Mob No" in result_df.columns:
+        drill = _drill_priority_accounts
+    elif step == "entity_summary" and grain == "branch":
+        drill = _drill_branch_summary
+    elif step == "entity_summary" and grain == "executive":
+        drill = _drill_executive_summary
+    elif step == "entity_summary" and grain in ("region", "zone", "bu"):
+        drill = _drill_area_summary
+    elif step == "dimension_breakdown" and record.metric_focus == "branch" and "Unit" in result_df.columns:
+        drill = _drill_branch_breakdown
+    elif step in ("underperformer_quartile", "bottom_n_per_group", "intersect_entities"):
+        drill = _drill_executive_list
+    elif step == "concept_filter":
+        drill = _drill_concept
+    elif step == "non_paying_customers" and "Cust Mob No" in result_df.columns:
+        drill = _drill_customer_book
+    else:
+        return
+    drill(record, df_curr, memory, dl_key, df_prev, as_of)
 
-    if record.step_type == "priority_menu" and "Category" in result_df.columns:
-        # The menu shows COUNTS only -- one row per category runs the
-        # underlying, already-built step (concept_filter/fleet_defaulters/
-        # top_closing_arrears, never a second filter implementation),
-        # scoped the SAME way the menu itself was (record.params' own
-        # scope_col/scope_value). How many to pull is EDITABLE per
-        # category (a number input next to its button, defaulting to that
-        # row's own Shown, bounded to [1, Count]) -- a real ask: the same
-        # count that's right for "analyse further" isn't necessarily right
-        # for "how many loans go in the email to the branch manager."
-        category_lookup = {c["label"]: c for c in PRIORITY_MENU_CATEGORIES}
-        scope_col = (record.params or {}).get("scope_col")
-        scope_value = (record.params or {}).get("scope_value")
-        is_branch_scoped = scope_col == "branch" and scope_value
-        for _, row in result_df.iterrows():
-            label = str(row["Category"])
-            default_shown = int(row["Shown"])
-            total_count = int(row["Count"])
-            category = category_lookup.get(label)
-            if category is None:
-                continue
-            # width="stretch" is number_input's default -- inside a
-            # horizontal container that made it greedily fill all leftover
-            # space as a giant full-width bar next to a comparatively tiny
-            # button (the reported UI bug). Pin it to a fixed pixel width
-            # instead so it reads as a small counter, not a dominant block.
-            with st.container(horizontal=True, vertical_alignment="center"):
-                n = st.number_input(
-                    f"How many {label}?", min_value=1, max_value=total_count,
-                    value=default_shown, step=1, key=f"n_{_sanitize_key(label)}_{dl_key}",
-                    label_visibility="collapsed", width=110,
-                )
-                clicked = st.button(
-                    f"Analyse further: {label} (of {total_count})",
-                    key=f"drill_{_sanitize_key(label)}_{dl_key}",
-                )
-                mail_clicked = False
-                if is_branch_scoped:
-                    mail_clicked = st.button(
-                        "Draft email", key=f"mail_{_sanitize_key(label)}_{dl_key}",
-                    )
-            if clicked or mail_clicked:
-                shown = int(n)
-                kind = category["kind"]
-                if kind == "concept":
-                    concept = category["concept"]
-                    drill_df = STEP_REGISTRY["concept_filter"](
-                        df_curr, concept, scope_col=scope_col, scope_value=scope_value, as_of=as_of,
-                    ).head(shown)
-                    new_type, new_value = "concept_filter", concept
-                    new_params = {"concept": concept, "scope_col": scope_col, "scope_value": scope_value}
-                elif kind == "fleet_defaulters":
-                    drill_df = STEP_REGISTRY["fleet_defaulters"](
-                        df_curr, scope_col=scope_col, scope_value=scope_value,
-                    ).head(shown)
-                    new_type, new_value = "fleet_defaulters", scope_value or "portfolio"
-                    new_params = {"scope_col": scope_col, "scope_value": scope_value}
-                else:  # top_closing_arrears
-                    drill_df = STEP_REGISTRY["top_closing_arrears"](
-                        df_curr, top_n=shown, scope_col=scope_col, scope_value=scope_value,
-                    )
-                    new_type, new_value = "top_closing_arrears", scope_value or "portfolio"
-                    new_params = {"top_n": shown, "scope_col": scope_col, "scope_value": scope_value}
-            if clicked:
-                memory.touch(
-                    new_type, new_value, result_df=drill_df, step_type=new_type, params=new_params,
-                )
-                _append_drill_turn(f"show me the top {shown} {label.lower()}", new_type, new_value)
-                st.rerun()
-            elif mail_clicked:
-                branch_name = str(scope_value)
-                review = st.session_state.get(REVIEW_CONTEXT)
-                if review:   # the explicit approval for this action, logged against the review it came from
-                    log_decision(review, "action", f"email_draft:{label}:{branch_name}",
-                                 region=review.get("region", ""), list_name=review.get("list", ""), branch=branch_name)
-                to_list, cc_list = get_branch_recipients(branch_name)
-                _subject, eml_bytes = draft_priority_email(
-                    drill_df, branch_name, to_list, cc_list, category_label=label,
-                )
-                if not to_list:
-                    st.caption(
-                        "No manager email on file for this branch yet "
-                        "(investigator/branch_recipients.py): the draft's To field "
-                        "will be blank; fill it in yourself before sending."
-                    )
-                st.download_button(
-                    f"Download draft: {label} (.eml)",
-                    data=eml_bytes,
-                    file_name=f"{branch_name}_{_sanitize_key(label)}.eml",
-                    mime="message/rfc822",
-                    key=f"dl_mail_{_sanitize_key(label)}_{dl_key}",
-                )
 
-    elif record.step_type == "priority_accounts" and "Cust Mob No" in result_df.columns:
-        # Two independent drills at once (not an elif chain like the others
-        # below) -- a priority list genuinely supports both simultaneously:
-        # which executive has the most cases right now, and pulling any one
-        # customer's full history. Checked the actual output columns before
-        # assuming this had no drill-down value (it does -- loan-level,
-        # Cust Mob No/MNT NAME/Unit on every row, the same shape
-        # non_paying_customers already has).
-        if st.button(
-            "Analyse further: which executives have the most cases",
-            key=f"drill_exec_{dl_key}",
-        ):
-            drill_df = STEP_REGISTRY["priority_by_executive"](df_curr, result_df)
-            new_type = "priority_by_executive"
-            new_value = f"priority_accounts:{record.entity_value}"
-            memory.touch(
-                new_type, new_value, result_df=drill_df, step_type="priority_by_executive",
-                params={"source_entities": [{"entity_type": record.entity_type, "entity_value": record.entity_value}]},
+def _drill_priority_menu(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    # The menu shows COUNTS only -- one row per category runs the
+    # underlying, already-built step (concept_filter/fleet_defaulters/
+    # top_closing_arrears, never a second filter implementation),
+    # scoped the SAME way the menu itself was (record.params' own
+    # scope_col/scope_value). How many to pull is EDITABLE per
+    # category (a number input next to its button, defaulting to that
+    # row's own Shown, bounded to [1, Count]) -- a real ask: the same
+    # count that's right for "analyse further" isn't necessarily right
+    # for "how many loans go in the email to the branch manager."
+    category_lookup = {c["label"]: c for c in PRIORITY_MENU_CATEGORIES}
+    scope_col = (record.params or {}).get("scope_col")
+    scope_value = (record.params or {}).get("scope_value")
+    is_branch_scoped = scope_col == "branch" and scope_value
+    for _, row in result_df.iterrows():
+        label = str(row["Category"])
+        default_shown = int(row["Shown"])
+        total_count = int(row["Count"])
+        category = category_lookup.get(label)
+        if category is None:
+            continue
+        # width="stretch" is number_input's default -- inside a
+        # horizontal container that made it greedily fill all leftover
+        # space as a giant full-width bar next to a comparatively tiny
+        # button (the reported UI bug). Pin it to a fixed pixel width
+        # instead so it reads as a small counter, not a dominant block.
+        with st.container(horizontal=True, vertical_alignment="center"):
+            n = st.number_input(
+                f"How many {label}?", min_value=1, max_value=total_count,
+                value=default_shown, step=1, key=f"n_{_sanitize_key(label)}_{dl_key}",
+                label_visibility="collapsed", width=110,
             )
-            _append_drill_turn("which executives have the most cases", new_type, new_value)
-            st.rerun()
-
-        mob = st.text_input(
-            "Enter a customer's mobile number to view their full loan book",
-            key=f"mob_{dl_key}",
-        )
-        if mob.strip() and st.button("View full loan book", key=f"loanbook_{dl_key}"):
-            book = STEP_REGISTRY["customer_loan_book"](df_curr, mob.strip())
-            memory.touch(
-                "customer", mob.strip(), result_df=book, step_type="customer_loan_book",
-                params={"cust_mob_no": mob.strip()},
+            clicked = st.button(
+                f"Analyse further: {label} (of {total_count})",
+                key=f"drill_{_sanitize_key(label)}_{dl_key}",
             )
-            _append_drill_turn(f"show me {mob.strip()}'s full loan book", "customer", mob.strip())
+            mail_clicked = False
+            if is_branch_scoped:
+                mail_clicked = st.button(
+                    "Draft email", key=f"mail_{_sanitize_key(label)}_{dl_key}",
+                )
+        if clicked or mail_clicked:
+            shown = int(n)
+            kind = category["kind"]
+            if kind == "concept":
+                concept = category["concept"]
+                drill_df = STEP_REGISTRY["concept_filter"](
+                    df_curr, concept, scope_col=scope_col, scope_value=scope_value, as_of=as_of,
+                ).head(shown)
+                new_type, new_value = "concept_filter", concept
+                new_params = {"concept": concept, "scope_col": scope_col, "scope_value": scope_value}
+            elif kind == "fleet_defaulters":
+                drill_df = STEP_REGISTRY["fleet_defaulters"](
+                    df_curr, scope_col=scope_col, scope_value=scope_value,
+                ).head(shown)
+                new_type, new_value = "fleet_defaulters", scope_value or "portfolio"
+                new_params = {"scope_col": scope_col, "scope_value": scope_value}
+            else:  # top_closing_arrears
+                drill_df = STEP_REGISTRY["top_closing_arrears"](
+                    df_curr, top_n=shown, scope_col=scope_col, scope_value=scope_value,
+                )
+                new_type, new_value = "top_closing_arrears", scope_value or "portfolio"
+                new_params = {"top_n": shown, "scope_col": scope_col, "scope_value": scope_value}
+        if clicked:
+            memory.touch(
+                new_type, new_value, result_df=drill_df, step_type=new_type, params=new_params,
+            )
+            _append_drill_turn(f"show me the top {shown} {label.lower()}", new_type, new_value)
             st.rerun()
-
-        # A THIRD independent option, same reasoning as the two above --
-        # this list IS the "what to focus on" answer; closing the loop from
-        # "the tool found it" to "a human can act on it" is the actual
-        # differentiator, not another drill. Only offered when scoped to a
-        # SINGLE real branch (record.params.get("scope_col") == "branch" --
-        # not just "entity_value looks like a name," since portfolio-wide or
-        # region-scoped priority lists have no one branch manager to email).
-        # NEVER sends anything -- builds a downloadable .eml the user opens
-        # and sends themselves (investigator/email_draft.py's own docstring
-        # explains why: this must work in a cloud deployment too, where
-        # win32com/Outlook automation simply isn't available).
-        if (record.params or {}).get("scope_col") == "branch" and "Unit" in result_df.columns:
-            branch_name = str(record.entity_value)
+        elif mail_clicked:
+            branch_name = str(scope_value)
+            review = st.session_state.get(REVIEW_CONTEXT)
+            if review:   # the explicit approval for this action, logged against the review it came from
+                log_decision(review, "action", f"email_draft:{label}:{branch_name}",
+                             region=review.get("region", ""), list_name=review.get("list", ""), branch=branch_name)
             to_list, cc_list = get_branch_recipients(branch_name)
-            st.caption(f"Draft an email to {branch_name}'s branch manager with this priority list.")
-            if to_list:
-                st.caption(f"To: {'; '.join(to_list)}")
-            else:
+            _subject, eml_bytes = draft_priority_email(
+                drill_df, branch_name, to_list, cc_list, category_label=label,
+            )
+            if not to_list:
                 st.caption(
-                    "No manager email on file for this branch yet (investigator/branch_recipients.py) "
-                    "-- the draft's To field will be blank; fill it in yourself before sending."
+                    "No manager email on file for this branch yet "
+                    "(investigator/branch_recipients.py): the draft's To field "
+                    "will be blank; fill it in yourself before sending."
                 )
-            _subject, eml_bytes = draft_priority_email(result_df, branch_name, to_list, cc_list)
             st.download_button(
-                "Draft email to branch manager (.eml)",
+                f"Download draft: {label} (.eml)",
                 data=eml_bytes,
-                file_name=f"{branch_name}_priority_cases.eml",
+                file_name=f"{branch_name}_{_sanitize_key(label)}.eml",
                 mime="message/rfc822",
-                key=f"email_draft_{dl_key}",
+                key=f"dl_mail_{_sanitize_key(label)}_{dl_key}",
             )
 
-    elif record.step_type == "entity_summary" and record.entity_type == "branch":
-        _render_mechanism_suggestions(record, df_curr, df_prev, as_of, memory, dl_key)
-        # Drillable metrics come from whatever entity_summary actually
-        # returned, NOT gated on Delta being present -- a first upload with
-        # no previous-month file has every Delta as None, and the user must
-        # still be able to pick a metric to drill into from current
-        # standing alone (this was a real bug caught by an AppTest smoke
-        # check: the button silently never appeared at all in that case).
-        drillable = [m for m in result_df["Metric"] if m in _BRANCH_TO_EXEC_METRIC]
-        if drillable:
-            worst = _worst_metric(result_df)
-            default_idx = drillable.index(worst) if worst in drillable else 0
-            chosen = st.selectbox(
-                "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
-            )
-            if st.button(
-                f"Analyse further: executives driving {record.entity_value}'s {chosen}",
-                key=f"drill_{dl_key}",
-            ):
-                exec_metric = _BRANCH_TO_EXEC_METRIC[chosen]
-                scoped = df_curr[df_curr["Unit"].astype(str).str.strip().str.upper() == str(record.entity_value).strip().upper()]
-                drill_df = STEP_REGISTRY["underperformer_quartile"](scoped, exec_metric)
-                new_type, new_value = "branch_executives", f"{record.entity_value}:{exec_metric}"
-                memory.touch(
-                    new_type, new_value,
-                    result_df=drill_df, metric_focus=exec_metric, step_type="underperformer_quartile",
-                    params={"metric": exec_metric, "scope_col": "branch", "scope_value": record.entity_value},
-                )
-                _append_drill_turn(f"executives driving {record.entity_value}'s {chosen}", new_type, new_value)
-                st.rerun()
 
-    elif record.step_type == "entity_summary" and record.entity_type == "executive":
-        # The LAST hop of the region -> branch -> executive -> loan drill
-        # chain -- previously a dead end (no "Analyse further" existed here
-        # at all): "deep dive into Rahul" answered how Rahul is doing, but
-        # had no button to go one level further into WHICH of his loans are
-        # responsible. _EXEC_METRICS' own spelling ("NPA %", with a space)
-        # already matches METRIC_DRILL_FILTER's keys directly -- no
-        # _BRANCH_TO_EXEC_METRIC translation needed here, unlike the branch
-        # block above (that one crosses FROM branch-grain TO executive-grain
-        # spelling; this one stays at executive grain throughout).
-        drillable = [m for m in result_df["Metric"] if m in METRIC_DRILL_FILTER]
-        if drillable:
-            worst = _worst_metric(result_df)
-            default_idx = drillable.index(worst) if worst in drillable else 0
-            chosen = st.selectbox(
-                "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
-            )
-            exec_label = record.entity_value[0] if isinstance(record.entity_value, tuple) else record.entity_value
-            if st.button(f"Analyse further: loans driving {exec_label}'s {chosen}", key=f"drill_{dl_key}"):
-                try:
-                    drill_df = STEP_REGISTRY["worst_loans_by_metric"](
-                        df_curr, chosen, scope_col="executive", scope_value=record.entity_value, as_of=as_of,
-                    )
-                except ValueError as e:
-                    st.warning(f"I couldn't run that: {e}")
-                    return
-                summary = summarize_worst_loans(drill_df)
-                new_type = "worst_loans_by_metric"
-                new_value = f"{chosen}:{record.entity_value}"
-                scope_value = list(record.entity_value) if isinstance(record.entity_value, tuple) else record.entity_value
-                memory.touch(
-                    new_type, new_value, result_df=drill_df, step_type="worst_loans_by_metric",
-                    narrative=summary,
-                    params={"metric": chosen, "scope_col": "executive", "scope_value": scope_value},
-                )
-                _append_drill_turn(f"loans driving {exec_label}'s {chosen}", new_type, new_value)
-                st.rerun()
+def _drill_priority_accounts(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    # Two independent drills at once (not an elif chain like the others
+    # below) -- a priority list genuinely supports both simultaneously:
+    # which executive has the most cases right now, and pulling any one
+    # customer's full history. Checked the actual output columns before
+    # assuming this had no drill-down value (it does -- loan-level,
+    # Cust Mob No/MNT NAME/Unit on every row, the same shape
+    # non_paying_customers already has).
+    if st.button(
+        "Analyse further: which executives have the most cases",
+        key=f"drill_exec_{dl_key}",
+    ):
+        drill_df = STEP_REGISTRY["priority_by_executive"](df_curr, result_df)
+        new_type = "priority_by_executive"
+        new_value = f"priority_accounts:{record.entity_value}"
+        memory.touch(
+            new_type, new_value, result_df=drill_df, step_type="priority_by_executive",
+            params={"source_entities": [{"entity_type": record.entity_type, "entity_value": record.entity_value}]},
+        )
+        _append_drill_turn("which executives have the most cases", new_type, new_value)
+        st.rerun()
 
-    elif record.step_type == "entity_summary" and record.entity_type in ("region", "zone", "bu"):
-        _render_mechanism_suggestions(record, df_curr, df_prev, as_of, memory, dl_key)
-        # ONE-LEVEL-AT-A-TIME: drill into BRANCHES within this region/zone/BU
-        # first, never straight to executives -- matches the hierarchy
-        # BU > Zone > Region > Branch > Executive > Customer. Uses the same
-        # no-space metric names dimension_breakdown's own columns use
-        # (Collection%/NPA%/Hard Bucket%), since this hop stays at
-        # dimension_breakdown's grain, not the executive scorecard's.
-        drillable = [m for m in result_df["Metric"] if m in METRIC_DIRECTION]
-        if drillable:
-            worst = _worst_metric(result_df)
-            default_idx = drillable.index(worst) if worst in drillable else 0
-            chosen = st.selectbox(
-                "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
-            )
-            if st.button(
-                f"Analyse further: branches within {record.entity_value}'s {chosen}",
-                key=f"drill_{dl_key}",
-            ):
-                drill_df = STEP_REGISTRY["dimension_breakdown"](
-                    df_curr, "branch", scope_col=record.entity_type, scope_value=record.entity_value,
-                    metric=chosen, higher_is_better=METRIC_DIRECTION.get(chosen),
-                )
-                new_type = "dimension_breakdown"
-                new_value = f"branch within {record.entity_value}"
-                memory.touch(
-                    new_type, new_value, result_df=drill_df,
-                    metric_focus="branch", step_type="dimension_breakdown",
-                    params={
-                        "dimension": "branch", "scope_col": record.entity_type,
-                        "scope_value": record.entity_value, "metric": chosen,
-                    },
-                )
-                _append_drill_turn(f"branches within {record.entity_value}'s {chosen}", new_type, new_value)
-                st.rerun()
+    _drill_customer_book(record, df_curr, memory, dl_key, df_prev, as_of)
 
-    elif record.step_type == "dimension_breakdown" and record.metric_focus == "branch" and "Unit" in result_df.columns:
-        # Continue the hierarchy: drill into the WORST branch's executives
-        # (result_df is already sorted worst-first by dimension_breakdown).
-        worst_branch = result_df.iloc[0]["Unit"]
-        drillable = [m for m in result_df.columns if m in _BRANCH_TO_EXEC_METRIC]
-        if drillable:
-            chosen = st.selectbox(
-                "Focus on which metric?", drillable, key=f"metric_pick_{dl_key}",
+    # A THIRD independent option, same reasoning as the two above --
+    # this list IS the "what to focus on" answer; closing the loop from
+    # "the tool found it" to "a human can act on it" is the actual
+    # differentiator, not another drill. Only offered when scoped to a
+    # SINGLE real branch (record.params.get("scope_col") == "branch" --
+    # not just "entity_value looks like a name," since portfolio-wide or
+    # region-scoped priority lists have no one branch manager to email).
+    # NEVER sends anything -- builds a downloadable .eml the user opens
+    # and sends themselves (investigator/email_draft.py's own docstring
+    # explains why: this must work in a cloud deployment too, where
+    # win32com/Outlook automation simply isn't available).
+    if (record.params or {}).get("scope_col") == "branch" and "Unit" in result_df.columns:
+        branch_name = str(record.entity_value)
+        to_list, cc_list = get_branch_recipients(branch_name)
+        st.caption(f"Draft an email to {branch_name}'s branch manager with this priority list.")
+        if to_list:
+            st.caption(f"To: {'; '.join(to_list)}")
+        else:
+            st.caption(
+                "No manager email on file for this branch yet (investigator/branch_recipients.py) "
+                "-- the draft's To field will be blank; fill it in yourself before sending."
             )
-            if st.button(
-                f"Analyse further: executives driving {worst_branch}'s {chosen}",
-                key=f"drill_{dl_key}",
-            ):
-                exec_metric = _BRANCH_TO_EXEC_METRIC[chosen]
-                scoped = df_curr[df_curr["Unit"].astype(str).str.strip().str.upper() == str(worst_branch).strip().upper()]
-                drill_df = STEP_REGISTRY["underperformer_quartile"](scoped, exec_metric)
-                new_type, new_value = "branch_executives", f"{worst_branch}:{exec_metric}"
-                memory.touch(
-                    new_type, new_value, result_df=drill_df, metric_focus=exec_metric,
-                    step_type="underperformer_quartile",
-                    params={"metric": exec_metric, "scope_col": "branch", "scope_value": worst_branch},
-                )
-                _append_drill_turn(f"executives driving {worst_branch}'s {chosen}", new_type, new_value)
-                st.rerun()
+        _subject, eml_bytes = draft_priority_email(result_df, branch_name, to_list, cc_list)
+        st.download_button(
+            "Draft email to branch manager (.eml)",
+            data=eml_bytes,
+            file_name=f"{branch_name}_priority_cases.eml",
+            mime="message/rfc822",
+            key=f"email_draft_{dl_key}",
+        )
 
-    elif record.step_type in ("underperformer_quartile", "bottom_n_per_group", "intersect_entities"):
-        if "MNT NAME" in result_df.columns and st.button(
-            "Analyse further: find the non-paying customers of these executives",
+
+def _drill_branch_summary(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    _render_mechanism_suggestions(record, df_curr, df_prev, as_of, memory, dl_key)
+    # Drillable metrics come from whatever entity_summary actually
+    # returned, NOT gated on Delta being present -- a first upload with
+    # no previous-month file has every Delta as None, and the user must
+    # still be able to pick a metric to drill into from current
+    # standing alone (this was a real bug caught by an AppTest smoke
+    # check: the button silently never appeared at all in that case).
+    drillable = [m for m in result_df["Metric"] if m in _BRANCH_TO_EXEC_METRIC]
+    if drillable:
+        worst = _worst_metric(result_df)
+        default_idx = drillable.index(worst) if worst in drillable else 0
+        chosen = st.selectbox(
+            "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
+        )
+        if st.button(
+            f"Analyse further: executives driving {record.entity_value}'s {chosen}",
             key=f"drill_{dl_key}",
         ):
-            try:
-                drill_df = STEP_REGISTRY["non_paying_customers"](df_curr, result_df)
-            except ValueError as e:      # e.g. the file has no "Not Paying 3M+" flag column
-                st.warning(f"I couldn't run that: {e}")
-                return
-            new_type, new_value = "non_paying_customers", f"{record.entity_type}:{record.entity_value}"
-            source_entities = [{"entity_type": record.entity_type, "entity_value": record.entity_value}]
+            exec_metric = _BRANCH_TO_EXEC_METRIC[chosen]
+            scoped = df_curr[df_curr["Unit"].astype(str).str.strip().str.upper() == str(record.entity_value).strip().upper()]
+            drill_df = STEP_REGISTRY["underperformer_quartile"](scoped, exec_metric)
+            new_type, new_value = "branch_executives", f"{record.entity_value}:{exec_metric}"
             memory.touch(
-                new_type, new_value, result_df=drill_df, step_type="non_paying_customers",
-                params={"source_entities": source_entities},
+                new_type, new_value,
+                result_df=drill_df, metric_focus=exec_metric, step_type="underperformer_quartile",
+                params={"metric": exec_metric, "scope_col": "branch", "scope_value": record.entity_value},
             )
-            _append_drill_turn("find the non-paying customers of these executives", new_type, new_value)
+            _append_drill_turn(f"executives driving {record.entity_value}'s {chosen}", new_type, new_value)
             st.rerun()
 
-        # Companion to the button above, not a replacement -- "find
-        # non-paying customers" is the generic "Not Paying 3M+" rule across
-        # the WHOLE list; this is specifically "which loans are driving the
-        # metric THIS list was ranked by" (record.metric_focus), scoped
-        # the SAME way the list itself was (record.params' own
-        # scope_col/scope_value), so a list of "Mahad's worst NPA%
-        # executives" drills into Mahad's own worst NPA loans, not diluted
-        # by the rest of the portfolio.
-        if record.metric_focus in METRIC_DRILL_FILTER and st.button(
-            f"Analyse further: which loans are driving {record.metric_focus}",
-            key=f"drill_metric_{dl_key}",
-        ):
-            list_scope_col = (record.params or {}).get("scope_col")
-            list_scope_value = (record.params or {}).get("scope_value")
+
+def _drill_executive_summary(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    # The LAST hop of the region -> branch -> executive -> loan drill
+    # chain -- previously a dead end (no "Analyse further" existed here
+    # at all): "deep dive into Rahul" answered how Rahul is doing, but
+    # had no button to go one level further into WHICH of his loans are
+    # responsible. _EXEC_METRICS' own spelling ("NPA %", with a space)
+    # already matches METRIC_DRILL_FILTER's keys directly -- no
+    # _BRANCH_TO_EXEC_METRIC translation needed here, unlike the branch
+    # block above (that one crosses FROM branch-grain TO executive-grain
+    # spelling; this one stays at executive grain throughout).
+    drillable = [m for m in result_df["Metric"] if m in METRIC_DRILL_FILTER]
+    if drillable:
+        worst = _worst_metric(result_df)
+        default_idx = drillable.index(worst) if worst in drillable else 0
+        chosen = st.selectbox(
+            "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
+        )
+        exec_label = record.entity_value[0] if isinstance(record.entity_value, tuple) else record.entity_value
+        if st.button(f"Analyse further: loans driving {exec_label}'s {chosen}", key=f"drill_{dl_key}"):
             try:
                 drill_df = STEP_REGISTRY["worst_loans_by_metric"](
-                    df_curr, record.metric_focus, scope_col=list_scope_col, scope_value=list_scope_value, as_of=as_of,
+                    df_curr, chosen, scope_col="executive", scope_value=record.entity_value, as_of=as_of,
                 )
             except ValueError as e:
                 st.warning(f"I couldn't run that: {e}")
                 return
             summary = summarize_worst_loans(drill_df)
             new_type = "worst_loans_by_metric"
-            new_value = f"{record.metric_focus}:{list_scope_value or 'portfolio'}"
+            new_value = f"{chosen}:{record.entity_value}"
+            scope_value = list(record.entity_value) if isinstance(record.entity_value, tuple) else record.entity_value
             memory.touch(
                 new_type, new_value, result_df=drill_df, step_type="worst_loans_by_metric",
                 narrative=summary,
-                params={"metric": record.metric_focus, "scope_col": list_scope_col, "scope_value": list_scope_value},
+                params={"metric": chosen, "scope_col": "executive", "scope_value": scope_value},
             )
-            _append_drill_turn(f"which loans are driving {record.metric_focus}", new_type, new_value)
+            _append_drill_turn(f"loans driving {exec_label}'s {chosen}", new_type, new_value)
             st.rerun()
 
-    elif record.step_type == "concept_filter":
-        # concept_filter otherwise has NO drill at all -- "are there any non
-        # starters in my region" was a dead end. This is loan-level data
-        # with Unit/MNT NAME on every row, so "which branch/executive has
-        # the most" is genuinely answerable -- concept_breakdown groups by
-        # EVERY column resolve_dimension returns (not just the first), so
-        # "executive" keys on (MNT NAME, Unit) together, never name alone.
-        dim_options = [d for d in ("branch", "executive") if all(c in result_df.columns for c in resolve_dimension(d))]
-        if dim_options:
-            dimension = st.selectbox(
-                "Break down by which dimension?", dim_options, key=f"concept_dim_{dl_key}",
-            )
-            if st.button(f"Analyse further: break down by {dimension}", key=f"drill_{dl_key}"):
-                drill_df = STEP_REGISTRY["concept_breakdown"](result_df, dimension)
-                new_type, new_value = "concept_breakdown", f"{record.entity_type}:{record.entity_value}:{dimension}"
-                source_entities = [{"entity_type": record.entity_type, "entity_value": record.entity_value}]
-                memory.touch(
-                    new_type, new_value, result_df=drill_df, step_type="concept_breakdown",
-                    params={"source_entities": source_entities, "dimension": dimension},
-                )
-                _append_drill_turn(f"break this down by {dimension}", new_type, new_value)
-                st.rerun()
 
-    elif record.step_type == "non_paying_customers" and "Cust Mob No" in result_df.columns:
-        mob = st.text_input(
-            "Enter a customer's mobile number to view their full loan book",
-            key=f"mob_{dl_key}",
+def _drill_area_summary(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    _render_mechanism_suggestions(record, df_curr, df_prev, as_of, memory, dl_key)
+    # ONE-LEVEL-AT-A-TIME: drill into BRANCHES within this region/zone/BU
+    # first, never straight to executives -- matches the hierarchy
+    # BU > Zone > Region > Branch > Executive > Customer. Uses the same
+    # no-space metric names dimension_breakdown's own columns use
+    # (Collection%/NPA%/Hard Bucket%), since this hop stays at
+    # dimension_breakdown's grain, not the executive scorecard's.
+    drillable = [m for m in result_df["Metric"] if m in METRIC_DIRECTION]
+    if drillable:
+        worst = _worst_metric(result_df)
+        default_idx = drillable.index(worst) if worst in drillable else 0
+        chosen = st.selectbox(
+            "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
         )
-        if mob.strip() and st.button("View full loan book", key=f"loanbook_{dl_key}"):
-            book = STEP_REGISTRY["customer_loan_book"](df_curr, mob.strip())
-            memory.touch(
-                "customer", mob.strip(), result_df=book, step_type="customer_loan_book",
-                params={"cust_mob_no": mob.strip()},
+        if st.button(
+            f"Analyse further: branches within {record.entity_value}'s {chosen}",
+            key=f"drill_{dl_key}",
+        ):
+            drill_df = STEP_REGISTRY["dimension_breakdown"](
+                df_curr, "branch", scope_col=record.entity_type, scope_value=record.entity_value,
+                metric=chosen, higher_is_better=METRIC_DIRECTION.get(chosen),
             )
-            _append_drill_turn(f"show me {mob.strip()}'s full loan book", "customer", mob.strip())
+            new_type = "dimension_breakdown"
+            new_value = f"branch within {record.entity_value}"
+            memory.touch(
+                new_type, new_value, result_df=drill_df,
+                metric_focus="branch", step_type="dimension_breakdown",
+                params={
+                    "dimension": "branch", "scope_col": record.entity_type,
+                    "scope_value": record.entity_value, "metric": chosen,
+                },
+            )
+            _append_drill_turn(f"branches within {record.entity_value}'s {chosen}", new_type, new_value)
             st.rerun()
+
+
+def _drill_branch_breakdown(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    # Continue the hierarchy: drill into the WORST branch's executives
+    # (result_df is already sorted worst-first by dimension_breakdown).
+    worst_branch = result_df.iloc[0]["Unit"]
+    drillable = [m for m in result_df.columns if m in _BRANCH_TO_EXEC_METRIC]
+    if drillable:
+        chosen = st.selectbox(
+            "Focus on which metric?", drillable, key=f"metric_pick_{dl_key}",
+        )
+        if st.button(
+            f"Analyse further: executives driving {worst_branch}'s {chosen}",
+            key=f"drill_{dl_key}",
+        ):
+            exec_metric = _BRANCH_TO_EXEC_METRIC[chosen]
+            scoped = df_curr[df_curr["Unit"].astype(str).str.strip().str.upper() == str(worst_branch).strip().upper()]
+            drill_df = STEP_REGISTRY["underperformer_quartile"](scoped, exec_metric)
+            new_type, new_value = "branch_executives", f"{worst_branch}:{exec_metric}"
+            memory.touch(
+                new_type, new_value, result_df=drill_df, metric_focus=exec_metric,
+                step_type="underperformer_quartile",
+                params={"metric": exec_metric, "scope_col": "branch", "scope_value": worst_branch},
+            )
+            _append_drill_turn(f"executives driving {worst_branch}'s {chosen}", new_type, new_value)
+            st.rerun()
+
+
+def _drill_executive_list(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    if "MNT NAME" in result_df.columns and st.button(
+        "Analyse further: find the non-paying customers of these executives",
+        key=f"drill_{dl_key}",
+    ):
+        try:
+            drill_df = STEP_REGISTRY["non_paying_customers"](df_curr, result_df)
+        except ValueError as e:      # e.g. the file has no "Not Paying 3M+" flag column
+            st.warning(f"I couldn't run that: {e}")
+            return
+        new_type, new_value = "non_paying_customers", f"{record.entity_type}:{record.entity_value}"
+        source_entities = [{"entity_type": record.entity_type, "entity_value": record.entity_value}]
+        memory.touch(
+            new_type, new_value, result_df=drill_df, step_type="non_paying_customers",
+            params={"source_entities": source_entities},
+        )
+        _append_drill_turn("find the non-paying customers of these executives", new_type, new_value)
+        st.rerun()
+
+    # Companion to the button above, not a replacement -- "find
+    # non-paying customers" is the generic "Not Paying 3M+" rule across
+    # the WHOLE list; this is specifically "which loans are driving the
+    # metric THIS list was ranked by" (record.metric_focus), scoped
+    # the SAME way the list itself was (record.params' own
+    # scope_col/scope_value), so a list of "Mahad's worst NPA%
+    # executives" drills into Mahad's own worst NPA loans, not diluted
+    # by the rest of the portfolio.
+    if record.metric_focus in METRIC_DRILL_FILTER and st.button(
+        f"Analyse further: which loans are driving {record.metric_focus}",
+        key=f"drill_metric_{dl_key}",
+    ):
+        list_scope_col = (record.params or {}).get("scope_col")
+        list_scope_value = (record.params or {}).get("scope_value")
+        try:
+            drill_df = STEP_REGISTRY["worst_loans_by_metric"](
+                df_curr, record.metric_focus, scope_col=list_scope_col, scope_value=list_scope_value, as_of=as_of,
+            )
+        except ValueError as e:
+            st.warning(f"I couldn't run that: {e}")
+            return
+        summary = summarize_worst_loans(drill_df)
+        new_type = "worst_loans_by_metric"
+        new_value = f"{record.metric_focus}:{list_scope_value or 'portfolio'}"
+        memory.touch(
+            new_type, new_value, result_df=drill_df, step_type="worst_loans_by_metric",
+            narrative=summary,
+            params={"metric": record.metric_focus, "scope_col": list_scope_col, "scope_value": list_scope_value},
+        )
+        _append_drill_turn(f"which loans are driving {record.metric_focus}", new_type, new_value)
+        st.rerun()
+
+
+def _drill_concept(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    result_df = record.result_df
+    # concept_filter otherwise has NO drill at all -- "are there any non
+    # starters in my region" was a dead end. This is loan-level data
+    # with Unit/MNT NAME on every row, so "which branch/executive has
+    # the most" is genuinely answerable -- concept_breakdown groups by
+    # EVERY column resolve_dimension returns (not just the first), so
+    # "executive" keys on (MNT NAME, Unit) together, never name alone.
+    dim_options = [d for d in ("branch", "executive") if all(c in result_df.columns for c in resolve_dimension(d))]
+    if dim_options:
+        dimension = st.selectbox(
+            "Break down by which dimension?", dim_options, key=f"concept_dim_{dl_key}",
+        )
+        if st.button(f"Analyse further: break down by {dimension}", key=f"drill_{dl_key}"):
+            drill_df = STEP_REGISTRY["concept_breakdown"](result_df, dimension)
+            new_type, new_value = "concept_breakdown", f"{record.entity_type}:{record.entity_value}:{dimension}"
+            source_entities = [{"entity_type": record.entity_type, "entity_value": record.entity_value}]
+            memory.touch(
+                new_type, new_value, result_df=drill_df, step_type="concept_breakdown",
+                params={"source_entities": source_entities, "dimension": dimension},
+            )
+            _append_drill_turn(f"break this down by {dimension}", new_type, new_value)
+            st.rerun()
+
+
+def _drill_customer_book(record, df_curr: pd.DataFrame, memory: EntityMemory, dl_key: str, df_prev, as_of) -> None:
+    """Any customer's full loan book, by mobile number (under a priority list
+    and a non-paying list alike)."""
+    mob = st.text_input(
+        "Enter a customer's mobile number to view their full loan book",
+        key=f"mob_{dl_key}",
+    )
+    if mob.strip() and st.button("View full loan book", key=f"loanbook_{dl_key}"):
+        book = STEP_REGISTRY["customer_loan_book"](df_curr, mob.strip())
+        memory.touch(
+            "customer", mob.strip(), result_df=book, step_type="customer_loan_book",
+            params={"cust_mob_no": mob.strip()},
+        )
+        _append_drill_turn(f"show me {mob.strip()}'s full loan book", "customer", mob.strip())
+        st.rerun()
+
 
 
 # Steps that structurally CANNOT compute anything at all without a
