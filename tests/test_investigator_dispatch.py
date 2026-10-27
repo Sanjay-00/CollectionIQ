@@ -1,6 +1,6 @@
 """ui/tabs/investigator.py::_execute_step wiring, for EVERY registered step.
 
-Found via audit (assistant_feature.md): the dispatcher was only ever checked
+Found via audit (study/assistant_feature.md): the dispatcher was only ever checked
 by a one-off script, so a newly-added step with no dispatch branch -- or a
 branch passing a kwarg the step function doesn't accept -- surfaced only when
 someone clicked through the live app. Each STEP_REGISTRY function is replaced

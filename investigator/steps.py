@@ -516,7 +516,7 @@ def demand_summary(
 # much new business did we originate this month/in this branch" and "which
 # branch/executive originated the most" are real, distinct questions from
 # "how well are we collecting," and were a confirmed, named gap in
-# assistant_feature.md's honest critique ("new-advances tracking... still
+# study/assistant_feature.md's honest critique ("new-advances tracking... still
 # isn't reachable from the Investigator") before this was added.
 
 _NEW_ADVANCES_DIMENSIONS = {"region", "branch", "executive"}

@@ -10,10 +10,10 @@ generate_sample_data.py
 
 bash.exe.stackdump
 
-project_guide.md
 CLAUDE.md
 AGENTS.md
-collectioniq_workflow.md
+# Personal study notes and deep-dives (project guide, pipeline deep-dives, data notes)
+study/
 
 sample_data/Dummy_Current_Month_15k.xlsx
 sample_data/Dummy_Previous_Month_13k.xlsx
