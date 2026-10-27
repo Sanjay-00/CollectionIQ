@@ -8,7 +8,7 @@ from ui.components import _esc
 
 _H = HARD_BUCKET_ARREARS_EMI_MIN
 
-_NOT_PAYING = "Behind on payment and no receipt in the 3 months up to month end (from Last Receipt Date)."
+_NOT_PAYING = "Delinquent and no receipt in the 3 months up to month end (from Last Receipt Date)."
 _STILL_PAYING = (f"{_H} or more EMIs overdue, but a receipt came in during the last 3 months: "
                  "trying, but not keeping up.")
 _FLEET = f"A customer (same mobile number) with {FLEET_MIN_LOANS} or more loans in the whole upload."
@@ -25,11 +25,11 @@ GLOSSARY: dict[str, str] = {
     HARD_STILL_PAYING: _STILL_PAYING + " Worth a restructuring conversation.",
     WAS_SILENT: (f"Under {_H} EMIs overdue, but no receipt in the 3 months up to month end. "
                  f"Call now, before it reaches {_H} EMIs."),
-    EARLY_DELINQUENCY: (f"Behind, under {_H} EMIs overdue, with a receipt in the last 3 months. "
+    EARLY_DELINQUENCY: (f"Delinquent, under {_H} EMIs overdue, with a receipt in the last 3 months. "
                         "Normal follow-up by the field executive."),
     "Insurance-Only": (f"EMI fully paid; only the insurance/expense charge (over ₹{INSURANCE_EXP_ARREARS_MIN:,}) "
                        "is unpaid. Fix with a cash or WCL adjustment, not a credit problem."),
-    "Other": (f"Behind for another reason: a small insurance charge (₹{INSURANCE_EXP_ARREARS_MIN:,} or less) "
+    "Other": (f"Delinquent for another reason: a small insurance charge (₹{INSURANCE_EXP_ARREARS_MIN:,} or less) "
               "or only bounce/penal charges."),
     "Installment-Only": "EMI unpaid; no unpaid insurance/expense charge.",
     "Both": "Both the EMI and the insurance/expense charge are unpaid.",
@@ -40,13 +40,13 @@ GLOSSARY: dict[str, str] = {
     "Driver Share %": "Share of the region's delinquent loans explained by the dominant driver.",
     "Fleet operator": _FLEET,
     # Roll / flow steps (Migration tab, config.ROLL_STEPS)
-    "STD → Behind": ("New defaulters: paid up (STD) last month, behind on payments now. "
+    "STD → Delinquent": ("New defaulters: paid up (STD) last month, delinquent now. "
                      "The cheapest to bring back; call before the next due date."),
-    "1-30 → SMA-1+": ("Were 1-30 days behind last month, now SMA-1 or worse: slipping further. "
+    "1-30 → SMA-1+": ("Were 1-30 DPD last month, now SMA-1 or worse: slipping further. "
                       "Stop them here before they reach SMA-2."),
     "SMA-1 → SMA-2+": "Were SMA-1 last month, now SMA-2 or worse: one step from NPA.",
     "SMA-2 → NPA": "Were SMA-2 last month, NPA now: new NPAs this month.",
-    "Back to STD": "Were behind last month (any bucket), fully paid up (STD) now: recovered loans.",
+    "Back to STD": "Were delinquent last month (any bucket), fully paid up (STD) now: recovered loans.",
     "Concern Score": ("0-100 rank of this branch against all other branches (higher = worse), blending "
                       + ", ".join(f"{k} ({round(w * 100)}%)" for k, w in CONCERN_SCORE_WEIGHTS.items())
                       + ". A part with no data (e.g. Roll Fwd% without last month) is left out."),

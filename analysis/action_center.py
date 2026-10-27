@@ -16,7 +16,7 @@ from config import (
     ACTION_COLLECTION_GAP_PP, ACTION_HEADLINES_MAX, ACTION_HOTSPOT_MULTIPLE, ACTION_MIN_ACCOUNTS,
     ACTION_MIN_ROLLED, ACTION_RANGE_Z, ACTION_RISING_PP, ACTION_TOP_N, INSURANCE_EXP_ARREARS_MIN,
 )
-from utils import BUCKET_SCORE, insurance_only_mask, loan_flags, non_starter_mask, to_num, unit_metrics
+from utils import BUCKET_SCORE, insurance_only_mask, loan_flags, non_starter_mask, prev_held_now, to_num, unit_metrics
 
 _GRAIN_COLS = {"region": ["RegionName"], "branch": ["Unit"], "executive": ["MNT NAME", "Unit"]}
 _WORSE_THAN = {b: [c for c in rf.VALID_BUCKETS if BUCKET_SCORE[c] > BUCKET_SCORE[b]] for b in rf.VALID_BUCKETS}
@@ -155,7 +155,7 @@ def headlines(df_curr: pd.DataFrame, df_prev: pd.DataFrame, ctx: dict | None = N
             if s["soh_pct"] - s["pct"] >= 2:
                 soh_note = f" By SOH it's {s['soh_pct']:.1f}%: the bigger loans are slipping."
             title = {
-                "STD → Behind": f"{s['n']:,} new defaulters",
+                "STD → Delinquent": f"{s['n']:,} new defaulters",
                 "1-30 → SMA-1+": f"{s['n']:,} loans slipped from 1-30 DPD to SMA-1 or worse",
                 "SMA-1 → SMA-2+": f"{s['n']:,} loans slipped from SMA-1 to SMA-2 or worse",
                 "SMA-2 → NPA": f"{s['n']:,} new NPAs from SMA-2",
@@ -285,8 +285,13 @@ def attention(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str, ctx: dic
     if m.empty:
         return {"worst": [], "improving": []}
     port = unit_metrics(df_curr, [], flags=ctx["flags"]).iloc[0]
-    prev = (unit_metrics(df_prev, cols, flags=ctx["flags_prev"]).set_index(cols)["Delinquency%"].to_dict()
-            if df_prev is not None and len(df_prev) and set(cols) <= set(df_prev.columns) else {})
+    # An executive's last month is the loans they hold now (utils.prev_held_now),
+    # so a book handed over isn't read as "delinquency up".
+    by_exec = "MNT NAME" in cols
+    src_prev = prev_held_now(df_curr, df_prev) if by_exec else df_prev
+    prev = (unit_metrics(src_prev, cols, flags=None if by_exec else ctx["flags_prev"])
+            .set_index(cols)["Delinquency%"].to_dict()
+            if src_prev is not None and len(src_prev) and set(cols) <= set(src_prev.columns) else {})
     roll = ctx["roll_by"][grain]
     roll_port = ctx["summary"] or {}
     id_names = {"RegionName": "Region", "Unit": "Branch", "MNT NAME": "Executive"}

@@ -124,11 +124,11 @@ def _render_why(why: dict) -> None:
     Dashboard says what is driving the number, not only where."""
     from analysis.root_cause import GROUP_LABELS, HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY
     if not why:
-        st.caption("No loans behind on payment in this view.")
+        st.caption("No delinquent loans in this view.")
         return
-    st.caption(f"What the {why['delinquent']:,} loans behind on payment have in common. "
+    st.caption(f"What the {why['delinquent']:,} delinquent loans have in common. "
                "Shares of those loans. Insurance charge only overlaps the others: it says what is unpaid, "
-               "not how far behind.")
+               "not how many EMIs are overdue.")
     order = (HARD_NOT_PAYING, HARD_STILL_PAYING, WAS_SILENT, EARLY_DELINQUENCY, "Insurance-Only")
     accent = {HARD_NOT_PAYING: "#dc2626", HARD_STILL_PAYING: "#d97706"}
     tiles = [_tile(GROUP_LABELS[g], f"{why['groups'][g][1]:.1f}%", f"{why['groups'][g][0]:,} loans",
@@ -148,7 +148,7 @@ def _render_recent(why: dict) -> None:
     tiles = [
         _tile("Recent loans", f"{rec['cohort_count']:,}", f"{rec['cohort_count_pct']:.1f}% of all loans"),
         _tile("Their SOH", f"₹{rec['cohort_soh_cr']:,.2f} Cr", f"{rec['cohort_soh_pct']:.1f}% of all SOH"),
-        _tile("Behind at month end", f"{rec['behind_pct']:.1f}%", f"{rec['behind']:,} of {rec['running']:,} running loans",
+        _tile("Delinquent at month end", f"{rec['behind_pct']:.1f}%", f"{rec['behind']:,} of {rec['running']:,} running loans",
               "#d97706"),
     ]
     st.markdown(_grid(tiles, 3), unsafe_allow_html=True)

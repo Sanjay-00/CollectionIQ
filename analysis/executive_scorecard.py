@@ -7,7 +7,7 @@ Performance tiers are quartile-based (relative to the dataset) - not hardcoded t
 import pandas as pd
 
 from config import SCORECARD_MIN_ACCOUNTS
-from utils import attach_prev_delinquency, order_unit_columns, unit_metrics
+from utils import attach_prev_delinquency, order_unit_columns, prev_held_now, unit_metrics
 
 
 def compute_executive_scorecard(
@@ -17,7 +17,8 @@ def compute_executive_scorecard(
     Returns a DataFrame ranked by Collection % with a quartile Tier column.
 
     Columns: Executive (Branch), MNT NAME, Unit, Accounts, Delinquent,
-             Delinquency %, [Prev Delinquency %, Δ Delinquency %], SMA-2,
+             Delinquency %, [Prev Delinquency %, Δ Delinquency %: last month
+             for the loans each executive holds now], SMA-2,
              SMA-2 %, NPA, NPA %, NPA % (SOH), NPA SOH (Cr), Strike Rate %, Collection %,
              Hard Bucket %, [Roll Fwd %, Roll Bwd %], Total POS (L),
              Total SOH (L), Demand (L), Collected (L), Tier
@@ -77,7 +78,9 @@ def compute_executive_scorecard(
     sc["Tier"] = quartile_tier(sc["Collection %"])
     sc = sc.reset_index(drop=True)
     on = {"MNT NAME": "MNT NAME", "Unit": "Unit"} if "Unit" in df.columns else {"MNT NAME": "MNT NAME"}
-    sc = attach_prev_delinquency(sc, df_prev, on, pct_col="Delinquency %", fuzzy="MNT NAME", decimals=1)
+    # Last month's figure is the loans each executive holds now (utils.prev_held_now).
+    sc = attach_prev_delinquency(sc, prev_held_now(df, df_prev), on, pct_col="Delinquency %", fuzzy="MNT NAME",
+                                 decimals=1)
     return sc[order_unit_columns(sc.columns, ["Executive (Branch)", "MNT NAME", "Unit"])]
 
 

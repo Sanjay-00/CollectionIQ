@@ -171,8 +171,8 @@ def root_cause_snapshot(df: pd.DataFrame) -> dict:
     if "Insurance-Only" in ins.columns:
         counts["Insurance-Only"] = int(ins["Insurance-Only"].sum())
     out = {"delinquent": delinquent, "groups": {g: (n, _safe_div(n, delinquent)) for g, n in counts.items()}}
-    # Behind at month end over the running recent loans: the same base as the
-    # Recent advances page's "Behind at month end", so the two never disagree.
+    # Delinquent at month end over the running recent loans: the same base as the
+    # Recent advances page's "Delinquent at month end", so the two never disagree.
     summary = compute_recent_advances_summary(clean)
     running = _running_cohort(clean, RECENT_ADVANCES_COHORT_START)
     if summary and not running.empty:
@@ -1072,9 +1072,9 @@ _MOVEMENT_SHEETS = {
 _STORY_NAMES = {
     "Running Loans": "Loans",
     "Change in Delinquent": "Change (loans)", "Change in Delinquent % (pts)": "Change (% points)",
-    "Still Pending": "Still behind", "Cleared": "Month-end cases cleared",
-    "Clean at Close": "Not behind at month end", "Due by List Date": "EMI due by list date",
-    "New Slippage": "Newly behind", "New, No EMI at Close": "New loans, no EMI at month end",
+    "Still Pending": "Still delinquent", "Cleared": "Month-end cases cleared",
+    "Clean at Close": "Not delinquent at month end", "Due by List Date": "EMI due by list date",
+    "New Slippage": "Newly delinquent", "New, No EMI at Close": "New loans, no EMI at month end",
     "First EMI Missed": "Missed first EMI", "On List, Not Yet Due": "On list before due date",
 }
 
@@ -1086,7 +1086,7 @@ def _story_name(col: str) -> str:
     for side, when in (("Close ", "at month end"), ("List ", "on list date")):
         if base.startswith(side):
             part = base[len(side):]
-            return (f"Behind {when}" if part == "Delinquent" else f"{part} {when}") + pct
+            return (f"Delinquent {when}" if part == "Delinquent" else f"{part} {when}") + pct
     return col
 
 
@@ -1099,7 +1099,7 @@ def story_for_export(df: pd.DataFrame) -> pd.DataFrame:
 def bucket_moves_for_export(df: pd.DataFrame) -> pd.DataFrame:
     """compute_recent_advances_bucket_movement's table in screen wording."""
     return df.replace({"Bucket at Close": {"No EMI Yet": "New, no EMI yet"}}).rename(
-        columns={"Bucket at Close": "At month end", "Not on List": "Not behind now", "Total": "Loans"})
+        columns={"Bucket at Close": "At month end", "Not on List": "Not delinquent now", "Total": "Loans"})
 
 
 def build_root_cause_workbook(

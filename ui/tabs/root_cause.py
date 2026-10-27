@@ -189,7 +189,7 @@ def _render_insurance_split(ins_df: pd.DataFrame) -> None:
 
 def _render_chronic_shock_split(cs_df: pd.DataFrame) -> None:
     section_label("Paying or Not: Delinquent Loans in Four Groups, by Branch")
-    st.caption(f"By how far behind the loan is ({HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs = hard) and whether anything "
+    st.caption(f"By how many EMIs are overdue ({HARD_BUCKET_ARREARS_EMI_MIN}+ EMIs = hard) and whether anything "
                "was paid in the last 3 months. Hover the ⓘ on a column for what to do with that group.")
     if cs_df.empty:
         st.info("Not enough data to compute the paying vs not paying split.")
@@ -350,12 +350,12 @@ def _story_cards(total: pd.Series, close_lbl: str, list_lbl: str) -> None:
     if "First EMI Missed" in total and not _is_missing(total["First EMI Missed"]):
         newly_sub += f", plus {int(total['First EMI Missed']):,} missed their first EMI"
     _cards([
-        (f"Behind at {close_lbl}", _pct(total["Close Delinquent %"]), f"{int(total['Close Delinquent']):,} of {run:,} loans"),
-        (f"Behind on {list_lbl}", _pct(total["List Delinquent %"]),
+        (f"Delinquent at {close_lbl}", _pct(total["Close Delinquent %"]), f"{int(total['Close Delinquent']):,} of {run:,} loans"),
+        (f"Delinquent on {list_lbl}", _pct(total["List Delinquent %"]),
          f"{int(total['List Delinquent']):,} loans, {_signed(total['Change in Delinquent % (pts)'], unit=' % points', decimals=2)}"),
         ("Month-end cases cleared", _pct(total["Cleared %"]),
-         f"{int(total['Cleared']):,} of {int(total['Pending at Close']):,}, {int(total['Still Pending']):,} still behind"),
-        ("Newly behind", _pct(total["New Slippage %"]), newly_sub),
+         f"{int(total['Cleared']):,} of {int(total['Pending at Close']):,}, {int(total['Still Pending']):,} still delinquent"),
+        ("Newly delinquent", _pct(total["New Slippage %"]), newly_sub),
     ])
 
 
@@ -368,9 +368,9 @@ def _story_table(df: pd.DataFrame, close_lbl: str, list_lbl: str, show_buckets: 
 
     def _side(side: str, lbl: str) -> list[dict]:
         when = f"at {lbl}" if side == "Close" else f"on {lbl}"
-        out = [{"key": f"{side} Delinquent %", "label": f"Behind {when}", "fmt": "pct_count",
+        out = [{"key": f"{side} Delinquent %", "label": f"Delinquent {when}", "fmt": "pct_count",
                 "count": f"{side} Delinquent", "heat": True,
-                "help": f"Loans behind on EMI (delinquent) {when}: % of Loans, with the count."}]
+                "help": f"Loans with any EMI overdue (delinquent) {when}: % of Loans, with the count."}]
         if show_buckets:
             out += [{"key": f"{side} {b} %", "label": f"{b} ({lbl})", "fmt": "pct_count", "count": f"{side} {b}"}
                     for b in _RISK_BUCKETS if f"{side} {b} %" in df.columns]
@@ -382,15 +382,15 @@ def _story_table(df: pd.DataFrame, close_lbl: str, list_lbl: str, show_buckets: 
                      "help": "On the list with no EMI overdue (usually only a charge)."})
     cols.append({"key": "Change in Delinquent % (pts)", "label": "Change (% points)",
                  "fmt": lambda v, row: _signed(v, decimals=2),
-                 "help": f"Behind on {list_lbl} minus behind at {close_lbl}, in percentage points."})
+                 "help": f"Delinquent on {list_lbl} minus delinquent at {close_lbl}, in percentage points."})
     if show_buckets:
         cols.append({"key": "Change in Delinquent", "label": "Change (loans)", "fmt": _signed,
-                     "help": f"Loans behind on {list_lbl} minus loans behind at {close_lbl}."})
+                     "help": f"Loans delinquent on {list_lbl} minus loans delinquent at {close_lbl}."})
     cols += [
         {"key": "Cleared %", "label": "Month-end cases cleared", "fmt": "pct_count", "count": "Cleared",
-         "help": f"Behind at {close_lbl} and not on the list now: % of the loans behind at month end."},
-        {"key": "New Slippage %", "label": "Newly behind", "fmt": "pct_count", "count": "New Slippage", "heat": True,
-         "help": f"Not behind at {close_lbl}, EMI due by {list_lbl}, and now on the list: "
+         "help": f"Delinquent at {close_lbl} and not on the list now: % of the loans delinquent at month end."},
+        {"key": "New Slippage %", "label": "Newly delinquent", "fmt": "pct_count", "count": "New Slippage", "heat": True,
+         "help": f"Not delinquent at {close_lbl}, EMI due by {list_lbl}, and now on the list: "
                  "% of those loans with an EMI due."},
     ]
     if "First EMI Missed" in df.columns:
@@ -398,8 +398,8 @@ def _story_table(df: pd.DataFrame, close_lbl: str, list_lbl: str, show_buckets: 
                      "help": "New loans with no EMI yet at month end that are now on the list."})
     if "On List, Not Yet Due" in df.columns:
         cols.append({"key": "On List, Not Yet Due", "label": "On list before due date", "fmt": "int",
-                     "help": "Not behind at month end and on the list, though the EMI date has not come yet "
-                             "(often an overdue charge). Not in Newly behind."})
+                     "help": "Not delinquent at month end and on the list, though the EMI date has not come yet "
+                             "(often an overdue charge). Not in Newly delinquent."})
     st.markdown(_table(df, cols, last_row_is_total=True, max_height=560), unsafe_allow_html=True)
 
 
@@ -411,7 +411,7 @@ def _render_bucket_moves(moves: pd.DataFrame) -> None:
                "list date. Better, Same and Worse compare the two.")
     view = moves.replace({"Bucket at Close": {"No EMI Yet": "New, no EMI yet"}})
     cols = [{"key": "Bucket at Close", "label": "At month end", "align": "left", "bold": True}]
-    cols += [{"key": c, "label": "Not behind now" if c == "Not on List" else c, "fmt": "int"}
+    cols += [{"key": c, "label": "Not delinquent now" if c == "Not on List" else c, "fmt": "int"}
              for c in view.columns if c not in ("Bucket at Close", "Better", "Same", "Worse", "Total")]
     cols += [{"key": "Better", "fmt": "int"}, {"key": "Same", "fmt": "int"}, {"key": "Worse", "fmt": "int"},
              {"key": "Total", "label": "Loans", "fmt": "int", "bold": True}]
@@ -424,10 +424,10 @@ def _render_about(match: dict, close_lbl: str, list_lbl: str) -> None:
     (no nested expanders: this already sits inside one)."""
     st.markdown(
         "- **Loans**: recent loans (agreed from the start date) still running in the month-end file.\n"
-        f"- **Behind**: at least part of an EMI overdue (delinquent). At {close_lbl} from the month-end file, "
+        f"- **Delinquent**: at least part of an EMI overdue. At {close_lbl} from the month-end file, "
         f"on {list_lbl} from the list.\n"
-        "- **Month-end cases cleared**: behind at month end, not on the list now.\n"
-        "- **Newly behind**: not behind at month end, EMI due by the list date, now on the list.\n"
+        "- **Month-end cases cleared**: delinquent at month end, not on the list now.\n"
+        "- **Newly delinquent**: not delinquent at month end, EMI due by the list date, now on the list.\n"
         "- **Missed first EMI**: new loans with no EMI yet at month end that are now on the list.\n"
         "- The list date can fall mid-month, before customers who missed an EMI have paid, "
         "so figures on it run higher than at a month end."

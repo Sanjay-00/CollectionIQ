@@ -46,8 +46,8 @@ from registry.semantic_model import resolve_dimension
 from smart_alerts import alert_high_arrears_ratio
 from utils import (
     delinquent_mask, can_tell_not_paying,
-    BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, loan_flags, resolve_dynamic_values, to_num,
-    unit_metrics,
+    BUCKET_SCORE, _mom_pct, expand_to_all_columns, fleet_loan_mask, loan_flags, prev_held_now,
+    resolve_dynamic_values, to_num, unit_metrics,
 )
 
 def _scope(df: pd.DataFrame | None, scope_col, scope_value, required: bool = True) -> pd.DataFrame | None:
@@ -89,14 +89,46 @@ METRIC_DIRECTION: dict[str, bool] = {
     "NPA %": False, "NPA%": False,
     "Hard Bucket %": False, "Hard Bucket%": False,
     "SMA-2 %": False, "SMA-2%": False,
+    "Delinquency %": False, "Delinquency%": False,
 }
 
-_BRANCH_METRICS  = ["Collection%", "NPA%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Accounts"]
-_EXEC_METRICS    = ["Collection %", "NPA %", "Strike Rate %", "Hard Bucket %", "Total SOH (L)", "Accounts"]
+# The executive scorecard spells its columns with a space ("NPA %",
+# "Strike Rate %"); the branch/region tables without ("NPA%", "Strike%").
+# A caller may use either, so executive steps map the name first: a
+# spelling that matched no column used to come back as an empty table,
+# shown as "No rows matched" (a false zero).
+_EXEC_METRIC_NAME = {
+    "Collection%": "Collection %", "NPA%": "NPA %", "Strike%": "Strike Rate %", "Strike Rate%": "Strike Rate %",
+    "Hard Bucket%": "Hard Bucket %", "SMA-2%": "SMA-2 %", "Delinquency%": "Delinquency %",
+}
+
+
+def _exec_metric(metric: str, scorecard: pd.DataFrame) -> str:
+    """`metric` as the executive scorecard's column name. Refuses (shown to
+    the user) a metric the scorecard doesn't have, instead of an empty table."""
+    name = _EXEC_METRIC_NAME.get(str(metric).strip(), str(metric).strip())
+    if not scorecard.empty and name not in scorecard.columns:
+        known = ", ".join(m for m in METRIC_DIRECTION if " %" in m)
+        raise ValueError(f"I can't rank executives by '{metric}'. I can rank by {known}.")
+    return name
+
+
+def _rankable(scorecard: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """Executives with no EMI due this month have no collection rate: the
+    shared engine shows that as 0.0, which would rank them weakest on
+    Collection % (real Sept file: 2 of 766). Left out of that ranking only."""
+    if metric == "Collection %" and "Demand (L)" in scorecard.columns:
+        return scorecard[pd.to_numeric(scorecard["Demand (L)"], errors="coerce") > 0]
+    return scorecard
+
+
+_BRANCH_METRICS  = ["Collection%", "NPA%", "Delinquency%", "Strike%", "Hard Bucket%", "SOH (Cr)", "Accounts"]
+_EXEC_METRICS    = ["Collection %", "NPA %", "Delinquency %", "Strike Rate %", "Hard Bucket %", "Total SOH (L)",
+                    "Accounts"]
 # region/zone/BU go through the generic _dimension_metrics aggregator
 # (below), which doesn't compute Strike% -- hence a shorter metric list
 # than _BRANCH_METRICS, not an oversight.
-_GENERIC_DIMENSION_METRICS = ["Collection%", "NPA%", "Hard Bucket%", "SOH (Cr)", "Accounts"]
+_GENERIC_DIMENSION_METRICS = ["Collection%", "NPA%", "Delinquency%", "Hard Bucket%", "SOH (Cr)", "Accounts"]
 _GENERIC_ENTITY_TYPES = {"region", "zone", "bu"}
 _MONEY_METRICS  = {"SOH (Cr)", "Total SOH (L)", "Total POS (L)", "Accounts", "Demand (L)", "Collected (L)"}
 
@@ -212,13 +244,14 @@ def dimension_breakdown(
     if df_prev is not None and not df_prev.empty and col in df_prev.columns:
         prev = _dimension_metrics(df_prev, col)
         prev = prev.rename(columns={
-            "Collection%": "_prev_coll", "NPA%": "_prev_npa", "Hard Bucket%": "_prev_hb",
-        })[[col, "_prev_coll", "_prev_npa", "_prev_hb"]]
+            "Collection%": "_prev_coll", "NPA%": "_prev_npa", "Delinquency%": "_prev_del", "Hard Bucket%": "_prev_hb",
+        })[[col, "_prev_coll", "_prev_npa", "_prev_del", "_prev_hb"]]
         curr = curr.merge(prev, on=col, how="left")
         curr["Δ Collection%"]  = (curr["Collection%"] - curr["_prev_coll"]).round(2)
         curr["Δ NPA%"]         = (curr["NPA%"] - curr["_prev_npa"]).round(2)
+        curr["Δ Delinquency%"] = (curr["Delinquency%"] - curr["_prev_del"]).round(2)
         curr["Δ Hard Bucket%"] = (curr["Hard Bucket%"] - curr["_prev_hb"]).round(2)
-        curr = curr.drop(columns=["_prev_coll", "_prev_npa", "_prev_hb"])
+        curr = curr.drop(columns=["_prev_coll", "_prev_npa", "_prev_del", "_prev_hb"])
 
     # Normalize the executive-grain metric spelling ("Collection %", with a
     # space -- compute_executive_scorecard's own column naming) to this
@@ -379,9 +412,9 @@ def roll_rate_by_dimension(
 
 
 def _dimension_metrics(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    """Accounts/Collection%/NPA%/Hard Bucket%/SOH per `col` value, from
-    utils.unit_metrics: the same definitions every dashboard table uses."""
-    cols = [col, "Accounts", "Collection%", "NPA%", "Hard Bucket%", "SOH (Cr)"]
+    """Accounts/Collection%/NPA%/Delinquency%/Hard Bucket%/SOH per `col` value,
+    from utils.unit_metrics: the same definitions every dashboard table uses."""
+    cols = [col, "Accounts", "Collection%", "NPA%", "Delinquency%", "Hard Bucket%", "SOH (Cr)"]
     m = unit_metrics(df, [col])
     return pd.DataFrame(columns=cols) if m.empty else m[cols].reset_index(drop=True)
 
@@ -850,7 +883,8 @@ def entity_summary(
         else:
             name, unit = entity_value, None
         curr_row = _executive_row(df_curr, name, unit)
-        prev_row = _executive_row(df_prev, name, unit)
+        # Last month: the loans this executive holds now (utils.prev_held_now).
+        prev_row = _executive_row(prev_held_now(df_curr, df_prev), name, unit)
         metrics = _EXEC_METRICS
     elif entity_type in _GENERIC_ENTITY_TYPES:
         curr_row = _generic_dimension_row(df_curr, entity_type, entity_value)
@@ -1039,12 +1073,12 @@ def underperformer_quartile(
     which direction is good.
     """
     hib = _higher_is_better(metric, higher_is_better)
-    sub = df
     sub = _scope(df, scope_col, scope_value)
     scorecard = compute_executive_scorecard(sub)
-    if scorecard.empty or metric not in scorecard.columns:
+    if scorecard.empty:
         return pd.DataFrame()
-    ranked = rank_by_metric(scorecard, metric)
+    metric = _exec_metric(metric, scorecard)
+    ranked = rank_by_metric(_rankable(scorecard, metric), metric)
     bad_tier = "bottom" if hib else "top"
     flagged = ranked[ranked["Tier"] == bad_tier]
     # rank_by_metric always sorts descending regardless of which direction
@@ -1078,9 +1112,10 @@ def bottom_n_per_group(
     hib = _higher_is_better(metric, higher_is_better)
     key = resolve_dimension(group_col)[0]
     scorecard = compute_executive_scorecard(df)
-    if scorecard.empty or metric not in scorecard.columns or key not in scorecard.columns:
+    if scorecard.empty or key not in scorecard.columns:
         return pd.DataFrame()
-    ordered = scorecard.sort_values([metric, "Accounts"], ascending=[hib, False])
+    metric = _exec_metric(metric, scorecard)
+    ordered = _rankable(scorecard, metric).sort_values([metric, "Accounts"], ascending=[hib, False])
     return ordered.groupby(key, sort=False, group_keys=False).head(n).reset_index(drop=True)
 
 
@@ -1122,10 +1157,11 @@ def executive_roster(
     sub = df
     sub = _scope(df, scope_col, scope_value)
     roster = compute_executive_scorecard(sub)
-    if n and metric and not roster.empty and metric in roster.columns:
+    if n and metric and not roster.empty:
+        metric = _exec_metric(metric, roster)
         hib = _higher_is_better(metric, higher_is_better)
         ascending = hib if worst_first else not hib
-        roster = roster.sort_values(metric, ascending=ascending).head(int(n)).reset_index(drop=True)
+        roster = _rankable(roster, metric).sort_values(metric, ascending=ascending).head(int(n)).reset_index(drop=True)
     return roster
 
 
@@ -1164,12 +1200,16 @@ def intersect_entities(
 
 def non_paying_customers(
     df: pd.DataFrame,
-    entities: pd.DataFrame,
+    entities: pd.DataFrame | None = None,
     key_cols: list[str] | None = None,
     all_columns: bool = False,
+    scope_col: str | None = None,
+    scope_value=None,
 ) -> pd.DataFrame:
     """Customers of the given executives (entities: a table with MNT NAME/Unit
-    columns, e.g. intersect_entities' output) who are NOT paying: the
+    columns, e.g. intersect_entities' output), or of one branch/region/zone/BU
+    (scope_col/scope_value, no earlier result needed), or of the whole book
+    (neither given), who are NOT paying: the
     Dashboard's own "Not Paying 3M+" rule (config.NOT_PAYING_3M_FLAG_COL:
     behind and no receipt in the 3 months to month end, read through
     utils.loan_flags), so "not paying" means one thing in every tab
@@ -1185,14 +1225,18 @@ def non_paying_customers(
     understood the intent correctly.
     """
     key_cols = key_cols or ["MNT NAME", "Unit"]
-    if df is None or df.empty or entities is None or entities.empty:
+    if df is None or df.empty:
         return pd.DataFrame()
-    if not all(c in df.columns for c in key_cols) or not all(c in entities.columns for c in key_cols):
-        return pd.DataFrame()
-
-    scoped = df.merge(entities[key_cols].drop_duplicates(), on=key_cols, how="inner")
-    if scoped.empty:
-        return pd.DataFrame()
+    scoped = _scope(df, scope_col, scope_value)
+    if entities is not None:
+        if entities.empty:          # the earlier result really had no executives
+            return pd.DataFrame()
+        if not all(c in scoped.columns for c in key_cols) or not all(c in entities.columns for c in key_cols):
+            raise ValueError("the earlier result has no executive and branch to match customers on. "
+                             "Ask for a branch, region or executive by name instead.")
+        scoped = scoped.merge(entities[key_cols].drop_duplicates(), on=key_cols, how="inner")
+        if scoped.empty:
+            raise ValueError("none of those executives have loans in this data, so I can't list their customers.")
 
     if not can_tell_not_paying(scoped):
         raise ValueError("this file has neither Last Receipt Date nor the No Coll 3 Months flag, "
@@ -1360,6 +1404,8 @@ METRIC_DRILL_FILTER: dict[str, dict] = {
     "Collection%":    {"concept": "short_collection"},
     "Strike Rate %":  {"column": "Strike", "op": "in", "value": ["N", "NO"]},
     "Strike%":        {"column": "Strike", "op": "in", "value": ["N", "NO"]},
+    "Delinquency %":  {"concept": "delinquent"},
+    "Delinquency%":   {"concept": "delinquent"},
 }
 
 
@@ -1400,29 +1446,35 @@ def worst_loans_by_metric(
     if df is None or df.empty:
         return pd.DataFrame()
 
+    # An unknown metric, a scope that matches nothing or a filter that won't
+    # build is refused, never answered as an empty table ("No rows matched"
+    # read as a real zero).
     filter_spec = METRIC_DRILL_FILTER.get(metric)
     if filter_spec is None:
-        return pd.DataFrame()
+        known = ", ".join(m for m in METRIC_DRILL_FILTER if " %" in m)
+        raise ValueError(f"I can't list the loans behind '{metric}'. I can for {known}.")
 
     if scope_col and scope_value is not None:
         cols = [c for c in resolve_dimension(scope_col) if c in df.columns]
         if not cols:
             raise ValueError(f"this file has no {scope_col} column, so I can't narrow to '{scope_value}'")
-        if cols:
-            if len(cols) > 1 and isinstance(scope_value, (list, tuple)) and len(scope_value) == len(cols):
-                mask = pd.Series(True, index=df.index)
-                for c, v in zip(cols, scope_value):
-                    mask &= df[c].astype(str).str.strip().str.upper() == str(v).strip().upper()
-                df = df[mask]
-            else:
-                df = df[df[cols[0]].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+        if len(cols) > 1 and isinstance(scope_value, (list, tuple)) and len(scope_value) == len(cols):
+            mask = pd.Series(True, index=df.index)
+            for c, v in zip(cols, scope_value):
+                mask &= df[c].astype(str).str.strip().str.upper() == str(v).strip().upper()
+            df = df[mask]
+        else:
+            df = df[df[cols[0]].astype(str).str.strip().str.upper() == str(scope_value).strip().upper()]
+        if df.empty:
+            shown = " / ".join(map(str, scope_value)) if isinstance(scope_value, (list, tuple)) else scope_value
+            raise ValueError(f"there's no {scope_col} matching '{shown}' in this data.")
     if df.empty:
         return pd.DataFrame()
 
     errs: list[str] = []
     conditions = resolve_dynamic_values(_expand_filters([filter_spec], errs), as_of)
     if errs:
-        return pd.DataFrame()
+        raise ValueError(f"I couldn't build the filter for '{metric}': {'; '.join(errs)}")
     missing = _missing_condition_columns(df, conditions)
     if missing:
         raise ValueError(
@@ -1517,7 +1569,7 @@ def fleet_defaulters(
 
     Largest POS first (SOH breaks a tie): the principal still at stake is
     what makes a defaulting fleet owner a priority (business decision,
-    2026-10-16; the priority menu calls this "Fleet Owners Behind on Payment").
+    2026-10-16; the priority menu calls this "Fleet Owners, Delinquent").
     """
     if df is None or df.empty or "Cust Mob No" not in df.columns or "Loan No" not in df.columns:
         return pd.DataFrame()
@@ -1591,7 +1643,7 @@ PRIORITY_MENU_CATEGORIES: list[dict] = [
     {"label": "Non Starter",                    "kind": "concept", "concept": "non_starter",                  "default_n": 10},
     {"label": "NPA Accounts",                   "kind": "concept", "concept": "npa",                          "default_n": 10},
     {"label": "High Closing Arrears",           "kind": "top_closing_arrears",                                 "default_n": 20},
-    {"label": "Fleet Owners Behind on Payment", "kind": "fleet_defaulters",                                    "default_n": 10},
+    {"label": "Fleet Owners, Delinquent", "kind": "fleet_defaulters",                                    "default_n": 10},
     {"label": "Co-lending at Risk",             "kind": "concept", "concept": "colending_at_risk",             "default_n": 10},
     {"label": "Insurance-Only Delinquency",     "kind": "concept", "concept": "insurance_driven_delinquency",  "default_n": 10},
     {"label": "Easy to Nil",                    "kind": "concept", "concept": "easy_settlement",               "default_n": 10},

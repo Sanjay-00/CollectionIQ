@@ -8,7 +8,7 @@ import pandas as pd
 
 from analysis import roll_flow as rf
 from config import ACTION_MIN_ACCOUNTS, DASHBOARD_TOP_N
-from utils import _unit_key, per_frame, unit_metrics
+from utils import _unit_key, per_frame, prev_held_now, unit_metrics
 
 _GRAIN = {  # grain: (group columns, display name column); hierarchy Zone > Region > Branch > Executive
     "Zone": (["Zone"], "Zone"),
@@ -26,7 +26,7 @@ LEAGUE_METRICS = {
     "Delinquency %": ("Delinquency%", True),
     "SMA-2 %": ("SMA-2%", True),
     "Hard Bucket %": ("Hard Bucket%", True),
-    "New defaulters %": ("STD → Behind | %", True),
+    "New defaulters %": ("STD → Delinquent | %", True),
     "Collection %": ("Collection%", False),
     "Strike %": ("Strike%", False),
 }
@@ -34,7 +34,7 @@ LEAGUE_METRICS = {
 
 # The count behind each league metric, shown beside it as "11.9% (37)".
 LEAGUE_COUNTS = {"NPA %": "NPA", "Delinquency %": "Delinquent", "SMA-2 %": "SMA-2",
-                 "Hard Bucket %": "Hard Bucket", "New defaulters %": "STD → Behind | Accounts"}
+                 "Hard Bucket %": "Hard Bucket", "New defaulters %": "STD → Delinquent | Accounts"}
 # The money behind a % by SOH, shown beside it as "34.6% (₹121.40 Cr)".
 LEAGUE_AMOUNTS = {"NPA % (SOH)": "NPA SOH (Cr)"}
 
@@ -58,6 +58,12 @@ def _units(df: pd.DataFrame, grain: str) -> pd.DataFrame:
         keys = list(zip(*[m[c] for c in cols])) if len(cols) > 1 else list(m[cols[0]])
         m[label] = [first.get(k) for k in keys]
     return m
+
+
+def _prev_units(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.DataFrame:
+    """_units for last month. An executive's last month is the loans they hold
+    now (utils.prev_held_now); a zone's, region's or branch's is last month's file."""
+    return _units(prev_held_now(df_curr, df_prev) if grain == "Executive" else df_prev, grain)
 
 
 def league_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, metric: str, grain: str,
@@ -86,10 +92,10 @@ def league_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, metric: str, grai
     now["Rank"] = range(1, len(now) + 1)
 
     prev_val, prev_rank = {}, {}
-    if col in ("STD → Behind | %",):
+    if col in ("STD → Delinquent | %",):
         pass                            # needs a third month; shown as "-"
     else:
-        prev = _units(df_prev, grain)
+        prev = _prev_units(df_curr, df_prev, grain)
         if not prev.empty:
             prev = prev[prev["Accounts"] >= _MIN[grain]].sort_values(col, ascending=not descending, kind="stable")
             prev_val = dict(zip(prev["_key"], prev[col]))
@@ -118,7 +124,7 @@ def biggest_moves(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str, n: i
                   metric: str = "Delinquency%") -> dict:
     """Units whose `metric` rose / fell most since last month (points), among
     units big enough to judge. {"worse": [...], "better": [...]}."""
-    now, prev = _units(df_curr, grain), _units(df_prev, grain)
+    now, prev = _units(df_curr, grain), _prev_units(df_curr, df_prev, grain)
     if now.empty or prev.empty:
         return {"worse": [], "better": []}
     now = now[now["Accounts"] >= _MIN[grain]]
@@ -146,7 +152,7 @@ def unit_table(df_curr: pd.DataFrame, df_prev: pd.DataFrame, grain: str) -> pd.D
         return pd.DataFrame()
     floor = {"Zone": 1, "Region": 1, "Branch": MIN_ACCOUNTS_DIMENSION_BREAKDOWN, "Executive": MIN_ACCOUNTS_EXECUTIVE}[grain]
     now = now[now["Accounts"] >= floor]
-    prev = _units(df_prev, grain)
+    prev = _prev_units(df_curr, df_prev, grain)
     before = prev.set_index("_key")[["Delinquency%", "NPA%"]].to_dict("index") if not prev.empty else {}
     out = pd.DataFrame({grain: now["Name"].values})
     if grain == "Executive":

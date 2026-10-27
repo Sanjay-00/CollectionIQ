@@ -1693,9 +1693,10 @@ class TestWorstLoansByMetric:
         result = worst_loans_by_metric(make_df(rows), "Strike Rate %")
         assert list(result["Cust Name"]) == ["Not Struck"]
 
-    def test_unmapped_metric_returns_empty(self):
-        result = worst_loans_by_metric(self._df(), "SOH (Cr)")
-        assert result.empty
+    def test_unmapped_metric_is_refused_not_an_empty_table(self):
+        # An empty table shows as "No rows matched", read as a real zero.
+        with pytest.raises(ValueError, match="can't list the loans behind 'SOH \\(Cr\\)'"):
+            worst_loans_by_metric(self._df(), "SOH (Cr)")
 
     def test_no_space_metric_spelling_also_works(self):
         result = worst_loans_by_metric(self._df(), "NPA%", scope_col="executive", scope_value=("RAHUL", "PUNE"))
@@ -1866,7 +1867,7 @@ class TestFleetOwnersBehindOnPayment:
     def test_menu_label(self):
         from investigator.steps import PRIORITY_MENU_CATEGORIES
         labels = [c["label"] for c in PRIORITY_MENU_CATEGORIES]
-        assert "Fleet Owners Behind on Payment" in labels and "Fleet Owners with High POS" not in labels
+        assert "Fleet Owners, Delinquent" in labels and "Fleet Owners with High POS" not in labels
 
 
 class TestRollSummaryScopeNeedsLastMonthsColumn:

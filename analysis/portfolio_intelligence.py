@@ -12,6 +12,7 @@ from utils import (
     _EXEC_KEY, _exec_name, _with_exec_key, _safe_pct, BUCKET_ORDER, BUCKET_COLORS, to_num, account_count,
     is_yes, compute_overdue_demand_pct, attach_prev_delinquency, _unit_key, order_unit_columns, unit_metrics,
     first_value, as_of_or_today, segment_column, match_prev, loan_flags, portfolio_metrics, non_starter_mask,
+    prev_held_now,
 )
 from config import (
     MIN_ACCOUNTS_DIMENSION_BREAKDOWN, MIN_ACCOUNTS_EXECUTIVE, MIN_ACCOUNTS_PRODUCT_SEGMENT,
@@ -480,9 +481,13 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
 
     def _table(label_cols: list[str], min_accounts: int, fuzzy_pos, display, extras: dict) -> pd.DataFrame:
         """label_cols: raw columns to group by; display(row) -> the identity
-        columns; extras: {output column: source column} from the unit's first row."""
+        columns; extras: {output column: source column} from the unit's first row.
+        An executive's last month is the loans they hold now (utils.prev_held_now);
+        a region's or branch's is last month's file as it is."""
         if not set(label_cols) <= set(df_curr.columns):
             return pd.DataFrame()
+        by_exec = "MNT NAME" in label_cols
+        src_prev = prev_held_now(df_curr, df_prev) if by_exec and has_prev else df_prev
         key_cols = [f"_k_{c}" for c in label_cols]
         # An executive groups on the NORMALIZED branch (the same branch typed
         # two ways is one branch) but keeps the raw name for display.
@@ -492,8 +497,8 @@ def compute_npa_sma2_comparison(df_curr: pd.DataFrame, df_prev: pd.DataFrame) ->
         if m.empty:
             return pd.DataFrame()
         prev: dict = {}
-        if has_prev and set(label_cols) <= set(df_prev.columns):
-            pm = unit_metrics(_norm(df_prev, label_cols), key_cols, flags=prev_flags)
+        if has_prev and set(label_cols) <= set(src_prev.columns):
+            pm = unit_metrics(_norm(src_prev, label_cols), key_cols, flags=None if by_exec else prev_flags)
             prev = {tuple(r[k] for k in key_cols): r for _, r in pm.iterrows()}
         firsts = {out: first_value(curr, group_cols, src) for out, src in extras.items()}
 
@@ -960,7 +965,7 @@ def compute_risk_indicators(
         c = int(not_paying_3m_mask(df_curr).sum())
         p = int(not_paying_3m_mask(df_prev).sum()) if has_prev and can_tell_not_paying(df_prev) else 0
         _add("Not Paying 3M+", c, p, "", "down",
-             "Behind on payment and no receipt in the 3 months up to month end", is_count=True)
+             "Delinquent and no receipt in the 3 months up to month end", is_count=True)
 
     if "Non Starter" in df_curr.columns:
         c = int(non_starter_mask(df_curr).sum())

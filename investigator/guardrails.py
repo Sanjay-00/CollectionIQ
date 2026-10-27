@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from investigator.state import EntityMemory
 from investigator.steps import distinct_executive_matches
+from registry.semantic_model import resolve_dimension
 
 # Which metric columns each step type can actually produce -- known
 # statically from each step's own implementation (investigator/steps.py),
@@ -43,10 +44,10 @@ from investigator.steps import distinct_executive_matches
 # four. Both spellings (with/without a space) are listed since callers use
 # either depending on which grain they're thinking in.
 _STEP_PRODUCIBLE_METRICS: dict[str, set[str]] = {
-    "dimension_breakdown": {"Collection%", "NPA%", "Hard Bucket%"},
-    "underperformer_quartile": {"Collection %", "NPA %", "Strike Rate %", "Hard Bucket %"},
-    "bottom_n_per_group": {"Collection %", "NPA %", "Strike Rate %", "Hard Bucket %"},
-    "executive_roster": {"Collection %", "NPA %", "Strike Rate %", "Hard Bucket %"},
+    "dimension_breakdown": {"Collection%", "NPA%", "Delinquency%", "Hard Bucket%"},
+    "underperformer_quartile": {"Collection %", "NPA %", "Delinquency %", "Strike Rate %", "Hard Bucket %"},
+    "bottom_n_per_group": {"Collection %", "NPA %", "Delinquency %", "Strike Rate %", "Hard Bucket %"},
+    "executive_roster": {"Collection %", "NPA %", "Delinquency %", "Strike Rate %", "Hard Bucket %"},
 }
 
 # Entities produced by underperformer_quartile/bottom_n_per_group -- see
@@ -160,10 +161,77 @@ def _ambiguous_executive_clarification(turn: dict, df_curr) -> dict | None:
     }
 
 
-def validate_and_correct(turn: dict, entity_memory: EntityMemory, df_curr=None) -> dict:
+def _source_found(ref: dict, entity_memory: EntityMemory) -> bool:
+    etype, evalue = ref.get("entity_type"), ref.get("entity_value")
+    if etype == "executive" and isinstance(evalue, (list, tuple)) and len(evalue) == 2:
+        return True                                  # looked up in the file itself, not in memory
+    if etype == "executive" and isinstance(evalue, list):
+        evalue = tuple(evalue)
+    return entity_memory.get(etype, evalue) is not None
+
+
+def _place_named_in(ref: dict, df_curr) -> tuple[str, str] | None:
+    """The branch / region / zone a missing source's own name points at
+    ("branch_executives" "AKLUJ:Collection %" -> branch AKLUJ), checked
+    against the file. None when nothing (or more than one level) matches."""
+    if df_curr is None or getattr(df_curr, "empty", True):
+        return None
+    raw = str(ref.get("entity_value") or "")
+    pieces = {p.strip().upper() for part in raw.split(":") for p in part.split(" within ") if p.strip()}
+    for level in ("branch", "region", "zone"):
+        col = resolve_dimension(level)[0]
+        if col not in df_curr.columns:
+            continue
+        names = {str(v).strip().upper(): str(v).strip() for v in df_curr[col].dropna().unique()}
+        hits = [names[p] for p in pieces if p in names]
+        if len(hits) == 1:
+            return level, hits[0]
+    return None
+
+
+def _redirect_missing_source(turn: dict, entity_memory: EntityMemory, df_curr) -> dict | None:
+    """non_paying_customers pointed at an earlier result that isn't in this
+    chat (live: "customers not paying in Akluj" as a first question named a
+    "branch_executives" table never built). Run on the branch / region that
+    reference names instead. When no place can be read from it, the turn is
+    left alone and the run refuses with a clear message
+    (ui/tabs/investigator.py::_resolve_source_tables), never a false zero."""
+    if turn.get("step_type") != "non_paying_customers":
+        return None
+    params = turn.get("params") or {}
+    missing = [r for r in params.get("source_entities") or [] if not _source_found(r, entity_memory)]
+    if not missing:
+        return None
+    place = _place_named_in(missing[0], df_curr)
+    if place is None:
+        return None
+    corrected = {k: v for k, v in params.items() if k != "source_entities"}
+    corrected.update(scope_col=place[0], scope_value=place[1])
+    return {**turn, "params": corrected, "needs_clarification": False, "clarification_question": ""}
+
+
+# Words that mean "any EMI overdue" (Delinquency %), not NPA. A model that
+# reads "most delinquent loans" as NPA % ranks a different, smaller set.
+_DELINQUENCY_WORDS = ("delinquen", "overdue", "behind on")
+
+
+def _delinquency_not_npa(turn: dict, question: str | None) -> dict | None:
+    params = turn.get("params") or {}
+    metric = params.get("metric")
+    if not question or not metric or _normalize(str(metric)) != "NPA%":
+        return None
+    q = question.lower()
+    if "npa" in q or not any(w in q for w in _DELINQUENCY_WORDS):
+        return None
+    new_metric = "Delinquency %" if " %" in str(metric) else "Delinquency%"
+    return {**turn, "params": {**params, "metric": new_metric}}
+
+
+def validate_and_correct(turn: dict, entity_memory: EntityMemory, df_curr=None, question: str | None = None) -> dict:
     """Returns turn unchanged if nothing is wrong, a corrected turn spliced
     from a suitable entity's own stored params, or a clarification request.
-    Never returns a turn known to be unable to satisfy what was asked."""
+    Never returns a turn known to be unable to satisfy what was asked.
+    question (the user's own words) lets a wording check correct the metric."""
     ambiguous = _ambiguous_executive_clarification(turn, df_curr)
     if ambiguous is not None:
         return ambiguous
@@ -171,6 +239,9 @@ def validate_and_correct(turn: dict, entity_memory: EntityMemory, df_curr=None) 
     redirected = _redirect_invalid_executive_grouping(turn)
     if redirected is not None:
         return redirected
+
+    turn = _redirect_missing_source(turn, entity_memory, df_curr) or turn
+    turn = _delinquency_not_npa(turn, question) or turn
 
     step_type = turn.get("step_type")
     params = turn.get("params") or {}

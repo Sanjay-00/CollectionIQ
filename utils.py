@@ -575,11 +575,18 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     Pass 1  -  Strip leading/trailing spaces from every column.
     Pass 2  -  Apply COL_ALIASES (exact known truncations / variations).
     Pass 3  -  Case-insensitive exact match (handles capitalisation differences).
+    Pass 3b -  Same, ignoring every space: the Sept 2026 Mumbai extract had
+              "DelinquencyDay s" and "CoLending_Loan s", so co-lending checks
+              quietly read 0 on a whole month's file.
     Pass 4  -  Prefix match for truncated long names.
               Targets sorted longest-first so the more-specific column wins
               when a shorter column name is a prefix of a longer one
               (e.g. "Net Collection Demand Inst+Exp+BC" beats "NET Collection
               Demand Inst+Exp" when the file column is ambiguously truncated).
+
+    Every header read under a different name (passes 2 to 4, not the plain
+    strip) is kept in df.attrs["header_renames"] {file name: standard name},
+    so the upload can say what it renamed instead of doing it silently.
     """
     all_standard = list(dict.fromkeys(CRITICAL_COLS + REQUIRED_COLS))  # critical first, no dupes
 
@@ -588,7 +595,8 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # Pass 2  -  known aliases (never onto a name the file already has -- that
     # would leave two columns with the same name)
-    df.rename(columns={k: v for k, v in COL_ALIASES.items() if k in df.columns and v not in df.columns}, inplace=True)
+    aliased = {k: v for k, v in COL_ALIASES.items() if k in df.columns and v not in df.columns}
+    df.rename(columns=aliased, inplace=True)
 
     # Build case-insensitive lookup; longest targets first so more-specific
     # columns win over shorter prefix-collision siblings.
@@ -597,6 +605,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         tl = t.lower()
         if tl not in target_ci:
             target_ci[tl] = t
+    target_nospace = {_no_space(t): t for t in reversed(list(target_ci.values()))}
 
     rename_map: dict[str, str] = {}
     claimed: set[str] = {c for c in df.columns if c in all_standard}
@@ -611,6 +620,13 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         # Pass 3  -  case-insensitive exact match
         if col_lower in target_ci and target_ci[col_lower] not in claimed:
             target = target_ci[col_lower]
+            rename_map[col] = target
+            claimed.add(target)
+            continue
+
+        # Pass 3b  -  same, ignoring spaces inside the name
+        target = target_nospace.get(_no_space(col))
+        if target and target not in claimed:
             rename_map[col] = target
             claimed.add(target)
             continue
@@ -630,8 +646,26 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
-
+    df.attrs["header_renames"] = {**aliased, **rename_map}
     return df
+
+
+def _no_space(name: str) -> str:
+    return "".join(str(name).lower().split())
+
+
+def header_renames_note(renames: dict) -> str | None:
+    """The data checks line for headers read under another name, e.g.
+    "'DelinquencyDay s' read as DelinquencyDays". Capital letters alone are
+    left out: real extracts differ in case on ~25 headers every month, which
+    would bury a real change (a stray space, a renamed column)."""
+    renames = {k: v for k, v in (renames or {}).items() if k.lower() != v.lower()}
+    if not renames:
+        return None
+    shown = [f"'{k}' read as {v}" for k, v in list(renames.items())[:6]]
+    more = f", and {len(renames) - 6} more" if len(renames) > 6 else ""
+    return (f"Read {len(renames)} column header(s) under the standard name: {', '.join(shown)}{more}. "
+            "Check the source file if a header changed by mistake.")
 
 
 def _reorder_to_template(df: pd.DataFrame) -> pd.DataFrame:
@@ -687,6 +721,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
 
     # Normalize column names (strips spaces, fixes capitalisation, maps truncated names)
     df = _normalize_columns(df)
+    header_renames = df.attrs.get("header_renames", {})
     df = _reorder_to_template(df)
 
     # If critical columns are missing from sheet 0, try a sheet named "LCC"
@@ -702,6 +737,7 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
                     file.seek(0)
                 df = pd.read_excel(file, engine=engine, sheet_name=lcc)
                 df = _normalize_columns(df)
+                header_renames = df.attrs.get("header_renames", {})
                 df = _reorder_to_template(df)
                 missing_critical = [c for c in CRITICAL_COLS if c not in df.columns]
         except Exception:
@@ -770,6 +806,9 @@ def load_and_validate(file) -> tuple[pd.DataFrame, list[str]]:
             df[col] = clean_mobile(df[col])
 
     df, data_fixes = repair_upload(df)
+    renamed_note = header_renames_note(header_renames)
+    if renamed_note:
+        data_fixes.insert(0, renamed_note)
     df, not_paying_note = add_not_paying_flag(df)
     if not_paying_note:
         data_fixes.append(not_paying_note)
@@ -1041,13 +1080,13 @@ def add_not_paying_flag(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
     receipt = pd.to_datetime(df["Last Receipt Date"], errors="coerce")
     flag = delinquent_mask(df) & (receipt.isna() | (receipt < start))
     df = df.assign(**{NOT_PAYING_3M_FLAG_COL: flag.map({True: "Y", False: "N"})})
-    note = (f"\"Not paying 3 months\" means behind on payment with no receipt since {start:%d %b %Y} "
+    note = (f"\"Not paying 3 months\" means delinquent with no receipt since {start:%d %b %Y} "
             "(from Last Receipt Date).")
     if NOT_PAYING_SOURCE_FLAG_COL in df.columns:
         paid = int((is_yes(df, NOT_PAYING_SOURCE_FLAG_COL) & ~flag).sum())
         if paid:
             note += (f" The file's own {NOT_PAYING_SOURCE_FLAG_COL} flag also marks {paid:,} loan(s) that "
-                     "are not behind or did pay in that time; they are not counted as not paying.")
+                     "are not delinquent or did pay in that time; they are not counted as not paying.")
     return df, note
 
 
@@ -1306,6 +1345,28 @@ def delinquency_by(df: pd.DataFrame, cols: list[str]) -> dict[tuple, tuple[int, 
     return {tuple(r[k] for k in keys): (int(r["Accounts"]), int(r["Delinquent"])) for _, r in m.iterrows()}
 
 
+EXECUTIVE_COLS = ("MNT NAME", "Unit")
+
+
+def prev_held_now(df_curr: pd.DataFrame | None, df_prev: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Last month's rows for the loans held this month, each under THIS month's
+    executive (MNT NAME, Unit): the base for any executive's "last month"
+    figure. A loan belongs to the executive who handles it now and is
+    accountable for it (user decision, 2026-10-23), so a book handed over
+    mid-month moves with its history instead of reading as a sudden jump.
+    Loans that left the running book have no one holding them and are left
+    out, so executives' last-month figures needn't add up to last month's
+    total. Region and branch figures keep using last month's file as it is.
+    df_prev unchanged when either month lacks Loan No or the executive columns."""
+    if df_prev is None or df_curr is None or df_prev.empty or df_curr.empty:
+        return df_prev
+    owner_cols = [c for c in EXECUTIVE_COLS if c in df_curr.columns]
+    if "Loan No" not in df_prev.columns or "Loan No" not in df_curr.columns or "MNT NAME" not in owner_cols:
+        return df_prev
+    owners = df_curr[["Loan No", *owner_cols]].drop_duplicates("Loan No")
+    return df_prev.drop(columns=owner_cols, errors="ignore").merge(owners, on="Loan No", how="inner")
+
+
 def match_prev(prev: dict, key: tuple, fuzzy_pos: int | None = None):
     """Last month's entry for a normalized label tuple: exact match first;
     then, if fuzzy_pos is given (a name the source system truncates at
@@ -1330,8 +1391,9 @@ def attach_prev_delinquency(
     right after `pct_col` in a per-region/branch/executive table.
 
     on: {table column: previous-file column}, e.g. {"Branch": "Unit"}. Last
-    month is grouped by the previous file's OWN labels, so an executive's
-    previous figure is the book they held then. fuzzy: a table column whose
+    month is grouped by df_prev's own labels: for an executive table, pass
+    prev_held_now(df_curr, df_prev), so the figure is the loans they hold now
+    (user decision, 2026-10-23). fuzzy: a table column whose
     spelling gets truncated between months (MNT NAME); when there's no exact
     match, a single prefix match within the same other labels is used.
     No columns are added when there is no previous file."""

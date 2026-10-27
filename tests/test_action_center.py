@@ -102,7 +102,7 @@ def test_hotspot_branch_is_flagged_with_reasons_in_words():
     att = ac.attention(df, _prev(df), "branch")
     top = att["worst"][0]
     assert top["name"] == "MALEGAON" and top["region"] == "NASHIK"
-    assert any("STD → Behind" in r and "x the average" in r for r in top["reasons"])
+    assert any("STD → Delinquent" in r and "x the average" in r for r in top["reasons"])
 
 
 def test_small_units_are_not_judged(monkeypatch):

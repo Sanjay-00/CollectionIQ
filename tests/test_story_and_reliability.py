@@ -90,11 +90,11 @@ class TestRootCauseWorkbook:
     def test_sheets_use_the_words_on_screen(self):
         wb = self._workbook()
         heads = [c.value for c in wb["Recent Loans by Region"][1]]
-        assert {"Loans", "Behind at month end", "Behind on list date", "Change (% points)",
-                "Month-end cases cleared", "Newly behind"} <= set(heads)
+        assert {"Loans", "Delinquent at month end", "Delinquent on list date", "Change (% points)",
+                "Month-end cases cleared", "Newly delinquent"} <= set(heads)
         assert not {"Running Loans", "Close Delinquent", "Pending at Close", "New Slippage"} & set(heads)
         moves = [c.value for c in wb["Bucket Movement"][1]]
-        assert moves[0] == "At month end" and "Not behind now" in moves
+        assert moves[0] == "At month end" and "Not delinquent now" in moves
 
     def test_download_button_is_built_after_the_view(self):
         # Regression: built first, it handed out a workbook without the list figures.

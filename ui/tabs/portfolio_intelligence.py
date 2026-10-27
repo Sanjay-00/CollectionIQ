@@ -489,7 +489,7 @@ def _view_large_customers(c, data_version, filter_key) -> None:
     total = _customer_total(cust)
     takeaway(f"<b>{len(cust):,}</b> customers with ₹{min_cr:,.2f} Cr or more exposure hold "
               f"<b>₹{total['Exposure (Cr)']:,.2f} Cr</b>. <b>{int(cust['Has Delinquent Loan'].sum()):,}</b> of them "
-              f"have a loan behind on payment, with <b>₹{total['Delinquent SOH (Cr)']:,.2f} Cr</b> SOH on those "
+              f"have a delinquent loan, with <b>₹{total['Delinquent SOH (Cr)']:,.2f} Cr</b> SOH on those "
               f"loans; they are marked in red.")
     st.markdown(html_table(cust, _CUSTOMER_COLS, total=total, max_height=480 if len(cust) > 12 else None,
                            highlight=lambda row: bool(row.get("Has Delinquent Loan"))), unsafe_allow_html=True)

@@ -130,7 +130,7 @@ PRIORITY_RULES = [
     {
         "rank": 6,
         "label": "No Collection 3 Months",
-        "why": "Behind on payment and no receipt in the 3 months up to month end: pre-NPA deterioration signal",
+        "why": "Delinquent and no receipt in the 3 months up to month end: pre-NPA deterioration signal",
         "conditions": [{"column": NOT_PAYING_3M_FLAG_COL, "op": "in", "value": _YES}],
     },
     {
@@ -196,7 +196,7 @@ CONCEPTS: dict[str, dict] = {
     },
     "no_collection_3m": {
         "label": "No Collection 3 Months",
-        "description": "Behind on payment and no receipt in the 3 months up to month end: pre-NPA signal.",
+        "description": "Delinquent and no receipt in the 3 months up to month end: pre-NPA signal.",
         "conditions": [{"column": NOT_PAYING_3M_FLAG_COL, "op": "in", "value": _YES}],
     },
     "hard_bucket": {
@@ -396,6 +396,22 @@ METRICS: dict[str, dict] = {
         "scale": 100,
         "grain": "loan",
         "description": "% of accounts current on their installment (Strike=Y) among accounts with a valid Strike value.",
+    },
+    "thirty_plus_pct": {
+        "label": "30+ %",
+        "kind": "count_ratio",
+        # The Deep Investigation's 30+ rate (investigation/metrics.py, one
+        # definition): running loans at SMA-1 or worse (one or more EMIs
+        # overdue) among running loans with an EMI due -- loans with no EMI due
+        # yet (bucket NA) are outside the base, unlike delinquency_pct below.
+        # tests/investigation/test_registry_thirty_plus.py keeps the two equal.
+        "numerator_where": [{"column": "Loan Status", "op": "==", "value": "RUN"},
+                            {"column": "curr_bucket", "op": "in", "value": ["SMA-1", "SMA-2", "NPA"]}],
+        "denominator_where": [{"column": "Loan Status", "op": "==", "value": "RUN"},
+                              {"column": "curr_bucket", "op": "in", "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]}],
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of running loans with an EMI due that are 30+ (SMA-1 or worse: one or more EMIs overdue).",
     },
     "delinquency_pct": {
         "label": "Delinquency %",

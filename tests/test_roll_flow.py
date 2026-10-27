@@ -26,7 +26,7 @@ BOOK = _loans([
 
 def test_steps_by_count_and_by_last_months_soh():
     s = rf.roll_steps_summary(BOOK)
-    new = s["STD → Behind"]
+    new = s["STD → Delinquent"]
     assert (new["base"], new["n"]) == (3, 1) and new["pct"] == pytest.approx(33.33)
     assert new["soh_pct"] == pytest.approx(83.33)               # 10L of 12L: the big loan slipped
     assert s["1-30 → SMA-1+"]["n"] == 1 and s["1-30 → SMA-1+"]["pct"] == 50.0
@@ -36,14 +36,14 @@ def test_steps_by_count_and_by_last_months_soh():
 
 
 def test_unmatched_loans_and_no_previous_month():
-    assert rf.roll_steps_summary(BOOK)["STD → Behind"]["base"] == 3          # H (new) left out
+    assert rf.roll_steps_summary(BOOK)["STD → Delinquent"]["base"] == 3          # H (new) left out
     assert rf.roll_steps_summary(BOOK.drop(columns=["prev_bucket"])) is None
     assert rf.roll_steps_by(BOOK.drop(columns=["prev_bucket"]), "branch").empty
 
 
 def test_soh_falls_back_to_this_month_when_last_month_has_none():
     s = rf.roll_steps_summary(BOOK.drop(columns=["prev_SOH"]))
-    assert s["STD → Behind"]["soh_pct"] == pytest.approx(83.33)     # same proportions on current SOH
+    assert s["STD → Delinquent"]["soh_pct"] == pytest.approx(83.33)     # same proportions on current SOH
 
 
 @pytest.mark.parametrize("measure", ["count_pct", "soh_pct"])
@@ -92,8 +92,8 @@ def test_where_table_total_row_is_sum_over_sum():
         df[f"{lb} | Accounts"], df[f"{lb} | SOH (Cr)"] = [8, 2], [0.5, 0.5]
         df[f"{lb} | %"], df[f"{lb} | SOH %"] = [80.0, 0.41], [50.0, 5.56]
     total = _with_total(df, ["Branch"]).iloc[-1]
-    assert total["Branch"] == "Total" and total["STD → Behind | %"] == 2.0    # 10 of 500, not the 40% average
-    assert total["STD → Behind | SOH %"] == 10.0
+    assert total["Branch"] == "Total" and total["STD → Delinquent | %"] == 2.0    # 10 of 500, not the 40% average
+    assert total["STD → Delinquent | SOH %"] == 10.0
 
 
 def test_one_roll_engine_counts_a_transferred_loan_where_it_is_now():
@@ -110,4 +110,4 @@ def test_one_roll_engine_counts_a_transferred_loan_where_it_is_now():
     matrix, meta = compute_roll_rate_matrix(view_c, view_p)
     assert meta["matched_count"] == 2 and matrix.loc["STD", "SMA-1"] == 1
     assert meta["new_entries"] == 1                       # N1 only: T1 existed last month (in branch A)
-    assert rf.roll_steps_summary(view_c)["STD → Behind"]["n"] == 1
+    assert rf.roll_steps_summary(view_c)["STD → Delinquent"]["n"] == 1

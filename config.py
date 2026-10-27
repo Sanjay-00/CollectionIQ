@@ -257,7 +257,7 @@ VINTAGE_CHART_WATCH_PCT = 5
 # SOH. The first two (new defaulters, 1-30 slipping further) are the cheapest
 # to bring back and the ones that otherwise become NPA a few months later.
 ROLL_STEPS = {
-    "STD → Behind": "STD",
+    "STD → Delinquent": "STD",
     "1-30 → SMA-1+": "1-30 DPD",
     "SMA-1 → SMA-2+": "SMA-1",
     "SMA-2 → NPA": "SMA-2",
@@ -281,3 +281,52 @@ DASHBOARD_TOP_N = 5
 # The report's "New Book" section follows every loan disbursed (Ag_Date) on or
 # after this date, month by month (user, 2026-10-12: "November onward advances").
 NEW_BOOK_FROM = "2025-11-01"
+
+# Deep Investigation (investigation/; design: docs/superpowers/specs/
+# 2026-10-23-investigation-agent-design.md). Tuned with the evaluation set.
+INVESTIGATION_MIN_SEGMENT = 200           # eligible loans for a segment to stand alone in a book-wide scan
+INVESTIGATION_MIN_SEGMENT_DRILL = 50      # the same inside one segment
+INVESTIGATION_NOISE_SE = 2.0              # noise band: this many standard errors of a rate change
+INVESTIGATION_NO_CHANGE_PP = 0.20         # a total change under this (% points) is not material
+INVESTIGATION_RECONCILE_TOL_PP = 0.01     # parts of a change must add up to within this (% points)
+INVESTIGATION_DPD_DISAGREE_WARN_PCT = 2.0 # warn when the days column and the EMI buckets disagree on 30+ for more %
+INVESTIGATION_POP_CHANGE_HALT_PCT = 15.0  # stop when eligible loans change by more than this % month on month
+INVESTIGATION_MISSING_UNIT_HALT_PCT = 1.0 # stop when a branch missing this month held more than this % of last month
+INVESTIGATION_TOP_SEGMENTS = 2            # segments cited per breakdown
+# A dimension whose label changed for more than this % of the same loans
+# between the two files can't be compared month on month (real Sept 2026:
+# CHANNEL 31% (a file name), FUEL_TYPE 10%, Zone 9.8%; natural changes such
+# as EMI date or loans per customer stay under 3%).
+INVESTIGATION_LABEL_DRIFT_WARN_PCT = 5.0
+# A dimension "concentrates" a material change when its concentration score
+# (investigation/tools/mix.py::_concentration) reaches this; below it no
+# slice explains the change and the answer is "inconclusive". Provisional:
+# set from the Phase 2 cases, tuned again with the baseline.
+INVESTIGATION_CONCENTRATION_MIN_PCT = 20.0
+# Compare like for like (leave out branches in one file only) only while
+# what is left out stays under this % of either month's eligible loans; more
+# means a truncated or different extract, and the investigation stops. The
+# same line as a population jump: one large branch missing (about 11%) is a
+# gap, six of ten branches is another book (real Sept 2026: 1.8%).
+INVESTIGATION_LIKE_FOR_LIKE_MAX_PCT = 15.0
+# A driver of a material change accounts for at least this % of it: a small
+# segment's real but minor move is reported in its breakdown, not named as
+# a cause (Phase 2 case 12: about 6%; case 11's second cause about 32%).
+INVESTIGATION_DRIVER_MIN_SHARE_PCT = 10.0
+
+# Portfolio Review (investigation/review/; design: docs/superpowers/specs/
+# 2026-10-24-portfolio-review-agent-design.md, section 5.5). Provisional,
+# pending the user's confirmation (spec open question 5).
+REVIEW_MIN_ACCOUNTS = 200        # eligible loans for a region to be ranked (smaller: shown, not ranked)
+REVIEW_FDR = 0.10                # Benjamini-Hochberg false discovery rate, across every list of one review
+# A region with more than this % of its base in strata no other region has
+# (e.g. only it holds 2019-2022 agreements) has no like-for-like benchmark
+# there, so it is shown but not listed (Phase 1 seasoning eval).
+REVIEW_MAX_UNMATCHED_PCT = 20.0
+REVIEW_MIN_RS = 10_00_000        # a shortfall or excess exposure under this (Rs) is not listed
+REVIEW_MIN_PTS = 0.5             # a gap under this many % points is not listed
+REVIEW_MAX_DEEP_DIVES = 3        # background deep-dives per review (the top candidate of each list)
+REVIEW_MAX_JOBS = 3              # finished reviews kept in memory (one per upload / sidebar filter)
+# The decision log's local file (investigation/review/decisions.py). On
+# Streamlit Cloud it lasts until a restart; the panel's download keeps it.
+REVIEW_DECISION_LOG = ".collectioniq/decision_log.jsonl"

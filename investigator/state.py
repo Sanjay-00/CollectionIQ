@@ -55,6 +55,10 @@ class EntityRecord:
     # is exactly the re-derivation step that produced a real misroute (see
     # investigator/llm.py's STAY-AT-GRAIN rule docstring for the incident).
     params: dict = field(default_factory=dict)
+    # The answer's headline and "why" split (investigator/headline.py), worked
+    # out on first display and kept here so a rerun doesn't redo it. A
+    # re-touch makes a new record, so it can never outlive its result_df.
+    story: dict | None = None
     touched_at: float = field(default_factory=time.time)
     # Monotonic tie-breaker for recency ordering -- wall-clock time.time()
     # has real-world resolution too coarse to guarantee strict ordering

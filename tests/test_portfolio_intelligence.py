@@ -752,15 +752,15 @@ class TestComputeNpaSma2Comparison:
         assert row_x["Unit"] == "X" and row_x["NPA (Curr)"] == 3
         assert row_y["Unit"] == "Y" and row_y["NPA (Curr)"] == 0
 
-    def test_prev_match_scoped_to_same_unit_not_cross_branch(self):
-        # A same-named executive in a different branch last month must not be treated
-        # as this month's match -- prev lookup (including the prefix fallback) is
-        # scoped to the same Unit.
+    def test_last_month_follows_the_loans_the_executive_holds_now(self):
+        # User decision 2026-10-23: a loan belongs to the executive who holds it
+        # now. These three loans sat under branch Y last month; Rahul (X) holds
+        # them now, so his last month counts them (no false "jump" of 3).
         curr = make_df([{"MNT NAME": "Rahul Sharma", "Unit": "X", "curr_bucket": "NPA"} for _ in range(3)])
         prev = make_df([{"MNT NAME": "Rahul Sharma", "Unit": "Y", "curr_bucket": "NPA"} for _ in range(3)])
         out = compute_npa_sma2_comparison(curr, prev)
         row = out["executive"].iloc[0]
-        assert row["NPA (Prev)"] is None
+        assert row["NPA (Prev)"] == 3 and row["NPA Δ"] == 0
 
     def test_executive_prev_match_falls_back_to_unambiguous_prefix(self):
         # Source export truncates MNT NAME to a different length between months
@@ -778,20 +778,20 @@ class TestComputeNpaSma2Comparison:
         assert row["NPA (Prev)"] == 1
         assert row["NPA Δ"] == 1
 
-    def test_executive_prev_match_skips_ambiguous_prefix_candidates(self):
-        # Two different previous-period names both prefix-match the current name --
-        # must not guess, stays unmatched (None) rather than merging two people.
+    def test_loans_that_left_the_book_are_in_no_executives_last_month(self):
+        # Last month is the loans held now: L004-L006 left the running book, so
+        # nobody holds them and they don't count for anyone, even under a
+        # look-alike name.
         curr = make_df([
             {"MNT NAME": "SANTOSH", "curr_bucket": b} for b in ["NPA", "NPA", "STD"]
         ])
         prev = make_df(
-            [{"MNT NAME": "SANTOSH KAPSE", "curr_bucket": "NPA"} for _ in range(3)]
+            [{"MNT NAME": "SANTOSH KAPSE", "curr_bucket": "STD"} for _ in range(3)]
             + [{"MNT NAME": "SANTOSH PATIL", "curr_bucket": "NPA"} for _ in range(3)]
         )
         out = compute_npa_sma2_comparison(curr, prev)
         row = out["executive"].iloc[0]
-        assert row["NPA (Prev)"] is None
-        assert row["NPA Δ"] is None
+        assert row["NPA (Prev)"] == 0 and row["NPA Δ"] == 2
 
 
 # ── compute_branch_quadrant ──────────────────────────────────────────────────

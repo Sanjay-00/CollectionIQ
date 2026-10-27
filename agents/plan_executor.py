@@ -18,7 +18,7 @@ import pandas as pd
 
 from agents.data_executor import BUCKET_COMPARE_OPS, _apply_condition, _build_mask, _COL_COMPARE_OPS
 
-from utils import as_list
+from utils import as_list, prev_held_now
 
 _AGG_FUNCS = {"sum", "count", "nunique", "mean", "min", "max", "first"}
 
@@ -120,18 +120,24 @@ def _op_group_aggregate(df: pd.DataFrame, step: dict) -> pd.DataFrame:
     return out
 
 
-def _group_aggregate_with_prev_file(df: pd.DataFrame, step: dict, df_prev: pd.DataFrame | None) -> pd.DataFrame:
+def _group_aggregate_with_prev_file(df: pd.DataFrame, step: dict, df_prev: pd.DataFrame | None,
+                                    df_all: pd.DataFrame | None = None) -> pd.DataFrame:
     """group_aggregate, with its last-month figures (step["prev_file"], built by
     compiler.core._prev_file_pass) taken from LAST MONTH'S FILE: that file's
     loans under its own labels, including loans that have since left the book.
-    The carried prev_* values stand when there's no last-month file or it lacks
-    a column the figures need. A group that only existed last month gets a row
-    (its this-month figures 0)."""
+    Grouped by executive, last month is instead the loans each executive holds
+    now (utils.prev_held_now; owners read from df_all, the whole of this
+    month before the plan's filters, so a filter on this month can't drop a
+    loan from last month's figure). The carried prev_* values stand when
+    there's no last-month file or it lacks a column the figures need. A group
+    that only existed last month gets a row (its this-month figures 0)."""
     out = _op_group_aggregate(df, step)
     pf = step.get("prev_file")
     if not pf or df_prev is None or df_prev.empty:
         return out
     group_by = [str(c) for c in as_list(step.get("group_by"))]
+    if "MNT NAME" in group_by:
+        df_prev = prev_held_now(df if df_all is None else df_all, df_prev)
     prev_aggs = pf["aggregations"]
     needed = set(group_by) | {c for a in prev_aggs for c in
                               ([a["column"]] if a.get("column") else [])
@@ -285,7 +291,7 @@ def execute_plan(df: pd.DataFrame, plan: list, df_prev: pd.DataFrame | None = No
             return pd.DataFrame(), f"Step {i}: unknown operation '{op}'."
         try:
             if op == "group_aggregate" and step.get("prev_file"):
-                result = _group_aggregate_with_prev_file(result, step, df_prev)
+                result = _group_aggregate_with_prev_file(result, step, df_prev, df_all=df)
             else:
                 result = handler(result, step)
         except Exception as e:

@@ -18,7 +18,7 @@ def test_groups_in_order_and_no_duplicate_lists():
     assert len(names) == len(set(names))
     # Same loans under another name: shown once, in "Call this week".
     assert "Insurance-Driven Delinquency" not in names and "Non Starters" not in names
-    assert "STD → Behind" not in names                      # that is "New defaulters"
+    assert "STD → Delinquent" not in names                      # that is "New defaulters"
 
 
 def test_every_list_counts_its_loans_and_soh_the_same_way():

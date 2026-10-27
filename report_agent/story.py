@@ -406,7 +406,7 @@ def _month_vs_month(c, p, curr_month: str, prev_month: str | None, ac: dict) -> 
     s = ac.get("roll_summary")
     if s:
         group("Movement this month")
-        for label, step in (("New defaulters (STD → behind)", "STD → Behind"), ("New NPAs (SMA-2 → NPA)", "SMA-2 → NPA"),
+        for label, step in (("New defaulters (STD → delinquent)", "STD → Delinquent"), ("New NPAs (SMA-2 → NPA)", "SMA-2 → NPA"),
                             ("Back to STD", "Back to STD")):
             rows.append({"Metric": label, "Last month": "", "Change": "", "_group": False, "_section": "Movement",
                          "This month": f"{s[step]['n']:,} (₹{s[step]['soh_cr']:,.2f} Cr)",
@@ -602,7 +602,7 @@ def _new_book(c: pd.DataFrame, curr_month: str, preset: str) -> list[dict]:
     return blocks
 
 
-_STEP_LABEL = {"STD → Behind": "New defaulters (STD → behind)", "1-30 → SMA-1+": "1-30 → SMA-1 or worse",
+_STEP_LABEL = {"STD → Delinquent": "New defaulters (STD → delinquent)", "1-30 → SMA-1+": "1-30 → SMA-1 or worse",
                "SMA-1 → SMA-2+": "SMA-1 → SMA-2 or worse", "SMA-2 → NPA": "SMA-2 → NPA", "Back to STD": "Back to STD"}
 
 
@@ -719,10 +719,10 @@ def _why(c, preset: str) -> list[dict]:
             {"key": "Delinquent Accounts", "label": "Delinquent loans", "fmt": "int"},
             *[{"key": f"{g} %", "label": labels.get(g, g), "fmt": "pct", "count": g, "heat": True}
               for g in groups]]
-    return [heading("Why Loans Are Behind", "Each % is a share of the delinquent loans (loans in brackets). The "
-                                            "first columns say what is unpaid; the last ones how far behind and "
+    return [heading("Why Loans Are Delinquent", "Each % is a share of the delinquent loans (loans in brackets). The "
+                                            "first columns say what is unpaid; the last ones how many EMIs and "
                                             "whether the customer still pays."),
-            table("Why loans are behind", t, cols, total=total if len(t) > 1 else None, sheet="Why loans are behind")]
+            table("Why loans are delinquent", t, cols, total=total if len(t) > 1 else None, sheet="Why loans are delinquent")]
 
 
 def _focus(ac: dict) -> list[dict]:
@@ -793,11 +793,11 @@ _MEANING = {
               "instalment collected, or no instalment arrears), of the loans the file gives a Strike value.",
     "Rolled forward": "Loans in a worse bucket than last month, as % of loans in both months' files.",
     "Bucket movement": "Rows: each loan's bucket last month. Columns: its bucket now. Each row adds to 100%.",
-    "New defaulters (STD → behind)": "Paid up (STD) last month, behind now. The cheapest to bring back.",
-    "1-30 → SMA-1 or worse": "Were 1-30 days behind last month, now SMA-1 or worse: slipping further.",
+    "New defaulters (STD → delinquent)": "Paid up (STD) last month, delinquent now. The cheapest to bring back.",
+    "1-30 → SMA-1 or worse": "Were 1-30 DPD last month, now SMA-1 or worse: slipping further.",
     "SMA-1 → SMA-2 or worse": "Were SMA-1 last month, now SMA-2 or worse: one step from NPA.",
     "SMA-2 → NPA": "Were SMA-2 last month, NPA now: this month's new NPAs.",
-    "Back to STD": "Were behind last month, fully paid up (STD) now: recovered loans.",
+    "Back to STD": "Were delinquent last month, fully paid up (STD) now: recovered loans.",
     "Insurance charge only": f"EMI paid; only the insurance or expense charge (over ₹{_INS:,}) is unpaid. "
                              "A cash or WCL adjustment fixes it.",
     "EMI only": "EMI unpaid, no insurance or expense charge unpaid.",
@@ -809,7 +809,7 @@ _MEANING = {
                                     "worth a restructuring talk.",
     SILENT_LABEL: f"Under {_HARD} EMIs overdue, but no receipt in the 3 months to month end. "
                   f"Call now, before it reaches {_HARD}.",
-    _WHY_LABEL["Early Delinquency"]: f"Behind, under {_HARD} EMIs overdue, with a receipt in the last 3 months. "
+    _WHY_LABEL["Early Delinquency"]: f"Delinquent, under {_HARD} EMIs overdue, with a receipt in the last 3 months. "
                                      "Normal field follow-up.",
     "Loans in book": "Every loan in this report's files: running, matured (MAT) and S&S.",
     "POS": "Principal outstanding: the loan amount still to be repaid, excluding interest and charges.",
@@ -818,7 +818,7 @@ _MEANING = {
     "Newly matured this month": "Loans that are MAT now but were not last month.",
     "Not paying 3M+": "No payment in the last 3 months and more than 6 EMIs overdue.",
     "Δ": "Change since last month, in percentage points. Red: worse; green: better.",
-    "Non-starters": "Never paid the first EMI (Non Starter = Y) and still behind.",
+    "Non-starters": "Never paid the first EMI (Non Starter = Y) and still delinquent.",
     "Month demand collection %": "Of this month's fresh demand (instalment, expense, bounce), the share collected "
                                  "after last month's overdue was cleared first.",
     "Funded": "Loan amount disbursed.",
@@ -1069,7 +1069,7 @@ OPTIONAL_SECTIONS = {
 MAIN_SECTIONS = {
     "glance": "At a glance", "month_vs_month": "This month vs last month", "zones": "Zone scorecard", "regions": "Region scorecard",
     "branches": "Branch scorecard", "executives": "Executive scorecard",
-    "slipping": "Roll forward", "why": "Why loans are behind",
+    "slipping": "Roll forward", "why": "Why loans are delinquent",
     "new_business": "New business", "new_book": f"New book (since {new_book_since():%b %Y})", "focus": "Where to focus first",
     "call_lists": "Who to call first", "definitions": "How to read this",
 }

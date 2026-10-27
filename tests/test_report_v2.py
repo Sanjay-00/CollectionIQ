@@ -381,7 +381,7 @@ def test_was_silent_group_gets_a_plain_label_and_definition(data):
     behind = c.index[pd.to_numeric(c["Arrears / EMI"], errors="coerce").between(0.01, 5.9)][:2]
     c.loc[behind, NOT_PAYING_3M_FLAG_COL] = "Y"                     # went silent, now under 6 EMIs
     m = build_report(c, p, "2026-08", "2026-07", "Regional")
-    labels = [col.get("label") for col in _table(m, "Why loans are behind")["columns"]]
+    labels = [col.get("label") for col in _table(m, "Why loans are delinquent")["columns"]]
     assert SILENT_LABEL in labels and WAS_SILENT not in labels
     assert SILENT_LABEL in list(_table(m, "Definitions")["df"]["Term"])
 

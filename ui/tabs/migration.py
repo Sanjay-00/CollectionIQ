@@ -70,7 +70,7 @@ def _step_card(label: str, d: dict, from_bucket: str) -> str:
     accent = "#16a34a" if is_cure else ("#dc2626" if early else "#9ca3af")
     tag = ('<span style="background:#fee2e2;color:#991b1b;font-size:10px;font-weight:700;'
            'padding:1px 7px;border-radius:9px;margin-left:6px;">CATCH EARLY</span>') if early else ""
-    base_name = "behind" if is_cure else from_bucket
+    base_name = "delinquent" if is_cure else from_bucket
     return (
         f'<div style="border:1px solid #e5e7eb;border-top:4px solid {accent};border-radius:10px;'
         f'padding:12px 14px;background:#fff;height:100%;">'
