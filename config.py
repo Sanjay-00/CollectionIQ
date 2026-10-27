@@ -32,6 +32,13 @@ MAX_QUERY_CHARS = 1000
 # seconds; 60s leaves room for the longer report-narrative prompts.
 GEMINI_TIMEOUT_MS = 60_000
 
+# Calls the user waits on with nothing on screen (AI Query planner,
+# Investigator router) send one identical backup request if the first hasn't
+# answered by then (gemini_client.call_gemini_hedged). Measured 2026-10-27 on
+# 40 planner calls: half answer by about 2.3s and 9 in 10 by about 3.5s, but
+# the same question can take 7.5s by chance. 0 turns hedging off.
+GEMINI_HEDGE_AFTER_S = 3.5
+
 # Investigator session caps -- threads and remembered result tables live in
 # st.session_state for the whole browser session, and each table can be
 # thousands of rows. Oldest (least recently used) entries are evicted first.

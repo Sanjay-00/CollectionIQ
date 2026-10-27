@@ -51,7 +51,7 @@ class TestCallSites:
         import agents.logical_planner as lp
         monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
         sent = {}
-        monkeypatch.setattr(lp, "_call_gemini_with_retry",
+        monkeypatch.setattr(lp, "_call_gemini_hedged",
                             lambda c, m, contents, config: sent.update(config=config) or _Reply('{"intent": "loan_table"}'))
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
         lp.plan_logical("show me the top branches")
@@ -61,7 +61,7 @@ class TestCallSites:
     def test_a_planner_reply_that_is_not_an_object_is_out_of_scope(self, monkeypatch):
         import agents.logical_planner as lp
         monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _Reply("[1, 2]"))
+        monkeypatch.setattr(lp, "_call_gemini_hedged", lambda *a, **k: _Reply("[1, 2]"))
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
         assert lp.plan_logical("anything")["query_title"] == "Out of Scope"
 
@@ -72,7 +72,7 @@ class TestCallSites:
         sent = {}
         monkeypatch.setattr(llm, "make_client", lambda key: object())
         monkeypatch.setattr(llm, "_add_token_usage", lambda *a, **k: None)
-        monkeypatch.setattr(llm, "_call_gemini_with_retry", lambda c, m, contents, config: sent.update(config=config)
+        monkeypatch.setattr(llm, "_call_gemini_hedged", lambda c, m, contents, config: sent.update(config=config)
                             or _Reply('{"step_type": "dimension_breakdown", "params": {"dimension": "region"}}'))
         out = llm.parse_turn("how are my regions doing", EntityMemory())
         assert sent["config"]["response_mime_type"] == "application/json" and out["step_type"] == "dimension_breakdown"

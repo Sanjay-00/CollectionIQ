@@ -29,6 +29,7 @@ from typing import Iterator
 import pandas as pd
 
 from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry
+from gemini_client import call_gemini_hedged as _call_gemini_hedged
 from config import GEMINI_MODEL, MAX_QUERY_CHARS, PII_COLUMNS, PLANNER_TEMPERATURE
 from gemini_client import JSONReplyError, json_config, make_client, parse_json_object
 from investigator.state import EntityMemory
@@ -848,7 +849,7 @@ def parse_turn(question: str, entity_memory: EntityMemory, allow_multi: bool = F
 
     client = make_client(api_key)
     try:
-        response = _call_gemini_with_retry(
+        response = _call_gemini_hedged(
             client, GEMINI_MODEL, build_turn_prompt(question, entity_memory, allow_multi=allow_multi),
             json_config(PLANNER_TEMPERATURE),
         )

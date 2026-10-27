@@ -247,7 +247,7 @@ class TestParseTurnWiring:
             seen["contents"] = contents
             return _FakeResponse()
 
-        monkeypatch.setattr(llm, "_call_gemini_with_retry", _fake_call)
+        monkeypatch.setattr(llm, "_call_gemini_hedged", _fake_call)
         monkeypatch.setattr(llm, "make_client", lambda api_key: object())
 
         result = llm.parse_turn("why is Mahad underperforming", EntityMemory())
@@ -259,7 +259,7 @@ class TestParseTurnWiring:
         # Same MAX_QUERY_CHARS guardrail AI Query's plan_logical enforces.
         monkeypatch.setenv("GOOGLE_API_KEY", "fake")
         calls = []
-        monkeypatch.setattr(llm, "_call_gemini_with_retry", lambda *a, **kw: calls.append(1))
+        monkeypatch.setattr(llm, "_call_gemini_hedged", lambda *a, **kw: calls.append(1))
         out = llm.parse_turn("x" * (llm.MAX_QUERY_CHARS + 1), EntityMemory())
         assert calls == []
         assert out["needs_clarification"] is True
@@ -277,7 +277,7 @@ class TestParseTurnWiring:
     def test_missing_api_key_returns_clarification_without_calling_gemini(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         calls = []
-        monkeypatch.setattr(llm, "_call_gemini_with_retry", lambda *a, **kw: calls.append(1))
+        monkeypatch.setattr(llm, "_call_gemini_hedged", lambda *a, **kw: calls.append(1))
 
         result = llm.parse_turn("why is Mahad underperforming", EntityMemory())
 
@@ -474,7 +474,7 @@ class TestGeminiFailureHandling:
         def _boom(*a, **kw):
             raise RuntimeError("service unavailable")
 
-        monkeypatch.setattr(llm, "_call_gemini_with_retry", _boom)
+        monkeypatch.setattr(llm, "_call_gemini_hedged", _boom)
         out = llm.parse_turn("why is collection down", EntityMemory())
         assert out["step_type"] is None
         assert out["needs_clarification"] is True

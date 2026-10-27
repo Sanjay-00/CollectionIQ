@@ -513,7 +513,7 @@ class TestPlannerTemperature:
             sent["config"] = config
             return _FakeResponse()
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_call_gemini_hedged", _capture)
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         lp.plan_logical("show me the top branches")
@@ -545,7 +545,7 @@ class TestClarificationFollowupContext:
             sent["contents"] = contents
             return _FakeResponse()
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_call_gemini_hedged", _capture)
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
         return lp, sent
 
@@ -625,7 +625,7 @@ class TestDeterministicBusinessFastPathWiring:
 
         def _fail_if_called(*a, **k):
             raise AssertionError("must not call Gemini when the deterministic resolver matches")
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", _fail_if_called)
+        monkeypatch.setattr(lp, "_call_gemini_hedged", _fail_if_called)
 
         ir1 = lp.plan_logical("give me my best branch top 5 wrt business")
         assert ir1["needs_clarification"] is True
@@ -647,7 +647,7 @@ class TestDeterministicBusinessFastPathWiring:
             called["yes"] = True
             return _FakeResponse()
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_call_gemini_hedged", _capture)
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         lp.plan_logical(
@@ -670,7 +670,7 @@ class TestDeterministicBusinessFastPathWiring:
             called["yes"] = True
             return _FakeResponse()
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", _capture)
+        monkeypatch.setattr(lp, "_call_gemini_hedged", _capture)
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         lp.plan_logical(
@@ -694,7 +694,7 @@ class TestDeterministicBusinessFastPathWiring:
                 '"clarification_options": []}'
             )
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_call_gemini_hedged", lambda *a, **k: _FakeResponse())
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         ir1 = lp.plan_logical("asdkjhasdkjh")
@@ -707,7 +707,7 @@ class TestDeterministicBusinessFastPathWiring:
 
         def _fail_if_called(*a, **k):
             raise AssertionError("must not call Gemini for an oversized query")
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", _fail_if_called)
+        monkeypatch.setattr(lp, "_call_gemini_hedged", _fail_if_called)
 
         ir1 = lp.plan_logical("x" * (lp.MAX_QUERY_CHARS + 1))
         assert ir1["needs_clarification"] is True
@@ -720,7 +720,7 @@ class TestDeterministicBusinessFastPathWiring:
         class _FakeResponse:
             text = "I'm sorry, I can't help with that."  # not JSON -- model broke format
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_call_gemini_hedged", lambda *a, **k: _FakeResponse())
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         ir1 = lp.plan_logical("some query that confused the model")
@@ -742,7 +742,7 @@ class TestDeterministicBusinessFastPathWiring:
         class _FakeResponse:
             text = '{"intent": "loan_table", "filters": [], "display_columns": ["Loan No", "SOH"], "show_all_columns": false}'
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_call_gemini_hedged", lambda *a, **k: _FakeResponse())
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         ir1 = lp.plan_logical("give me all cases with all columns including overdue collection %")
@@ -755,7 +755,7 @@ class TestDeterministicBusinessFastPathWiring:
         class _FakeResponse:
             text = '{"intent": "loan_table", "filters": [], "display_columns": ["Loan No", "SOH"], "show_all_columns": false}'
 
-        monkeypatch.setattr(lp, "_call_gemini_with_retry", lambda *a, **k: _FakeResponse())
+        monkeypatch.setattr(lp, "_call_gemini_hedged", lambda *a, **k: _FakeResponse())
         monkeypatch.setattr(lp, "_add_token_usage", lambda *a, **k: None)
 
         ir1 = lp.plan_logical("show me Loan No and SOH only")

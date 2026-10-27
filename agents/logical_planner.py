@@ -22,7 +22,7 @@ from gemini_client import JSONReplyError, json_config, make_client, parse_json_o
 from registry.ontology import CONCEPTS, METRICS, AMBIGUOUS_TERMS
 from registry.semantic_model import DIMENSIONS
 from registry.views import VIEWS, _METRIC_DIRECTION
-from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry
+from gemini_client import add_token_usage as _add_token_usage, call_gemini_hedged as _call_gemini_hedged
 
 
 @lru_cache(maxsize=1)
@@ -784,7 +784,7 @@ def plan_logical(
     ) if "(interpretation:" in query else ""
 
     client = make_client(api_key)
-    response = _call_gemini_with_retry(
+    response = _call_gemini_hedged(
         client, GEMINI_MODEL, repair_context + clarification_followup_context + query,
         json_config(
             system_instruction=system_prompt,
