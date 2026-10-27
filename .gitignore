@@ -14,6 +14,8 @@ CLAUDE.md
 AGENTS.md
 # Personal study notes and deep-dives (project guide, pipeline deep-dives, data notes)
 study/
+# Design-review tool notes (impeccable critiques)
+.impeccable/
 
 sample_data/Dummy_Current_Month_15k.xlsx
 sample_data/Dummy_Previous_Month_13k.xlsx
