@@ -114,6 +114,7 @@ def log_query_outcome(state: dict) -> None:
             "error":                   state.get("error", ""),
             "clarification_question":  state.get("clarification_question", ""),
             "result_rows":             int(len(result_df)) if result_df is not None else 0,
+            "plan_cache":              state.get("plan_cache", ""),
         }
 
         with open(path, "a", encoding="utf-8") as f:

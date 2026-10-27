@@ -16,6 +16,7 @@ from agents.data_executor import (
 )
 from agents.plan_executor import _check_condition_columns, execute_plan
 from agents.logical_planner import plan_logical
+from agents.plan_cache import PLAN_CACHE, planner_cache_key
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
 from registry.semantic_model import resolve_dimension
@@ -69,6 +70,7 @@ def _report_month(state: dict):
 
 _STEP_LABELS: dict[str, str] = {
     "planner":  "🧠  Query Planner: understanding your question",
+    "planner_cached": "🧠  Query Planner: reused the plan from an earlier identical question (no AI call)",
     "compile":  "⚙️   Compiler: building and validating the execution plan",
     "view":     "⚡  Fast Path: fetching a pre-computed answer",
     "execute":  "⚡  Data Executor: computing the answer",
@@ -248,6 +250,11 @@ class QueryState(TypedDict):
     # LangSmith trace ID
     run_id: str
 
+    # Plan cache (agents/plan_cache.py): "hit" (reused, no planner call),
+    # "miss", or "" before the planner runs; the key run_query stores under.
+    plan_cache: str
+    plan_cache_key: str
+
     # Shadow-mode comparison slot (kept for backward compat; no longer populated)
     shadow: dict
 
@@ -255,13 +262,18 @@ class QueryState(TypedDict):
 # ── Node 1: Logical Planner (Gemini) ─────────────────────────────────────────
 @traceable(run_type="chain", name="LogicalPlannerNode", tags=["node"], process_inputs=_trace_process_inputs, process_outputs=_trace_process_outputs)
 def logical_planner_node(state: QueryState) -> QueryState:
-    _announce("planner")
     try:
-        ir1 = plan_logical(
-            state["query"],
-            state.get("snapshot_dates"),
-            allow_clarification=state.get("allow_clarification", True),
-        )
+        cache_key = planner_cache_key(state["query"], state.get("snapshot_dates"),
+                                      state.get("allow_clarification", True))
+        ir1 = PLAN_CACHE.get(cache_key)
+        cache = "hit" if ir1 is not None else "miss"
+        _announce("planner_cached" if ir1 is not None else "planner")
+        if ir1 is None:
+            ir1 = plan_logical(
+                state["query"],
+                state.get("snapshot_dates"),
+                allow_clarification=state.get("allow_clarification", True),
+            )
         intent = ir1.get("intent", "loan_table")
 
         # Map intent → UI mode flags (backward compat for UI rendering branches)
@@ -325,6 +337,7 @@ def logical_planner_node(state: QueryState) -> QueryState:
             "needs_clarification": bool(ir1.get("needs_clarification", False)),
             "priority_mode": priority_mode,
             "risk_flag": ir1.get("risk_flag") or "medium",
+            "plan_cache": cache,
         })
 
         return {
@@ -348,6 +361,8 @@ def logical_planner_node(state: QueryState) -> QueryState:
             "clarification_options":  ir1.get("clarification_options") or [],
             "parsed_filters":    {"plain_english": ir1.get("description") or state["query"]},
             "error":             "",
+            "plan_cache":        cache,
+            "plan_cache_key":    cache_key,
         }
     except Exception as e:
         return {**state, "error": f"Query planning failed: {e}"}
@@ -1129,6 +1144,8 @@ def run_query(
         "error":            "",
         "run_id":           run_id,
         "shadow":           {},
+        "plan_cache":       "",
+        "plan_cache_key":   "",
     }
 
     _tls.step_callback = on_step
@@ -1161,5 +1178,20 @@ def run_query(
         # carrying a DIFFERENT df, and the node silently uses the stale one.
         _tls.large_data = {}
 
+    _update_plan_cache(result)
     log_query_outcome(result)
     return result
+
+
+def _update_plan_cache(result: dict) -> None:
+    """Keep the plan of a question that worked (after any repair, so a reuse
+    skips the repair too); never an error or a clarification. A reused plan
+    that failed is dropped, e.g. a new file lacks a column it uses."""
+    key = result.get("plan_cache_key")
+    if not key:
+        return
+    if result.get("error"):
+        if result.get("plan_cache") == "hit":
+            PLAN_CACHE.drop(key)
+    elif not result.get("needs_clarification") and result.get("ir1"):
+        PLAN_CACHE.put(key, result["ir1"])

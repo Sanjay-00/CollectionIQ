@@ -18,6 +18,10 @@ GEMINI_MODEL = "gemini-2.5-flash-lite"
 # point writing, where some variety is fine and arguably desirable.
 PLANNER_TEMPERATURE = 0.1
 
+# AI Query plans kept for reuse across sessions (agents/plan_cache.py). A plan
+# is a small dict; 256 covers a team's repeated questions many times over.
+PLAN_CACHE_MAX = 256
+
 # Longest free-text question either chat surface (AI Query, Investigator)
 # will send to Gemini -- a cost/abuse guardrail; a real portfolio question
 # never needs more. One constant so the two surfaces can't drift apart.
