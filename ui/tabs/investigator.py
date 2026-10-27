@@ -1315,102 +1315,117 @@ def _process_new_question(
 
         steps: list[str] = []
         with st.status("Thinking...", expanded=True) as status:
-            def log(text: str, detail: str = "") -> None:
-                """text: the short step shown in the strip; detail: the hover text."""
-                steps.append(text + (f"|{detail}" if detail else ""))
-                status.write(text + (f" ({detail})" if detail else ""))
+            ran = _route_and_run(question, scope_hint, df_curr, df_prev, memory, as_of, status, steps, turns)
+        if ran is not None:
+            _store_answer(*ran, df_curr, df_prev, memory, as_of, steps, turns)
 
-            status.write("Understanding your question...")
-            # A workspace question may come back in parts ("segment or executive?").
-            parsed = parse_turn(scope_hint + question, memory, allow_multi=bool(scope_hint))
-            if parsed.get("parts"):
-                parts = parsed["parts"]
-                log(f"Understood: {len(parts)} parts", ", ".join(p["label"] or _step_name(p["step_type"]) for p in parts))
-                ran = _run_parts(parts, question, df_curr, df_prev, memory, as_of)
-                status.update(label=f"Done: {ran} of {len(parts)} parts", state="complete" if ran else "error",
-                              expanded=False)
-                return
-            if parsed.get("step_type"):
-                log(f"Understood: {_step_name(parsed['step_type'])}", _params_text(parsed.get("params")))
-            turn = validate_and_correct(parsed, memory, df_curr, question=question)
-            if turn.get("step_type") == parsed.get("step_type") and turn.get("params") == parsed.get("params"):
-                log("Validated", "checked against your data: no changes needed")
-            elif turn.get("step_type"):
-                log(f"Corrected to: {_step_name(turn['step_type'])}",
-                    "checked against your data and adjusted. " + _params_text(turn.get("params")))
 
-            if turn["needs_clarification"] or not turn["step_type"]:
-                log("Needs more detail", "nothing was run")
-                status.update(label="Needs a bit more detail", state="error", expanded=False)
-                text = turn.get("clarification_question") or "Could you rephrase that?"
-                st.warning(text)
-                turns.append({"role": "assistant", "text": text, "steps": steps})
-                return
+def _route_and_run(question: str, scope_hint: str, df_curr: pd.DataFrame, df_prev: pd.DataFrame,
+                   memory: EntityMemory, as_of, status, steps: list[str], turns: list[dict]):
+    """Understand, check and run the question, logging each step in the
+    "Thinking..." box. Returns (turn, result_df) to show; None when the turn
+    is already answered (parts, a clarification, a hand-off, an error)."""
+    def log(text: str, detail: str = "") -> None:
+        """text: the short step shown in the strip; detail: the hover text."""
+        steps.append(text + (f"|{detail}" if detail else ""))
+        status.write(text + (f" ({detail})" if detail else ""))
 
-            if turn["step_type"] == PORTFOLIO_QUERY:
-                # A list / count question: the AI Query tab answers those.
-                log("Sent to AI Query", "a list or count question")
-                status.update(label="Over to AI Query", state="complete", expanded=False)
-                query = (turn.get("params") or {}).get("question") or question
-                turns.append({"role": "assistant", "kind": "handoff", "question": query, "steps": steps})
-                return
+    status.write("Understanding your question...")
+    # A workspace question may come back in parts ("segment or executive?").
+    parsed = parse_turn(scope_hint + question, memory, allow_multi=bool(scope_hint))
+    if parsed.get("parts"):
+        parts = parsed["parts"]
+        log(f"Understood: {len(parts)} parts", ", ".join(p["label"] or _step_name(p["step_type"]) for p in parts))
+        ran = _run_parts(parts, question, df_curr, df_prev, memory, as_of)
+        status.update(label=f"Done: {ran} of {len(parts)} parts", state="complete" if ran else "error",
+                      expanded=False)
+        return None
+    if parsed.get("step_type"):
+        log(f"Understood: {_step_name(parsed['step_type'])}", _params_text(parsed.get("params")))
+    turn = validate_and_correct(parsed, memory, df_curr, question=question)
+    if turn.get("step_type") == parsed.get("step_type") and turn.get("params") == parsed.get("params"):
+        log("Validated", "checked against your data: no changes needed")
+    elif turn.get("step_type"):
+        log(f"Corrected to: {_step_name(turn['step_type'])}",
+            "checked against your data and adjusted. " + _params_text(turn.get("params")))
 
-            turn["params"] = _canonical_params(turn["params"], df_curr)
-            try:
-                result_df = _execute_step(turn["step_type"], turn["params"], df_curr, df_prev, memory, as_of=as_of)
-            except (KeyError, ValueError) as e:
-                log("Couldn't run", str(e))
-                status.update(label="Couldn't run that", state="error", expanded=False)
-                text = f"I couldn't run that: {e}"
-                st.warning(text)
-                turns.append({"role": "assistant", "text": text, "steps": steps})
-                return
-            log(f"Ran: {0 if result_df is None else len(result_df):,} rows", "exact rows from your file")
-            status.update(label=f"Done: {_step_name(turn['step_type'])}", state="complete", expanded=False)
+    if turn["needs_clarification"] or not turn["step_type"]:
+        log("Needs more detail", "nothing was run")
+        status.update(label="Needs a bit more detail", state="error", expanded=False)
+        text = turn.get("clarification_question") or "Could you rephrase that?"
+        st.warning(text)
+        turns.append({"role": "assistant", "text": text, "steps": steps})
+        return None
 
-        # Outside the status block -- the "thinking" indicator has
-        # collapsed, and the actual chat content (streamed narrative, then
-        # the table) renders as the message body.
-        narrative = ""
-        if result_df is not None and not result_df.empty and st.session_state.get("investigator_narrate"):
-            narrative = st.write_stream(narrate_step_stream(turn["step_type"], result_df))
+    if turn["step_type"] == PORTFOLIO_QUERY:
+        # A list / count question: the AI Query tab answers those.
+        log("Sent to AI Query", "a list or count question")
+        status.update(label="Over to AI Query", state="complete", expanded=False)
+        query = (turn.get("params") or {}).get("question") or question
+        turns.append({"role": "assistant", "kind": "handoff", "question": query, "steps": steps})
+        return None
 
-        entity_type, entity_value = _derive_entity_key(
-            turn["step_type"], turn["params"], turn.get("resolved_entity"),
-        )
-        # Canonicalize a resolved executive's identity BEFORE storing it --
-        # entity_summary's own executive-matching (_executive_row) resolves
-        # a typed name ("Taushif Khan") against the real data's MNT NAME
-        # ("TAUSIF KHAN NAZIR KH") internally, but that resolution used to
-        # be thrown away: only the computed table reached here, never the
-        # canonical identity. Storing the raw typed name broke any LATER
-        # step needing an exact match (non_paying_customers's source-table
-        # merge requires exact MNT NAME/Unit) -- confirmed live, twice:
-        # once as a silent empty result, once as the WRONG executive's data
-        # (the LLM substituting a stale, unrelated table once the typed
-        # name failed to resolve anywhere useful). Every later reference to
-        # "this executive" in the conversation, by any step, now resolves
-        # against the same real identity.
-        if entity_type == "executive":
-            raw_name, raw_unit = entity_value if isinstance(entity_value, tuple) else (entity_value, None)
-            canonical = resolve_executive_identity(df_curr, raw_name, raw_unit)
-            if canonical:
-                entity_value = canonical
-                turn["params"] = {**turn["params"], "entity_value": list(canonical)}
-        record = memory.touch(
-            entity_type, entity_value, result_df=result_df,
-            metric_focus=_metric_focus_for(turn["step_type"], turn["params"]), step_type=turn["step_type"],
-            narrative=narrative, params=turn["params"],
-        )
-        turns.append({"role": "assistant", "entity_type": entity_type, "entity_value": entity_value,
-                      "steps": steps})
-        dl_key = _turn_dl_key(len(turns) - 1, entity_type, entity_value)
+    turn["params"] = _canonical_params(turn["params"], df_curr)
+    try:
+        result_df = _execute_step(turn["step_type"], turn["params"], df_curr, df_prev, memory, as_of=as_of)
+    except (KeyError, ValueError) as e:
+        log("Couldn't run", str(e))
+        status.update(label="Couldn't run that", state="error", expanded=False)
+        text = f"I couldn't run that: {e}"
+        st.warning(text)
+        turns.append({"role": "assistant", "text": text, "steps": steps})
+        return None
+    log(f"Ran: {0 if result_df is None else len(result_df):,} rows", "exact rows from your file")
+    status.update(label=f"Done: {_step_name(turn['step_type'])}", state="complete", expanded=False)
+    return turn, result_df
 
-        if result_df is None or result_df.empty:
-            st.info(_empty_result_message(turn["step_type"], df_prev))
-        else:
-            _show_result(record, df_curr, df_prev, dl_key, show_narrative=False)
-            _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
+
+def _store_answer(turn: dict, result_df, df_curr: pd.DataFrame, df_prev: pd.DataFrame, memory: EntityMemory,
+                  as_of, steps: list[str], turns: list[dict]) -> None:
+    """Narrate (when asked), remember the result under its entity, and show it with its drills."""
+    # Called outside the status block -- the "thinking" indicator has
+    # collapsed, and the actual chat content (streamed narrative, then
+    # the table) renders as the message body.
+    narrative = ""
+    if result_df is not None and not result_df.empty and st.session_state.get("investigator_narrate"):
+        narrative = st.write_stream(narrate_step_stream(turn["step_type"], result_df))
+
+    entity_type, entity_value = _derive_entity_key(
+        turn["step_type"], turn["params"], turn.get("resolved_entity"),
+    )
+    # Canonicalize a resolved executive's identity BEFORE storing it --
+    # entity_summary's own executive-matching (_executive_row) resolves
+    # a typed name ("Taushif Khan") against the real data's MNT NAME
+    # ("TAUSIF KHAN NAZIR KH") internally, but that resolution used to
+    # be thrown away: only the computed table reached here, never the
+    # canonical identity. Storing the raw typed name broke any LATER
+    # step needing an exact match (non_paying_customers's source-table
+    # merge requires exact MNT NAME/Unit) -- confirmed live, twice:
+    # once as a silent empty result, once as the WRONG executive's data
+    # (the LLM substituting a stale, unrelated table once the typed
+    # name failed to resolve anywhere useful). Every later reference to
+    # "this executive" in the conversation, by any step, now resolves
+    # against the same real identity.
+    if entity_type == "executive":
+        raw_name, raw_unit = entity_value if isinstance(entity_value, tuple) else (entity_value, None)
+        canonical = resolve_executive_identity(df_curr, raw_name, raw_unit)
+        if canonical:
+            entity_value = canonical
+            turn["params"] = {**turn["params"], "entity_value": list(canonical)}
+    record = memory.touch(
+        entity_type, entity_value, result_df=result_df,
+        metric_focus=_metric_focus_for(turn["step_type"], turn["params"]), step_type=turn["step_type"],
+        narrative=narrative, params=turn["params"],
+    )
+    turns.append({"role": "assistant", "entity_type": entity_type, "entity_value": entity_value,
+                  "steps": steps})
+    dl_key = _turn_dl_key(len(turns) - 1, entity_type, entity_value)
+
+    if result_df is None or result_df.empty:
+        st.info(_empty_result_message(turn["step_type"], df_prev))
+    else:
+        _show_result(record, df_curr, df_prev, dl_key, show_narrative=False)
+        _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
 
 
 def _render_header() -> None:
@@ -1685,10 +1700,26 @@ def render_investigator_tab(
     """The Investigator tab: why a number moved, one bounded step at a time,
     each answer with the steps that produced it. List / count questions are
     handed to the AI Query tab."""
-    # Scoped styles, not a global theme change: the theme's near-black widget
-    # background with black text would be unreadable on these controls.
-    st.markdown(
-        """<style>
+    st.markdown(_TAB_STYLE, unsafe_allow_html=True)
+    _render_header()
+    memory = _get_memory()
+    turns = _get_turns()
+    cards, card = _render_briefing_and_focus(df_curr, df_prev, data_version, filter_key, curr_month, prev_month, turns)
+    question = _render_question_box(card, df_curr, turns)
+    if question is not None:
+        _process_new_question(question, df_curr, df_prev, memory, as_of=curr_month, scope_hint=_scope_hint(card))
+        st.rerun()
+
+    if not turns:
+        if card is None and not cards:
+            _render_proactive_opener(df_curr, alerts_curr, memory)
+        return
+    _render_conversation(turns, memory, df_curr, df_prev, curr_month)
+
+
+# Scoped styles, not a global theme change: the theme's near-black widget
+# background with black text would be unreadable on these controls.
+_TAB_STYLE = """<style>
         /* "Focus on which metric?" selectbox (_render_analyse_further's
            several st.selectbox(key=f"metric_pick_{dl_key}") calls): this app's theme
            (.streamlit/config.toml) sets secondaryBackgroundColor (widget
@@ -1787,14 +1818,12 @@ def render_investigator_tab(
             background: #FFC000 !important; color: #000000 !important;
             font-style: normal; font-weight: 700 !important; box-shadow: none !important;
         }
-        </style>""",
-        unsafe_allow_html=True,
-    )
+        </style>"""
 
-    _render_header()
-    memory = _get_memory()
-    turns = _get_turns()
 
+def _render_briefing_and_focus(df_curr, df_prev, data_version, filter_key, curr_month, prev_month, turns):
+    """The monthly briefing, the region cards, and the open card's header.
+    Returns (cards, the open card or None)."""
     # Briefing and workspace (2026-10-26): the monthly briefing on top, one
     # card per region that stands out, and the open card's own conversation
     # below. "All regions" is the general Q&A, as before.
@@ -1812,8 +1841,12 @@ def render_investigator_tab(
             _open_focus(next(c for c in cards if c.region == clicked), job, df_curr, df_prev, curr_month)
     if card is not None:
         _render_focus_header(card, job, df_curr, df_prev, curr_month)
+    return cards, card
 
-    # The question box: about the open region's workspace, or the whole portfolio.
+
+def _render_question_box(card, df_curr: pd.DataFrame, turns: list[dict]) -> str | None:
+    """The question box (about the open region, or the whole portfolio), and
+    suggestions on a blank page. Returns the question asked, if any."""
     with st.form("ask_form", clear_on_submit=True, border=False):
         placeholder = (f'Ask about {card.region}, e.g. "is it a segment or an executive?" or "which branches?"'
                        if card is not None else
@@ -1840,23 +1873,17 @@ def render_investigator_tab(
             )
         if suggestion and question is None:
             question = _SUGGESTIONS[suggestion]
+    return question
 
-    if question is not None:
-        # In a region's workspace the router is told which region the question
-        # is about, so "is it a segment or an executive?" stays on that region.
-        scope = ""
-        if card is not None:
-            from investigation.review.brief import LIST_NAMES
-            lens = (_get_threads()[_get_active_thread_id()].get("focus") or {}).get("lens", card.lens)
-            scope = f"About the {card.region} region (focus: {LIST_NAMES[lens.split(':', 1)[0]]}): "
-        _process_new_question(question, df_curr, df_prev, memory, as_of=curr_month, scope_hint=scope)
-        st.rerun()
 
-    if not turns:
-        if card is None and not cards:
-            _render_proactive_opener(df_curr, alerts_curr, memory)
-        return
-    _render_conversation(turns, memory, df_curr, df_prev, curr_month)
+def _scope_hint(card) -> str:
+    """In a region's workspace the router is told which region the question
+    is about, so "is it a segment or an executive?" stays on that region."""
+    if card is None:
+        return ""
+    from investigation.review.brief import LIST_NAMES
+    lens = (_get_threads()[_get_active_thread_id()].get("focus") or {}).get("lens", card.lens)
+    return f"About the {card.region} region (focus: {LIST_NAMES[lens.split(':', 1)[0]]}): "
 
 
 def _example_region(df_curr: pd.DataFrame) -> str:
