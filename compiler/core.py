@@ -18,6 +18,7 @@ aliases and metric definitions, resolves the dynamic 1-year cutoff, assembles th
 plan, and validates it with the existing validate_plan. Unknown concept/metric ->
 a loud error (routes to repair/clarification), never a silent wrong plan.
 """
+import json
 import re
 
 
@@ -557,11 +558,29 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
     extra_derives: list = []
     local_errs: list = []  # non-fatal: only used to resolve mdef, not propagated
 
-    for m in ir_measures:
-        mdef = _measure_def(m, local_errs, columns)
+    mdefs = [d for d in (_measure_def(m, local_errs, columns) for m in ir_measures) if d is not None]
+    # A measure that already reads last month (prev_npa_count, prev_exposure)
+    # IS the comparison's last-month side: it has no "month before" to add.
+    # The planner often names one AND adds a time block; that used to fail.
+    # Its figure is reused as the twin of the matching this-month measure,
+    # never computed a second time under another name.
+    twins = {}
+    for d in mdefs:
+        if _reads_last_month(d):
+            twins.setdefault(_twin_key(d), d["alias"])
+
+    def _add_prev(alias: str, prev_alias: str, agg: dict) -> None:
+        twin = twins.get(_twin_key({**agg, "kind": "count" if agg["func"] == "count" else "additive"}))
+        if twin is None:
+            extra_aggs.append({"alias": prev_alias, **agg})
+            twin = prev_alias
+        if typ == "change":
+            extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {twin}"})
+
+    for mdef in mdefs:
         # (Every unsupported measure below adds to errs: a fatal error, so the
         # repair loop or the user sees it.)
-        if mdef is None:
+        if _reads_last_month(mdef):
             continue
         alias = mdef["alias"]
         kind = mdef["kind"]
@@ -572,7 +591,8 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
             prev_col = PREV_CARRYOVER_COLS.get(col) if col else None
             func = (mdef.get("agg") or "sum").lower()
             if prev_col:
-                extra_aggs.append({"alias": prev_alias, "func": func, "column": prev_col})
+                _add_prev(alias, prev_alias, {"func": func, "column": prev_col})
+                continue
             elif col in LABEL_COLUMNS:
                 # A fixed loan attribute (e.g. Loan Amount): last month's total
                 # is the same column over the loans on the book last month.
@@ -654,9 +674,7 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
             if prev_where is None:
                 errs.append(_no_prev_msg(alias, mdef.get("where") or []))
                 continue
-            extra_aggs.append({"alias": prev_alias, "func": "count", "where": prev_where})
-            if typ == "change":
-                extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
+            _add_prev(alias, prev_alias, {"func": "count", "where": prev_where})
 
         elif kind == "count_distinct":
             col = mdef.get("distinct") or mdef.get("column")
@@ -669,6 +687,29 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
                 extra_derives.append({"column": f"{alias}_change", "expr": f"{alias} - {prev_alias}"})
 
     return extra_aggs, extra_derives
+
+
+def _reads_last_month(mdef: dict) -> bool:
+    """The measure reads only last month (a prev_* column or prev_bucket, plus
+    labels). One that also reads this month ("worse than last month") is a
+    both-months measure, and still has no last-month version."""
+    cols = {mdef.get("column"), mdef.get("distinct")} - {None}
+    cols |= set(as_list(mdef.get("numerator"))) | set(as_list(mdef.get("denominator")))
+    for key in ("where", "numerator_where", "denominator_where"):
+        for cond in mdef.get(key) or []:
+            cols |= _condition_columns(cond)
+    return bool(cols & _PREV_TO_BASE.keys()) and cols <= (_PREV_TO_BASE.keys() | LABEL_COLUMNS)
+
+
+def _twin_key(mdef: dict):
+    """What a count or amount measure computes, so a this-month measure's
+    last-month version can be matched to one the IR already names. None for
+    kinds that are never matched (each keeps its own last-month column)."""
+    if mdef.get("kind") == "count":
+        return ("count", json.dumps(mdef.get("where") or [], sort_keys=True))
+    if mdef.get("kind") in ("additive", "semi_additive"):
+        return ((mdef.get("agg") or mdef.get("func") or "sum").lower(), mdef.get("column"))
+    return None
 
 
 def _no_prev_msg(alias: str, conditions: list) -> str:

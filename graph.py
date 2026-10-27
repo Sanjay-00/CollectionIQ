@@ -817,7 +817,9 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
 
         err_msg = "; ".join(errs)
         if attempt == _MAX_REPAIRS:
-            if "prev_bucket" in err_msg:
+            # Only when last month really is missing: with it loaded, the
+            # tip sent people to upload a file they already had.
+            if "prev_bucket" in err_msg and not (state.get("snapshot_dates") or {}).get("prev"):
                 err_msg += ". Tip: upload a previous-period file to enable snapshot comparisons."
             _trace_metadata({"repair_attempts": attempt, "compiled_ok": False, "compile_errors": err_msg})
             return {**state, "error": f"Could not compile query: {err_msg}"}

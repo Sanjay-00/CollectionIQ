@@ -126,6 +126,50 @@ class TestVsLastMonthNeverDropsTheComparison:
         assert {"npa", "prev_npa", "npa_change"} <= set(r.columns)
         assert r.loc["NASIK", "npa_change"] == -1
 
+    def test_explicit_last_month_measure_plus_a_time_block(self):
+        # The planner's real IR for the "biggest NPA reduction" example chip
+        # (traced 2026-10-24): it names prev_npa_count AND adds time.compare.
+        # prev_npa is already last month's side; it used to fail as "no
+        # last-month value for prev_bucket", every time, repair included.
+        curr, prev = _months()
+        ir = {"measures": [{"metric": "prev_npa_count", "alias": "prev_npa"},
+                           {"metric": "npa_count", "alias": "curr_npa"}],
+              "metrics": [{"alias": "npa_reduction", "expr": "prev_npa - curr_npa"}],
+              "order_by": [{"by": "npa_reduction", "dir": "desc"}]}
+        with_time = _run({**ir, "time": {"grain": "month", "compare": {"type": "snapshot", "from": "prev",
+                                                                       "to": "curr"}}}, curr, prev)
+        without = _run(ir, curr, prev)
+        pd.testing.assert_frame_equal(with_time, without)   # no duplicate last-month column either
+        assert with_time.loc["NASIK", "prev_npa"] == 1 and with_time.loc["PUNE", "npa_reduction"] == -1
+
+    def test_change_reuses_the_explicit_last_month_measure(self):
+        # "npa" vs last month would be named prev_npa: the same figure the IR
+        # already has under that name, so it is reused, not added twice.
+        curr, prev = _months()
+        r = _run({"measures": [{"metric": "prev_npa_count", "alias": "prev_npa"},
+                               {"metric": "npa_count", "alias": "npa"}],
+                  "time": {"compare": {"type": "change", "from": "prev", "to": "curr"}}}, curr, prev)
+        assert list(r.columns) == ["Rank", "prev_npa", "npa", "npa_change"]
+        assert r.loc["PUNE", "npa_change"] == 1 and r.loc["NASIK", "npa_change"] == -1
+
+    @pytest.mark.parametrize("prev_loaded", [True, False])
+    def test_upload_tip_only_when_last_month_is_missing(self, monkeypatch, prev_loaded):
+        # The tip said "upload a previous-period file" with one uploaded.
+        import graph
+        ir = {"intent": "aggregation", "dimensions": ["region"],
+              # NPA last month AND in arrears now: has no "month before" version.
+              "measures": [{"agg": "count", "alias": "x", "where": [
+                  {"column": "prev_bucket", "op": "==", "value": "NPA"},
+                  {"column": "Arrears / EMI", "op": ">", "value": 0}]}],
+              "time": {"compare": {"type": "change", "from": "prev", "to": "curr"}}}
+        monkeypatch.setattr(graph, "plan_logical", lambda *a, **k: ir)   # the repair returns the same IR
+        curr, _ = _months()
+        dates = {"curr": "2026-09-30", **({"prev": "2026-08-31"} if prev_loaded else {})}
+        out = graph.compile_and_validate_node({"query": "t", "ir1": ir, "result_df_full": curr,
+                                               "snapshot_dates": dates})
+        assert "Could not compile" in out["error"]
+        assert ("upload a previous-period file" in out["error"]) is (not prev_loaded)
+
     def test_a_measure_with_no_last_month_value_is_an_error(self):
         curr, _ = _months()
         ir = {"intent": "aggregation", "dimensions": ["region"],
