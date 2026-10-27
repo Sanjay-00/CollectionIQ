@@ -32,6 +32,7 @@ from ui.tabs.root_cause import render_root_cause_tab
 from ui.tabs.business import render_business_tab
 from ui.tabs.ai_query import render_ai_query_tab
 from ui.tabs.investigator import render_investigator_tab
+from ui.review_panel import start_review
 from ui.tabs.report import render_report_tab
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -463,10 +464,15 @@ try:
     elif active == "🕵️ Investigator":
         # Why a number moved, one bounded step at a time; lists go to AI Query.
         render_investigator_tab(df_curr, df_prev, data_version=data_version, filter_key=_filter_key,
-                                alerts_curr=_alerts(), curr_month=curr_month)
+                                alerts_curr=_alerts(), curr_month=curr_month, prev_month=prev_month)
 
     elif active == "📋 Report":
         render_report_tab(df_curr, df_prev, curr_month, prev_month, sel_region, sel_branch, sel_status, sel_zone)
 
 except Exception as _e:
     _tab_error(active.split(" ", 1)[-1], _e)
+
+# The Portfolio Review of every region starts in the background once this
+# page has drawn (code only, no AI), so it is usually ready by the time the
+# Investigator tab is opened. Started at most once per session, data and filter.
+start_review(df_curr, df_prev, curr_month, prev_month, data_version, _filter_key)

@@ -435,7 +435,13 @@ already in entity memory (source_entities names them). Params:
                         {"entity_type": "branch_executives", "entity_value": "Mahad:NPA %"}],
    "min_appearances": null}
 
-non_paying_customers: customers behind a previously-computed executive
+non_paying_customers: customers who are not paying ("not paying,"
+"haven't paid for 3 months," "non-paying customers"). For a NAMED branch/
+region/zone/BU ("customers not paying in Akluj"), pass scope_col/
+scope_value directly: NEVER invent a source_entities entry that is not in
+the entity memory context below (a source that isn't there cannot be run).
+With nothing named and nothing in focus, pass {} (the whole book). Use
+source_entities only for customers behind a previously-computed executive
 table already in entity memory, OR behind a SINGLE executive currently in
 focus (entity_type "executive": e.g. right after "why does Tausif Khan
 have low collection," a follow-up like "who are the customers behind him"
@@ -451,6 +457,9 @@ the question asks for "all columns," "every column," "full details," or
 names a SPECIFIC column not in that curated list, set all_columns: true and
 RE-RUN this same step (don't try to enumerate individual extra columns,
 that's not a real parameter: all_columns is the only lever). Params:
+  {"scope_col": "branch", "scope_value": "Mahad"}
+  {"scope_col": "region", "scope_value": "WEST"}
+  {}
   {"source_entities": [{"entity_type": "branch_executives", "entity_value": "Mahad:Collection %"}]}
   {"source_entities": [{"entity_type": "executive", "entity_value": ["Tausif Khan Nazir Kh", "BHSWL"]}]}
   {"source_entities": [{"entity_type": "branch_executives", "entity_value": "Mahad:Collection %"}],
@@ -510,7 +519,7 @@ underperformer_quartile/bottom_n_per_group (executive grain) or
 dimension_breakdown (branch grain), when the question goes one level
 FURTHER than "which executive/branch," down to "which actual loans/
 customers." metric MUST be one of "NPA %", "Hard Bucket %", "Collection %",
-"Strike Rate %" (also accepts the no-space spelling): this maps that
+"Strike Rate %", "Delinquency %" (also accepts the no-space spelling): this maps that
 metric to its matching registered concept and returns sorted-worst-first,
 customer-named rows, distinct from non_paying_customers (the Dashboard's
 "Not Paying 3M+" rule, not tied to any specific metric) and from
@@ -696,8 +705,35 @@ discussing branch PUNE -> "PUNE branch's loans"). Params:
 """.strip()
 
 
-def build_turn_prompt(question: str, entity_memory: EntityMemory) -> str:
-    """Deterministic prompt text -- no Gemini call, fully unit-testable."""
+MAX_PARTS = 3
+
+# Only for a question asked in a region's workspace (allow_multi): live,
+# "is it a segment or an executive?" about NASHIK ran one step and answered
+# neither part.
+_MULTI_RULE = """
+MULTI-PART QUESTIONS: when the question asks for two or three SEPARATE
+analyses ("is it a segment or an executive", "show both X and Y", "by branch
+and by product"), add a "parts" list instead of answering only one of them:
+up to 3 steps, each a complete step from the list above with its own params
+and a short label. Keep the region the question is about as each part's
+scope. Leave "parts" out for a question that one step answers.
+Example: "About the NASHIK region (focus: collection shortfall): is it a
+segment or an executive?" ->
+  "parts": [
+    {"step_type": "product_analysis", "label": "By segment",
+     "params": {"axis": "segment", "scope_col": "region", "scope_value": "NASHIK"}},
+    {"step_type": "underperformer_quartile", "label": "By executive",
+     "params": {"metric": "Collection %", "scope_col": "region", "scope_value": "NASHIK"}}
+  ]
+"""
+
+
+def build_turn_prompt(question: str, entity_memory: EntityMemory, allow_multi: bool = False) -> str:
+    """Deterministic prompt text -- no Gemini call, fully unit-testable.
+    allow_multi: a workspace question, which may come back in parts."""
+    multi = _MULTI_RULE if allow_multi else ""
+    parts_key = ('\n  "parts": [ ...only for a multi-part question, see MULTI-PART QUESTIONS... ],'
+                 if allow_multi else "")
     metrics = ", ".join(sorted(METRIC_DIRECTION.keys()))
     concepts = ", ".join(sorted(CONCEPTS.keys()))
     return f"""You are a sharp, experienced NBFC collections & credit risk analyst,
@@ -714,6 +750,8 @@ resolve any reference in the question (a pronoun, "that branch," "focus on
 X") against the entity memory given.
 
 KNOWN METRICS (use these exact names): {metrics}
+"Delinquent," "delinquency," "overdue" or "behind on EMI" mean Delinquency %
+(any EMI overdue). Use NPA % only when the question says NPA.
 
 KNOWN CONCEPTS (predefined business rules, use with concept_filter, use
 these exact names): {concepts}
@@ -726,11 +764,11 @@ STEP TYPES AND THEIR EXACT PARAMETERS:
 {_STEP_EXAMPLES}
 
 {_entity_memory_context(entity_memory)}
-
+{multi}
 Return ONLY a JSON object with this shape, no markdown fences, no prose:
 {{
   "step_type": "<one of the step types above, or null if you cannot map this to a tool>",
-  "params": {{...parameters matching that step type's shape EXACTLY, same key names...}},
+  "params": {{...parameters matching that step type's shape EXACTLY, same key names...}},{parts_key}
   "resolved_entity": {{"entity_type": "...", "entity_value": "..."}} or null,
   "needs_clarification": false,
   "clarification_question": ""
@@ -753,17 +791,39 @@ def _fallback_turn_result(reason: str) -> dict:
     }
 
 
-def _normalize_turn_response(raw_text: str) -> dict:
+def _parts(raw, resolved_entity) -> dict | None:
+    """A multi-part answer as a turn with "parts" (2 to MAX_PARTS known
+    steps; anything else in the list is dropped), a single part as a plain
+    turn, or None when no part is usable. A hand-off to AI Query is never a
+    part: it answers a different kind of question."""
+    if not isinstance(raw, list):
+        return None
+    parts = [{"step_type": p["step_type"], "params": p.get("params") or {}, "label": str(p.get("label") or "")[:40]}
+             for p in raw if isinstance(p, dict) and p.get("step_type") in STEP_REGISTRY][:MAX_PARTS]
+    if not parts:
+        return None
+    turn = {"step_type": parts[0]["step_type"], "params": parts[0]["params"], "resolved_entity": resolved_entity,
+            "needs_clarification": False, "clarification_question": ""}
+    return {**turn, "parts": parts} if len(parts) > 1 else turn
+
+
+def _normalize_turn_response(raw_text: str, allow_multi: bool = False) -> dict:
     """Parse and validate a raw Gemini response into a turn-result dict.
     Never raises -- any malformed/unparseable response degrades to a
     clarification request instead of crashing the caller, matching
-    agents/logical_planner.py::plan_logical's own JSON-failure handling."""
+    agents/logical_planner.py::plan_logical's own JSON-failure handling.
+    allow_multi: a workspace question, whose "parts" are kept."""
     try:
         parsed = json.loads(_strip_code_fence(raw_text))
     except (json.JSONDecodeError, ValueError):
         return _fallback_turn_result(
             "I couldn't understand that as a portfolio question. Could you rephrase it?"
         )
+
+    if allow_multi and parsed.get("parts"):
+        multi = _parts(parsed.get("parts"), parsed.get("resolved_entity"))
+        if multi is not None:
+            return multi
 
     step_type = parsed.get("step_type")
     if step_type is not None and step_type not in STEP_REGISTRY and step_type != PORTFOLIO_QUERY:
@@ -780,7 +840,7 @@ def _normalize_turn_response(raw_text: str) -> dict:
     }
 
 
-def parse_turn(question: str, entity_memory: EntityMemory) -> dict:
+def parse_turn(question: str, entity_memory: EntityMemory, allow_multi: bool = False) -> dict:
     """One Gemini call: route free text (initial question OR any follow-up)
     to a step_type + params from the fixed vocabulary, resolving references
     against entity_memory. Never performs aggregation/grouping itself."""
@@ -797,7 +857,7 @@ def parse_turn(question: str, entity_memory: EntityMemory) -> dict:
     client = make_client(api_key)
     try:
         response = _call_gemini_with_retry(
-            client, GEMINI_MODEL, build_turn_prompt(question, entity_memory),
+            client, GEMINI_MODEL, build_turn_prompt(question, entity_memory, allow_multi=allow_multi),
             {"temperature": PLANNER_TEMPERATURE},
         )
     except Exception as e:
@@ -806,7 +866,7 @@ def parse_turn(question: str, entity_memory: EntityMemory) -> dict:
         logger.warning("Investigator routing call failed: %s", e)
         return _fallback_turn_result("I couldn't reach the AI service just now. Please try again in a moment.")
     _add_token_usage(response)
-    return _normalize_turn_response(response.text)
+    return _normalize_turn_response(response.text, allow_multi=allow_multi)
 
 
 def build_narration_prompt(step_type: str, result_df_preview: str) -> str:
@@ -897,18 +957,97 @@ def _build_preview(step_type: str, result_df) -> str:
     shown = f"(all {n} rows)" if n <= _PREVIEW_ROWS else f"(the first {_PREVIEW_ROWS} of {n} rows, in the table's order)"
     # Rounded to 2 decimals, as the model should quote them (and as _checked
     # compares them): an unrounded 87.23456 would get a correct "87.23%" dropped.
-    return shown + "\n" + result_df.head(_PREVIEW_ROWS).round(2).to_csv(index=False)
+    preview = shown + "\n" + result_df.head(_PREVIEW_ROWS).round(2).to_csv(index=False)
+    facts = direction_facts(result_df)
+    if facts:
+        # Every row, not just the preview: the model describes the table's
+        # changes from these counts (live: it called a table "generally
+        # improving" where Collection% fell in 26 of 50 branches).
+        lines = [f"{m}: fell in {f['down']} of {f['rows']} rows, rose in {f['up']}" for m, f in facts.items()]
+        preview += "\nCHANGES SINCE LAST MONTH (counted over all rows; describe changes only as these say):\n" \
+                   + "\n".join(lines)
+    return preview
+
+
+def direction_facts(result_df) -> dict:
+    """{metric: {"up", "down", "rows"}} for each change column ("Δ NPA%")
+    of a table, counted over every row."""
+    out = {}
+    if result_df is None:
+        return out
+    for col in result_df.columns:
+        if isinstance(col, str) and col.startswith("Δ "):
+            v = pd.to_numeric(result_df[col], errors="coerce").dropna()
+            if len(v):
+                out[col[2:]] = {"up": int((v > 0).sum()), "down": int((v < 0).sum()), "rows": int(len(v))}
+    return out
+
+
+# Words that state a change over time. "higher"/"lower"/"up"/"down" are left
+# out: they usually compare units ("the lowest Collection%"), not months.
+_UP = re.compile(r"\b(rose|ris(?:e|es|ing)|increas\w*|grew|grow(?:s|ing)?|climb\w*|jump\w*|went up)\b", re.I)
+_DOWN = re.compile(r"\b(fell|fall(?:s|ing)?|drop\w*|declin\w*|decreas\w*|dipp?\w*|went down|shr[ai]nk\w*)\b", re.I)
+_GOOD = re.compile(r"\b(improv\w*|getting better|recover\w*)\b", re.I)
+_BAD = re.compile(r"\b(worsen\w*|deteriorat\w*|getting worse|weaken\w*)\b", re.I)
+_FEW = re.compile(r"\b(some|several|a few|a handful|a number of|certain)\b", re.I)
+_CLAUSE = re.compile(r"[,;]|\b(?:while|whereas|but|however|although)\b", re.I)
+
+
+def _metric_pattern(metric: str) -> re.Pattern:
+    base = metric.rstrip("%").strip().lower()
+    stem = base if (" " in base or len(base) <= 7) else base[:7]       # "delinquency" -> "delinqu"
+    return re.compile(r"\b" + re.escape(stem), re.I)
+
+
+def _contradicts(sentence: str, facts: dict) -> bool:
+    """True when a clause states a change in a metric that its counts don't
+    support: a claim about most rows needs a majority, "some" a fifth."""
+    for clause in _CLAUSE.split(sentence):
+        if not clause:
+            continue
+        claims = []
+        if _UP.search(clause):
+            claims.append(("up", None))
+        if _DOWN.search(clause):
+            claims.append(("down", None))
+        if _GOOD.search(clause):
+            claims.append((None, True))
+        if _BAD.search(clause):
+            claims.append((None, False))
+        if not claims:
+            continue
+        few = bool(_FEW.search(clause))
+        for metric, f in facts.items():
+            if not _metric_pattern(metric).search(clause):
+                continue
+            for direction, good in claims:
+                if direction is None:
+                    hib = METRIC_DIRECTION.get(metric)
+                    if hib is None:
+                        continue
+                    direction = "up" if good == hib else "down"
+                share = f[direction] / f["rows"] if f["rows"] else 0.0
+                supported = share >= 0.2 if few else share > 0.5       # "some" needs a fifth; otherwise a majority
+                if not supported:
+                    return True
+    return False
 
 
 _PREVIEW_ROWS = 20
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
-def _checked(text: str, preview: str) -> str:
+def _checked(text: str, preview: str, facts: dict | None = None) -> str:
     """Only the sentences whose every number is in the preview the model saw
-    (agents/insight_generator.check_numbers, sentence by sentence)."""
+    (agents/insight_generator.check_numbers, sentence by sentence) and whose
+    stated changes agree with the table's counts (direction_facts): a
+    sentence can be wrong with no number in it."""
     from agents.insight_generator import check_numbers
     sentences = [x for x in _SENTENCE_END.split(text.strip()) if x]
+    if facts:
+        sentences = [s for s in sentences if not _contradicts(s, facts)]
+    if not sentences:
+        return ""
     return " ".join(check_numbers("\n".join(sentences), preview).splitlines())
 
 
@@ -929,7 +1068,7 @@ def narrate_step(step_type: str, result_df) -> str:
         {"temperature": PLANNER_TEMPERATURE},
     )
     _add_token_usage(response)
-    return _checked(response.text or "", preview)
+    return _checked(response.text or "", preview, direction_facts(result_df))
 
 
 def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
@@ -960,7 +1099,7 @@ def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
                 chunks.append(chunk.text)
         if chunks:
             yielded = True
-            yield _checked("".join(chunks), preview)
+            yield _checked("".join(chunks), preview, direction_facts(result_df))
     except Exception as e:
         # Streaming has no retry of its own, and nothing has been shown yet
         # (the text is checked before it is shown), so retry in full with
@@ -973,6 +1112,6 @@ def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
             text = narrate_step(step_type, result_df)
         except Exception as e2:
             logger.warning("Investigator narration fallback failed: %s", e2)
-            text = _checked("".join(chunks), preview) if chunks else ""
+            text = _checked("".join(chunks), preview, direction_facts(result_df)) if chunks else ""
         if text:
             yield text

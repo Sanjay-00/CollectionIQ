@@ -1,4 +1,4 @@
-"""
+﻿"""
 Investigator tab: why a number moved, answered one bounded step at a time,
 each answer with the steps that produced it ("How I got this"). When the
 router picks "portfolio_query" (a list / count question), the question is
@@ -50,6 +50,9 @@ from config import INVESTIGATOR_MAX_THREADS
 from investigator.branch_recipients import get_branch_recipients
 from investigator.email_draft import draft_priority_email
 from investigator.guardrails import validate_and_correct
+from investigator.headline import (
+    RANKING_LONG, RANKING_SHOWN, RANKING_STEP_TYPES, STEP_LABELS, display_table, headline, metric_shown, why_split,
+)
 from investigator.llm import PORTFOLIO_QUERY, narrate_step_stream, parse_turn
 from investigator.state import EntityMemory
 from investigator.steps import (
@@ -57,12 +60,18 @@ from investigator.steps import (
     METRIC_DRILL_FILTER,
     PRIORITY_MENU_CATEGORIES,
     STEP_REGISTRY,
+    _scope,
+    _scope_executive_rows,
     resolve_executive_identity,
     summarize_worst_loans,
 )
 from investigator.suggestions import suggest_mechanism_steps
 from registry.semantic_model import resolve_dimension
 from ui.components import TAB_LABELS, _dl_btn, _esc, _safe_df
+from ui.review_panel import (
+    ALL_REGIONS, REVIEW_CONTEXT, REVIEW_OPEN, choose, log_decision, render_briefing, render_focus_strip,
+    review_focuses, start_review,
+)
 
 _NEW_CHAT_TITLE = "New chat"
 _TITLE_MAX_CHARS = 40
@@ -134,6 +143,7 @@ _BRANCH_TO_EXEC_METRIC = {
     "NPA%":          "NPA %",
     "Strike%":       "Strike Rate %",
     "Hard Bucket%":  "Hard Bucket %",
+    "Delinquency%":  "Delinquency %",
 }
 
 
@@ -216,7 +226,7 @@ def _turn_dl_key(turn_index: int, entity_type: str, entity_value) -> str:
     return f"inv_t{turn_index}_{entity_type}_{_sanitize_key(entity_value)}"
 
 
-def _resolve_source_tables(params: dict, memory: EntityMemory) -> list[pd.DataFrame]:
+def _resolve_source_tables(params: dict, memory: EntityMemory, df_curr: pd.DataFrame | None = None) -> list[pd.DataFrame]:
     """A step consuming a previously-computed entity table (intersect_entities,
     non_paying_customers) names it via params["source_entities"] (a list of
     {"entity_type", "entity_value"}) -- resolved here against EntityMemory,
@@ -231,18 +241,27 @@ def _resolve_source_tables(params: dict, memory: EntityMemory) -> list[pd.DataFr
     LLM to substitute a stale, unrelated one when asked about a single
     already-focused executive -- confirmed live), synthesize a one-row
     lookup table directly from that executive's own (by now canonicalized,
-    see _process_new_question) identity."""
+    see _process_new_question) identity. A typed name ("Taushif") is matched
+    to the file's own spelling first, as entity_summary does.
+
+    Raises ValueError when a named earlier result isn't in this chat: run on
+    the tables that ARE found, the step answered "No rows matched", a false
+    zero (live: "customers not paying in Akluj" showed none; there were 27).
+    An earlier result that exists but had no rows stays an empty table."""
     refs = params.get("source_entities") or []
     tables = []
     for ref in refs:
         etype = ref.get("entity_type")
         evalue = _as_entity_value(etype, ref.get("entity_value"))
         if etype == "executive" and isinstance(evalue, tuple) and len(evalue) == 2:
-            tables.append(pd.DataFrame([{"MNT NAME": evalue[0], "Unit": evalue[1]}]))
+            name, unit = resolve_executive_identity(df_curr, *evalue) or evalue
+            tables.append(pd.DataFrame([{"MNT NAME": name, "Unit": unit}]))
             continue
         record = memory.get(etype, evalue)
-        if record is not None and record.result_df is not None and not record.result_df.empty:
-            tables.append(record.result_df)
+        if record is None or record.result_df is None:
+            raise ValueError("it builds on an earlier answer that isn't in this chat. "
+                             "Ask again naming the branch, region or executive.")
+        tables.append(record.result_df)
     return tables
 
 
@@ -318,13 +337,39 @@ def _derive_entity_key(step_type: str, params: dict, resolved_entity: dict | Non
         return "executive_group", f"{step_type}:{params.get('metric')}:{scope}"
     if step_type in ("intersect_entities", "non_paying_customers", "priority_by_executive", "concept_breakdown"):
         sources = params.get("source_entities") or []
-        label = ",".join(f"{s.get('entity_type')}:{s.get('entity_value')}" for s in sources) or "unscoped"
+        label = (",".join(f"{s.get('entity_type')}:{s.get('entity_value')}" for s in sources)
+                 or params.get("scope_value") or "portfolio")
         if step_type == "concept_breakdown":
             label = f"{label}:{params.get('dimension')}"
         return step_type, label
     # Fallback for any future step type not special-cased above.
     resolved = resolved_entity or {}
     return resolved.get("entity_type", step_type), resolved.get("entity_value", step_type)
+
+
+def _file_spelling(df_curr: pd.DataFrame, level, value):
+    """A typed branch / region / zone / BU name ("solapur") as the file
+    spells it ("SOLAPUR"), so answers and later references show one name.
+    Unchanged when it isn't a single such name in the file."""
+    if not isinstance(value, str) or not level or df_curr is None or df_curr.empty:
+        return value
+    try:
+        col = resolve_dimension(level)[0]
+    except (KeyError, ValueError):
+        return value
+    if col not in df_curr.columns:
+        return value
+    hits = {str(v).strip() for v in df_curr[col].dropna().unique() if str(v).strip().upper() == value.strip().upper()}
+    return hits.pop() if len(hits) == 1 else value
+
+
+def _canonical_params(params: dict, df_curr: pd.DataFrame) -> dict:
+    out = dict(params or {})
+    if out.get("scope_col") and out.get("scope_value"):
+        out["scope_value"] = _file_spelling(df_curr, out["scope_col"], out["scope_value"])
+    if out.get("entity_type") not in (None, "executive") and out.get("entity_value"):
+        out["entity_value"] = _file_spelling(df_curr, out["entity_type"], out["entity_value"])
+    return out
 
 
 def _metric_focus_for(step_type: str, params: dict) -> str | None:
@@ -452,13 +497,14 @@ def _execute_step(
         )
 
     if step_type == "intersect_entities":
-        tables = _resolve_source_tables(params, memory)
+        tables = _resolve_source_tables(params, memory, df_curr)
         return fn(tables, key_cols=params.get("key_cols"), min_appearances=params.get("min_appearances"))
 
     if step_type == "non_paying_customers":
-        tables = _resolve_source_tables(params, memory)
-        entities = tables[0] if tables else pd.DataFrame()
-        return fn(df_curr, entities, key_cols=params.get("key_cols"), all_columns=bool(params.get("all_columns")))
+        tables = _resolve_source_tables(params, memory, df_curr)
+        return fn(df_curr, tables[0] if tables else None, key_cols=params.get("key_cols"),
+                  all_columns=bool(params.get("all_columns")),
+                  scope_col=params.get("scope_col"), scope_value=params.get("scope_value"))
 
     if step_type == "customer_loan_book":
         return fn(df_curr, params["cust_mob_no"], all_columns=bool(params.get("all_columns")))
@@ -504,12 +550,12 @@ def _execute_step(
         )
 
     if step_type == "priority_by_executive":
-        tables = _resolve_source_tables(params, memory)
+        tables = _resolve_source_tables(params, memory, df_curr)
         priority_df = tables[0] if tables else pd.DataFrame()
         return fn(df_curr, priority_df)
 
     if step_type == "concept_breakdown":
-        tables = _resolve_source_tables(params, memory)
+        tables = _resolve_source_tables(params, memory, df_curr)
         filtered_df = tables[0] if tables else pd.DataFrame()
         return fn(filtered_df, params["dimension"])
 
@@ -686,6 +732,10 @@ def _render_analyse_further(
                 st.rerun()
             elif mail_clicked:
                 branch_name = str(scope_value)
+                review = st.session_state.get(REVIEW_CONTEXT)
+                if review:   # the explicit approval for this action, logged against the review it came from
+                    log_decision(review, "action", f"email_draft:{label}:{branch_name}",
+                                 region=review.get("region", ""), list_name=review.get("list", ""), branch=branch_name)
                 to_list, cc_list = get_branch_recipients(branch_name)
                 _subject, eml_bytes = draft_priority_email(
                     drill_df, branch_name, to_list, cc_list, category_label=label,
@@ -786,7 +836,7 @@ def _render_analyse_further(
                 "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
             )
             if st.button(
-                f"Analyse further: executives behind {record.entity_value}'s {chosen}",
+                f"Analyse further: executives driving {record.entity_value}'s {chosen}",
                 key=f"drill_{dl_key}",
             ):
                 exec_metric = _BRANCH_TO_EXEC_METRIC[chosen]
@@ -798,7 +848,7 @@ def _render_analyse_further(
                     result_df=drill_df, metric_focus=exec_metric, step_type="underperformer_quartile",
                     params={"metric": exec_metric, "scope_col": "branch", "scope_value": record.entity_value},
                 )
-                _append_drill_turn(f"executives behind {record.entity_value}'s {chosen}", new_type, new_value)
+                _append_drill_turn(f"executives driving {record.entity_value}'s {chosen}", new_type, new_value)
                 st.rerun()
 
     elif record.step_type == "entity_summary" and record.entity_type == "executive":
@@ -819,10 +869,14 @@ def _render_analyse_further(
                 "Focus on which metric?", drillable, index=default_idx, key=f"metric_pick_{dl_key}",
             )
             exec_label = record.entity_value[0] if isinstance(record.entity_value, tuple) else record.entity_value
-            if st.button(f"Analyse further: loans behind {exec_label}'s {chosen}", key=f"drill_{dl_key}"):
-                drill_df = STEP_REGISTRY["worst_loans_by_metric"](
-                    df_curr, chosen, scope_col="executive", scope_value=record.entity_value, as_of=as_of,
-                )
+            if st.button(f"Analyse further: loans driving {exec_label}'s {chosen}", key=f"drill_{dl_key}"):
+                try:
+                    drill_df = STEP_REGISTRY["worst_loans_by_metric"](
+                        df_curr, chosen, scope_col="executive", scope_value=record.entity_value, as_of=as_of,
+                    )
+                except ValueError as e:
+                    st.warning(f"I couldn't run that: {e}")
+                    return
                 summary = summarize_worst_loans(drill_df)
                 new_type = "worst_loans_by_metric"
                 new_value = f"{chosen}:{record.entity_value}"
@@ -832,7 +886,7 @@ def _render_analyse_further(
                     narrative=summary,
                     params={"metric": chosen, "scope_col": "executive", "scope_value": scope_value},
                 )
-                _append_drill_turn(f"loans behind {exec_label}'s {chosen}", new_type, new_value)
+                _append_drill_turn(f"loans driving {exec_label}'s {chosen}", new_type, new_value)
                 st.rerun()
 
     elif record.step_type == "entity_summary" and record.entity_type in ("region", "zone", "bu"):
@@ -881,7 +935,7 @@ def _render_analyse_further(
                 "Focus on which metric?", drillable, key=f"metric_pick_{dl_key}",
             )
             if st.button(
-                f"Analyse further: executives behind {worst_branch}'s {chosen}",
+                f"Analyse further: executives driving {worst_branch}'s {chosen}",
                 key=f"drill_{dl_key}",
             ):
                 exec_metric = _BRANCH_TO_EXEC_METRIC[chosen]
@@ -893,12 +947,12 @@ def _render_analyse_further(
                     step_type="underperformer_quartile",
                     params={"metric": exec_metric, "scope_col": "branch", "scope_value": worst_branch},
                 )
-                _append_drill_turn(f"executives behind {worst_branch}'s {chosen}", new_type, new_value)
+                _append_drill_turn(f"executives driving {worst_branch}'s {chosen}", new_type, new_value)
                 st.rerun()
 
     elif record.step_type in ("underperformer_quartile", "bottom_n_per_group", "intersect_entities"):
         if "MNT NAME" in result_df.columns and st.button(
-            "Analyse further: find non-paying customers behind these executives",
+            "Analyse further: find the non-paying customers of these executives",
             key=f"drill_{dl_key}",
         ):
             try:
@@ -912,7 +966,7 @@ def _render_analyse_further(
                 new_type, new_value, result_df=drill_df, step_type="non_paying_customers",
                 params={"source_entities": source_entities},
             )
-            _append_drill_turn("find non-paying customers behind these executives", new_type, new_value)
+            _append_drill_turn("find the non-paying customers of these executives", new_type, new_value)
             st.rerun()
 
         # Companion to the button above, not a replacement -- "find
@@ -929,9 +983,13 @@ def _render_analyse_further(
         ):
             list_scope_col = (record.params or {}).get("scope_col")
             list_scope_value = (record.params or {}).get("scope_value")
-            drill_df = STEP_REGISTRY["worst_loans_by_metric"](
-                df_curr, record.metric_focus, scope_col=list_scope_col, scope_value=list_scope_value, as_of=as_of,
-            )
+            try:
+                drill_df = STEP_REGISTRY["worst_loans_by_metric"](
+                    df_curr, record.metric_focus, scope_col=list_scope_col, scope_value=list_scope_value, as_of=as_of,
+                )
+            except ValueError as e:
+                st.warning(f"I couldn't run that: {e}")
+                return
             summary = summarize_worst_loans(drill_df)
             new_type = "worst_loans_by_metric"
             new_value = f"{record.metric_focus}:{list_scope_value or 'portfolio'}"
@@ -1009,6 +1067,82 @@ def _empty_result_message(step_type: str, df_prev: pd.DataFrame | None) -> str:
     return "No rows matched for this step."
 
 
+_ONE_MONTH_NOTE = ("Only this month's file is loaded, so this shows where things stand now, not what changed. "
+                   "Add last month's file to see the change.")
+# Steps that compare with last month when its file is loaded.
+_CHANGE_STEP_TYPES = {"entity_summary", "dimension_breakdown"}
+
+
+def _result_view(step_type: str | None, result_df: pd.DataFrame,
+                 df_prev: pd.DataFrame | None) -> tuple[pd.DataFrame, str | None]:
+    """The table as shown, and a note to show above it. With no previous
+    month, the empty Previous/Delta columns are left out and the note says
+    no change can be shown, so "why did collection drop" never reads as
+    answered from one month alone."""
+    no_prev = df_prev is None or df_prev.empty
+    view = result_df.drop(columns=[c for c in ("Previous", "Delta") if c in result_df.columns]) if no_prev \
+        else result_df
+    return view, (_ONE_MONTH_NOTE if no_prev and step_type in _CHANGE_STEP_TYPES else None)
+
+
+def _entity_rows(df_curr: pd.DataFrame, entity_type: str, entity_value) -> pd.DataFrame | None:
+    """The loans of one branch / region / zone / BU / executive."""
+    if entity_type == "executive":
+        name, unit = entity_value if isinstance(entity_value, tuple) else (entity_value, None)
+        return _scope_executive_rows(df_curr, name, unit)
+    try:
+        return _scope(df_curr, entity_type, entity_value)
+    except (KeyError, ValueError):
+        return None
+
+
+def _record_story(record, df_curr: pd.DataFrame) -> dict:
+    """Headline and (for one unit's summary) the Root Cause split, worked out
+    once per answer and kept on the record."""
+    if record.story is None:
+        is_summary = record.step_type == "entity_summary"
+        story = {"headline": headline(record.step_type, record.result_df, record.params,
+                                      record.entity_value if is_summary else None)}
+        if is_summary:
+            story["why"] = why_split(_entity_rows(df_curr, record.entity_type, record.entity_value))
+        record.story = story
+    return record.story
+
+
+def _render_why_split(why: dict) -> None:
+    st.markdown(f"**What its {why['delinquent']:,} delinquent loans have in common**")
+    rows = "".join(f"| {_esc(label)} | {n:,} | {pct:.1f}% |\n" for label, n, pct in why["rows"])
+    st.markdown("| Group | Loans | Share of delinquent |\n|---|---:|---:|\n" + rows)
+    st.caption("The same split as the Root Cause tab. Insurance charge only overlaps the other groups: "
+               "it says what is unpaid, not how many EMIs.")
+
+
+def _show_result(record, df_curr: pd.DataFrame, df_prev: pd.DataFrame | None, dl_key: str,
+                 show_narrative: bool = True) -> None:
+    """One answer, the same for a fresh answer and a replayed one: the
+    headline, the "why" split for one unit, then the table in plain words
+    (long rankings show their first rows, all one tick away) and the
+    download, which keeps every row and the file's own columns.
+    show_narrative=False when it was just streamed on screen."""
+    story = _record_story(record, df_curr)
+    if story.get("headline"):
+        st.markdown(f"**{_esc(story['headline'])}**")
+    if record.narrative and show_narrative:
+        st.markdown(record.narrative)
+    view, note = _result_view(record.step_type, record.result_df, df_prev)
+    if note:
+        st.caption(note)
+    if story.get("why"):
+        _render_why_split(story["why"])
+    view = display_table(record.step_type, view)
+    if record.step_type in RANKING_STEP_TYPES and len(view) > RANKING_LONG:
+        if not st.checkbox(f"Show all {len(view):,}", key=f"all_{dl_key}"):
+            st.caption(f"The first {RANKING_SHOWN} of {len(view):,}, in ranked order. The download has all of them.")
+            view = view.head(RANKING_SHOWN)
+    st.dataframe(_safe_df(view), width='stretch', hide_index=True)
+    _dl_btn(record.result_df, f"investigator_{record.step_type or 'result'}.xlsx", key=dl_key, full_source=df_curr)
+
+
 def _render_result_body(
     record, df_curr: pd.DataFrame, memory: EntityMemory, show_controls: bool, dl_key: str,
     df_prev: pd.DataFrame | None = None, as_of=None,
@@ -1026,10 +1160,7 @@ def _render_result_body(
         st.info(_empty_result_message(record.step_type, df_prev))
         return
 
-    if record.narrative:
-        st.markdown(record.narrative)
-    st.dataframe(_safe_df(result_df), width='stretch', hide_index=True)
-    _dl_btn(result_df, f"investigator_{record.step_type or 'result'}.xlsx", key=dl_key, full_source=df_curr)
+    _show_result(record, df_curr, df_prev, dl_key)
 
     if show_controls:
         _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
@@ -1046,12 +1177,28 @@ def _maybe_set_thread_title(question: str) -> None:
 
 
 def _step_name(step_type: str) -> str:
-    return step_type.replace("_", " ")
+    return STEP_LABELS.get(step_type, step_type.replace("_", " "))
 
 
 def _params_text(params: dict | None) -> str:
-    shown = {k: v for k, v in (params or {}).items() if v not in (None, "", [], {})}
-    return ", ".join(f"{k.replace('_', ' ')}: {v}" for k, v in shown.items())
+    """What the step ran on, in words ("branch, in SOLAPUR, by NPA%")."""
+    p = params or {}
+    parts = []
+    for key in ("dimension", "entity_value", "axis", "group_col"):
+        v = p.get(key)
+        if v not in (None, "", [], {}):
+            parts.append(" / ".join(map(str, v)) if isinstance(v, (list, tuple)) else str(v))
+    if p.get("concept"):
+        parts.append(str(p["concept"]).replace("_", " "))
+    if p.get("scope_value"):
+        sv = p["scope_value"]
+        parts.append("in " + (" / ".join(map(str, sv)) if isinstance(sv, (list, tuple)) else str(sv)))
+    if p.get("metric"):
+        parts.append(f"by {metric_shown(p['metric'])}")
+    n = p.get("n") or p.get("top_n")
+    if n:
+        parts.append(f"top {n}")
+    return ", ".join(parts)
 
 
 def _go_to_ai_query(question: str) -> None:
@@ -1069,8 +1216,48 @@ def _render_handoff(question: str, key: str, latest: bool) -> None:
                   on_click=_go_to_ai_query, args=(question,))
 
 
+def _run_parts(parts: list, question: str, df_curr: pd.DataFrame, df_prev: pd.DataFrame,
+               memory: EntityMemory, as_of=None) -> int:
+    """Each part of a multi-part question as its own answer under the one
+    question, through the same checks as a single question (validate_and_correct,
+    one deterministic step). A part that can't run says so; the others still
+    run. Returns how many ran."""
+    turns, ran, n = _get_turns(), 0, len(parts)
+    for i, part in enumerate(parts, start=1):
+        label = part["label"] or _step_name(part["step_type"])
+        heading = f"Part {i} of {n}: {label}"
+        steps = [f"Understood: {_step_name(part['step_type'])}|{_params_text(part['params'])}"]
+        turn = validate_and_correct({"step_type": part["step_type"], "params": part["params"], "resolved_entity": None,
+                                     "needs_clarification": False, "clarification_question": ""},
+                                    memory, df_curr, question=question)
+        if turn["needs_clarification"] or not turn["step_type"] or turn["step_type"] == PORTFOLIO_QUERY:
+            turns.append({"role": "assistant", "part": heading, "steps": steps + ["Needs more detail|nothing was run"],
+                          "text": turn.get("clarification_question") or "This part couldn't be run as asked."})
+            continue
+        if turn["step_type"] != part["step_type"] or turn["params"] != part["params"]:
+            steps.append(f"Corrected to: {_step_name(turn['step_type'])}|{_params_text(turn['params'])}")
+        else:
+            steps.append("Validated|checked against your data: no changes needed")
+        params = _canonical_params(turn["params"], df_curr)
+        try:
+            result_df = _execute_step(turn["step_type"], params, df_curr, df_prev, memory, as_of=as_of)
+        except (KeyError, ValueError) as e:
+            turns.append({"role": "assistant", "part": heading, "steps": steps + [f"Couldn't run|{e}"],
+                          "text": f"I couldn't run this part: {e}"})
+            continue
+        steps.append(f"Ran: {0 if result_df is None else len(result_df):,} rows|exact rows from your file")
+        entity_type, entity_value = _derive_entity_key(turn["step_type"], params, None)
+        memory.touch(entity_type, entity_value, result_df=result_df, step_type=turn["step_type"], params=params,
+                     metric_focus=_metric_focus_for(turn["step_type"], params))
+        turns.append({"role": "assistant", "part": heading, "entity_type": entity_type, "entity_value": entity_value,
+                      "steps": steps})
+        ran += 1
+    return ran
+
+
 def _process_new_question(
     question: str, df_curr: pd.DataFrame, df_prev: pd.DataFrame, memory: EntityMemory, as_of=None,
+    scope_hint: str = "",
 ) -> None:
     """Route one question, run its step, and store the answer with the steps
     taken (shown under it as "How I got this")."""
@@ -1090,8 +1277,10 @@ def _process_new_question(
             return
 
         if not os.environ.get("GOOGLE_API_KEY"):
-            st.error("GOOGLE_API_KEY not found in .env file.")
-            turns.append({"role": "assistant", "text": "GOOGLE_API_KEY not found in .env file."})
+            text = ("Typed questions need the AI, which isn't set up here (no Google API key in the .env file). "
+                    "The \"What moved most\" cards still work.")
+            st.error(text)
+            turns.append({"role": "assistant", "text": text})
             return
 
         steps: list[str] = []
@@ -1102,10 +1291,18 @@ def _process_new_question(
                 status.write(text + (f" ({detail})" if detail else ""))
 
             status.write("Understanding your question...")
-            parsed = parse_turn(question, memory)
+            # A workspace question may come back in parts ("segment or executive?").
+            parsed = parse_turn(scope_hint + question, memory, allow_multi=bool(scope_hint))
+            if parsed.get("parts"):
+                parts = parsed["parts"]
+                log(f"Understood: {len(parts)} parts", ", ".join(p["label"] or _step_name(p["step_type"]) for p in parts))
+                ran = _run_parts(parts, question, df_curr, df_prev, memory, as_of)
+                status.update(label=f"Done: {ran} of {len(parts)} parts", state="complete" if ran else "error",
+                              expanded=False)
+                return
             if parsed.get("step_type"):
                 log(f"Understood: {_step_name(parsed['step_type'])}", _params_text(parsed.get("params")))
-            turn = validate_and_correct(parsed, memory, df_curr)
+            turn = validate_and_correct(parsed, memory, df_curr, question=question)
             if turn.get("step_type") == parsed.get("step_type") and turn.get("params") == parsed.get("params"):
                 log("Validated", "checked against your data: no changes needed")
             elif turn.get("step_type"):
@@ -1128,6 +1325,7 @@ def _process_new_question(
                 turns.append({"role": "assistant", "kind": "handoff", "question": query, "steps": steps})
                 return
 
+            turn["params"] = _canonical_params(turn["params"], df_curr)
             try:
                 result_df = _execute_step(turn["step_type"], turn["params"], df_curr, df_prev, memory, as_of=as_of)
             except (KeyError, ValueError) as e:
@@ -1181,8 +1379,7 @@ def _process_new_question(
         if result_df is None or result_df.empty:
             st.info(_empty_result_message(turn["step_type"], df_prev))
         else:
-            st.dataframe(_safe_df(result_df), width='stretch', hide_index=True)
-            _dl_btn(result_df, f"investigator_{turn['step_type']}.xlsx", key=dl_key, full_source=df_curr)
+            _show_result(record, df_curr, df_prev, dl_key, show_narrative=False)
             _render_analyse_further(record, df_curr, memory, dl_key, df_prev=df_prev, as_of=as_of)
 
 
@@ -1268,7 +1465,7 @@ def _render_header() -> None:
                     new_id = _new_thread()
                     st.session_state["investigator_active_thread"] = new_id
                     st.rerun()
-        st.caption("Ask why a number moved: which region, branch or executive, and what's behind it. The AI only "
+        st.caption("Ask why a number moved: which region, branch or executive, and what's driving it. The AI only "
                    "picks the step; every table is exact source data. For lists and counts, use AI Query.")
 
     if chosen_id != active_id:
@@ -1306,9 +1503,154 @@ def _render_proactive_opener(df_curr: pd.DataFrame, alerts_curr: list | None, me
     return True
 
 
+# The background Portfolio Review's "Look deeper" (ui/review_panel.py) opens
+# the existing step that shows where inside the region each list's gap sits:
+# collection composition by branch, results by disbursement month, bucket
+# movement. Deterministic, no Gemini call, like the "What moved most" cards.
+_REVIEW_DRILL = {
+    "collection_shortfall": ("demand_summary", {"dimension": "branch"}),
+    "excess_30plus": ("vintage_summary", {}),
+    "worsening": ("roll_rate_summary", {}),
+}
+
+
+def _review_look_deeper(list_name: str, region: str, df_curr: pd.DataFrame, df_prev: pd.DataFrame,
+                        memory: EntityMemory, as_of=None) -> None:
+    from investigation.review.brief import LIST_NAMES
+    step_type, params = _REVIEW_DRILL[list_name]
+    params = _canonical_params({**params, "scope_col": "region", "scope_value": region}, df_curr)
+    try:
+        result_df = _execute_step(step_type, params, df_curr, df_prev, memory, as_of=as_of)
+    except (KeyError, ValueError) as e:
+        st.warning(f"I couldn't open that: {e}")
+        return
+    entity_type, entity_value = _derive_entity_key(step_type, params, None)
+    memory.touch(entity_type, entity_value, result_df=result_df, step_type=step_type, params=params,
+                 metric_focus=_metric_focus_for(step_type, params))
+    _append_drill_turn(f"Look deeper at {region}: {LIST_NAMES[list_name]}", entity_type, entity_value)
+    _get_turns()[-1]["review"] = st.session_state.get(REVIEW_CONTEXT)    # its next steps render under it
+    st.rerun()
+
+
+def _render_review_next_steps(i: int, review: dict, memory: EntityMemory, df_curr: pd.DataFrame,
+                              df_prev: pd.DataFrame, as_of=None) -> None:
+    """After a "Look deeper" from the portfolio review: where to go next
+    (investigation/review/next_steps.py), each choice logged. The branch's
+    priority list carries the existing "Draft email" (a download, never sent)."""
+    from investigation.review.next_steps import next_steps
+    steps = next_steps(review["region"], review["list"], review.get("branch"))
+    st.markdown('<div style="font-size:13px;font-weight:700;color:#374151;margin:12px 0 4px 0;">'
+                "Next step from the portfolio review</div>", unsafe_allow_html=True)
+    with st.container(horizontal=True):
+        for s in steps:
+            if not st.button(s.label, key=f"rv_next_{_sanitize_key(s.id)}_{i}"):
+                continue
+            if s.id != "back":                            # going back is navigation, not a decision
+                segment = "close" if s.id.startswith("close:") else "next_step"
+                log_decision(review, segment, s.id, region=review["region"], list_name=review["list"],
+                             branch=s.params.get("scope_value", "") if s.params.get("scope_col") == "branch" else "")
+            if s.id == "back":
+                st.session_state[REVIEW_OPEN] = True
+                st.rerun()
+            if s.step_type is None:                       # marked as handled: back to the review for the next one
+                _get_turns().append({"role": "assistant", "kind": "info",
+                                     "text": f"Marked {review['region']} as handled. It's in your decision log "
+                                             "under the portfolio review, which is open above for the next one."})
+                st.session_state[REVIEW_OPEN] = True
+                st.rerun()
+            params = _canonical_params(s.params, df_curr)
+            try:
+                result_df = _execute_step(s.step_type, params, df_curr, df_prev, memory, as_of=as_of)
+            except (KeyError, ValueError) as e:
+                st.warning(f"I couldn't open that: {e}")
+                return
+            entity_type, entity_value = _derive_entity_key(s.step_type, params, None)
+            memory.touch(entity_type, entity_value, result_df=result_df, step_type=s.step_type, params=params)
+            _append_drill_turn(s.label, entity_type, entity_value)
+            _get_turns()[-1]["review"] = review                 # the next steps stay with the thread
+            st.rerun()
+
+
+def _active_focus(cards: list, job) -> object | None:
+    """The focus card whose workspace is the open conversation, if any (a
+    region's thread from an earlier upload no longer matches its files)."""
+    focus = _get_threads()[_get_active_thread_id()].get("focus") or {}
+    if not focus or job is None or job.brief is None:
+        return None
+    if focus.get("data_version") != job.brief.data_version:
+        return None
+    return next((c for c in cards if c.region == focus.get("region")), None)
+
+
+def _open_general() -> None:
+    """The "All regions" card: the newest conversation that isn't a region's, or a new one."""
+    threads = _get_threads()
+    general = sorted((t for t, th in threads.items() if not th.get("focus")),
+                     key=lambda t: threads[t]["created_at"], reverse=True)
+    st.session_state["investigator_active_thread"] = general[0] if general else _new_thread()
+    st.rerun()
+
+
+def _open_focus(card, job, df_curr: pd.DataFrame, df_prev: pd.DataFrame, as_of=None) -> None:
+    """A region's card: its own conversation (made the first time, opened
+    with the card's lens: the AI's pick, or the list looked into)."""
+    threads, version = _get_threads(), job.brief.data_version
+    existing = next((t for t, th in threads.items()
+                     if (th.get("focus") or {}).get("region") == card.region
+                     and th["focus"].get("data_version") == version), None)
+    if existing is not None:
+        st.session_state["investigator_active_thread"] = existing
+        st.rerun()
+    thread_id = _new_thread()
+    threads[thread_id]["title"] = card.region
+    threads[thread_id]["focus"] = {"region": card.region, "data_version": version, "lens": card.lens}
+    st.session_state["investigator_active_thread"] = thread_id
+    _open_lens(card.lens, job, df_curr, df_prev, as_of)
+
+
+def _open_lens(candidate_id: str, job, df_curr: pd.DataFrame, df_prev: pd.DataFrame, as_of=None) -> None:
+    """Look at the open region through one of its lists: logged as the choice,
+    then the matching step runs as this conversation's next answer."""
+    choose(job, candidate_id)
+    list_name, region = candidate_id.split(":", 1)
+    thread = _get_threads()[_get_active_thread_id()]
+    if thread.get("focus"):
+        thread["focus"]["lens"] = candidate_id
+    _review_look_deeper(list_name, region, df_curr, df_prev, _get_memory(), as_of=as_of)
+
+
+def _render_focus_header(card, job, df_curr: pd.DataFrame, df_prev: pd.DataFrame, as_of=None) -> None:
+    """The open region's workspace head: every finding about it, and its
+    lists as lenses to switch between."""
+    from investigation.review.brief import LIST_NAMES
+    lens = (_get_threads()[_get_active_thread_id()].get("focus") or {}).get("lens", card.lens)
+    items = "".join(f'<div class="ws-item"><b>{_esc(LIST_NAMES[f.list].capitalize())}.</b> {_esc(f.text)}</div>'
+                    for f in card.findings)
+    pick = '<span class="ws-pick">AI pick</span>' if card.ai_pick else ""
+    st.markdown(
+        '<style>.ws { background:#0d1117; border:1px solid #21262d; border-left:4px solid #FFC000; border-radius:12px;'
+        ' padding:12px 16px; margin:8px 0 6px 0; }'
+        '.ws-tag { color:#FFC000; font-size:10.5px; font-weight:800; letter-spacing:1px; text-transform:uppercase; }'
+        '.ws-name { color:#ffffff; font-size:18px; font-weight:800; margin:2px 0 8px 0; }'
+        '.ws-pick { background:#FFC000; color:#111; font-size:10.5px; font-weight:800; border-radius:99px;'
+        ' padding:1px 8px; margin-left:8px; vertical-align:middle; }'
+        '.ws-item { color:#c9d1d9; font-size:13.5px; line-height:1.6; margin:0 0 6px 0; }'
+        '.ws-item b { color:#ffffff; }</style>'
+        f'<div class="ws"><div class="ws-tag">Workspace</div><div class="ws-name">{_esc(card.region)}{pick}</div>'
+        f'{items}</div>', unsafe_allow_html=True)
+    if len(card.findings) > 1:
+        with st.container(horizontal=True, vertical_alignment="center", key="focus_lenses"):
+            st.markdown('<div style="font-size:12.5px;color:#6b7280;">Look at it as:</div>', unsafe_allow_html=True)
+            for f in card.findings:
+                current = f.candidate_id == lens
+                if st.button(LIST_NAMES[f.list].capitalize(), key=f"focus_lens_{_sanitize_key(f.candidate_id)}",
+                             type="primary" if current else "secondary", disabled=current):
+                    _open_lens(f.candidate_id, job, df_curr, df_prev, as_of)
+
+
 def render_investigator_tab(
     df_curr: pd.DataFrame, df_prev: pd.DataFrame, data_version: int = 0, filter_key: str = "",
-    alerts_curr: list | None = None, curr_month: str | None = None,
+    alerts_curr: list | None = None, curr_month: str | None = None, prev_month: str | None = None,
 ) -> None:
     """The Investigator tab: why a number moved, one bounded step at a time,
     each answer with the steps that produced it. List / count questions are
@@ -1423,23 +1765,43 @@ def render_investigator_tab(
     memory = _get_memory()
     turns = _get_turns()
 
-    # The question box sits at the top, as on the old AI Query tab, with the
-    # newest answer right under it (full width) and earlier ones below it.
+    # Briefing and workspace (2026-10-26): the monthly briefing on top, one
+    # card per region that stands out, and the open card's own conversation
+    # below. "All regions" is the general Q&A, as before.
+    job = start_review(df_curr, df_prev, curr_month, prev_month, data_version, filter_key)
+    cards = review_focuses(job)
+    card = _active_focus(cards, job)
+    open_briefing = bool(st.session_state.pop(REVIEW_OPEN, False)) or (card is None and not turns)
+    render_briefing(job, prev_month, expanded=open_briefing)
+    if cards:
+        active = card.region if card else (ALL_REGIONS if turns else None)
+        clicked = render_focus_strip(cards, active, suffix=job.brief.data_version)
+        if clicked == ALL_REGIONS:
+            _open_general()
+        elif clicked:
+            _open_focus(next(c for c in cards if c.region == clicked), job, df_curr, df_prev, curr_month)
+    if card is not None:
+        _render_focus_header(card, job, df_curr, df_prev, curr_month)
+
+    # The question box: about the open region's workspace, or the whole portfolio.
     with st.form("ask_form", clear_on_submit=True, border=False):
-        prompt = st.text_area(
-            "Your question", key="ask_box", height=80, label_visibility="collapsed",
-            placeholder='Ask why, e.g. "why did NPA rise in NASHIK" or "which branches are underperforming"')
+        placeholder = (f'Ask about {card.region}, e.g. "is it a segment or an executive?" or "which branches?"'
+                       if card is not None else
+                       f'Ask why, e.g. "why is NPA high in {_example_region(df_curr)}" '
+                       'or "which branches are underperforming"')
+        prompt = st.text_area("Your question", key="ask_box", height=80, label_visibility="collapsed",
+                              placeholder=placeholder)
         c1, c3, c4 = st.columns([1, 1.6, 2.9], vertical_alignment="center")
         asked = c1.form_submit_button("Ask", type="primary", icon=":material/search:", key="ask_submit",
                                       width="stretch")
         c3.checkbox("Narrate each step", key="investigator_narrate",
-                    help="One extra Gemini call per step writes a short observation above the table. "
-                         "Off by default to keep answers instant.")
+                    help="One extra AI call per answer writes a short observation above the table. "
+                         "Off by default to keep answers instant. The headline is always shown.")
         c4.markdown('<div class="ask-hint">Ctrl+Enter also asks</div>', unsafe_allow_html=True)
 
     question = prompt.strip() if asked and prompt and prompt.strip() else None
 
-    if not turns:
+    if not turns and card is None:
         with st.container(key="investigator_suggestions_wrap"):
             st.caption("Try asking:")
             suggestion = st.pills(
@@ -1450,13 +1812,32 @@ def render_investigator_tab(
             question = _SUGGESTIONS[suggestion]
 
     if question is not None:
-        _process_new_question(question, df_curr, df_prev, memory, as_of=curr_month)
+        # In a region's workspace the router is told which region the question
+        # is about, so "is it a segment or an executive?" stays on that region.
+        scope = ""
+        if card is not None:
+            from investigation.review.brief import LIST_NAMES
+            lens = (_get_threads()[_get_active_thread_id()].get("focus") or {}).get("lens", card.lens)
+            scope = f"About the {card.region} region (focus: {LIST_NAMES[lens.split(':', 1)[0]]}): "
+        _process_new_question(question, df_curr, df_prev, memory, as_of=curr_month, scope_hint=scope)
         st.rerun()
 
     if not turns:
-        _render_proactive_opener(df_curr, alerts_curr, memory)
+        if card is None and not cards:
+            _render_proactive_opener(df_curr, alerts_curr, memory)
         return
     _render_conversation(turns, memory, df_curr, df_prev, curr_month)
+
+
+def _example_region(df_curr: pd.DataFrame) -> str:
+    """A region that is in this file, for the question box's example (a
+    fixed name like NASHIK isn't in every file)."""
+    if df_curr is not None and "RegionName" in df_curr.columns:
+        names = df_curr["RegionName"].dropna().astype(str).str.strip()
+        names = names[names != ""]
+        if not names.empty:
+            return names.value_counts().index[0].title()
+    return "my region"
 
 
 def _render_question(text: str) -> None:
@@ -1506,6 +1887,10 @@ def _render_steps(t: dict, key: str) -> None:
 
 def _render_answer(i: int, t: dict, memory: EntityMemory, df_curr: pd.DataFrame, df_prev: pd.DataFrame,
                    curr_month, latest: bool) -> None:
+    if t.get("part"):          # one part of a multi-part question (_run_parts)
+        st.markdown(f'<div style="font-size:14px;font-weight:800;color:#111827;margin:16px 0 2px 0;'
+                    f'border-left:4px solid #FFC000;padding-left:8px;">{_esc(t["part"])}</div>',
+                    unsafe_allow_html=True)
     _render_steps(t, f"inv_steps_{_sanitize_key(_get_active_thread_id())}_{i}")
     if "entity_type" in t:
         record = memory.get(t["entity_type"], t["entity_value"])
@@ -1515,6 +1900,8 @@ def _render_answer(i: int, t: dict, memory: EntityMemory, df_curr: pd.DataFrame,
         _render_result_body(record, df_curr, memory, show_controls=latest,
                             dl_key=_turn_dl_key(i, t["entity_type"], t["entity_value"]),
                             df_prev=df_prev, as_of=curr_month)
+        if latest and t.get("review"):
+            _render_review_next_steps(i, t["review"], memory, df_curr, df_prev, as_of=curr_month)
     elif t.get("kind") == "handoff":
         _render_handoff(t["question"], f"inv_handoff_{_sanitize_key(_get_active_thread_id())}_{i}", latest)
     elif t.get("kind") == "info":
