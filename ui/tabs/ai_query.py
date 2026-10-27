@@ -28,55 +28,37 @@ _EXAMPLES = [
 ]
 
 
+def _fill(text: str) -> None:
+    """An example's on_click: fills the question box. Callbacks run before the
+    page redraws, so the box's value can be set here."""
+    st.session_state[INPUT_KEY] = text
+
+
 def _panel() -> None:
-    """The dark title panel with example questions; clicking one fills the box."""
-    chips = "".join(
-        f'<button class="chip" onclick="fill({_js(full)})">{_html(short)}</button>' for short, full in _EXAMPLES)
-    st.components.v1.html(f"""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
-<style>
-*, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ background: transparent; font-family: 'Inter', sans-serif; padding: 2px 0 0 0; }}
-.panel {{ background: #0d1117; border: 1px solid #21262d; border-radius: 12px; padding: 18px 22px; }}
-.hdr {{ display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }}
-.icon {{ font-size: 22px; line-height: 1; }}
-.title {{ font-size: 20px; font-weight: 800; color: #FFC000; letter-spacing: -0.3px; }}
-.sub {{ font-size: 13px; color: #8b949e; line-height: 1.7; margin-bottom: 12px; }}
-.chip {{ display: inline-block; background: #161b22; color: #8b949e; border: 1px solid #2d333b; border-radius: 6px;
-        padding: 5px 12px; font-size: 11px; font-style: italic; cursor: pointer; margin: 0 6px 6px 0;
-        font-family: 'Inter', sans-serif; transition: background 0.15s, color 0.15s, border-color 0.15s;
-        line-height: 1.4; outline: none; }}
-.chip:hover {{ background: #2a2a2a; color: #d0d0d0; border-color: #555; }}
-</style>
-<div class="panel">
-  <div class="hdr"><span class="icon">🤖</span><span class="title">AI Query Assistant</span></div>
-  <div class="sub">Ask for any list, count or comparison in plain English. You'll see each step as it runs,
-  and every table is exact source data. Click an example to try:</div>
-  {chips}
-</div>
-<script>
-function fill(text) {{
-    var doc = window.parent.document;
-    var ta  = doc.querySelector('[data-testid="stTextArea"] textarea');
-    if (!ta) return;
-    var set = Object.getOwnPropertyDescriptor(window.parent.HTMLTextAreaElement.prototype, 'value').set;
-    set.call(ta, text);
-    ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    ta.focus();
-}}
-</script>
-""", height=168, scrolling=False)
-
-
-def _js(text: str) -> str:
-    """A string as a JavaScript literal inside an HTML attribute."""
-    import json
-    return _html(json.dumps(text))
-
-
-def _html(text: str) -> str:
-    import html
-    return html.escape(text, quote=True)
+    """The dark title panel with example questions; clicking one fills the box.
+    Native buttons (code review, 2026-10-27): this used Streamlit's HTML
+    component, now deprecated, with JavaScript reaching into the parent page."""
+    st.markdown(
+        """<style>
+        .st-key-aiq_panel { background:#0d1117; border:1px solid #21262d; border-radius:12px;
+                            padding:16px 20px 10px 20px; gap:6px; }
+        .aiq-title { font-size:20px; font-weight:800; color:#FFC000; letter-spacing:-0.3px; }
+        .aiq-sub { font-size:13px; color:#8b949e; line-height:1.7; margin-bottom:4px; }
+        .st-key-aiq_panel .stButton button { background:#161b22; color:#8b949e; border:1px solid #2d333b;
+                            border-radius:6px; padding:3px 12px; min-height:0; font-size:11px; font-style:italic; }
+        .st-key-aiq_panel .stButton button p { font-size:11px; }
+        .st-key-aiq_panel .stButton button:hover { background:#2a2a2a; color:#d0d0d0; border-color:#555; }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    with st.container(key="aiq_panel"):
+        st.markdown('<div class="aiq-title">🤖 AI Query Assistant</div>'
+                    '<div class="aiq-sub">Ask for any list, count or comparison in plain English. You\'ll see each '
+                    'step as it runs, and every table is exact source data. Click an example to try:</div>',
+                    unsafe_allow_html=True)
+        with st.container(horizontal=True, gap="small"):
+            for i, (short, full) in enumerate(_EXAMPLES):
+                st.button(short, key=f"aiq_example_{i}", on_click=_fill, args=(full,))
 
 
 def render_ai_query_tab(df_curr: pd.DataFrame, query_ctx: dict) -> None:
