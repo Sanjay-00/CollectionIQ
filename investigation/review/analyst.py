@@ -22,6 +22,7 @@ from typing import Callable
 
 from agents.insight_generator import _unverified, _values
 from config import PLANNER_TEMPERATURE
+from langsmith import traceable
 from gemini_client import JSONReplyError, generate_json_text, parse_json_object
 from investigation.review.brief import LIST_NAMES, Brief
 from investigation.review.outcomes import IMPROVED, NO_CLEAR_CHANGE, WORSE as OUTCOME_WORSE
@@ -238,6 +239,8 @@ def _parse(raw: str) -> dict | None:
     return out
 
 
+@traceable(run_type="chain", name="ReviewAnalyst",
+           process_inputs=lambda i: {"prompt_chars": len(i.get("prompt") or ""), "prompt_version": PROMPT_VERSION})
 def gemini_generate(prompt: str) -> str:
     """One Gemini call, JSON out (the app's model, timeout and retry policy)."""
     return generate_json_text(prompt, temperature=PLANNER_TEMPERATURE)

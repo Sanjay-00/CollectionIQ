@@ -30,6 +30,7 @@ import pandas as pd
 
 from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry
 from gemini_client import call_gemini_hedged as _call_gemini_hedged
+from langsmith import traceable
 from config import GEMINI_MODEL, MAX_QUERY_CHARS, PII_COLUMNS, PLANNER_TEMPERATURE
 from gemini_client import JSONReplyError, json_config, make_client, parse_json_object
 from investigator.state import EntityMemory
@@ -833,6 +834,23 @@ def _normalize_turn_response(raw_text: str, allow_multi: bool = False) -> dict:
     }
 
 
+# ── Tracing (2026-10-27): the Investigator had none, so none of its calls
+# reached LangSmith. Each Gemini request is traced in gemini_client; these name
+# the run around it. Tables and the conversation memory are summarised, never
+# sent: graph.py records traces of whole tables reaching 20-85MB.
+def _trace_turn_inputs(inputs: dict) -> dict:
+    memory = inputs.get("entity_memory")
+    return {"question": inputs.get("question"), "allow_multi": inputs.get("allow_multi", False),
+            "remembered": len(getattr(memory, "_entities", {}) or {})}
+
+
+def _trace_narration_inputs(inputs: dict) -> dict:
+    df = inputs.get("result_df")
+    shape = {"rows": int(len(df)), "columns": [str(c) for c in df.columns][:40]} if df is not None else {}
+    return {"step_type": inputs.get("step_type"), **shape}
+
+
+@traceable(run_type="chain", name="InvestigatorRouter", process_inputs=_trace_turn_inputs)
 def parse_turn(question: str, entity_memory: EntityMemory, allow_multi: bool = False) -> dict:
     """One Gemini call: route free text (initial question OR any follow-up)
     to a step_type + params from the fixed vocabulary, resolving references
@@ -1044,6 +1062,7 @@ def _checked(text: str, preview: str, facts: dict | None = None) -> str:
     return " ".join(check_numbers("\n".join(sentences), preview).splitlines())
 
 
+@traceable(run_type="chain", name="InvestigatorNarration", process_inputs=_trace_narration_inputs)
 def narrate_step(step_type: str, result_df) -> str:
     """One Gemini call per step the user actually triggers. Writes a short
     narrative for an already-computed step result -- never computes
@@ -1064,6 +1083,7 @@ def narrate_step(step_type: str, result_df) -> str:
     return _checked(response.text or "", preview, direction_facts(result_df))
 
 
+@traceable(run_type="chain", name="InvestigatorNarration", process_inputs=_trace_narration_inputs)
 def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
     """Same call/prompt/guardrails as narrate_step, but yields text chunks
     as they arrive -- for st.write_stream() in the chat UI, so the narrative

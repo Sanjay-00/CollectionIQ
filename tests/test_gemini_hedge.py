@@ -82,7 +82,8 @@ class TestHedging:
     def test_the_losing_request_stops_retrying(self, monkeypatch):
         """Seen live: the slow first request had hung, timed out after 60s and
         started retrying for a reply nobody wanted any more."""
-        monkeypatch.setattr(gc, "time", type("T", (), {"sleep": staticmethod(lambda s: None)}))
+        monkeypatch.setattr(gc, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                "perf_counter": staticmethod(time.perf_counter)}))
         client = _Client((HEDGE + 0.1, TimeoutError("read timed out")), (FAST, "backup"),
                          (FAST, "retry 1"), (FAST, "retry 2"))
         assert _call(client)[0] == "backup"

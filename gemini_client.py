@@ -18,7 +18,10 @@ from google.genai import types as genai_types
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from concurrent.futures import TimeoutError as FuturesTimeout
+import contextvars
 import threading
+
+from langsmith import traceable
 
 from config import GEMINI_HEDGE_AFTER_S, GEMINI_MODEL, GEMINI_TIMEOUT_MS
 
@@ -64,6 +67,40 @@ def is_retryable(exc: Exception) -> bool:
     return True
 
 
+# ── Tracing (2026-10-27) ─────────────────────────────────────────────────────
+# Every Gemini request is one LangSmith "llm" run: before, only the AI Query
+# pipeline was traced, so Investigator and review calls never showed up.
+# Text is cut and the planner's ~41k-character system prompt only counted
+# (its version is on the parent run): graph.py records traces of whole
+# tables reaching 20-85MB and failing to upload.
+TRACE_TEXT_CHARS = 4_000
+
+
+def _trace_call_inputs(inputs: dict) -> dict:
+    config = dict(inputs.get("config") or {})
+    system = config.pop("system_instruction", None)
+    if system:
+        config["system_instruction_chars"] = len(str(system))
+    contents = str(inputs.get("contents") or "")
+    return {"model": inputs.get("model"), "prompt": contents[:TRACE_TEXT_CHARS], "prompt_chars": len(contents),
+            "config": {k: v for k, v in config.items() if k != "response_schema"}}
+
+
+def _trace_call_output(response) -> dict:
+    out = {"text": (getattr(response, "text", "") or "")[:TRACE_TEXT_CHARS]}
+    um = getattr(response, "usage_metadata", None)
+    if um:
+        out["usage_metadata"] = {"input_tokens": int(getattr(um, "prompt_token_count", 0) or 0),
+                                 "output_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+                                 "total_tokens": int(getattr(um, "total_token_count", 0) or 0)}
+    return out
+
+
+@traceable(run_type="llm", name="Gemini", process_inputs=_trace_call_inputs, process_outputs=_trace_call_output)
+def _generate(client, model: str, contents: str, config: dict):
+    return client.models.generate_content(model=model, contents=contents, config=config)
+
+
 def call_gemini_with_retry(client, model: str, contents: str, config: dict, max_retries: int = 2,
                            stop: threading.Event | None = None):
     """generate_content with exponential backoff on transient failures only.
@@ -71,7 +108,7 @@ def call_gemini_with_retry(client, model: str, contents: str, config: dict, max_
     request answered), so a failure here isn't retried."""
     for attempt in range(max_retries + 1):
         try:
-            return client.models.generate_content(model=model, contents=contents, config=config)
+            return _generate(client, model, contents, config)
         except Exception as e:
             if attempt == max_retries or not is_retryable(e) or (stop is not None and stop.is_set()):
                 raise
@@ -105,9 +142,46 @@ def _count(name: str) -> None:
 
 
 def hedge_stats() -> dict:
-    """calls, hedged (a backup was sent), backup_won (the backup answered first)."""
+    """calls, hedged (a backup was sent), backup_won (the backup answered first). This process only."""
     with _hedge_lock:
         return dict(_hedge_counts)
+
+
+_last_call = threading.local()
+
+
+def last_call_info() -> dict:
+    """This thread's last hedged call: seconds, hedged, backup_won; {} if
+    none since the last read (reading clears it). graph.py puts the
+    planner's into the query log."""
+    info = getattr(_last_call, "info", None) or {}
+    _last_call.info = None
+    return info
+
+
+def _record_call(started: float, hedged: bool, backup_won: bool) -> None:
+    """Kept for the query log, and put on the current LangSmith run (the
+    planner's or router's), so the slow tail and how often a backup was
+    sent can be read per call, not only from this process's counters."""
+    seconds = round(time.perf_counter() - started, 3)
+    _last_call.info = {"seconds": seconds, "hedged": hedged, "backup_won": backup_won}
+    try:
+        rt = _current_run()
+        if rt is not None:
+            rt.add_metadata({"gemini_seconds": seconds, "hedged": hedged, "backup_won": backup_won})
+    except Exception:
+        pass
+
+
+def _current_run():
+    from langsmith.run_helpers import get_current_run_tree
+    return get_current_run_tree()
+
+
+def _submit(fn, *args):
+    """Run fn on the pool inside a copy of this thread's context, so its
+    LangSmith run lands under the caller's run (a new thread starts empty)."""
+    return _pool().submit(contextvars.copy_context().run, fn, *args)
 
 
 def call_gemini_hedged(client, model: str, contents: str, config: dict, hedge_after_s: float | None = None):
@@ -116,19 +190,24 @@ def call_gemini_hedged(client, model: str, contents: str, config: dict, hedge_af
     first reply; an error only when both failed (the first one's error). A
     quick failure (e.g. a bad key) is raised at once, with no backup."""
     hedge_after_s = GEMINI_HEDGE_AFTER_S if hedge_after_s is None else hedge_after_s
+    started = time.perf_counter()
     if hedge_after_s <= 0:
-        return call_gemini_with_retry(client, model, contents, config)
+        reply = call_gemini_with_retry(client, model, contents, config)
+        _record_call(started, False, False)
+        return reply
     _count("calls")
     answered = threading.Event()
-    first = _pool().submit(call_gemini_with_retry, client, model, contents, config, 2, answered)
+    first = _submit(call_gemini_with_retry, client, model, contents, config, 2, answered)
     try:
-        return first.result(timeout=hedge_after_s)
+        reply = first.result(timeout=hedge_after_s)
+        _record_call(started, False, False)
+        return reply
     except FuturesTimeout:
         pass
     _count("hedged")
     logger.info("Gemini call slower than %.1fs, sending a backup request", hedge_after_s)
     # The backup doesn't retry: the first request is still running its own retries.
-    backup = _pool().submit(call_gemini_with_retry, client, model, contents, config, 0)
+    backup = _submit(call_gemini_with_retry, client, model, contents, config, 0)
     pending = {first, backup}
     while pending:
         done, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -137,7 +216,9 @@ def call_gemini_hedged(client, model: str, contents: str, config: dict, hedge_af
                 answered.set()      # seen live: a hung first request timed out, then retried for nobody
                 if f is backup:
                     _count("backup_won")
+                _record_call(started, True, f is backup)
                 return f.result()
+    _record_call(started, True, False)
     raise first.exception()
 
 

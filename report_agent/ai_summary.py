@@ -13,6 +13,8 @@ import logging
 import os
 import re
 
+from langsmith import traceable
+
 logger = logging.getLogger(__name__)
 
 PROMPT = """You write the opening paragraph of a monthly collections report for regional managers of an Indian NBFC.
@@ -53,6 +55,7 @@ def numbers_check(answer: str, facts: str) -> list[str]:
     return sorted(n for n in _numbers(answer) if n not in allowed)
 
 
+@traceable(run_type="chain", name="ReportSummary", process_inputs=lambda i: {"custom_call": i.get("call") is not None})
 def polish(model: dict, call=None) -> tuple[str | None, str]:
     """(paragraph or None, status message). `call(prompt) -> str` can be
     passed in (tests); by default Gemini is used when GOOGLE_API_KEY is set."""

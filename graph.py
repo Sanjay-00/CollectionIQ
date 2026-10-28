@@ -17,6 +17,7 @@ from agents.data_executor import (
 from agents.plan_executor import _check_condition_columns, execute_plan
 from agents.logical_planner import plan_logical
 from agents.plan_cache import PLAN_CACHE, planner_cache_key
+from gemini_client import last_call_info
 from registry.metric_names import canonical
 from agents.insight_generator import generate_insights
 from compiler.core import compile_logical, _expand_filters
@@ -255,6 +256,9 @@ class QueryState(TypedDict):
     # "miss", or "" before the planner runs; the key run_query stores under.
     plan_cache: str
     plan_cache_key: str
+    # The planner's Gemini call: seconds, hedged, backup_won ({} on a reused
+    # plan or no call). Logged per question, so the slow tail can be measured.
+    planner_call: dict
 
     # Shadow-mode comparison slot (kept for backward compat; no longer populated)
     shadow: dict
@@ -269,12 +273,15 @@ def logical_planner_node(state: QueryState) -> QueryState:
         ir1 = PLAN_CACHE.get(cache_key)
         cache = "hit" if ir1 is not None else "miss"
         _announce("planner_cached" if ir1 is not None else "planner")
+        planner_call: dict = {}
         if ir1 is None:
+            last_call_info()                  # clear: only this question's own call is logged
             ir1 = plan_logical(
                 state["query"],
                 state.get("snapshot_dates"),
                 allow_clarification=state.get("allow_clarification", True),
             )
+            planner_call = last_call_info()   # {} when no Gemini call was needed
         intent = ir1.get("intent", "loan_table")
 
         # Map intent → UI mode flags (backward compat for UI rendering branches)
@@ -364,6 +371,7 @@ def logical_planner_node(state: QueryState) -> QueryState:
             "error":             "",
             "plan_cache":        cache,
             "plan_cache_key":    cache_key,
+            "planner_call":      planner_call,
         }
     except Exception as e:
         return {**state, "error": f"Query planning failed: {e}"}
@@ -1148,6 +1156,7 @@ def run_query(
         "shadow":           {},
         "plan_cache":       "",
         "plan_cache_key":   "",
+        "planner_call":     {},
     }
 
     _tls.step_callback = on_step
