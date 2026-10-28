@@ -685,11 +685,12 @@ def _render_feedback(result: dict, key: str) -> None:
             )
         with _fb_cols[1]:
             if st.button("👍", key=f"{key}_fb_up", help="Helpful result"):
-                _send_feedback(_run_id, score=1.0)
-                st.session_state["_fb_sent"] = True
+                st.session_state["_fb_sent"] = _send_feedback(_run_id, score=1.0)
         with _fb_cols[2]:
             if st.button("👎", key=f"{key}_fb_down", help="Result needs improvement"):
-                _send_feedback(_run_id, score=0.0)
-                st.session_state["_fb_sent"] = True
-        if st.session_state.pop("_fb_sent", False):
+                st.session_state["_fb_sent"] = _send_feedback(_run_id, score=0.0)
+        sent = st.session_state.pop("_fb_sent", None)
+        if sent is True:
             st.toast("Feedback saved to LangSmith", icon="✅")
+        elif sent is False:      # it used to say "saved" either way
+            st.toast("Couldn't save your feedback to LangSmith. Please try again later.", icon="⚠️")

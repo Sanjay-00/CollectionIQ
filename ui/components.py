@@ -3,6 +3,7 @@
 import datetime
 import hashlib
 import html
+import logging
 import re
 from io import BytesIO
 
@@ -17,6 +18,8 @@ from utils import (
     REQUIRED_COLS, CRITICAL_COLS,
 )
 from utils import dates_only as _dateonly      # noqa: F401  (its old name here, for existing callers)
+
+logger = logging.getLogger(__name__)
 
 
 def _esc(val):
@@ -802,13 +805,24 @@ def heat_style(val, rng: tuple[float, float] | None) -> str:
     return f"background:{bg};color:{HEAT_TEXT};font-weight:600;" if bg else ""
 
 
-def _send_feedback(run_id: str, score: float) -> None:
-    """Post thumbs-up (1.0) or thumbs-down (0.0) feedback to LangSmith."""
+def _send_feedback(run_id: str, score: float) -> bool:
+    """Post thumbs-up (1.0) or thumbs-down (0.0) feedback to LangSmith. True
+    when it was saved: the page used to say "saved" either way."""
     try:
-        from langsmith import Client as _LSClient
-        _LSClient().create_feedback(run_id=run_id, key="result_quality", score=score)
+        import langsmith
+        langsmith.Client().create_feedback(run_id=run_id, key="result_quality", score=score)
+        return True
     except Exception:
-        pass
+        logger.warning("Couldn't save feedback for run %s", run_id, exc_info=True)
+        return False
+
+
+def render_tab_error(name: str, exc: Exception) -> None:
+    """A tab that crashed: a message on the page, and the traceback in the
+    server log (the page alone left nothing to debug from)."""
+    logger.error("%s tab failed to render", name, exc_info=exc)
+    st.error(f"**{name} tab failed to render:** {exc}")
+    st.caption("Try clearing the cache from the sidebar, or check your data file.")
 
 
 def _send_report_email(html_report: str, email_to: str, curr_month: str,

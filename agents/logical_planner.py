@@ -83,7 +83,7 @@ def build_views_catalog() -> str:
 # literal brace is doubled ({{ }}). Bump the version whenever the text changes:
 # it is recorded on every LangSmith trace of the planner. (The plan cache keys
 # on the prompt's full text, so it needs no bump to stay correct.)
-PLANNER_PROMPT_VERSION = 1
+PLANNER_PROMPT_VERSION = 2   # 2 (2026-10-28): catalog gained npa_pct, sma2_pct, roll_forward_pct, roll_backward_pct
 _PROMPT_FILE = Path(__file__).parent / "prompts" / "planner_system.txt"
 
 

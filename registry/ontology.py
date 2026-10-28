@@ -380,6 +380,58 @@ METRICS: dict[str, dict] = {
         "grain": "loan",
         "description": f"% of accounts >= {HARD_BUCKET_ARREARS_EMI_MIN} EMIs overdue: a narrower, more severe signal than NPA.",
     },
+    "npa_pct": {
+        "label": "NPA %",
+        "kind": "count_ratio",
+        # % of accounts whose current bucket is NPA: the dashboard's NPA%
+        # (utils.unit_metrics). Missing until 2026-10-28: the planner asked for
+        # "npa_pct" anyway, the compiler refused it, and "branches in NASHIK
+        # with NPA above 10%" failed. tests/test_metric_consistency.py keeps
+        # the two equal.
+        "numerator_where": [{"column": "curr_bucket", "op": "==", "value": "NPA"}],
+        "denominator_where": [],  # empty = count all rows in the group
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of accounts in the NPA bucket (NPA% by count, as the dashboard shows it).",
+    },
+    "sma2_pct": {
+        "label": "SMA-2 %",
+        "kind": "count_ratio",
+        # The dashboard's SMA-2% (utils.unit_metrics). Missing until 2026-10-28,
+        # like npa_pct: the planner asked for it and needed a repair pass.
+        "numerator_where": [{"column": "curr_bucket", "op": "==", "value": "SMA-2"}],
+        "denominator_where": [],
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of accounts in the SMA-2 bucket (2+ EMIs overdue, one step before NPA).",
+    },
+    # Roll rates: of loans with a real bucket in BOTH months, the share that
+    # moved to a worse (forward) or better (backward) bucket, as the dashboard
+    # computes them (utils.loan_flags roll_valid/roll_fwd/roll_bwd). Need last
+    # month's file (prev_bucket). "roll forward rate by branch" failed outright
+    # before these existed (2026-10-28).
+    "roll_forward_pct": {
+        "label": "Roll Forward %",
+        "kind": "count_ratio",
+        "movement": True,     # already a this-month vs last-month figure (compiler.core)
+        "numerator_where": [{"column": "curr_bucket", "op": "bucket_worse_than", "value": "prev_bucket"}],
+        "denominator_where": [{"column": "curr_bucket", "op": "in", "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]},
+                              {"column": "prev_bucket", "op": "in", "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]}],
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of loans whose bucket got worse since last month (needs last month's file).",
+    },
+    "roll_backward_pct": {
+        "label": "Roll Backward %",
+        "kind": "count_ratio",
+        "movement": True,     # already a this-month vs last-month figure (compiler.core)
+        "numerator_where": [{"column": "curr_bucket", "op": "bucket_better_than", "value": "prev_bucket"}],
+        "denominator_where": [{"column": "curr_bucket", "op": "in", "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]},
+                              {"column": "prev_bucket", "op": "in", "value": ["STD", "1-30 DPD", "SMA-1", "SMA-2", "NPA"]}],
+        "scale": 100,
+        "grain": "loan",
+        "description": "% of loans whose bucket improved since last month (cured or rolled back; needs last month's file).",
+    },
     "strike_pct": {
         "label": "Strike %",
         "kind": "count_ratio",

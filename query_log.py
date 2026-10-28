@@ -14,10 +14,13 @@ break a real query, so every failure mode here is swallowed.
 """
 import datetime
 import json
+import logging
 import re
 from pathlib import Path
 
 from config import QUERY_LOG_ENABLED, QUERY_LOG_PATH, QUERY_LOG_RETENTION_DAYS
+
+logger = logging.getLogger(__name__)
 
 # How often _prune_old_entries actually does the read+rewrite work, tracked via
 # a sidecar marker file next to the log. Bounds the cost of retention to about
@@ -122,4 +125,6 @@ def log_query_outcome(state: dict) -> None:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
-        pass
+        # Never breaks a query, but a log that silently stops filling would
+        # hide every later outcome (code review item 7, 2026-10-28).
+        logger.warning("Couldn't write the AI Query log at %s", QUERY_LOG_PATH, exc_info=True)

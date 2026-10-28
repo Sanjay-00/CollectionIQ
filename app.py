@@ -13,7 +13,7 @@ from ui.styles import inject_styles
 from ui.header import render_header
 from ui.landing import render_landing
 from ui.sidebar import render_sidebar
-from ui.components import _load_and_concat, _bump_data_version, _file_fingerprint
+from ui.components import _load_and_concat, _bump_data_version, _file_fingerprint, render_tab_error
 from analysis.executive_scorecard import compute_executive_scorecard
 from analysis.roll_rate import compute_roll_rate_matrix
 from analysis.portfolio_intelligence import compute_region_scorecard, compute_product_analysis
@@ -407,11 +407,6 @@ if active is None:
 st.session_state["_last_active_section"] = active
 
 
-def _tab_error(name: str, exc: Exception) -> None:
-    st.error(f"**{name} tab failed to render:** {exc}")
-    st.caption("Try clearing the cache from the sidebar, or check your data file.")
-
-
 try:
     if active == "🗂️ Dashboard":
         render_dashboard_tab(
@@ -470,7 +465,7 @@ try:
         render_report_tab(df_curr, df_prev, curr_month, prev_month, sel_region, sel_branch, sel_status, sel_zone)
 
 except Exception as _e:
-    _tab_error(active.split(" ", 1)[-1], _e)
+    render_tab_error(active.split(" ", 1)[-1], _e)
 
 # The Portfolio Review of every region starts in the background once this
 # page has drawn (code only, no AI), so it is usually ready by the time the

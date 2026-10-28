@@ -580,7 +580,11 @@ def _resolve_time_compare(time_block: dict, ir_measures: list, errs: list, colum
     for mdef in mdefs:
         # (Every unsupported measure below adds to errs: a fatal error, so the
         # repair loop or the user sees it.)
-        if _reads_last_month(mdef):
+        if _reads_last_month(mdef) or mdef.get("movement"):
+            # movement: a registry rate that IS last month vs this month (roll
+            # forward/backward); it has no "month before" in a two-file upload,
+            # so it answers the comparison as it is. An ad-hoc both-months
+            # measure still errors below (that comparison really can't be made).
             continue
         alias = mdef["alias"]
         kind = mdef["kind"]

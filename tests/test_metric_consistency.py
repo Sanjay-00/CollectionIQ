@@ -7,6 +7,7 @@ business definition with no shared code path between them. If either drifts, thi
 fails instead of the two silently disagreeing in production.
 """
 import pandas as pd
+import pytest
 
 from compiler.core import compile_logical
 from agents.plan_executor import execute_plan
@@ -214,3 +215,55 @@ class TestCollectionPctsConsistency:
         shared = compute_overdue_demand_pct(df)
         assert _via_compiler("overdue_collection_pct", df) == shared["overdue_pct"]
         assert _via_compiler("month_demand_collection_pct", df) == shared["demand_pct"]
+
+
+class TestNpaPctConsistency:
+    """NPA% was missing from the AI Query registry (found 2026-10-28): the
+    planner asked for 'npa_pct' (a comment here even named it), the compiler
+    refused, and "branches in NASHIK with NPA above 10%" failed outright."""
+
+    @staticmethod
+    def _book():
+        return pd.DataFrame({
+            "Loan No": [f"L{i}" for i in range(8)],
+            "Unit": ["A"] * 8,
+            "Arrears / EMI": [0, 0, 1, 4, 9, 12, 0, 2],
+            "curr_bucket": ["STD", "STD", "1-30 DPD", "SMA-2", "NPA", "NPA", "NA", "SMA-1"],
+        })
+
+    def test_ai_query_path_matches_the_dashboard(self):
+        from utils import unit_metrics
+        df = self._book()
+        assert _via_compiler("npa_pct", df) == float(unit_metrics(df, ["Unit"])["NPA%"].iloc[0]) == 25.0
+
+    def test_still_matches_with_no_npa(self):
+        from utils import unit_metrics
+        df = self._book().assign(curr_bucket="STD")
+        assert _via_compiler("npa_pct", df) == float(unit_metrics(df, ["Unit"])["NPA%"].iloc[0]) == 0.0
+
+
+class TestMoreDashboardRatesConsistency:
+    """Found by the same probe (2026-10-28): "SMA-2 % by region" needed a
+    repair pass (planner asked for 'sma2_pct'), and "roll forward rate by
+    branch" failed outright ('roll_forward_rate'). Each now matches the
+    dashboard's own number (utils.unit_metrics)."""
+
+    @staticmethod
+    def _book():
+        return pd.DataFrame({
+            "Loan No": [f"L{i}" for i in range(10)],
+            "Unit": ["A"] * 10,
+            "Arrears / EMI": [0, 0, 1, 4, 9, 12, 0, 2, 3, 0],
+            "curr_bucket": ["STD", "SMA-2", "1-30 DPD", "SMA-2", "NPA", "NPA", "NA", "SMA-1", "SMA-2", "STD"],
+            "prev_bucket": ["STD", "SMA-1", "STD", "NPA", "SMA-2", "NPA", "STD", "SMA-1", None, "1-30 DPD"],
+        })
+
+    @pytest.mark.parametrize("metric, column, places", [
+        ("sma2_pct", "SMA-2%", 2), ("roll_forward_pct", "Roll Fwd%", 1), ("roll_backward_pct", "Roll Bwd%", 1),
+    ])
+    def test_ai_query_path_matches_the_dashboard(self, metric, column, places):
+        from utils import unit_metrics
+        df = self._book()
+        dashboard = float(unit_metrics(df, ["Unit"])[column].iloc[0])
+        assert round(_via_compiler(metric, df), places) == dashboard
+        assert dashboard > 0

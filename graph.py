@@ -1,3 +1,4 @@
+import logging
 import re
 import threading
 import uuid as _uuid
@@ -25,6 +26,8 @@ from registry.semantic_model import resolve_dimension
 from registry.views import VIEWS, _METRIC_DIRECTION, _METRIC_AGG, normalize_view_output, resolve_view_fn
 from config import PII_COLUMNS
 from query_log import log_query_outcome
+
+logger = logging.getLogger(__name__)
 from utils import expand_to_all_columns, resolve_dynamic_values
 
 
@@ -374,6 +377,7 @@ def logical_planner_node(state: QueryState) -> QueryState:
             "planner_call":      planner_call,
         }
     except Exception as e:
+        logger.exception("Query planning failed")
         return {**state, "error": f"Query planning failed: {e}"}
 
 
@@ -668,11 +672,13 @@ def view_node(state: QueryState) -> QueryState:
 
             raw = _call_view_fn(name, spec, input_df, input_df_prev, call_params, rr_meta)
     except Exception as e:
+        logger.warning("View %s raised; answering through the compiler instead", name, exc_info=True)
         return _fallthrough(f"analysis_fn_raised: {e}")
 
     try:
         result_df, result_kpis, result_rankings = normalize_view_output(spec, raw)
     except Exception as e:
+        logger.warning("View %s output couldn't be read; answering through the compiler instead", name, exc_info=True)
         return _fallthrough(f"output_normalization_failed: {e}")
 
     # The planner is instructed to mirror a ranking request into BOTH the
@@ -826,6 +832,7 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
         try:
             plan, errs = compile_logical(ir1, cols, as_of=_report_month(state))
         except Exception as e:
+            logger.exception("Compiler raised")
             _trace_metadata({"repair_attempts": attempt, "compiled_ok": False, "compiler_exception": str(e)})
             return {**state, "error": f"Compiler failed: {e}"}
 
@@ -863,6 +870,7 @@ def compile_and_validate_node(state: QueryState) -> QueryState:
                 repair_feedback=feedback, allow_clarification=False,
             )
         except Exception as e:
+            logger.exception("Query repair failed")
             return {**state, "error": f"Query repair failed: {e}"}
 
     return state  # unreachable -- loop always returns on its final attempt
@@ -973,6 +981,7 @@ def execute_node(state: QueryState) -> QueryState:
                 "result_rankings": rankings, "error": ""}
 
     except Exception as e:
+        logger.exception("Data execution failed")
         return {**state, "result_df": pd.DataFrame(), "error": f"Data execution failed: {e}"}
 
 
@@ -998,6 +1007,7 @@ def analyze_node(state: QueryState) -> QueryState:
         )
         return {**state, "insights": insights}
     except Exception as e:
+        logger.exception("Insight generator failed")
         return {**state, "insights": f"• AI observations unavailable: {e}"}
 
 

@@ -170,6 +170,19 @@ class TestVsLastMonthNeverDropsTheComparison:
         assert "Could not compile" in out["error"]
         assert ("upload a previous-period file" in out["error"]) is (not prev_loaded)
 
+    @pytest.mark.parametrize("compare", ["snapshot", "change"])
+    def test_a_roll_rate_is_already_the_comparison(self, compare):
+        """A roll rate IS last month vs this month; there is no "last month's
+        roll rate" in a two-file upload. The planner adds a time block to
+        "roll forward rate by branch" anyway, and that failed the question
+        (live, 2026-10-28). It's shown as it is."""
+        curr, prev = _months()
+        ir = {"measures": [{"metric": "roll_forward_pct", "alias": "roll_fwd"}]}
+        with_time = _run({**ir, "time": {"grain": "month", "compare": {"type": compare, "from": "prev",
+                                                                       "to": "curr"}}}, curr, prev)
+        pd.testing.assert_frame_equal(with_time, _run(ir, curr, prev))
+        assert with_time.loc["PUNE", "roll_fwd"] == 50.0           # L2 went STD -> NPA, L1 stayed NPA
+
     def test_a_measure_with_no_last_month_value_is_an_error(self):
         curr, _ = _months()
         ir = {"intent": "aggregation", "dimensions": ["region"],
