@@ -54,6 +54,10 @@ The demo data is fully synthetic: no real customer, loan or branch figure. Its p
 | Ratnagiri | Healthy and stable |
 
 To try the Root Cause tab's due-date-missed check, upload `sample_data/Demo_Due_Date_Missed_List.xlsx` there. Regenerate everything with `python generate_demo_data.py`.
+
+**Before a demo:** `python demo_check.py` drives the real app through the whole demo on the sample (every tab, the review briefing, all three report formats, and every example question asked of the AI for real) and must end with READY FOR THE DEMO. The talk track, timings and fallbacks are in [docs/demo-runbook.md](docs/demo-runbook.md).
+
+**Switching AI off:** add `COLLECTIONIQ_AI=off` to `.env`. No data then leaves the computer: no Gemini call and no LangSmith trace. The dashboard, reports and review briefing work as normal; AI Query and typed Investigator questions say AI is off.
 &nbsp;
 
 ## Screenshots

@@ -1,9 +1,9 @@
-import os
 import re
 
 from langsmith import traceable
 from config import GEMINI_MODEL
 from gemini_client import add_token_usage as _add_token_usage, call_gemini_with_retry as _call_gemini_with_retry, make_client
+from gemini_client import ai_key, ai_unavailable_reason
 
 SYSTEM_PROMPT = """You are a senior credit risk analyst at an NBFC (Non-Banking Financial Company).
 Generate concise, actionable observations from loan portfolio query results.
@@ -69,9 +69,9 @@ def generate_insights(
     rankings: dict,
     insight_focus: str = "",
 ) -> str:
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    api_key = ai_key()
     if not api_key:
-        return "• GOOGLE_API_KEY not set: AI observations unavailable."
+        return f"• AI observations unavailable. {ai_unavailable_reason()}"
 
     agg_rows = kpis.get("_agg_rows")
 

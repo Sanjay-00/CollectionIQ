@@ -2,6 +2,8 @@ import datetime
 
 from dotenv import load_dotenv
 load_dotenv()
+from gemini_client import apply_ai_switch  # noqa: E402
+apply_ai_switch()   # COLLECTIONIQ_AI=off: no Gemini call, no LangSmith trace
 
 import streamlit as st
 import pandas as pd
@@ -51,6 +53,11 @@ render_header()
 if st.session_state.pop("_set_sample_dates", False):
     st.session_state["curr_month_pick"] = datetime.date(2026, 8, 1)   # generate_demo_data.py's months
     st.session_state["prev_month_pick"] = datetime.date(2026, 7, 1)
+# The pickers' starting values live in session state only: also passing value=
+# to a keyed widget whose value is set above makes Streamlit log a warning.
+_this_month = datetime.date.today().replace(day=1)
+st.session_state.setdefault("curr_month_pick", _this_month)
+st.session_state.setdefault("prev_month_pick", (_this_month - datetime.timedelta(days=1)).replace(day=1))
 
 st.markdown('<div class="section-label">Data Source</div>', unsafe_allow_html=True)
 col_up1, col_up2 = st.columns(2)
@@ -67,7 +74,7 @@ with col_up1:
         key="curr", label_visibility="collapsed", accept_multiple_files=True,
     )
     curr_month_input = st.date_input(
-        "Reporting Month", value=datetime.date.today().replace(day=1),
+        "Reporting Month",
         key="curr_month_pick",
         help="Select any date in the reporting month: only Month & Year are used",
         format="DD/MM/YYYY",
@@ -87,7 +94,6 @@ with col_up2:
     )
     prev_month_input = st.date_input(
         "Reporting Month",
-        value=(datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
         key="prev_month_pick",
         help="Select any date in the previous month: only Month & Year are used",
         format="DD/MM/YYYY",

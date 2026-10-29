@@ -6,10 +6,11 @@ on the answer ("How this answer was built"), with the validation badge and
 
 Questions about WHY a number moved belong to the Investigator tab; it hands
 list questions over here (HANDOFF_KEY), already typed in and run."""
-import os
 
 import pandas as pd
 import streamlit as st
+
+from gemini_client import ai_unavailable_reason
 
 from ui.query_answer import render_clarification, render_query_result, render_steps, run_ai_query
 
@@ -82,8 +83,8 @@ def render_ai_query_tab(df_curr: pd.DataFrame, query_ctx: dict) -> None:
     if run or handoff:
         if not (question or "").strip():
             st.warning("Please enter a question.")
-        elif not os.environ.get("GOOGLE_API_KEY"):
-            st.error("GOOGLE_API_KEY not found in .env file.")
+        elif ai_unavailable_reason():
+            st.info(ai_unavailable_reason())
         else:
             st.session_state[RESULT_KEY] = run_ai_query(question.strip(), df_curr, query_ctx,
                                                         skip_insights=not summary)

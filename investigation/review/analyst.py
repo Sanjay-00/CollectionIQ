@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from agents.insight_generator import _unverified, _values
 from config import PLANNER_TEMPERATURE
 from langsmith import traceable
 from gemini_client import JSONReplyError, generate_json_text, parse_json_object
+from gemini_client import ai_key, ai_unavailable_reason
 from investigation.review.brief import LIST_NAMES, Brief
 from investigation.review.outcomes import IMPROVED, NO_CLEAR_CHANGE, WORSE as OUTCOME_WORSE
 
@@ -255,8 +255,8 @@ def write_analysis(brief: Brief, generate: Callable[[str], str] | None = None,
     if brief.status != "ok" or not brief.findings:
         return Analysis("skipped")
     if generate is None:
-        if not os.environ.get("GOOGLE_API_KEY"):
-            return Analysis("skipped", problems=["no Google API key"])
+        if not ai_key():
+            return Analysis("skipped", problems=[ai_unavailable_reason()])
         generate = gemini_generate
     facts, problems = analyst_facts(brief, outcomes), None
     for attempt in (1, 2):

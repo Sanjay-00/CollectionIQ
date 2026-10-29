@@ -10,7 +10,6 @@ figures.
 from __future__ import annotations
 
 import logging
-import os
 import re
 
 from langsmith import traceable
@@ -63,9 +62,10 @@ def polish(model: dict, call=None) -> tuple[str | None, str]:
     if not facts:
         return None, "No summary to rewrite."
     if call is None:
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        from gemini_client import ai_key, ai_unavailable_reason
+        api_key = ai_key()
         if not api_key:
-            return None, "AI summary skipped: no GOOGLE_API_KEY set."
+            return None, f"AI summary skipped. {ai_unavailable_reason()}"
         from config import GEMINI_MODEL
         from gemini_client import call_gemini_with_retry, make_client
         client = make_client(api_key)

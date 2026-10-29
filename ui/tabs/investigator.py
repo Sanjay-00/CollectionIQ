@@ -39,7 +39,6 @@ drill controls (and their keys) on every historical message on every rerun.
 Does not touch graph.py/compiler/registry/agents' AI Query pipeline -- this
 is an entirely separate, additive module.
 """
-import os
 import time
 import uuid
 
@@ -48,6 +47,7 @@ import streamlit as st
 
 from config import INVESTIGATOR_MAX_THREADS
 from investigator.branch_recipients import get_branch_recipients
+from gemini_client import ai_unavailable_reason
 from investigator.email_draft import draft_priority_email
 from investigator.guardrails import validate_and_correct
 from investigator.headline import (
@@ -1306,10 +1306,10 @@ def _process_new_question(
             turns.append({"role": "assistant", "text": _HELP_RESPONSE, "kind": "info"})
             return
 
-        if not os.environ.get("GOOGLE_API_KEY"):
-            text = ("Typed questions need the AI, which isn't set up here (no Google API key in the .env file). "
-                    "The \"What moved most\" cards still work.")
-            st.error(text)
+        if ai_unavailable_reason():
+            text = (f"{ai_unavailable_reason()} Typed questions need the AI; the briefing, the region "
+                    "cards and their drill-downs don't.")
+            st.info(text)
             turns.append({"role": "assistant", "text": text})
             return
 

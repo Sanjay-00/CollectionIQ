@@ -49,8 +49,49 @@ def add_token_usage(response) -> None:
         pass
 
 
+# ── The AI switch (2026-10-28) ───────────────────────────────────────────────
+# COLLECTIONIQ_AI=off in .env: no Gemini call and no LangSmith trace, so no data
+# leaves this computer, whatever else is configured (a pilot waiting on data
+# approval; the demo's fallback if the network fails). Read on every call, so
+# changing .env and restarting the app is all it takes.
+AI_SWITCH_ENV = "COLLECTIONIQ_AI"
+AI_OFF_MESSAGE = ("AI is switched off on this installation, so no data leaves this computer. "
+                  "The dashboard, reports and the review briefing work as normal.")
+AI_NO_KEY_MESSAGE = "AI isn't set up here: there is no Google API key in the .env file."
+
+
+class AIDisabledError(RuntimeError):
+    """A Gemini call was attempted with AI switched off."""
+
+
+def ai_enabled() -> bool:
+    return os.environ.get(AI_SWITCH_ENV, "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def ai_key() -> str:
+    """The Gemini key when AI may be used; "" when switched off or not set."""
+    return os.environ.get("GOOGLE_API_KEY", "").strip() if ai_enabled() else ""
+
+
+def ai_unavailable_reason() -> str:
+    """Why AI can't be used here, in words for the page; "" when it can."""
+    if not ai_enabled():
+        return AI_OFF_MESSAGE
+    return "" if ai_key() else AI_NO_KEY_MESSAGE
+
+
+def apply_ai_switch() -> None:
+    """Called by app.py right after loading .env: with AI off, tracing is off too."""
+    if not ai_enabled():
+        for name in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
+            os.environ[name] = "false"
+
+
 def make_client(api_key: str):
-    """A Gemini client with this app's standard per-request timeout."""
+    """A Gemini client with this app's standard per-request timeout. Refuses
+    while AI is switched off: the last guard, whatever a caller checked."""
+    if not ai_enabled():
+        raise AIDisabledError(AI_OFF_MESSAGE)
     return genai.Client(
         api_key=api_key,
         http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
@@ -264,7 +305,7 @@ def generate_json_text(contents: str, *, temperature: float, system_instruction:
                        response_schema=None, model: str | None = None) -> str:
     """One JSON-mode call with this app's client, timeout and retry policy;
     the raw reply text (parse it with parse_json_object)."""
-    client = make_client(os.environ["GOOGLE_API_KEY"])
+    client = make_client(ai_key())
     response = call_gemini_with_retry(client, model or GEMINI_MODEL, contents,
                                       json_config(temperature, system_instruction, response_schema))
     add_token_usage(response)

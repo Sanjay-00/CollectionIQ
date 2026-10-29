@@ -11,7 +11,6 @@ Prompt structure:
   - Extended IR-1 schema (intent, metadata, filters, dimensions, measures, time, etc.)
   - Rules for routing, clarification, priority, bucket ops, and display_columns
 """
-import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +19,7 @@ from langsmith import traceable
 
 from config import GEMINI_MODEL, PLANNER_TEMPERATURE
 from gemini_client import JSONReplyError, json_config, make_client, parse_json_object
+from gemini_client import ai_key, ai_unavailable_reason
 from registry.ontology import CONCEPTS, METRICS, AMBIGUOUS_TERMS
 from registry.semantic_model import DIMENSIONS
 from registry.views import VIEWS, _METRIC_DIRECTION
@@ -376,9 +376,9 @@ def plan_logical(
     Returns a fully-normalized IR-1 dict including metadata fields
     (query_title, risk_flag, description, needs_clarification, …).
     """
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    api_key = ai_key()
     if not api_key:
-        raise ValueError("GOOGLE_API_KEY environment variable not set.")
+        raise ValueError(ai_unavailable_reason())
 
     # Input hygiene: reject absurdly long input before ever calling the model --
     # cheap cost/DoS guardrail, and a real business question is never this long.

@@ -22,7 +22,6 @@ existing Flash-Lite cost discipline (CLAUDE.md's "Model Choice" section).
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Iterator
 
@@ -33,6 +32,7 @@ from gemini_client import call_gemini_hedged as _call_gemini_hedged
 from langsmith import traceable
 from config import GEMINI_MODEL, MAX_QUERY_CHARS, PII_COLUMNS, PLANNER_TEMPERATURE
 from gemini_client import JSONReplyError, json_config, make_client, parse_json_object
+from gemini_client import ai_key, ai_unavailable_reason
 from investigator.state import EntityMemory
 from investigator.steps import METRIC_DIRECTION, STEP_REGISTRY
 from registry.ontology import CONCEPTS
@@ -861,9 +861,9 @@ def parse_turn(question: str, entity_memory: EntityMemory, allow_multi: bool = F
             f"That question is too long ({len(question)} characters, limit {MAX_QUERY_CHARS}). "
             "Please ask a shorter, more specific question."
         )
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = ai_key()
     if not api_key:
-        return _fallback_turn_result("GOOGLE_API_KEY not configured.")
+        return _fallback_turn_result(ai_unavailable_reason())
 
     client = make_client(api_key)
     try:
@@ -1069,7 +1069,7 @@ def narrate_step(step_type: str, result_df) -> str:
     anything itself, and only ever sees a preview of the table, matching
     the same discipline as agents/insight_generator.py for the main
     AI Query pipeline."""
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = ai_key()
     if not api_key or result_df is None or result_df.empty:
         return ""
 
@@ -1091,7 +1091,7 @@ def narrate_step_stream(step_type: str, result_df) -> Iterator[str]:
     final full string (e.g. to store in EntityMemory) should use
     st.write_stream's own return value, which concatenates every yielded
     chunk -- never re-request or reconstruct it here."""
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = ai_key()
     if not api_key or result_df is None or result_df.empty:
         return
 
